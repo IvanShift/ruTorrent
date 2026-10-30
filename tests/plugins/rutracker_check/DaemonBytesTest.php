@@ -408,7 +408,7 @@ $suite->test('aud "q" \\b \'a\' &c: a session directory with these bytes still y
         $scene->start();
 
         $answer = $scene->driver->run('$path = null;'
-            . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', $path);'
+            . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', null, $path);'
             . ' rsDone(array("path" => $path, "hash" => is_object($t) ? $t->hash_info() : null));');
         strictAssertSame(array('path' => $scene->session . $old['hash'] . '.torrent', 'hash' => $old['hash']),
             $answer, 'getSource() reads the session copy by its real path');
@@ -426,7 +426,7 @@ $suite->test('aud "q" \\b \'a\' &c: the tied .torrent fallback is opened by its 
         $scene->start();
 
         $answer = $scene->driver->run('$path = null;'
-            . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', $path);'
+            . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', null, $path);'
             . ' rsDone(array("path" => $path, "hash" => is_object($t) ? $t->hash_info() : null));');
         strictAssertSame(array('path' => $tied, 'hash' => $old['hash']), $answer,
             'without a session copy the tied file is found by its own bytes');

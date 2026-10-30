@@ -5,13 +5,14 @@ require_once(__DIR__ . '/TestCase.php');
 /**
  * Every shipped PHP file that reads rXMLRPCRequest's string accessors has
  * been reviewed for what it does with the daemon's bytes (AUD-ESC, rounds 4
- * and 5), and nothing in the tree escapes or unescapes them again.
+ * and 5), and nothing in the tree escapes them again.
  *
  * Until round 5, run() handed out every string with its quotes and
  * backslashes escaped. Twenty-odd consumers compared such a value with a
  * path, quoted it a second time or put it into JSON, and a few undid the
- * escaping with rXMLRPCRequest::unescapeValue() -- which, now that ->val
- * carries the daemon's own bytes, would drop a backslash the daemon reported.
+ * escaping with rXMLRPCRequest::unescapeValue(). ->val now carries the
+ * daemon's own bytes and unescapeValue() returns its argument, so code taken
+ * from upstream, whose reader still escapes, reads the same bytes here.
  *
  * So this file pins four things over the non-test PHP in conf/, php/,
  * plugins/, tools/ and the top level:
@@ -20,8 +21,9 @@ require_once(__DIR__ . '/TestCase.php');
  *    that reads daemon strings has changed: review what it does with them,
  *    then update REVIEWED_ACCESS_COUNTS from the failure message;
  *  - the typed string-array and string-table owners and their inventory callers;
- *  - no file but php/xmlrpc.php names unescapeValue, as a call or as a
- *    callable string;
+ *  - the files that name unescapeValue, as a call or as a callable string,
+ *    with their counts: each is upstream code reading a value it expects
+ *    escaped, and is reviewed like an access;
  *  - no file but php/xmlrpc.php names the deprecated $escapeForScript flag,
  *    which exists for external plugins only.
  *
@@ -39,9 +41,11 @@ class RpcStringConsumersTest extends TestCase
 	 * unpack now read file paths through rTorrent::getFilePath().
 	 */
 	const REVIEWED_ACCESS_COUNTS = array(
-		// Source paths read the raw reply once, or reuse the already-read batch paths.
-		'php/rtorrent.php'                               => 7,
+		// File paths, and upstream's getSourcePaths() reading every session and tied path.
+		'php/rtorrent.php'                               => 17,
 		'php/settings.php'                               => 13,
+		// downloadName(): the live path, size and file count of one file.
+		'php/torrentfilenames.php'                       => 4,
 		'php/utility/hashfault.php'                      => 6,
 		'php/xmlrpc.php'                                 => 4,
 		'plugins/_getdir/info.php'                       => 2,
@@ -60,8 +64,9 @@ class RpcStringConsumersTest extends TestCase
 		// Physical paths now retain per-command XML types/table rows instead of flat values.
 		'plugins/erasedata/removewithdata.php'           => 41,
 		'plugins/extratio/rules.php'                     => 5,
-		// List and files preserve nested subcall boundaries; other modes retain flat values.
-		'plugins/httprpc/action.php'                     => 46,
+		// List and files are read row by row, other modes as flat values, and a
+		// names=1 file list reads the session and tied paths for its labels.
+		'plugins/httprpc/action.php'                     => 47,
 		'plugins/ratio/ratio.php'                        => 9,
 		'plugins/retrackers/update.php'                  => 2,
 		'plugins/rutracker_check/check.php'              => 96,
@@ -99,16 +104,28 @@ class RpcStringConsumersTest extends TestCase
 
 	// Raw semantic values retain XML provenance; these consumers must not flatten it.
 	const REVIEWED_SEMANTIC_COUNTS = array(
-		// File download paths retain required result slots separately from optional name evidence.
-		'php/rtorrent.php' => 4,
 		'php/xmlrpc.php' => 12,
 		// Exact version/incarnation strings and typed state fields are compared without flattening.
 		'plugins/erasedata/native.php' => 14,
-		// Feed rows and optional metadata paths share one typed response without flattening.
-		'plugins/feeds/action.php' => 3,
-		// List/file batches validate main tables separately from optional source-path results.
-		'plugins/httprpc/action.php' => 9,
+		// Feed rows are one typed response, read without flattening.
+		'plugins/feeds/action.php' => 4,
+		// httprpcRows() checks the list and the file list row by row: rtorrent
+		// sends numbers as <i8>, which a string table refuses.
+		'plugins/httprpc/action.php' => 6,
 		'tools/autotools-move-readiness.php' => 4,
+	);
+
+	// Callers of unescapeValue(), all of them upstream code: it returns its
+	// argument (XMLRPCStringBytesTest), so each still reads the daemon's bytes.
+	const REVIEWED_UNESCAPE_COUNTS = array(
+		// getSourcePaths(): the session and tied paths.
+		'php/rtorrent.php' => 2,
+		// downloadName(): the live path.
+		'php/torrentfilenames.php' => 1,
+		// A title that needs metadata.
+		'plugins/feeds/action.php' => 1,
+		// A list title and a file row that need metadata.
+		'plugins/httprpc/action.php' => 2,
 	);
 
 	// The one file allowed to define unescapeValue and to name the flag.
@@ -329,7 +346,7 @@ PHP;
 			'all three Move inventory callers retain the reviewed shared-owner edge');
 	}
 
-	public function testOnlyTheParserNamesUnescapeValue()
+	public function testEveryUnescapeValueCallerIsReviewed()
 	{
 		$found = array();
 		foreach (self::tree() as $file => $counts) {
@@ -337,9 +354,9 @@ PHP;
 				$found[$file] = $counts['unescape'];
 			}
 		}
-		$this->assertSame(array(), $found,
-			'no shipped file unescapes a daemon string: a value is the daemon\'s own bytes and '
-			. 'unescaping it drops a backslash. Now: ' . self::entries($found));
+		$this->assertSame(self::REVIEWED_UNESCAPE_COUNTS, $found,
+			'every caller of unescapeValue() is reviewed: it must take the value from run(), whose '
+			. 'bytes it returns unchanged. Now: ' . self::entries($found));
 	}
 
 	public function testOnlyTheParserNamesTheDeprecatedEscapeFlag()

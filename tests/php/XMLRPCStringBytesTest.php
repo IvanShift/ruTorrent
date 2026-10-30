@@ -196,8 +196,21 @@ class XMLRPCStringBytesTest extends TestCase
 		$this->assertTrue($request->run(), 'the typed answer is read');
 		$this->same(array(self::ESCAPED, 'a\\"b\\\\c'), $request->strings,
 			'the flag escapes ->strings the same way');
-		$this->same(self::RAW, rXMLRPCRequest::unescapeValue(self::ESCAPED),
-			'unescapeValue() inverts the flagged form');
+	}
+
+	// Upstream's reader escapes every value and its callers undo that with
+	// unescapeValue(). Here the values are already the daemon's bytes, so it
+	// returns them unchanged: a name holding \\ or \" keeps both characters.
+	public function testUnescapeValueReturnsTheDaemonsBytes()
+	{
+		$body = self::arrayBody(array(self::str(self::DAEMON_TEXT), self::str('dbs\\\\x'), self::str('bq\\"x')));
+		$this->serve(array($body));
+		$request = $this->request(false);
+		$this->assertTrue($request->run(), 'the answer is read');
+		$this->same(array(self::RAW, 'dbs\\\\x', 'bq\\"x'), array_map(array('rXMLRPCRequest', 'unescapeValue'), $request->val),
+			'unescapeValue() hands back what run() read');
+		foreach(array(null, 7, array('a\\\\b')) as $value)
+			$this->same($value, rXMLRPCRequest::unescapeValue($value), 'a value that is not a string is returned as it is');
 	}
 
 	// AUD-ESC-01: a torrent named "x faultCode y.bin" and a tracker failure

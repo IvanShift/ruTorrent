@@ -103,7 +103,7 @@ if(($hash!=='') && ($cmd!==''))
 			if(rTorrent::isMetadataStubName(basename($fname), $hash))
 			{
 				$validatedPath = null;
-				if(rTorrent::getSource($hash, $validatedPath) === false)
+				if(rTorrent::getSource($hash, null, $validatedPath) === false)
 				{
 					$reason = $validatedPath === false ? 'source-unavailable' : 'source-invalid';
 					$ret = array( "status"=>255, "errors"=>array('Magnet metadata is missing or invalid') );

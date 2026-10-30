@@ -52,11 +52,11 @@ class HttprpcNestedListReplies extends FakeRtorrentMethodReplies
 	public function __construct($values, $row) { parent::__construct($values); $this->row = $row; }
 	public function __invoke($request, $methods)
 	{
-		if($methods === array('d.multicall', 'd.multicall', 'session.path'))
+		if($methods === array('d.multicall'))
 			return HttprpcListFixture::reply(array($this->row));
-		if($methods === array('f.multicall', 'session.path', 'd.tied_to_file'))
-			return new FakeRtorrentRawReply(HttprpcListFixture::body(array(
-				array(array(parent::__invoke($request, array('f.multicall')))), array(''), array(''))));
+		if($methods === array('f.multicall'))
+			return new FakeRtorrentRawReply(HttprpcListFixture::body(HttprpcListFixture::typed(
+				array(parent::__invoke($request, array('f.multicall'))), HttprpcListFixture::FILE_INTEGERS)));
 		return parent::__invoke($request, $methods);
 	}
 }

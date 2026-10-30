@@ -163,18 +163,13 @@ class RtorrentProbeResponder
 		if($this->listFault !== null && in_array('d.multicall', $names, true))
 			return FakeRtorrentDaemon::fault($this->listFault);
 		$single = (count($names) === 1) ? $names[0] : '';
-		if($names === array('d.multicall', 'd.multicall', 'session.path')) {
-			if(RtorrentProbeFixture::firstParameter($body) !== '')
-				return FakeRtorrentDaemon::fault(RtorrentProbeFixture::INVALID_TARGET);
-			return HttprpcListFixture::reply(array(RtorrentProbeFixture::row($this->hash, 36)));
-		}
-
 		if ($single === 'd.multicall') {
 			if (RtorrentProbeFixture::firstParameter($body) !== '') {
 				return FakeRtorrentDaemon::fault(RtorrentProbeFixture::INVALID_TARGET);
 			}
-			// The httprpc list mode asks for 36 columns.
-			return RtorrentProbeFixture::row($this->hash, 36);
+			// The httprpc list mode asks for 36 columns. Fork: its reader
+			// takes the answer as rtorrent writes it, one array per torrent.
+			return HttprpcListFixture::reply(array(RtorrentProbeFixture::row($this->hash, 36)));
 		}
 		switch ($single) {
 			case 'system.client_version':

@@ -34,3 +34,9 @@ end_of_line = unset
 
 [tests/plugins/loginmgr/fixtures/kinozal-mirror-login-2026-10-15.html]
 end_of_line = unset
+
+# rtorrent answers captured on 2026-10-30, byte for byte: a raw CR and bytes
+# that are not UTF-8 inside values, and no final newline.
+[tests/php/fixtures/names-*-rtorrent-*.xml]
+end_of_line = unset
+insert_final_newline = false

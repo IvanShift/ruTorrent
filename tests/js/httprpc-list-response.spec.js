@@ -76,9 +76,9 @@ describe("invalid httprpc lists must reach the caller error path before cache wr
     ["nonempty array t", {t:[1],cid:99}],
     ["null row", {t:{[BAD]:null},cid:99}],
     ["short row after deletion", {t:{[BAD]:["0"]},cid:99,d:[OLD]}],
-    // Fork: only the name column may hold the {name, raw} display envelope.
-    ["name envelope without raw", {t:{[BAD]:Object.assign(row(), {4:{name:"shown"}})},cid:99}],
-    ["display envelope outside the name column", {t:{[BAD]:Object.assign(row(), {12:{name:"m",raw:"m"}})},cid:99}],
+    // Fork: the name column holds the daemon's string; labels travel in the
+    // optional n map, never as an object in the column itself.
+    ["an object in the name column", {t:{[BAD]:Object.assign(row(), {4:{name:"shown",raw:"r"}})},cid:99}],
   ])("%s", (_name, body, status=200, text="success") => {
     const kept = row(); theRequestManager.torrents[OLD] = kept;
     const x = exchange(body,status,text);
@@ -226,13 +226,21 @@ test.each([
   expect(absent.isError()).toBe(0);
 });
 
-test("a name column holding the display envelope is admitted", () => {
-  const x = exchange({t:{[OLD]:Object.assign(row(), {4:{name:"Серия",raw:"\u00f1"}})}, cid:8, full:1});
+test("an optional title map labels a row through the real route; an invalid map is ignored", () => {
+  let x = exchange({t:{[OLD]:Object.assign(row(), {4:"\ufffd"})}, n:{[OLD]:"Серия"}, cid:8, full:1});
   expect(x.resolve).not.toThrow();
   expect(x.error).not.toHaveBeenCalled();
   expect(x.ok).toHaveBeenCalledTimes(1);
   expect(x.ok.mock.calls[0][0].torrents[OLD].name).toBe("Серия");
+  expect(x.ok.mock.calls[0][0].torrents[OLD].path_name).toBe("\ufffd");
+  expect(theRequestManager.torrents[OLD][4]).toBe("\ufffd");
   expect(theRequestManager.cid).toBe(8);
+  x = exchange({t:{[OLD]:{4:"kept"}}, n:{[OLD]:{name:"Серия"}}, cid:9});
+  expect(x.resolve).not.toThrow();
+  expect(x.error).not.toHaveBeenCalled();
+  expect(x.ok.mock.calls[0][0].torrents[OLD].name).toBe("kept");
+  expect(noty).not.toHaveBeenCalled();
+  expect(theRequestManager.cid).toBe(9);
 });
 
 test("large deltas do not rescan the deletion array for every updated row", () => {

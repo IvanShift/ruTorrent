@@ -215,10 +215,15 @@ class HistoryDisplayTest extends TestCase
         $source = file_get_contents(__DIR__.'/../../../plugins/history/history.php');
         $source = substr($source, strpos($source, 'class rHistoryData'));
         $source = substr($source, 0, strpos($source, "class rHistory\n"));
-        $setup = 'require '.var_export(__DIR__.'/../../../php/torrentfilenames.php', true).';'
+        // TorrentFileNames loads php/rtorrent.php for its source reads; the
+        // stand-in below takes its place, so that one line is left out.
+        $names = file_get_contents(__DIR__.'/../../../php/torrentfilenames.php');
+        $names = str_replace(array('<?php', "require_once(__DIR__.'/utility/utf.php');", "require_once(__DIR__.'/rtorrent.php');"),
+            array('', 'require_once '.var_export(realpath(__DIR__.'/../../../php/utility/utf.php'), true).';', ''), $names);
+        $setup = 'eval('.var_export($names, true).');'
             .'eval('.var_export($source, true).');'
             .'class rTorrent { public static $paths; public static $mode; public static $calls=0;'
-            .'static function getSource($hash,&$path,$known) { self::$calls++; self::$paths=$known;'
+            .'static function getSource($hash,$known=null,&$path=null) { self::$calls++; self::$paths=$known;'
             .'if(self::$mode==="throw") throw new RuntimeException("source unavailable");'
             .'if(self::$mode==="partial") return array("name.utf-8"=>"wrong"); return self::$mode; }}';
         $code = $setup.'$event=array("name"=>"raw\\xFF","hash"=>"unchanged");'
@@ -234,11 +239,13 @@ class HistoryDisplayTest extends TestCase
         $this->assertSame(0, $result['code'], 'false, NULL, partial source and exception keep the original event');
         $this->assertSame('all failures retained', $result['out'], 'every failure executes and explicit false prevents a source-owner RPC fallback');
         $this->assertSame('', $result['err'], 'optional metadata failures have no diagnostics');
+        // Without is_string() TorrentFileNames stops before the source owner,
+        // and the event keeps its bytes all the same.
         foreach(array('preg_match', 'is_string', 'gettype', 'is_array') as $disabled) {
             $code = $setup.'$event=array("name"=>"raw\\xFF","hash"=>"unchanged");'
                 .'$out=rHistoryData::captureTorrentName($event,str_repeat("A",40),false);'
                 .'if($out["name"]!==$event["name"] || $out["hash"]!==$event["hash"]) exit(1);'
-                .'if(rTorrent::$calls!=='.($disabled === 'preg_match' ? '0' : '1').') exit(2);'
+                .'if(rTorrent::$calls!=='.(in_array($disabled, array('preg_match', 'is_string'), true) ? '0' : '1').') exit(2);'
                 .'if(rHistoryData::displayRecord($out)["name"]!=="raw\\\\xFF") exit(3);echo "disabled retained";';
             $result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'disable_functions='.$disabled, '-r', $code)));
             $this->assertSame(0, $result['code'], 'unavailable '.$disabled.' preserves the event and bounded lookup count');

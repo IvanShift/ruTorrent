@@ -228,29 +228,19 @@ class rXMLRPCRequest
 	}
 
 	/**
-	 * Undo the escaping of a string read with $escapeForScript set.
+	 * The daemon's own bytes of a value run() returned.
 	 *
-	 * Deprecated, for external plugins only: run() hands out the daemon's own
-	 * bytes unless $escapeForScript is set, and unescaping such a value again
-	 * would drop a backslash the daemon reported. No shipped file outside this
-	 * one calls it (tests/php/RpcStringConsumersTest.php).
-	 *
-	 * @deprecated
+	 * Upstream's run() escapes backslashes and double quotes in every value
+	 * and its callers undo that with this function. Here run() already hands
+	 * out the daemon's bytes, so this returns its argument unchanged and code
+	 * written for either reader gets the same bytes. Upstream comments that
+	 * say the reader escapes values (TorrentFileNames, rTorrent::
+	 * getSourcePaths()) describe upstream's reader, not this one. A value read
+	 * with the deprecated $escapeForScript keeps its escaped form.
 	 */
 	static public function unescapeValue( $value )
 	{
-		if(!is_string($value) || (strpos($value,'\\')===false))
-			return($value);
-		$out = '';
-		$len = strlen($value);
-		for($i = 0; $i<$len; $i++)
-		{
-			if(($value[$i]==='\\') && (($i+1)<$len) &&
-				(($value[$i+1]==='\\') || ($value[$i+1]==='"')))
-				$i++;
-			$out .= $value[$i];
-		}
-		return($out);
+		return($value);
 	}
 
 	public function setParseByTypes( $enable = true )

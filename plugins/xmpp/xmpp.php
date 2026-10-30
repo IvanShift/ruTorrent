@@ -165,21 +165,16 @@ class rXmpp
 
 	public function notificationMessage($name, $hash = '', $knownPaths = false)
 	{
-		$source = false;
-		if(TorrentFileNames::needsTitleMetadata($name))
+		try
 		{
-			try
-			{
-				$sourcePath = null;
-				$source = rTorrent::getSource($hash, $sourcePath, $knownPaths);
-			}
-			catch(Throwable $error)
-			{
-				// Notification delivery does not depend on optional metadata.
-			}
+			$title = TorrentFileNames::displayTitle($name, $hash, $knownPaths);
 		}
-		$title = TorrentFileNames::title($name, $hash, $source);
-		return str_replace('{TORRENT}', is_array($title) ? $title['name'] : $title, UTF::display($this->message));
+		catch(Throwable $error)
+		{
+			// Notification delivery does not depend on optional metadata.
+			$title = UTF::display($name);
+		}
+		return str_replace('{TORRENT}', $title, UTF::display($this->message));
 	}
 
 	public function setHandlers()

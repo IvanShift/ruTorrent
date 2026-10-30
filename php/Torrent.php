@@ -587,8 +587,7 @@ class Torrent
 			return $name;
 		try {
 			require_once(__DIR__.'/torrentfilenames.php');
-			$title = @TorrentFileNames::title($name, @$this->hash_info(), $this);
-			return is_array($title) ? $title['name'] : $title;
+			return @TorrentFileNames::title($name, @$this->hash_info(), $this);
 		} catch(Throwable $error) {
 			return UTF::display($name);
 		}

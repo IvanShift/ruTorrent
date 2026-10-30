@@ -50,20 +50,21 @@ test.each([null, false, true])("core no-message preference survives the JSON lis
   expect(new rTorrentStub("?list=1").content).toBe(enabled === true ? "mode=list" : "mode=list&nomsg=1");
 });
 
-test("display aliases preserve the old parent directory and extension indices", () => {
+test("a title label is shown while the raw name column keeps paths and extension indices", () => {
   loadUI();
   const wireName = "�����";
   let extension;
   theRequestManager.addRequest("trt", "d.get_custom3=", (id, torrent, value) => { extension = { id, name: torrent.name, value }; });
   const stub = new rTorrentStub("?list=1");
-  const values = row({ name: "Серия", raw: wireName }, `/downloads/${wireName}`);
-  const model = stub.getResponse({ t: { [hash]: values }, cid: 1, full: 1 }).torrents[hash];
+  const values = row(wireName, `/downloads/${wireName}`);
+  const model = stub.getResponse({ t: { [hash]: values }, n: { [hash]: "Серия" }, cid: 1, full: 1 }).torrents[hash];
   expect(model.name).toBe("Серия");
   expect(model.path_name).toBe(wireName);
   expect(model.base_path).toBe(`/downloads/${wireName}`);
   expect(model.save_path).toBe("/downloads");
   expect(extension).toEqual({ id: hash, name: "Серия", value: "plugin-value" });
-  expect(values[4]).toEqual({ name: "Серия", raw: wireName });
+  expect(values[4]).toBe(wireName);
+  expect(theRequestManager.torrents[hash][4]).toBe(wireName);
   theWebUI.torrents = { [hash]: model };
   const pathRequest = new rTorrentStub(`?action=getsavepath&hash=${hash}`);
   expect(pathRequest.getResponse(["0", `/downloads/${wireName}`, "0"])).toEqual({ hash, savepath: "/downloads" });
@@ -71,15 +72,15 @@ test("display aliases preserve the old parent directory and extension indices", 
   expect(removal.content).toBe(`mode=remove&hash=${hash}`);
 });
 
-test("sparse updates keep the display envelope and replace it atomically on a name change", () => {
+test("sparse updates keep the title label and a name change replaces or drops it", () => {
   loadUI();
   const stub = new rTorrentStub("?list=1");
-  stub.getResponse({ t: { [hash]: row({ name: "Display", raw: "�" }, "/downloads/�") }, cid: 1, full: 1 });
+  stub.getResponse({ t: { [hash]: row("�", "/downloads/�") }, n: { [hash]: "Display" }, cid: 1, full: 1 });
   let model = stub.getResponse({ t: { [hash]: { 11: "1234" } }, cid: 2 }).torrents[hash];
   expect(model.name).toBe("Display");
   expect(model.ul).toBe(1234);
   expect(model.save_path).toBe("/downloads");
-  model = stub.getResponse({ t: { [hash]: { 4: { name: "Next display", raw: "��" }, 25: "/downloads/��" } }, cid: 3 }).torrents[hash];
+  model = stub.getResponse({ t: { [hash]: { 4: "��", 25: "/downloads/��" } }, n: { [hash]: "Next display" }, cid: 3 }).torrents[hash];
   expect(model.name).toBe("Next display");
   expect(model.path_name).toBe("��");
   expect(model.save_path).toBe("/downloads");
@@ -89,9 +90,52 @@ test("sparse updates keep the display envelope and replace it atomically on a na
   expect(model.save_path).toBe("/downloads");
 });
 
-test("a directory named like the display alias is not confused with the raw title", () => {
+test.each(["full", "delete"])("%s retires the remembered title label before hash reuse", reset => {
   loadUI();
-  const model = new rTorrentStub("?list=1").getResponse({ t: { [hash]: row({ name: "Display", raw: "�" }, "/downloads/Display") }, cid: 1, full: 1 }).torrents[hash];
+  const stub = new rTorrentStub("?list=1");
+  stub.getResponse({ t: { [hash]: row("�", "/downloads/�") }, n: { [hash]: "Display" }, cid: 1, full: 1 });
+  stub.getResponse({ t: {}, ...(reset === "full" ? { full: 1 } : { d: [hash] }), cid: 2 });
+  expect(Object.keys(theRequestManager.torrentNames)).toHaveLength(0);
+});
+
+test("a label on a rate-only delta cannot relabel a cached torrent", () => {
+  loadUI();
+  const stub = new rTorrentStub("?list=1");
+  stub.getResponse({ t: { [hash]: row("�", "/downloads/�") }, n: { [hash]: "Display" }, cid: 1, full: 1 });
+  const model = stub.getResponse({ t: { [hash]: { 11: "2" } }, n: { [hash]: "wrong" }, cid: 2 }).torrents[hash];
+  expect(model.name).toBe("Display");
+  expect(stub.isError()).toBe(0);
+});
+
+const other = "B".repeat(40);
+test.each([
+  // A missing third cell would make Jest pass its done callback instead.
+  ["null", null, null],
+  ["an array", [], null],
+  ["a string", "wrong", null],
+  ["an object label", { [hash]: { name: "Серия" } }, null],
+  ["a torrent the delta does not carry", { [hash]: "Серия", [other]: "wrong" }, null],
+  ["a key that is not a hash", { [hash]: "Серия", "not-a-hash": "wrong" }, null],
+  ["a numeric label", { [hash]: "Серия", [other]: 123 }, row("other", "/downloads/other")],
+  ["a rate-only row", { [hash]: "Серия", [other]: "wrong" }, { 11: "2" }],
+])("an invalid title map (%s) is ignored as a whole and the rows stay usable", (_name, names, otherDelta) => {
+  loadUI();
+  const stub = new rTorrentStub("?list=1");
+  stub.getResponse({ t: { [other]: row("other", "/downloads/other") }, cid: 1, full: 1 });
+  const t = { [hash]: row("raw", "/downloads/raw") };
+  if (otherDelta) t[other] = otherDelta;
+  const models = stub.getResponse({ t, n: names, cid: 2 }).torrents;
+  expect(stub.isError()).toBe(0);
+  expect(theRequestManager.cid).toBe(2);
+  expect(models[hash].name).toBe("raw");
+  expect(models[hash].path_name).toBe("raw");
+  expect(models[other].name).toBe("other");
+});
+
+test("a directory named like the title label is not confused with the raw title", () => {
+  loadUI();
+  const model = new rTorrentStub("?list=1").getResponse({ t: { [hash]: row("�", "/downloads/Display") }, n: { [hash]: "Display" }, cid: 1, full: 1 }).torrents[hash];
+  expect(model.name).toBe("Display");
   expect(model.save_path).toBe("/downloads/Display");
   theWebUI.torrents = { [hash]: model };
   expect(new rTorrentStub(`?action=getsavepath&hash=${hash}`).getResponse(["0", "/downloads/Display", "0"]).savepath).toBe("/downloads/Display");

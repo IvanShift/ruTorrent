@@ -19,6 +19,7 @@ var theRequestManager =
 {
 	aliases: {},
 	torrents: {},
+	torrentNames: Object.create(null),
 	torrentPaths: Object.create(null),
 	torrentLabels: Object.create(null),
 	labelPaths: {},
@@ -288,7 +289,11 @@ function rTorrentStub( URI )
 rTorrentStub.prototype.getfiles = function()
 {
 	// The server can match legacy path bytes to the torrent's UTF-8 names.
+	// It appends their labels after every requested column, as the httprpc
+	// plugin asks; this route serves the WebUI when that plugin is off.
 	postHttprpcMode(this, "fls");
+	this.content += "&names=1";
+	this.fileNameIndex = theRequestManager.fls.commands.length;
 }
 
 rTorrentStub.prototype.getpeers = function()
@@ -1084,17 +1089,34 @@ rTorrentStub.prototype.getfilesResponse = function(values)
 	var ret = {};
 	var hash = this.hashes[0];
 	ret[hash] = [];
+	// A file's name is the daemon's string. Anything else, such as the
+	// {name, pathKey} object a fork server sent before names=1, is refused
+	// visibly rather than built into the file tree.
+	if(!values.every(function(data) { return typeof data[0] === "string"; }))
+	{
+		this.faultString.push("Invalid file list response ["+this.action+"]");
+		return(ret);
+	}
 	for(var j=0; j<values.length; j++)
 	{
 		var data = values[j];
 		var fls = {};
-		if(data[0] && typeof data[0] === "object")
-		{
-			fls.pathKey = data[0].pathKey;
-			data = data.slice();
-			data[0] = data[0].name;
-		}
 		fls.name = data[0];
+		var label = this.fileNameIndex === undefined ? null : data[this.fileNameIndex];
+		if(label && typeof label === "object" && !Array.isArray(label) &&
+			Object.prototype.hasOwnProperty.call(label, "displayName") && typeof label.displayName === "string" &&
+			label.displayName.split('/').length === fls.name.split('/').length &&
+			label.displayName.split('/').every(part => part !== "" && part !== "." && part !== ".." && !part.includes("\0")))
+		{
+			// Fork: the label is shown as the name. Tree identity and task
+			// extensions keep the daemon's bytes (filePathKey()): the cell's byte
+			// key keeps directories that JSON substitutes alike apart, and
+			// without it the wire string stands in.
+			fls.pathKey = (typeof label.pathKey === "string" && label.pathKey.split('/').length === fls.name.split('/').length &&
+				/^(?:(?:[A-Za-z0-9_.~-]|%[0-9A-F]{2})+\/)*(?:[A-Za-z0-9_.~-]|%[0-9A-F]{2})+$/.test(label.pathKey)) ?
+				label.pathKey : filePathKey(fls);
+			fls.name = label.displayName;
+		}
 		fls.size = iv(data[3]);
 		var get_size_chunks = iv(data[2]);	// f.get_size_chunks
 		var get_completed_chunks = iv(data[1]);	// f.get_completed_chunks
@@ -1104,7 +1126,7 @@ rTorrentStub.prototype.getfilesResponse = function(values)
 		fls.done = get_completed_bytes;
 		fls.priority = data[4];
 
-		theRequestManager.onResponse('fls', data, hash, ret);
+		theRequestManager.onResponse('fls', this.fileNameIndex === undefined ? data : data.slice(0, this.fileNameIndex), hash, ret);
 		ret[hash].push(fls);
 	}
 	return(ret);
@@ -1357,14 +1379,6 @@ rTorrentStub.prototype.listResponse = function(data)
 		return value !== null && typeof value === "object" &&
 			(!Array.isArray(value) || value.length === 0);
 	};
-	// Fork: the name column may carry the display envelope {name, raw} of
-	// TorrentFileNames::title() (php/torrentfilenames.php) instead of a string.
-	var validTitle = function(value) {
-		return typeof value === "string" || (value !== null && typeof value === "object" &&
-			!Array.isArray(value) &&
-			Object.prototype.hasOwnProperty.call(value, "name") && typeof value.name === "string" &&
-			Object.prototype.hasOwnProperty.call(value, "raw") && typeof value.raw === "string");
-	};
 	var valid = validMap(data) && Number.isInteger(data.cid) &&
 		validMap(data.t) && (data.full === undefined || data.full === 0 || data.full === 1) &&
 		(data.d === undefined || (Array.isArray(data.d) && data.d.every(function(hash) {
@@ -1379,15 +1393,13 @@ rTorrentStub.prototype.listResponse = function(data)
 				return false;
 			if(!Object.keys(values).every(function(key) {
 				return /^(0|[1-9][0-9]*)$/.test(key) &&
-					(typeof values[key] === "string" || typeof values[key] === "number" ||
-						(key === "4" && validTitle(values[key])));
+					(typeof values[key] === "string" || typeof values[key] === "number");
 			}))
 				return false;
 			var previous = !data.full && !deleted.has(hash) &&
 				theRequestManager.torrents[hash];
 			var merged = Object.assign({}, previous || {}, values);
-			return validTitle(merged[4]) &&
-				[25, 29].every(function(key) { return typeof merged[key] === "string"; });
+			return [4, 25, 29].every(function(key) { return typeof merged[key] === "string"; });
 		});
 	}
 	if(!valid)
@@ -1397,11 +1409,21 @@ rTorrentStub.prototype.listResponse = function(data)
 		return;
 	}
 	theRequestManager.cid = data.cid;
+	// Optional labels may describe only names included in this same delta.
+	// An invalid map is ignored; the ordinary torrent rows remain usable.
+	var names = data.n;
+	if(!names || typeof names !== "object" || Array.isArray(names) ||
+		!Object.keys(names).every(hash => /^[a-f0-9]{40}$/i.test(hash) &&
+			Object.prototype.hasOwnProperty.call(data.t, hash) &&
+			data.t[hash] && Object.prototype.hasOwnProperty.call(data.t[hash], 4) &&
+			typeof data.t[hash][4] === "string" && typeof names[hash] === "string"))
+		names = null;
 	// A full answer lists every torrent there is, so anything held that it does
 	// not mention is gone. Deletions are reported against a previous state the
 	// server no longer has, and would otherwise never arrive.
 	if(data.full)
 	{
+		theRequestManager.torrentNames = Object.create(null);
 		theRequestManager.torrentPaths = Object.create(null);
 		theRequestManager.torrentLabels = Object.create(null);
 		for( var hash in theRequestManager.torrents )
@@ -1412,11 +1434,18 @@ rTorrentStub.prototype.listResponse = function(data)
 		$.each( data.d, function( ndx, hash )
 		{
 			delete theRequestManager.torrents[hash];
+			delete theRequestManager.torrentNames[hash];
 			delete theRequestManager.torrentPaths[hash];
 			delete theRequestManager.torrentLabels[hash];
 		});
 	$.each( data.t, function( hash, values )
 	{
+		if(Object.prototype.hasOwnProperty.call(values, 4))
+		{
+			delete theRequestManager.torrentNames[hash];
+			if(names && Object.prototype.hasOwnProperty.call(names, hash))
+				theRequestManager.torrentNames[hash] = names[hash];
+		}
 		if(Object.prototype.hasOwnProperty.call(values, 4) || Object.prototype.hasOwnProperty.call(values, 25))
 		{
 			delete theRequestManager.torrentPaths[hash];
@@ -1462,13 +1491,10 @@ rTorrentStub.prototype.listResponse = function(data)
 		if(torrent.msg.length && torrent.msg!="Tracker: [Tried all trackers.]")
 			state|=dStatus.error;
 		torrent.state = state;
-		torrent.name = values[4];
-		torrent.path_name = torrent.name;
-		if(torrent.name && typeof torrent.name === "object")
-		{
-			torrent.path_name = torrent.name.raw;
-			torrent.name = torrent.name.name;
-		}
+		// Fork: the label replaces the shown name; save_path compares the daemon's.
+		torrent.path_name = values[4];
+		torrent.name = Object.prototype.hasOwnProperty.call(theRequestManager.torrentNames, hash) ?
+			theRequestManager.torrentNames[hash] : values[4];
 		torrent.size = iv(values[5]);
 		var get_completed_chunks = iv(values[6]);
 		var get_hashed_chunks = iv(values[24]);

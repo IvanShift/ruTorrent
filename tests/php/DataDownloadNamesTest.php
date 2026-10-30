@@ -57,7 +57,7 @@ class DataDownloadNamesTest extends TestCase
 
 	private static function string($text) { return strlen($text).':'.$text; }
 
-	private function download($raw, $alias, $failure = null, $closed = false)
+	private function download($raw, $alias, $failure = null, $closed = false, $serverArguments = array())
 	{
 		$root = realpath(__DIR__.'/../..');
 		$payload = "payload\0exact\xFF\r\n";
@@ -91,7 +91,7 @@ class DataDownloadNamesTest extends TestCase
 			.' $scgi_host="127.0.0.1";$scgi_port='.$this->daemon->port().';$rpcTimeOut=3;$rpcLogCalls=false;'
 			.' $log_file='.var_export($this->base.'/app.log',true).';'
 			.' chdir('.var_export($root.'/plugins/data',true).');require '.var_export($root.'/plugins/data/action.php',true).';');
-		$this->server = TestHttpServer::start($this->base.'/www', array(), array(), $router);
+		$this->server = TestHttpServer::start($this->base.'/www', array(), $serverArguments, $router);
 		$response = TestHttpServer::rawGet($this->server->port(), '/?hash='.$hash.'&no='.($failure === 'index' ? '-1' : '0'));
 		if($failure === 'close-fault') {
 			$this->assertSame('HTTP/1.0 302 Moved Temporarily', $response['status'], 'a failed required close retains the existing data-download refusal');
@@ -110,7 +110,7 @@ class DataDownloadNamesTest extends TestCase
 		$raw = "cp \xF1\xE5\xF0\xE8\xFF \"q\" \\b %41.bin";
 		$alias = 'серия "q" \\b %41.bin';
 		$this->assertSame($alias, $this->download($raw, $alias), 'metadata supplies the basename with literal quotes, backslashes and percent text');
-		$this->assertSame(1, count($this->daemon->bodies()), 'an already-open data download uses one batched daemon request');
+		$this->assertSame(3, count($this->daemon->bodies()), 'the path, then the file evidence, then the source: three requests for a name that is not UTF-8');
 	}
 
 	public function testSourceFailuresKeepBytesVisibleAndPreserveThePayload()
@@ -126,6 +126,7 @@ class DataDownloadNamesTest extends TestCase
 	public function testValidUnicodeAndClosedDownloadsRetainTheirFileIdentity()
 	{
 		$this->assertSame('中文 🙂 %41.bin', $this->download('中文 🙂 %41.bin', 'different.bin'), 'valid Unicode download basenames are unchanged');
+		$this->assertSame(1, count($this->daemon->bodies()), 'and need no request beyond the path');
 		$this->server->close(); $this->server = null;
 		$this->daemon->stop(); $this->daemon = null;
 		$this->assertSame('серия.bin', $this->download("cp\xFF.bin", 'серия.bin', null, true), 'temporarily opening a closed torrent retains its attested Unicode label');
@@ -143,38 +144,18 @@ class DataDownloadNamesTest extends TestCase
 			'valid nil open/close results do not suppress the frozen path or its display label');
 	}
 
-	public function testDisabledOptionalMetadataFunctionsKeepTheRawPathWithoutDiagnostics()
+	// A host may disable a function the name lookup needs: sha1() leaves
+	// the source unattested, strtoupper() makes the lookup throw. Either way
+	// the payload is served under the visible bytes of its name, and
+	// download() checks that no diagnostic came before the exact payload.
+	public function testDisabledNameFunctionsKeepThePayloadAndShowTheBytes()
 	{
-		$root = realpath(__DIR__.'/../..');
-		$source = file_get_contents($root.'/php/rtorrent.php');
-		$start = strpos($source, 'static public function getFilePath(');
-		// Use the production methods with only the daemon/source owners replaced.
-		$end = strpos($source, '// rTorrent names', $start);
-		$methods = substr($source, $start, $end-$start);
-		$methods = str_replace('__'.'DIR__', var_export($root.'/php', true), $methods);
-		$script = 'require '.var_export($root.'/php/utility/utf.php', true).';'. <<<'PHP'
-class FileUtil { static function getFileName($path) { $parts=explode('/', $path); return end($parts); } }
-class rXMLRPCCommand { function __construct(...$arguments) {} }
-class rXMLRPCRequest {
- public $responseTypes=array('array'); public $responseValues;
- function __construct(...$arguments) {
-  $this->responseValues=array(array(array("/tmp/raw\xFF"),array("raw\xFF"),array('1'),array('1'),array(''),array('')));
- }
- function addCommand(...$arguments) {} function run(){return true;}
-}
-class rTorrent {
- static function getSource(...$arguments) {return false;}
-PHP
-			.$methods.'} $label=null; $path=rTorrent::getFilePath(str_repeat("A",40),0,$label);'
-			.'echo json_encode(array(base64_encode($path),$label));';
-		foreach(array('preg_match', 'array_slice', 'strtoupper') as $disabled)
+		foreach(array('sha1', 'strtoupper') as $disabled)
 		{
-			$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d','display_errors=stderr',
-				'-d','disable_functions='.$disabled,'-r',$script)));
-			$this->assertSame(0, $result['code'], 'optional '.$disabled.' failure keeps the readable payload path');
-			$this->assertSame('', $result['err'], 'optional '.$disabled.' warnings cannot precede download headers');
-			$this->assertSame(array(base64_encode("/tmp/raw\xFF"),'raw\\xFF'), json_decode($result['out'],true),
-				'optional '.$disabled.' failure retains raw identity and a visible fallback');
+			$this->assertSame('cp\\xFF.bin', $this->download("cp\xFF.bin", 'серия.bin', null, false, array('-d', 'disable_functions='.$disabled)),
+				'with '.$disabled.' disabled the download shows its bytes');
+			$this->server->close(); $this->server = null;
+			$this->daemon->stop(); $this->daemon = null;
 		}
 	}
 }

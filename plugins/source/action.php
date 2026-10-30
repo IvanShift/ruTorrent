@@ -20,7 +20,7 @@ if(isset($_POST['hash']))
 		foreach($hashes as $hash)
 		{
 			$sourcePath = null;
-			$torrent = rTorrent::getSource($hash, $sourcePath);
+			$torrent = rTorrent::getSource($hash, null, $sourcePath);
 			if($torrent)
 				$files[] = array($hash, $sourcePath, $torrent);
 			else

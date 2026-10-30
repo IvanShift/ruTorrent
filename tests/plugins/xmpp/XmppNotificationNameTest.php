@@ -19,6 +19,12 @@ class XmppNameWire extends XMPPHP_XMPP
 	public function send($message, $timeout = null) { $this->sent = $message; }
 }
 
+class XmppThrowingStream
+{
+	public $context;
+	public function url_stat($path, $flags) { throw new RuntimeException('metadata check failed'); }
+}
+
 class XmppNotificationNameTest extends TestCase
 {
 	private $base;
@@ -59,6 +65,17 @@ class XmppNotificationNameTest extends TestCase
 		$before = file_get_contents($path);
 		$this->assertSame('Done: Название <&>', $this->body("raw\xFF",$hash,array($this->base.'/', '')), 'alias is readable');
 		$this->assertSame($before,file_get_contents($path),'notification does not modify metainfo');
+	}
+
+	// A session path whose metadata check throws: the source read fails and
+	// the notification still goes out with the name's bytes.
+	public function testAThrowingSourceReadKeepsTheNotification()
+	{
+		if(!in_array('xmppthrowing', stream_get_wrappers(), true))
+			stream_wrapper_register('xmppthrowing', 'XmppThrowingStream');
+		$hash = $this->source("raw\xFF", 'Alias');
+		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF", $hash, array('xmppthrowing://session/', '')),
+			'the name shows its bytes');
 	}
 
 	public function testOldHooksAndUnavailableMetadataKeepDifferentBytes()

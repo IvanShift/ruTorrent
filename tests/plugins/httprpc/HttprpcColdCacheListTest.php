@@ -106,7 +106,7 @@ class HttprpcColdCacheListTest extends TestCase
 
 		$multicall = null;
 		foreach ($this->daemon->bodies() as $body) {
-			if (RtorrentProbeFixture::methodNames($body) === array('d.multicall', 'd.multicall', 'session.path')) {
+			if (RtorrentProbeFixture::methodNames($body) === array('d.multicall')) {
 				$multicall = $body;
 			}
 		}

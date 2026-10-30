@@ -76,7 +76,8 @@ test.each([false, true])("getfiles uses the server name resolver with httprpc %s
   const stub = new rTorrentStub(`?action=getfiles&hash=${hash}`);
   expect(stub.mountPoint).toBe("plugins/httprpc/action.php");
   expect(stub.contentType).toBe("application/x-www-form-urlencoded");
-  expect(stub.content).toBe(`mode=fls&hash=${hash}${expectedCommands}`);
+  expect(stub.content).toBe(`mode=fls&hash=${hash}${expectedCommands}&names=1`);
+  expect(stub.fileNameIndex).toBe(theRequestManager.fls.commands.length);
   expect(stub.commands).toHaveLength(0);
 });
 

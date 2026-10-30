@@ -145,11 +145,7 @@ class rHistoryData
 			if(!UTF::isString($hash) || @preg_match('/\A[0-9A-Fa-f]{40}\z/', $hash) !== 1) return $event;
 			$event['torrent_hash'] = $hash;
 			if(!isset($event['name']) || !UTF::isString($event['name']) || UTF::isValid($event['name'])) return $event;
-			$sourcePath = null;
-			$source = @rTorrent::getSource($hash, $sourcePath, $knownPaths ?? false);
-			$title = @TorrentFileNames::title($event['name'], $hash, $source);
-			if(@is_array($title) && isset($title['name']) && UTF::isString($title['name']) && UTF::isValid($title['name']))
-				$event['display_name'] = $title['name'];
+			$event['display_name'] = @TorrentFileNames::displayTitle($event['name'], $hash, $knownPaths ?? false);
 		}
 		catch(Throwable $error)
 		{

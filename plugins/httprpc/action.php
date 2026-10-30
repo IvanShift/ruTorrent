@@ -12,6 +12,7 @@ $ss = array();
 $vs = array();
 $hash = array();
 $noMessage = false;
+$fileNames = false;
 $malformedForm = false;
 if (!isset($HTTP_RAW_POST_DATA))
 	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
@@ -60,6 +61,11 @@ foreach($vars as $var)
 		case "nomsg":
 		{
 			$noMessage = $parts[1] === '1';
+			break;
+		}
+		case "names":
+		{
+			$fileNames = isset($parts[1]) && $parts[1] === '1';
 			break;
 		}
 	}
@@ -115,7 +121,22 @@ foreach($add as $ndx=>$rawCommand)
 	$add[$ndx] = $safeCommand;
 }
 
-function makeMulticall($cmds,$hash,$add,$prefix,&$sourcePaths = null)
+// The rows of one d.multicall or f.multicall answer, each $cnt values wide.
+// rtorrent sends numbers as <i8> and text as <string> or <base64>; the reader
+// gives each as a PHP string. Any other shape, a nested value or a nil cell
+// among them, refuses the whole table: null.
+function httprpcRows($req, $cnt)
+{
+	$rows = $req->responseValues[0] ?? null;
+	if(!is_array($rows))
+		return(null);
+	foreach($rows as $row)
+		if(!is_array($row) || (array_keys($row) !== range(0, $cnt-1)) || (count(array_filter($row, 'is_string')) !== $cnt))
+			return(null);
+	return($rows);
+}
+
+function makeMulticall($cmds,$hash,$add,$prefix)
 {
 	$cmd = new rXMLRPCCommand( $prefix.".multicall", array( $hash, "" ) );
 	$cmd->addParameters( array_map("getCmd", $cmds) );
@@ -126,26 +147,10 @@ function makeMulticall($cmds,$hash,$add,$prefix,&$sourcePaths = null)
 	// Detail polling can race with torrent erase/replacement.
 	if(($prefix === 'f') || ($prefix === 'p') || ($prefix === 't'))
 		$req->important = false;
-	$sourcePaths = false;
-	if($prefix === 'f' && preg_match('/\A[0-9A-Fa-f]{40}\z/', $hash) === 1)
+	if($prefix === 'f')
 	{
-		// Optional name evidence shares the file request, never another timeout.
-		$req->addCommand(new rXMLRPCCommand('get_session'));
-		$req->addCommand(new rXMLRPCCommand('d.get_tied_to_file', $hash));
-		if(!$req->run(true) || $req->responseTypes !== array('array') || count($req->responseValues) !== 1) return false;
-		$replies = $req->responseValues[0];
-		if(!isset($replies[0]) || !is_array($replies[0]) || array_keys($replies[0]) !== array(0)
-			|| !is_array($replies[0][0])) return false;
-		foreach($replies[0][0] as $row)
-		{
-			if(!is_array($row) || count($row) !== $cnt || array_keys($row) !== range(0, $cnt-1)) return false;
-			foreach($row as $value) if(!is_string($value)) return false;
-		}
-		if(isset($replies[1], $replies[2]) && is_array($replies[1]) && is_array($replies[2])
-			&& array_keys($replies[1]) === array(0) && array_keys($replies[2]) === array(0)
-			&& is_string($replies[1][0]) && is_string($replies[2][0]))
-			$sourcePaths = array($replies[1][0], $replies[2][0]);
-		return $replies[0][0];
+		$rows = $req->run(true) ? httprpcRows($req, $cnt) : null;
+		return(($rows === null) ? false : $rows);
 	}
 	if($req->success(true))
 	{
@@ -282,6 +287,20 @@ function httprpcClosedBeforeHeadersMessage()
 		."A long-running request may have hit the daemon's SCGI timeout.";
 }
 
+// The label cell a names=1 file list appends to a row whose path is not
+// UTF-8. Fork: pathKey, the path's bytes percent-encoded per component, keeps
+// two directories apart when their bytes differ but their labels, or the
+// U+FFFD the JSON reply turns those bytes into, are equal. The key only
+// identifies a row in the WebUI; requests still name files by index.
+function httprpcFileLabel($path, $name)
+{
+	$label = array('displayName' => $name);
+	$value = FileUtil::displayPath($path);
+	if(is_array($value))
+		$label['pathKey'] = str_replace('%2F', '/', $value['pathKey']);
+	return $label;
+}
+
 function httprpcPathValues($base, $name)
 {
 	$pos = strrpos($base, '/');
@@ -319,24 +338,11 @@ switch($mode)
 		foreach( $add as $prm )
 			$cmd->addParameter($prm);
 		$cnt = count($cmds)+count($add);
-		$paths = new rXMLRPCCommand('d.multicall', 'main');
-		$paths->addParameters(array_map('getCmd', array('d.get_hash=', 'd.get_tied_to_file=')));
-		$req = new rXMLRPCRequest(array($cmd, $paths, new rXMLRPCCommand('get_session')));
+		$req = new rXMLRPCRequest($cmd);
 		if($req->run(true) && $req->responseTypes === array('array') && count($req->responseValues) === 1)
 		{
-			// Keep subcall boundaries: a source-path fault must not lose a good list.
-			$replies = $req->responseValues[0];
-			$malformed = !isset($replies[0]) || !is_array($replies[0]) || array_keys($replies[0]) !== array(0)
-				|| !is_array($replies[0][0]);
-			if(!$malformed)
-				foreach($replies[0][0] as $row)
-					if(!is_array($row) || count($row) !== $cnt || array_keys($row) !== range(0, $cnt-1)
-						|| count(array_filter($row, 'is_string')) !== $cnt)
-					{
-						$malformed = true;
-						break;
-					}
-			if($malformed)
+			$rows = httprpcRows($req, $cnt);
+			if($rows === null)
 			{
 				// The daemon answered, so the refusal must not call it unreachable.
 				$req->fault = true;
@@ -346,15 +352,8 @@ switch($mode)
 			$theCache = new rpcCache();
 			$dTorrents = array();
 			$torrents = array();
-			foreach($replies[0][0] as $row)
+			foreach($rows as $row)
 				$torrents[$row[0]] = array_slice($row, 1);
-			$sourcePaths = array();
-			if(isset($replies[1], $replies[2]) && is_array($replies[1]) && is_array($replies[2])
-				&& isset($replies[1][0], $replies[2][0]) && is_array($replies[1][0]) && is_string($replies[2][0])
-				&& array_keys($replies[1]) === array(0) && array_keys($replies[2]) === array(0))
-				foreach($replies[1][0] as $row)
-					if(is_array($row) && array_keys($row) === array(0, 1) && is_string($row[0]) && is_string($row[1]))
-						$sourcePaths[$row[0]] = array($replies[2][0], $row[1]);
 
 			// Without a previous state there is nothing to diff against, so the
 			// answer is the whole list and carries no deletions -- say so, or a
@@ -369,22 +368,24 @@ switch($mode)
 				if(!isset($torrents[$torrentHash][4]) && !isset($torrents[$torrentHash][25]))
 					unset($pathValues[$torrentHash]);
 			// Cache and diff daemon bytes first: unchanged titles need no source read.
+			// Every existing cell keeps its bytes; labels for legacy names are
+			// optional side data, and source paths are read only for them.
 			require_once(__DIR__.'/../../php/torrentfilenames.php');
+			$names = array();
 			foreach($torrents as $torrentHash=>$values)
+				if(isset($values[4]) && TorrentFileNames::needsTitleMetadata($values[4]))
+					$names[$torrentHash] = rXMLRPCRequest::unescapeValue($values[4]);
+			if(count($names))
 			{
-				if(!isset($values[4]) || !TorrentFileNames::needsTitleMetadata($values[4])) continue;
-				$source = false;
 				try
 				{
-					require_once(__DIR__.'/../../php/rtorrent.php');
-					$sourcePath = null;
-					$source = rTorrent::getSource($torrentHash, $sourcePath, $sourcePaths[$torrentHash] ?? false);
+					$names = TorrentFileNames::titles($names);
 				}
 				catch(Throwable $error)
 				{
 					// Optional display evidence must not discard the live list.
+					$names = array_map(array('UTF', 'display'), $names);
 				}
-				$torrents[$torrentHash][4] = TorrentFileNames::title($values[4], $torrentHash, $source);
 			}
 			$labelValues = array();
 			foreach($torrents as $torrentHash => &$values)
@@ -402,6 +403,8 @@ switch($mode)
 			}
 			unset($values);
 			$result = array( "t"=>$torrents, "cid"=>$cid );
+			if(count($names))
+				$result['n'] = $names;
 			if(count($labelValues))
 				$result['l'] = $labelValues;
 			if(count($pathValues))
@@ -415,40 +418,37 @@ switch($mode)
 	}
 	case "fls":	/**/
 	{
-		$sourcePaths = false;
 		$result = makeMulticall(array(
 			"f.get_path=", "f.get_completed_chunks=", "f.get_size_chunks=", "f.get_size_bytes=", "f.get_priority="
-			),$hash[0],$add,'f',$sourcePaths);
+			),$hash[0],$add,'f');
 		if($result === false)
 			$result = array();
-		require_once(__DIR__.'/../../php/torrentfilenames.php');
-		if(TorrentFileNames::needsMetadata($result))
+		if($fileNames)
 		{
-			$source = false;
-			try
+			require_once('../../php/torrentfilenames.php');
+			if(TorrentFileNames::needsMetadata($result))
 			{
-				if(preg_match('/\A[0-9A-Fa-f]{40}\z/', $hash[0]) === 1 && function_exists('strtoupper'))
-				{
-					$sourceHash = strtoupper($hash[0]);
-					if(is_string($sourceHash))
+				// Metadata matching uses raw bytes; the existing wire rows stay untouched.
+				$rawRows = $result;
+				foreach($rawRows as &$row)
+					if(!UTF::isValid($row[0]))
+						$row[0] = rXMLRPCRequest::unescapeValue($row[0]);
+				unset($row);
+				$source = false;
+				try {
+					require_once('../../php/rtorrent.php');
+					if(@preg_match('/^[0-9A-F]{40}\z/i', $hash[0]) === 1)
 					{
-						require_once(__DIR__.'/../../php/rtorrent.php');
-						$sourcePath = null;
-						$source = rTorrent::getSource($sourceHash, $sourcePath, $sourcePaths);
+						// Fork: read like the file list above, so an erase race is no logged fault.
+						$paths = new rXMLRPCRequest(array(new rXMLRPCCommand('get_session'), new rXMLRPCCommand('d.get_tied_to_file', $hash[0])));
+						$paths->important = false;
+						$source = @rTorrent::getSource(strtoupper($hash[0]), $paths->success() ? $paths->val : false);
 					}
+				} catch(Throwable $error) {
+					// Optional metadata must not hide the live file list.
 				}
-			}
-			catch(Throwable $error)
-			{
-				// Metadata is optional display evidence; retain the live file rows.
-			}
-			try
-			{
-				$result = TorrentFileNames::resolve($result, $hash[0], $source);
-			}
-			catch(Throwable $error)
-			{
-				// An unavailable display helper leaves the original response intact.
+				foreach(TorrentFileNames::resolve($rawRows, $hash[0], $source) as $index=>$name)
+					$result[$index][] = httprpcFileLabel($rawRows[$index][0], $name);
 			}
 		}
 		break;

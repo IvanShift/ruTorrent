@@ -34,6 +34,12 @@ plugin.origfls = rTorrentStub.prototype.getfiles;
 rTorrentStub.prototype.getfiles = function()
 {
         this.getCommon("fls");
+	if(plugin.enabled)
+	{
+		// Labels follow every requested command; old clients keep the old rows.
+		this.content += "&names=1";
+		this.fileNameIndex = theRequestManager.fls.commands.length;
+	}
 }
 
 plugin.origprs = rTorrentStub.prototype.getpeers;

@@ -1,7 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/../../php/TestCase.php');
-require_once(__DIR__ . '/../../php/SCGITransportFixture.php');
+require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
 require_once(__DIR__ . '/../../php/HttprpcListFixture.php');
 require_once(__DIR__ . '/../../../php/Torrent.php');
 
@@ -19,7 +19,7 @@ class FeedNameTorrent extends Torrent
  * fields are asked for.
  *
  * action.php is a top level script, so it runs in a process of its own
- * against SCGITransportFixture, from a copy of the tree in which
+ * against FakeRtorrentDaemon, from a copy of the tree in which
  * plugins/feeds/conf.local.php can switch the descriptions off.
  */
 class FeedsPubDateTest extends TestCase
@@ -38,6 +38,8 @@ class FeedsPubDateTest extends TestCase
 	private $torrents;
 	private $sourceDocuments = array();
 	private $sourceFaults = array(false, false);
+	// A session directory the daemon reports instead of the case's own.
+	private $reportedSession = null;
 
 	public function setUp()
 	{
@@ -47,13 +49,14 @@ class FeedsPubDateTest extends TestCase
 		$this->sessionName = 'fake';
 		$this->sourceDocuments = array();
 		$this->sourceFaults = array(false, false);
+		$this->reportedSession = null;
 		@mkdir($this->base . '/profile/settings', 0700, true);
 	}
 
 	public function tearDown()
 	{
 		if ($this->daemon !== null) {
-			$this->daemon->close();
+			$this->daemon->stop();
 			$this->daemon = null;
 		}
 		$this->removeTree($this->base);
@@ -136,15 +139,17 @@ class FeedsPubDateTest extends TestCase
 			$paths[] = array($torrent[0], '');
 		}
 		if ($this->daemon !== null) {
-			$this->daemon->close();
+			$this->daemon->stop();
 		}
+		// The list, then -- only when a title needs metadata -- the source
+		// paths TorrentFileNames::titles() asks for in one request.
 		$fault = array('faultCode'=>'1', 'faultString'=>'optional source unavailable');
-		$xml = HttprpcListFixture::body(array(array($values),
-			$this->sourceFaults[0] ? $fault : array($paths),
-			$this->sourceFaults[1] ? $fault : array($session)));
-		$this->daemon = SCGITransportFixture::start(
-			"Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
-			. strlen($xml) . "\r\n\r\n" . $xml);
+		$this->daemon = new FakeRtorrentDaemon(array(
+			HttprpcListFixture::raw(HttprpcListFixture::body($values)),
+			HttprpcListFixture::raw(HttprpcListFixture::body(array(
+				$this->sourceFaults[1] ? $fault : array($this->reportedSession ?? $session),
+				$this->sourceFaults[0] ? $fault : array($paths))))),
+			$this->base . '/rpc-calls.log');
 
 		// Seed the singleton so this peer sees the feed request, not settings probes.
 		// Load the shipped aliases too, so the multicall has its real target/view shape.
@@ -160,6 +165,10 @@ class FeedsPubDateTest extends TestCase
 		}
 		$driver = $this->base . '/drive-feeds.php';
 		file_put_contents($driver, "<?php\n"
+			// A source directory whose metadata check throws, for the case that asks for it.
+			. 'class FeedThrowingStream { public $context; public function url_stat($path, $flags) {'
+				. ' throw new RuntimeException("metadata check failed"); } }' . "\n"
+			. 'stream_wrapper_register("feedthrowing", "FeedThrowingStream");' . "\n"
 			. 'ini_set(\'error_log\', ' . var_export($this->base . '/child-errors.log', true) . ");\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
 			. 'putenv(' . var_export($environment === null ? 'RU_PUBLIC_URL' : 'RU_PUBLIC_URL=' . $environment, true) . ");\n"
@@ -260,10 +269,11 @@ class FeedsPubDateTest extends TestCase
 		$this->assertEquals($this->expected(), $items,
 			'each finished torrent is dated by its seeding time, with or without a comment: '
 			. json_encode($items) . ' ' . substr($output, 0, 300));
-		$request = $this->daemon->request();
-		$this->assertEquals(true,
-			strpos($request['payload'], '<methodName>system.multicall</methodName>') !== false,
-			'the list and optional sources share one daemon request');
+		$bodies = $this->daemon->bodies();
+		$this->assertSame(1, count($bodies), 'UTF-8 titles need no request beyond the list');
+		$this->assertEquals(false,
+			strpos($bodies[0] ?? '', '<methodName>system.multicall</methodName>') !== false,
+			'the list is one d.multicall without source path commands');
 		$this->assertSame('', $this->viewAsked(), 'the first list asks the all-torrents view');
 	}
 
@@ -361,6 +371,16 @@ class FeedsPubDateTest extends TestCase
 			sort($titles);
 			$this->assertSame(array('raw\\xFE','raw\\xFF'), $titles, 'bytes remain distinct when metadata is unavailable');
 		}
+	}
+
+	public function testAThrowingSourceReadKeepsTheFeed()
+	{
+		$this->torrents = array(array(str_repeat('3', 40), "raw\xFD", '1700000000', ''));
+		$this->reportedSession = 'feedthrowing://session/';
+		list($xml, $output) = $this->parsedFeed(false);
+		$this->assertTrue($xml !== null, 'a source read that throws does not lose the feed: '.$output);
+		if($xml === null) return;
+		$this->assertSame('raw\\xFD', (string)$xml->channel->item[0]->title, 'and the title shows its bytes');
 	}
 
 	/**
@@ -528,12 +548,11 @@ class FeedsPubDateTest extends TestCase
 	 */
 	private function viewAsked()
 	{
-		$request = $this->daemon->request();
-		$body = $request['payload'] ?? '';
+		$body = $this->daemon->bodies()[0] ?? '';
 		$xml = new DOMDocument();
 		if(!@$xml->loadXML($body)) return null;
 		$xpath = new DOMXPath($xml);
-		$values = $xpath->query('//struct[member/name="methodName" and member/value/string="d.multicall"]/member[name="params"]/value/array/data/value/string');
+		$values = $xpath->query('/methodCall[methodName="d.multicall" or methodName="d.multicall2"]/params/param/value/string');
 		return $values->length > 1 ? $values->item(1)->textContent : null;
 	}
 
@@ -628,6 +647,6 @@ class FeedsPubDateTest extends TestCase
 			'The refusal tells the operator which configuration to fix');
 		$this->assertTrue(strpos($output, '<rss') === false && strpos($output, 'secret') === false,
 			'The refusal neither emits a misleading feed nor exposes configured credentials');
-		$this->assertSame(false, $this->daemon->accepted(), 'Invalid public configuration needs no daemon connection');
+		$this->assertSame(array(), $this->daemon->bodies(), 'Invalid public configuration needs no daemon connection');
 	}
 }

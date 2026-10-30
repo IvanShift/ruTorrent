@@ -244,4 +244,26 @@ class DumpDiagnosticTest extends TestCase
 		$this->assertTrue(strpos($command, $tied) === false,
 			'and not from the tied file: ' . $command);
 	}
+
+	/**
+	 * A magnet download's metadata stub, <HASH>.meta, is checked against its
+	 * hash by rTorrent::getSource() before it is dumped, and the dumper gets
+	 * the file that check read.
+	 */
+	public function testAMagnetMetadataStubIsDumpedFromThePathItWasCheckedAt()
+	{
+		$this->newCase();
+		$info = 'd6:lengthi1e4:name1:a12:piece lengthi16384e6:pieces20:' . str_repeat('x', 20) . 'e';
+		$hash = strtoupper(sha1($info));
+		$stub = $this->caseDir . '/' . $hash . '.meta';
+		file_put_contents($stub, $info);
+		$this->stopDaemon();
+		$this->daemon = new FakeRtorrentDaemon(array(array('', $stub), array('', $stub), array('0'), array('0')),
+			$this->caseDir . '/calls.log');
+		$run = $this->drive($this->daemon->port(), $hash);
+
+		$this->assertTrue(!$this->isPluginError($run), 'a stub that matches its hash is dumped: ' . $this->describe($run));
+		$this->assertTrue(strpos($this->dumpCommand($run), $stub) !== false,
+			'from the path getSource() checked: ' . $this->dumpCommand($run));
+	}
 }

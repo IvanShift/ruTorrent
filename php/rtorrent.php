@@ -619,79 +619,24 @@ class rTorrent
 
 	// Closed downloads may not have a frozen file path until a temporary open.
 	// Keep the open/read/close commands together so media plugins share one result.
-	static public function getFilePath($hash, $index, &$displayName = null)
+	static public function getFilePath($hash, $index)
 	{
-		try { $withName = @func_num_args() > 2; }
-		catch(Throwable $error) { $withName = false; }
-		$displayName = null;
 		$index = intval($index);
 		$req = new rXMLRPCRequest(new rXMLRPCCommand("f.get_frozen_path", array($hash, $index)));
-		$values = self::filePathValues($req, $hash, $index, $withName, 1);
-		if($values === false || !isset($values[0]) || !is_string($values[0]))
+		if(!$req->success() || !isset($req->val[0]) || !is_string($req->val[0]))
 			return(false);
-		$path = $values[0];
-		$metadataOffset = 1;
+		$path = $req->val[0];
 		if($path === '')
 		{
 			$req = new rXMLRPCRequest(array(
 				new rXMLRPCCommand("d.open", $hash),
 				new rXMLRPCCommand("f.get_frozen_path", array($hash, $index)),
 				new rXMLRPCCommand("d.close", $hash)));
-			$values = self::filePathValues($req, $hash, $index, $withName, 3);
-			if($values === false || !isset($values[1]) || !is_string($values[1]))
+			if(!$req->success() || !isset($req->val[1]) || !is_string($req->val[1]))
 				return(false);
-			$path = $values[1];
-			$metadataOffset = 3;
-		}
-		if($withName && $path !== '')
-		{
-			$leaf = FileUtil::getFileName($path);
-			$displayName = UTF::display($leaf);
-			if(!UTF::isValid($leaf))
-			{
-				try
-				{
-					$meta = @array_slice($values, $metadataOffset);
-					if(UTF::isString($hash) && @preg_match('/\A[0-9A-Fa-f]{40}\z/', $hash) === 1
-						&& @count($meta) === 5 && UTF::isString($meta[0]) && UTF::isString($meta[1]) && UTF::isString($meta[2])
-						&& UTF::isString($meta[3]) && UTF::isString($meta[4]) && FileUtil::getFileName($meta[0]) === $leaf)
-					{
-						$sourcePath = null;
-						$source = @self::getSource(@strtoupper($hash), $sourcePath, array($meta[3], $meta[4]));
-						require_once(__DIR__.'/torrentfilenames.php');
-						$displayName = @TorrentFileNames::fileName($meta[0], $index, $meta[1], $meta[2], $hash, $source);
-					}
-				}
-				catch(Throwable $error)
-				{
-					// The readable payload remains available without optional name evidence.
-				}
-			}
+			$path = $req->val[1];
 		}
 		return($path !== '' ? $path : false);
-	}
-
-	/** Read optional name evidence in the existing path request, preserving fault slots. */
-	private static function filePathValues($req, $hash, $index, $withName, $required)
-	{
-		if(!$withName) return $req->success() ? $req->val : false;
-		$req->addCommand(new rXMLRPCCommand('f.get_path', array($hash, $index)));
-		$req->addCommand(new rXMLRPCCommand('f.get_size_bytes', array($hash, $index)));
-		$req->addCommand(new rXMLRPCCommand('d.get_size_files', $hash));
-		$req->addCommand(new rXMLRPCCommand('get_session'));
-		$req->addCommand(new rXMLRPCCommand('d.get_tied_to_file', $hash));
-		if(isset($req->parseStructured)) $req->parseStructured = true;
-		if(!$req->run() || $req->responseTypes !== array('array') || count($req->responseValues) !== 1
-			|| !is_array($req->responseValues[0])) return false;
-		$values = array();
-		foreach($req->responseValues[0] as $position=>$reply)
-		{
-			$valid = is_array($reply) && array_keys($reply) === array(0);
-			if($position < $required && !$valid) return false;
-			$values[] = $valid ? $reply[0] : null;
-		}
-		if(count($values) < $required) return false;
-		return $values;
 	}
 
 	// rTorrent names a BEP-9 magnet download <HASH>.meta, in uppercase hex,
@@ -707,7 +652,10 @@ class rTorrent
 			&& $name === strtoupper($hash).'.meta');
 	}
 
-	static public function getSource($hash, &$sourcePath = null, $knownPaths = null)
+	// $knownPaths is what getSourcePaths() returns for this hash, false when
+	// that is unknown (nothing is asked), or null to ask the daemon. Fork:
+	// $sourcePath receives the file that was read.
+	static public function getSource($hash, $knownPaths = null, &$sourcePath = null)
 	{
 		$sourcePath = self::getSourcePath($hash, $knownPaths);
 		if($sourcePath === false)
@@ -744,6 +692,23 @@ class rTorrent
 			return($torrent);
 		}
 		return(false);
+	}
+
+	// The session directory and tied file of every loaded torrent, in one
+	// request, for callers that read several sources. Keyed by hash. The
+	// reply reader escapes backslashes and double quotes; these paths are
+	// returned unescaped.
+	static public function getSourcePaths()
+	{
+		$req = new rXMLRPCRequest( array(
+			new rXMLRPCCommand("get_session"),
+			new rXMLRPCCommand("d.multicall", array("main", getCmd("d.get_hash="), getCmd("d.get_tied_to_file="))) ) );
+		$paths = array();
+		if($req->run() && !$req->fault && (count($req->val) % 2 == 1))
+			for($i = 1; $i < count($req->val); $i += 2)
+				$paths[$req->val[$i]] = array(rXMLRPCRequest::unescapeValue($req->val[0]),
+					rXMLRPCRequest::unescapeValue($req->val[$i+1]));
+		return($paths);
 	}
 
 	static public function fastResume($torrent, $base, $add_path = true)

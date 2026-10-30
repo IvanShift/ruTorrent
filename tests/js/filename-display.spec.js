@@ -25,34 +25,57 @@ function loadUI(enabled = null) {
 const hash = "A".repeat(40);
 const row = (name, size = 100) => [name, "1", "2", String(size), "1"];
 
-test.each([null, false, true])("file names use the shared server resolver with httprpc %s", enabled => {
+// The label cell follows every requested column, so pad a row up to it.
+function labelled(request, values, label) {
+  const cells = values.slice();
+  while (cells.length < request.fileNameIndex) cells.push("0");
+  cells.push(label);
+  return cells;
+}
+
+const legacy = "�".repeat(5) + ".mkv";
+const series = { displayName: "Серия.mkv", pathKey: "%D1%E5%F0%E8%FF.mkv" };
+
+test.each([null, false, true])("file names ask the shared server resolver for label cells with httprpc %s", enabled => {
   loadUI(enabled);
   theRequestManager.addRequest("fls", "f.get_priority=", () => {});
   const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
   expect(request.mountPoint).toBe("plugins/httprpc/action.php");
   expect(request.dataType).toBe("json");
-  expect(request.content).toBe(`mode=fls&hash=${hash}&cmd=f.prioritize_first%3D&cmd=f.prioritize_last%3D&cmd=f.priority%3D`);
+  expect(request.content).toBe(`mode=fls&hash=${hash}&cmd=f.prioritize_first%3D&cmd=f.prioritize_last%3D&cmd=f.priority%3D&names=1`);
+  expect(request.fileNameIndex).toBe(theRequestManager.fls.commands.length);
+  expect(request.fileNameIndex).toBe(8);
   expect(request.commands).toHaveLength(0);
 });
 
-test("an attested display name reaches the model and extension callbacks without losing its identity", () => {
+test("a file name that is not a string, such as an older fork server's envelope, refuses the answer visibly", () => {
+  loadUI(true);
+  const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
+  request.getResponse([row("plain.mkv"), row({ name: "Серия.mkv", pathKey: series.pathKey })]);
+  expect(request.faultString).toEqual(["Invalid file list response [getfiles]"]);
+});
+
+test("a label cell reaches the model with its byte key while extension columns stay in place", () => {
   loadUI(true);
   let extensionResult;
   theRequestManager.addRequest("fls", "f.get_priority=", (hash, _files, value) => { extensionResult = { hash, value }; });
   const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
-  const envelope = {
-    name: "Panty And Stocking TV 01 серия.mkv",
+  const wire = "Panty And Stocking TV 01 " + legacy;
+  const label = {
+    displayName: "Panty And Stocking TV 01 серия.mkv",
     pathKey: "Panty%20And%20Stocking%20TV%2001%20%F1%E5%F0%E8%FF.mkv",
   };
-  const input = row(envelope, 3014966836);
-  input.push("0", "0", "2");
+  const input = row(wire, 3014966836);
+  input.push("0", "0", "2", label);
+  expect(input.indexOf(label)).toBe(request.fileNameIndex);
   const file = request.getResponse([input])[hash][0];
-  expect(file.name).toBe(envelope.name);
-  expect(file.pathKey).toBe(envelope.pathKey);
+  expect(request.isError()).toBe(0);
+  expect(file.name).toBe(label.displayName);
+  expect(file.pathKey).toBe(label.pathKey);
   expect(file.size).toBe(3014966836);
   expect(file.done).toBe(1507483418);
   expect(extensionResult).toEqual({ hash, value: "2" });
-  expect(input[0]).toBe(envelope);
+  expect(input[0]).toBe(wire);
 });
 
 test("valid Unicode and file indices survive alongside legacy names", () => {
@@ -60,17 +83,78 @@ test("valid Unicode and file indices survive alongside legacy names", () => {
   const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
   const files = request.getResponse([
     row("映画/Фильм 🎬.mkv"),
-    row({ name: "Серия.mkv", pathKey: "%D1%E5%F0%E8%FF.mkv" }),
+    labelled(request, row(legacy), series),
     row(" literal %F1!().mkv "),
   ])[hash];
   expect(files.map(file => file.name)).toEqual([
     "映画/Фильм 🎬.mkv", "Серия.mkv", " literal %F1!().mkv ",
   ]);
+  expect(files.map(file => file.pathKey)).toEqual([undefined, series.pathKey, undefined]);
   const directory = new rDirectory();
   files.forEach((file, index) => directory.addFile(file, index));
   const ids = [];
   directory.getFilesIds(ids, "", "_f_1", 0);
   expect(ids).toEqual(["1"]);
+});
+
+test("equal-length legacy directories with one wire spelling stay separate through their byte keys", () => {
+  loadUI(true);
+  const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
+  // cp1251 "Пример" and "Привет": JSON substitutes both to six U+FFFD.
+  const wire = "�".repeat(6) + "/a.mkv";
+  const files = request.getResponse([
+    labelled(request, row(wire), { displayName: "Пример/a.mkv", pathKey: "%CF%F0%E8%EC%E5%F0/a.mkv" }),
+    labelled(request, row(wire), { displayName: "Привет/a.mkv", pathKey: "%CF%F0%E8%E2%E5%F2/a.mkv" }),
+  ])[hash];
+  const directory = new rDirectory();
+  files.forEach((file, index) => directory.addFile(file, index));
+  const entries = directory.getDirectory();
+  const keys = ["_d_%CF%F0%E8%EC%E5%F0", "_d_%CF%F0%E8%E2%E5%F2"];
+  expect(Object.keys(entries)).toEqual(keys);
+  expect(keys.map(key => entries[key].data.name)).toEqual(["Пример", "Привет"]);
+  keys.forEach((key, index) => {
+    const ids = [];
+    directory.getFilesIds(ids, "", key, 2, "priority");
+    expect(ids).toEqual([String(index)]);
+  });
+});
+
+test.each([
+  ["a string", "Серия.mkv"],
+  ["an array", ["Серия.mkv", series.pathKey]],
+  ["null", null],
+  ["no display name", { pathKey: series.pathKey }],
+  ["a numeric display name", { displayName: 5, pathKey: series.pathKey }],
+  ["an extra display component", { displayName: "a/Серия.mkv", pathKey: series.pathKey }],
+  ["an empty display name", { displayName: "", pathKey: series.pathKey }],
+  ["a dot display name", { displayName: ".", pathKey: series.pathKey }],
+  ["a dot-dot display name", { displayName: "..", pathKey: series.pathKey }],
+  ["a NUL in the display name", { displayName: "Се\0рия.mkv", pathKey: series.pathKey }],
+])("an invalid label cell (%s) leaves the daemon's string and no byte key", (_name, label) => {
+  loadUI(true);
+  const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
+  const files = request.getResponse([labelled(request, row(legacy), label), row("plain.mkv")])[hash];
+  expect(request.isError()).toBe(0);
+  expect(files.map(file => file.name)).toEqual([legacy, "plain.mkv"]);
+  expect(files[0].pathKey).toBeUndefined();
+});
+
+test.each([
+  ["no byte key", undefined],
+  ["a non-string byte key", [series.pathKey]],
+  ["an extra key component", "a/" + series.pathKey],
+  ["an empty byte key", ""],
+  ["a lowercase escape", "%d1%E5%F0%E8%FF.mkv"],
+  ["a query delimiter", "x&names=1"],
+])("a label whose byte key is unusable (%s) keys the row and its extension by the wire string", (_name, pathKey) => {
+  loadUI(true);
+  const request = new rTorrentStub(`?action=getfiles&hash=${hash}`);
+  const label = { displayName: "Серия.rar", ...(pathKey === undefined ? {} : { pathKey }) };
+  const file = request.getResponse([labelled(request, row(legacy), label)])[hash][0];
+  expect(request.isError()).toBe(0);
+  expect(file.name).toBe("Серия.rar");
+  expect(file.pathKey).toBe("%EF%BF%BD".repeat(5) + ".mkv");
+  expect(fileExtension(file)).toBe("mkv");
 });
 
 test("equal display labels cannot merge separate raw directories or their selected files", () => {

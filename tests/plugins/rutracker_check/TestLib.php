@@ -464,6 +464,12 @@ class rXMLRPCRequest
     public static $requests = array();
     public static $defaultLocalProjectionResponse = null;
     private $commands = array();
+
+    // php/xmlrpc.php: values are already the daemon's bytes.
+    public static function unescapeValue($value)
+    {
+        return $value;
+    }
     public $important = true;
     public $fault = false;
     public $faultString = '';

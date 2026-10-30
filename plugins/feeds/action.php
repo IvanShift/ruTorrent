@@ -1,7 +1,6 @@
 <?php
 require_once( '../../php/util.php' );
 require_once( '../../php/settings.php' );
-require_once( '../../php/rtorrent.php' );
 require_once( '../../php/torrentfilenames.php' );
 eval( FileUtil::getPluginConf( 'feeds' ) );
 
@@ -193,45 +192,36 @@ if($showItemDescription)
 		getCmd("d.get_peers_connected="),
 		getCmd("d.get_peers_accounted="),
 		getCmd("d.get_peers_complete=")));
-$paths = new rXMLRPCCommand('d.multicall', array($view, getCmd('d.get_hash='), getCmd('d.get_tied_to_file=')));
-$req = new rXMLRPCRequest(array(new rXMLRPCCommand('d.multicall', $prm), $paths,
-	new rXMLRPCCommand('get_session')));
+$req = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', $prm));
 
 if($req->run(true) && $req->responseTypes === array('array') && count($req->responseValues) === 1)
 {
-	$replies = $req->responseValues[0];
-	$rows = isset($replies[0]) && is_array($replies[0]) && array_keys($replies[0]) === array(0)
-		&& is_array($replies[0][0]) ? $replies[0][0] : array();
-	$sourcePaths = array();
-	// Optional source failures must not discard the live list or trigger a
-	// separate daemon request for every name that needs display metadata.
-	if(isset($replies[1], $replies[2]) && is_array($replies[1]) && is_array($replies[2])
-		&& array_keys($replies[1]) === array(0) && array_keys($replies[2]) === array(0)
-		&& is_array($replies[1][0]) && is_string($replies[2][0]))
-		foreach($replies[1][0] as $row)
-			if(is_array($row) && array_keys($row) === array(0,1) && is_string($row[0]) && is_string($row[1]))
-				$sourcePaths[$row[0]] = array($replies[2][0], $row[1]);
+	$rows = array();
 	$values = array();
+	$titles = array();
 	$fields = count($prm)-1;
-	foreach($rows as $row)
+	foreach((is_array($req->responseValues[0]) ? $req->responseValues[0] : array()) as $row)
 	{
 		if(!is_array($row) || array_keys($row) !== range(0,$fields-1)) continue;
 		foreach($row as $value) if(!is_string($value)) continue 2;
+		$rows[] = $row;
 		if(TorrentFileNames::needsTitleMetadata($row[1]))
-		{
-			$source = false;
-			try
-			{
-				$sourcePath = null;
-				$source = rTorrent::getSource($row[0], $sourcePath, $sourcePaths[$row[0]] ?? false);
-			}
-			catch(Throwable $error)
-			{
-				// Unreadable optional metadata leaves the daemon name visible.
-			}
-			$title = TorrentFileNames::title($row[1], $row[0], $source);
-			$row[1] = $title['name'];
-		}
+			$titles[$row[0]] = rXMLRPCRequest::unescapeValue($row[1]);
+	}
+	// Source paths are read once, and only when a title needs its metadata.
+	try
+	{
+		$titles = TorrentFileNames::titles($titles);
+	}
+	catch(Throwable $error)
+	{
+		// Unreadable optional metadata leaves the daemon name, which feedText() shows.
+		$titles = array();
+	}
+	foreach($rows as $row)
+	{
+		if(isset($titles[$row[0]]))
+			$row[1] = $titles[$row[0]];
 		foreach($row as $value) $values[] = $value;
 	}
 	$items = array();
