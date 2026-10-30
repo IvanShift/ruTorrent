@@ -2,7 +2,8 @@
 
 class Utility
 {
-	/** Quote one POSIX shell argument without locale-dependent byte filtering. */
+	// Quote one POSIX shell argument byte for byte; escapeshellarg() drops
+	// the bytes the current locale cannot decode.
 	public static function escapeShellArg($value)
 	{
 		$value = (string)$value;
@@ -12,9 +13,9 @@ class Utility
 			$byte = $value[$offset];
 			if($byte === "\0")
 				throw new InvalidArgumentException('A shell argument cannot contain a NUL byte.');
-			$quoted .= $byte === "'" ? "'\\''" : $byte;
+			$quoted .= ($byte === "'") ? "'\\''" : $byte;
 		}
-		return $quoted."'";
+		return($quoted."'");
 	}
 
 	public static function quoteAndDeslashEachItem($item)

@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/AddTorrentHttpHarness.php');
+require_once(__DIR__ . '/../../php/Torrent.php');
 
 /**
  * php/addtorrent.php reports a torrent the daemon already holds as a
@@ -43,11 +44,14 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->daemon = null;
 	}
 
-	/** A single file torrent whose info dictionary hashes to the return value. */
-	private function torrent(&$hash, $piece = "\x01")
+	/**
+	 * A single file torrent whose info dictionary hashes to the return value.
+	 * The private flag is a key of that dictionary.
+	 */
+	private function torrent(&$hash, $piece = "\x01", $private = false)
 	{
 		$info = 'd6:lengthi1e4:name5:a.bin12:piece lengthi16384e6:pieces20:'
-			. str_repeat($piece, 20) . 'e';
+			. str_repeat($piece, 20) . ($private ? '7:privatei1e' : '') . 'e';
 		$hash = strtoupper(sha1($info));
 		$announce = 'http://127.0.0.1:1/announce';
 		return 'd8:announce' . strlen($announce) . ':' . $announce . '4:info' . $info . 'e';
@@ -142,11 +146,14 @@ class AddTorrentDuplicateTest extends TestCase
 
 	/**
 	 * Uploads one file per name, each with the torrent its name maps to in
-	 * $torrents (name => torrent bytes), to a daemon holding $loaded.
+	 * $torrents (name => torrent bytes), to a daemon holding $loaded, after
+	 * the plain form $fields (name => value).
 	 */
-	private function upload($loaded, $torrents, $names, $proofs, $daemon = array())
+	private function upload($loaded, $torrents, $names, $proofs, $daemon = array(), $fields = array())
 	{
 		$parts = array();
+		foreach ($fields as $field => $value)
+			$parts[] = array('name' => $field, 'content' => $value);
 		foreach ($names as $name)
 			$parts = array_merge($parts, AddTorrentHttpHarness::torrentFiles(array($name), $torrents[$name]));
 		list($contentType, $body) = AddTorrentHttpHarness::multipart($parts);
@@ -170,6 +177,41 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->assertEquals(0, $this->proofReads(), 'so no settle window is waited out');
 		$this->assertEquals(1, $this->presenceReads(), 'one d.hash read confirmed the torrent is still there');
 		$this->assertEquals(array(), $this->kept(), 'the uploaded copy of a duplicate is not kept');
+	}
+
+	/** The info hash of the torrent rtorrent was sent: the load is the only call with a base64 value. */
+	private function sentHash()
+	{
+		foreach ($this->daemon->bodies() as $body) {
+			if (preg_match('`<base64>([^<]*)</base64>`', $body, $match)) {
+				$torrent = new Torrent(base64_decode($match[1]));
+				return $torrent->hash_info();
+			}
+		}
+		return null;
+	}
+
+	public function testRandomizingLeavesAPrivateTorrentsHashAlone()
+	{
+		$torrent = $this->torrent($hash, "\x01", true);
+		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
+			array('one.torrent'), array(), array(), array('randomize_hash' => '1'));
+		$this->assertEquals(array('Duplicate'), $results,
+			'the private torrent keeps its own hash, so a loaded one is still a duplicate: ' . json_encode($results));
+		$this->assertEquals(0, $this->loadCalls(), 'and no load is sent for it');
+		$this->assertEquals(1, $this->presenceReads(), 'the d.hash read asked for its own hash');
+	}
+
+	public function testRandomizingStillGivesAPublicTorrentANewHash()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
+			array('one.torrent'), array(true), array(), array('randomize_hash' => '1'));
+		$sent = $this->sentHash();
+		$this->assertTrue(($sent !== null) && ($sent !== $hash),
+			'rtorrent was sent the public torrent with a new hash: ' . json_encode($sent));
+		$this->assertEquals(array('Success'), $results,
+			'so a loaded one is added as a new torrent: ' . json_encode($results));
 	}
 
 	/**

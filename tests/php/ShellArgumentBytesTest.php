@@ -26,7 +26,7 @@ class ShellArgumentBytesTest extends TestCase
 					.'Utility::escapeShellArg(\'echo base64_encode($argv[1]);\')." -- ".'
 					.'Utility::escapeShellArg('.var_export($value, true).');'
 					.'passthru($command, $status); exit($status);';
-				$result = PhpProcess::run(array('-n', '-r', $code));
+				$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-r', $code)));
 				$this->assertSame(0, $result['code'], 'the actual shell command exits successfully in '.$locale);
 				$this->assertSame(base64_encode($value), $result['out'], 'the invoked process receives the exact original argument in '.$locale);
 				$this->assertSame('', $result['err'], 'quoting produces no diagnostic or injected command output');

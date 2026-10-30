@@ -1351,6 +1351,51 @@ rTorrentStub.prototype.listResponse = function(data)
 	}
 	/** @type {ListResponseType} */
 	var ret = { labels: {}, labels_size: {}, torrents: {} };
+	// Admit the entire delta before changing the shared cache. PHP encodes empty
+	// maps as [] and sparse row deltas as objects, so validate merged rows.
+	var validMap = function(value) {
+		return value !== null && typeof value === "object" &&
+			(!Array.isArray(value) || value.length === 0);
+	};
+	// Fork: the name column may carry the display envelope {name, raw} of
+	// TorrentFileNames::title() (php/torrentfilenames.php) instead of a string.
+	var validTitle = function(value) {
+		return typeof value === "string" || (value !== null && typeof value === "object" &&
+			!Array.isArray(value) &&
+			Object.prototype.hasOwnProperty.call(value, "name") && typeof value.name === "string" &&
+			Object.prototype.hasOwnProperty.call(value, "raw") && typeof value.raw === "string");
+	};
+	var valid = validMap(data) && Number.isInteger(data.cid) &&
+		validMap(data.t) && (data.full === undefined || data.full === 0 || data.full === 1) &&
+		(data.d === undefined || (Array.isArray(data.d) && data.d.every(function(hash) {
+			return typeof hash === "string" && /^[a-f0-9]{40}$/i.test(hash);
+		})));
+	if(valid)
+	{
+		var deleted = new Set(data.d || []);
+		valid = Object.keys(data.t).every(function(hash) {
+			var values = data.t[hash];
+			if(!/^[a-f0-9]{40}$/i.test(hash) || values === null || typeof values !== "object")
+				return false;
+			if(!Object.keys(values).every(function(key) {
+				return /^(0|[1-9][0-9]*)$/.test(key) &&
+					(typeof values[key] === "string" || typeof values[key] === "number" ||
+						(key === "4" && validTitle(values[key])));
+			}))
+				return false;
+			var previous = !data.full && !deleted.has(hash) &&
+				theRequestManager.torrents[hash];
+			var merged = Object.assign({}, previous || {}, values);
+			return validTitle(merged[4]) &&
+				[25, 29].every(function(key) { return typeof merged[key] === "string"; });
+		});
+	}
+	if(!valid)
+	{
+		this.invalidListResponse = true;
+		this.faultString.push("Invalid list response ["+this.action+"]");
+		return;
+	}
 	theRequestManager.cid = data.cid;
 	// A full answer lists every torrent there is, so anything held that it does
 	// not mention is gone. Deletions are reported against a previous state the
@@ -1511,6 +1556,13 @@ rTorrentStub.prototype.logErrorMessages = function()
 function Ajax(URI, isASync, onComplete, onTimeout, onError, reqTimeout, partialData)
 {
 	var stub = URI instanceof rTorrentStub ? URI : new rTorrentStub(URI);
+	// A failed request and a rejected list reach the error callback with the
+	// same arguments, including the daemon state named by X-rTorrent-State.
+	var reportError = function(jqXHR, status, textStatus, response)
+	{
+		onError(status+" ["+textStatus+","+stub.action+"]", response,
+			rTorrentStateHeader(jqXHR));
+	};
 	var request = $.ajax(
 	{
 		type: stub.method,
@@ -1562,8 +1614,7 @@ function Ajax(URI, isASync, onComplete, onTimeout, onError, reqTimeout, partialD
 				response = errorThrown;
 			else
 				response = getXMLRPCFaultString(response);
-			onError(status+" ["+textStatus+","+stub.action+"]",response,
-				rTorrentStateHeader(jqXHR));
+			reportError(jqXHR, status, textStatus, response);
 		}
 		stub.finishSetsettingsFailure();
 		stub = null; // Cleanup memory leak
@@ -1574,6 +1625,7 @@ function Ajax(URI, isASync, onComplete, onTimeout, onError, reqTimeout, partialD
 		Ajax_UpdateTime(jqXHR);
 
 		var responseText = stub.getResponse(data);
+		// The error callback reports a rejected list; a second notice would repeat it.
 		var rejectedList = stub.invalidListResponse && ($type(onError)=="function");
 		if(!rejectedList)
 			stub.logErrorMessages();
@@ -1612,7 +1664,7 @@ function Ajax(URI, isASync, onComplete, onTimeout, onError, reqTimeout, partialD
 		else
 		{
 			if(rejectedList)
-				onError(jqXHR.status+" [parsererror,"+stub.action+"]", "Invalid list response");
+				reportError(jqXHR, jqXHR.status, "parsererror", "Invalid list response");
 			if(stub.xmlRPCFault)
 				stub.finishSetsettingsFailure();
 			stub.finishXMLFailure();

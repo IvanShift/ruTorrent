@@ -414,4 +414,85 @@ $suite->test('upstream destination root keeps a non-ASCII name that is not there
     strictAssertSame($root.'/fin/Сериал',$named,'the destination keeps its own name');
     strictAssertSame($root.'/fin/TV',$doubled,'and one that ends in two slashes is named as with one');
 });
+
+// A download of $files, a list of paths below its directory for a multi-file
+// one or a single file's name, and the session copy that names them.
+function upstreamFilesFixture($files)
+{
+    $multi = is_array($files);
+    $state = moveWorkerFixture($multi);
+    $string = function ($value) { return strlen($value).':'.$value; };
+    if ($multi) {
+        unlink($state['source'].'/item');
+        $list = '';
+        foreach ($files as $file) {
+            if (!is_dir(dirname($state['source'].'/'.$file))) mkdir(dirname($state['source'].'/'.$file), 0700, true);
+            file_put_contents($state['source'].'/'.$file, 'payload');
+            $list .= 'd6:lengthi7e4:pathl';
+            foreach (explode('/', $file) as $part) $list .= $string($part);
+            $list .= 'ee';
+        }
+        $info = '5:filesl'.$list.'e4:name'.$string($state['name']);
+    } else {
+        $source = $state['root'].'/dl/'.$files;
+        rename($state['source'], $source);
+        $state['source'] = $source;
+        $state['basename'] = $state['name'] = $files;
+        $state['destination'] = $state['root'].'/fin/'.$files;
+        $info = '6:lengthi7e4:name'.$string($files);
+    }
+    file_put_contents($state['root'].'/session/'.$state['hash'].'.torrent',
+        'd4:infod'.$info.'12:piece lengthi16384e6:pieces20:'.str_repeat('x', 20).'ee');
+    $state['files'] = $multi ? $files : array($files);
+    return $state;
+}
+
+// Ported from upstream f2fa2f0c7 (AutoMoveDestinationTest): check keeps a
+// download where its data is when skip_move_for_files matches one of its
+// files below its own directory, and move then leaves the data there, so the
+// files are at the directory check named either way. A matched single file
+// whose name is not UTF-8 is the raw filename exclusion case above.
+foreach (array(
+    array(array('item', 'extras/cover.rar'), '/\\.rar$/', true),
+    array(array('item', 'extras/notes.txt'), '/^extras\\//', true),
+    array(array('item', 'extras/cover.rar'), '/\\.zip$/', false),
+    // Matched as UTF-8, so "\xd0\xb6" is one character.
+    array("\xd0\xb6.rar", '/^.\\.rar$/', true),
+    array('Film.mkv', '/\\.rar$/', false),
+) as $case)
+$suite->test('upstream check and move agree on skip filter '.$case[1].' for '.implode(' ', (array) $case[0]),function()use($case){
+    list($files, $filter, $skipped) = $case;
+    $state = upstreamFilesFixture($files);
+    $state['skipFilter'] = $filter;
+    try {
+        list($exit,$after,$calls,$output) = moveWorkerRun($state,'upstream-check');
+        strictAssertSame(0,$exit,'check completes: '.$output);
+        $source = $state['multi'] ? $state['source'].'/' : $state['root'].'/dl/';
+        $finished = $state['multi'] ? $state['destination'].'/' : $state['root'].'/fin/';
+        strictAssertSame($skipped ? $source : $finished,$output,'check names the directory the data will be at');
+        $state['upstreamDirectory'] = rtrim($output,'/');
+        list($exit,$after,$calls,$moved) = moveWorkerRun($state,'upstream-move');
+        strictAssertSame(0,$exit,'move completes: '.$moved);
+        foreach ($state['files'] as $file)
+            strictAssertSame('payload',@file_get_contents($output.$file),'the files are at the directory check named: '.$file);
+        strictAssertSame($skipped,file_exists($state['source']),$skipped ? 'and were left where the download ran' : 'and moved from there');
+    } finally { strictRemoveTree($state['root']); }
+});
+
+// Ported from upstream e6c539a2f (AutoMoveDestinationTest): the skip filter
+// sees the file the daemon wrote, not the metainfo name.
+$suite->test('upstream skip filter matches the daemon basename, not the metainfo name',function(){
+    $state = upstreamAliasFixture(false);
+    $state['skipFilter'] = '/^selected /';
+    try {
+        list($exit,$after,$calls,$output) = moveWorkerRun($state,'upstream-check');
+        strictAssertSame($state['root'].'/dl/',$output,'check keeps the download where it is');
+        $state['upstreamDirectory'] = rtrim($output,'/');
+        list($exit,$after,$calls,$output) = moveWorkerRun($state,'upstream-move');
+        strictAssertSame(0,$exit,'move completes: '.$output);
+        strictAssertSame('payload',file_get_contents($state['source']),'the matched file stays at the source');
+        strictAssertSame(false,file_exists($state['destination']),'and nothing is made at the destination');
+        strictAssertSame('foreign',file_get_contents($state['raw_twin']),'the file at the metainfo name is untouched');
+    } finally { strictRemoveTree($state['root']); }
+});
 exit($suite->run());

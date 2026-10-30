@@ -13,7 +13,8 @@ class UTF
 		catch(Throwable $error) { return false; }
 	}
 
-	/** Strict Unicode scalar validation, independent of PCRE and converters. */
+	// Strict UTF-8, the same check as PCRE's u modifier and json_encode(), but
+	// independent of PCRE and converters.
 	public static function isValid($text)
 	{
 		if(!self::isString($text)) return false;
@@ -43,9 +44,14 @@ class UTF
 		return $length;
 	}
 
-	/** Display unknown bytes without guessing their encoding or changing valid text. */
-	public static function display(string $text)
+	// Text for display. Valid UTF-8 comes back unchanged. Otherwise each byte
+	// that is not part of a character, and each control but tab, CR and LF,
+	// becomes \xNN, and a backslash is doubled. So a valid name that spells
+	// "\xFF" reads like a name holding the byte 0xFF: compare names by their
+	// bytes, never by this label.
+	public static function display($text)
 	{
+		$text = (string)$text;
 		// Keep valid strings exactly as supplied, including literal backslashes.
 		for($offset = 0; isset($text[$offset]);)
 		{

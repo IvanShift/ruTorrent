@@ -86,6 +86,23 @@ class TaskTest extends TestCase
 		$this->assertEquals(true, is_dir($dir), 'The refused task stays available for diagnosis');
 	}
 
+	public function testKillRunsNothingForPidOne()
+	{
+		// Fork form of upstream's case (256b8c876): this kill never asks pgrep.
+		// A supervised task whose pid file names 0 or 1 is refused before any
+		// helper runs; no pid.identity exists that a helper could match.
+		foreach (array('0', '1') as $pid) {
+			list($id, $dir) = $this->makeTask($pid);
+			file_put_contents($dir.'/supervisor.version', "1\n");
+			$result = rTask::kill($id);
+			$this->assertEquals(false, $result, 'pid '.$pid.' refuses the kill');
+			$this->assertEquals(true, is_dir($dir), 'The refused task of pid '.$pid.' stays available for diagnosis');
+			$this->assertEquals(true, is_file($dir.'/errors') &&
+				strpos(file_get_contents($dir.'/errors'), 'invalid pid, including pid 1; no signal sent') !== false,
+				'The refusal of pid '.$pid.' names the invalid pid');
+		}
+	}
+
 	public function testLegacyKillRetainsMatchingPidWithoutSupervisor()
 	{
 		$process = proc_open(array('sleep', '30'), array(

@@ -6,6 +6,27 @@ require_once(__DIR__.'/../../php/utility/utf.php');
 
 class UTFDisplayTest extends TestCase
 {
+	// What display() makes of valid text once an invalid byte sends it down
+	// the byte walk: controls but tab, CR and LF as \xNN, a backslash doubled.
+	private static function walked($text)
+	{
+		$map = array('\\'=>'\\\\', "\x7F"=>'\\x7F');
+		for($byte = 0; $byte < 0x20; $byte++)
+			if(!in_array($byte, array(9, 10, 13), true))
+				$map[chr($byte)] = sprintf('\\x%02X', $byte);
+		return(strtr($text, $map));
+	}
+
+	// display() walks "\xFF" plus $text by its own decoder. It keeps every
+	// character of $text exactly when PCRE accepts $text, and what it shows
+	// is UTF-8 either way.
+	private static function walkMismatch($text)
+	{
+		$shown = UTF::display("\xFF".$text);
+		$kept = ($shown === '\\xFF'.self::walked($text));
+		return(($kept !== (preg_match('//u', $text) === 1)) || (preg_match('//u', $shown) !== 1));
+	}
+
 	public function testValidUnicodeRemainsByteIdentical()
 	{
 		foreach(array('', '0', '123', "ASCII \\xFF\t\r\n", "серия 中文 🙂", "\0\x7F",
@@ -26,15 +47,29 @@ class UTFDisplayTest extends TestCase
 
 	public function testInvalidSequencesAndNonStringsAreRejected()
 	{
-		foreach(array("\x80", "\xC0\x80", "\xC1\xBF", "\xE0\x9F\xBF", "\xED\xA0\x80",
-			"\xF0\x8F\xBF\xBF", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\xFF", "\xE2\x82", "\xC2A") as $text)
+		$diagnostics = array();
+		set_error_handler(function($number, $message) use (&$diagnostics) {
+			$diagnostics[] = $message;
+			return true;
+		});
+		try
 		{
-			$this->assertSame(false, UTF::isValid($text), 'malformed, overlong, surrogate and out-of-range sequences are rejected');
-			$this->assertSame(true, UTF::isInvalidUTF8($text), 'the existing validity API uses the same strict grammar');
-			$this->assertSame(1, preg_match('//u', UTF::display($text)), 'each malformed input has a valid display projection');
+			foreach(array("\x80", "\xC0\x80", "\xC1\xBF", "\xE0\x9F\xBF", "\xED\xA0\x80", "\xF0\x8F\xBF\xBF",
+				"\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\xFF", "\xE2\x82", "\xC2", "\xF0\x90\x80", "\xC2A") as $text)
+			{
+				$this->assertSame(false, UTF::isValid($text), 'malformed, overlong, surrogate and out-of-range sequences are rejected');
+				$this->assertSame(true, UTF::isInvalidUTF8($text), 'the existing validity API uses the same strict grammar');
+				$this->assertSame(1, preg_match('//u', UTF::display($text)), 'each malformed input has a valid display projection');
+			}
 		}
+		finally
+		{
+			restore_error_handler();
+		}
+		$this->assertSame(array(), $diagnostics, 'a sequence cut short at the end is not read past the string');
 		foreach(array(null, false, 12, array(), new stdClass()) as $value)
 			$this->assertSame(false, UTF::isValid($value), 'only strings can supply a Unicode label');
+		$this->assertTrue((UTF::display(12) === '12') && (UTF::display(null) === ''), 'display() shows a scalar as its string');
 	}
 
 	public function testEveryOneAndTwoByteSequenceAgreesWithPcre()
@@ -94,6 +129,46 @@ class UTFDisplayTest extends TestCase
 			$this->assertSame(0, $result['code'], 'one working type predicate preserves labels; neither may accept nonstrings');
 			$this->assertSame('', $result['out'].$result['err'], 'PHP 7 NULL and PHP 8 Error paths remain quiet');
 		}
+	}
+
+	public function testAValidNameSpellingAnEscapeReadsLikeTheByte()
+	{
+		$this->assertTrue(UTF::display('a\\xFF.mkv') === UTF::display("a\xFF.mkv"),
+			'labels are not unique across valid and invalid names, so names are compared by their bytes');
+		$this->assertTrue(UTF::display("a\\xFF\xFF") === 'a\\\\xFF\\xFF',
+			'inside one invalid name a literal backslash is doubled, so it reads apart from an escaped byte');
+	}
+
+	public function testControlBoundary()
+	{
+		$this->assertTrue(UTF::display("a\x1F b\x7F\xFF") === 'a\\x1F b\\x7F\\xFF',
+			'U+001F and U+007F are escaped while a space is kept');
+	}
+
+	public function testTheByteWalkAgreesWithPcreOnEveryOneAndTwoByteString()
+	{
+		$mismatches = 0;
+		for($first = 0; $first < 256; $first++)
+		{
+			if(self::walkMismatch(chr($first)))
+				$mismatches++;
+			for($second = 0; $second < 256; $second++)
+				if(self::walkMismatch(chr($first).chr($second)))
+					$mismatches++;
+		}
+		$this->assertTrue($mismatches === 0, 'display() keeps exactly the one/two-byte strings PCRE accepts');
+	}
+
+	public function testTheByteWalkAgreesWithPcreOnLongSequenceBoundaries()
+	{
+		$mismatches = 0;
+		foreach(array(0xDF, 0xE0, 0xE1, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF3, 0xF4, 0xF5) as $first)
+			foreach(array(0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0) as $second)
+				foreach(array(0x7F, 0x80, 0xBF, 0xC0) as $last)
+					foreach(array('', "\x80") as $fourth)
+						if(self::walkMismatch(chr($first).chr($second).chr($last).$fourth))
+							$mismatches++;
+		$this->assertTrue($mismatches === 0, 'three/four-byte lower, upper, surrogate and truncation boundaries agree');
 	}
 
 	public function testMixedByteCorpusRetainsEachValidFragment()

@@ -168,6 +168,26 @@ $suite->test('with the top directory at / a finished directory link is followed 
     } finally { topClean($state); }
 });
 
+// The control, ported from upstream 2446f4827 (AutoToolsTopDirectoryTest):
+// with no link out, a Move under a configured top directory completes, so the
+// refusals here are about the links and not about the top directory. The
+// name in the finished directory is not there yet, so each check resolves a
+// missing tail.
+foreach (array(false, true) as $multi)
+    $suite->test('native Move into a finished directory inside the top directory completes multi=' . (int) $multi,
+        function () use ($multi) {
+            $state = topFixture($multi);
+            try {
+                list($exit, $after) = moveWorkerRun($state);
+                strictAssertSame(0, $exit, 'the Move completes: ' . topLog($state));
+                strictAssertSame(false, $after['queued'], 'and finishes');
+                strictAssertSame('payload', @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
+                    'the payload is in the finished directory');
+                strictAssertSame(false, file_exists($state['source']), 'and not left at the source');
+                strictAssertSame(false, strpos(topLog($state), 'outside-top-directory'), 'nothing is refused');
+            } finally { topClean($state); }
+        });
+
 // The daemon's begin answer is where the probe swapped the link in: after
 // prepare() planned and checked the destination, before the rename.
 foreach (array(false, true) as $multi)
@@ -286,6 +306,26 @@ $suite->test('upstream mode refuses a directory on the way that links out', func
         strictAssertSame(array(), topOutside($state), 'nothing is written outside the top directory');
     } finally { topClean($state); }
 });
+
+// The control for upstream mode: check names the finished directory and move
+// carries the data there.
+foreach (array(false, true) as $multi)
+    $suite->test('upstream mode moves into a finished directory inside the top directory multi=' . (int) $multi,
+        function () use ($multi) {
+            $state = topFixture($multi);
+            try {
+                list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-check');
+                strictAssertSame($multi ? $state['destination'] . '/' : $state['root'] . '/fin/', $output,
+                    'check names the finished directory');
+                $state['upstreamDirectory'] = rtrim($output, '/');
+                list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-move');
+                strictAssertSame(0, $exit, 'move completes: ' . $output);
+                strictAssertSame('payload', @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
+                    'and carries the data there');
+                strictAssertSame(false, file_exists($state['source']), 'and not left at the source');
+                strictAssertSame(false, strpos(topLog($state), 'refused'), 'nothing is refused');
+            } finally { topClean($state); }
+        });
 
 $suite->test('upstream move refuses a finished directory swapped for a link out after its check', function () {
     $state = topFixture();

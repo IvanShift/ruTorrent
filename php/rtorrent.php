@@ -750,11 +750,6 @@ class rTorrent
 	{
 	        $files = array();
 	        $info = $torrent->info;
-		// Before load only the daemon can choose a differing legacy UTF-8
-		// alias. Let it hash the selected files rather than certify another name.
-		if(isset($info['name.utf-8']) && (!isset($info['files']) || $add_path)
-			&& $info['name.utf-8'] !== $info['name'])
-			return(false);
 	        $psize = intval($info['piece length']);
 	        if($base=='')
 	        {
@@ -764,18 +759,31 @@ class rTorrent
 	        {
 		        $base = FileUtil::addslash($base);
 	                $tsize = 0.0;
+			// Raw components and those under the legacy UTF-8 aliases a daemon
+			// can load: a string name.utf-8 and a list of strings path.utf-8.
+			$root = array($info['name']);
+			$rootAlias = (isset($info['name.utf-8']) && is_string($info['name.utf-8'])) ? array($info['name.utf-8']) : $root;
 			if(isset($info['files']))
 			{
+				if(!$add_path)
+					$root = $rootAlias = array();
 				foreach($info['files'] as $key=>$file)
 				{
-					if(isset($file['path.utf-8']) && $file['path.utf-8'] !== $file['path'])
-						return(false);
 				        $tsize+=floatval($file['length']);
-					$files[] = ($add_path ? $info['name']."/".implode('/',$file['path']) : implode('/',$file['path']));
+					$alias = $file['path'];
+					if(isset($file['path.utf-8']) && is_array($file['path.utf-8']) &&
+						(array_values($file['path.utf-8']) === array_filter($file['path.utf-8'], 'is_string')))
+						$alias = $file['path.utf-8'];
+					$path = array_merge($root, $file['path']);
+					if(!self::isCertifiable($path, array_merge($rootAlias, $alias)))
+						return(false);
+					$files[] = implode('/', $path);
 				}
 			}
 			else
 			{
+				if(!self::isCertifiable($root, $rootAlias))
+					return(false);
 				$tsize = floatval($info['length']);
 				$files[] = $info['name'];
 			}
@@ -796,6 +804,18 @@ class rTorrent
 			return($torrent);
 		}
 		return(false);
+	}
+
+	/**
+	 * Whether fastResume() may certify a file at its raw path, which needs the
+	 * daemon to load it there. By default libtorrent 0.16.25 and later load a
+	 * multi-file torrent under differing UTF-8 aliases, and 0.16.27 and later a
+	 * single file too; up to 0.16.13 an alias can be loaded through
+	 * encoding.add. libtorrent 0.16.22 and later replace a '/' inside a component.
+	 */
+	static private function isCertifiable($path, $alias)
+	{
+		return(($alias === $path) && (strpos(implode('', $path), '/') === false));
 	}
 
 	/**
@@ -907,6 +927,8 @@ class rTorrent
 		while(!@file_exists($path) && !@is_link($path))
 		{
 			$parent = @dirname($path);
+			// Not basename(): on PHP 7.4 it loses names the locale cannot decode,
+			// non-ASCII ones in C and non-UTF-8 ones in a UTF-8 locale.
 			$name = FileUtil::getFileName($path);
 			// An inaccessible root is not a missing directory we can keep climbing.
 			if(!is_string($parent) || $parent === '' || $parent === $path)

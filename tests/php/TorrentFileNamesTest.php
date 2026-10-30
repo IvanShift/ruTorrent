@@ -4,6 +4,7 @@ define('TESTLIB_HANDLER_STUBS', true);
 require_once(__DIR__.'/../plugins/rutracker_check/TestLib.php');
 require_once(__DIR__.'/TestCase.php');
 require_once(__DIR__.'/PhpProcess.php');
+require_once(__DIR__.'/QuietCall.php');
 require_once(__DIR__.'/../../php/torrentfilenames.php');
 
 function tfn_iconv($from, $to, $text)
@@ -38,6 +39,8 @@ function tfn_makeMulticall($commands, $hash, $add, $prefix)
 
 class TorrentFileNamesTest extends TestCase
 {
+    use QuietCall;
+
     private function source($files, $encoding = null)
     {
         $meta = array('info'=>array('name'=>'collection', 'piece length'=>16384,
@@ -71,6 +74,11 @@ class TorrentFileNamesTest extends TestCase
         $rows = array(array('中文/серия 🙂.mkv', '1', '2', '3', '1', 'extension'));
         $this->assertSame(false, TorrentFileNames::needsMetadata($rows), 'valid non-Russian UTF-8 does not request source metadata');
         $this->assertSame($rows, TorrentFileNames::resolve($rows, str_repeat('A', 40)), 'all Unicode and extension columns stay byte-identical');
+        $pathless = array(array(null, '0', '0', '0', '1'), array());
+        $this->assertSame(array(false, array()), self::quietly(function() use ($pathless) { return TorrentFileNames::needsMetadata($pathless); }),
+            'rows without a path request no source metadata and raise nothing');
+        $this->assertSame(array($pathless, array()), self::quietly(function() use ($pathless) { return TorrentFileNames::resolve($pathless, str_repeat('A', 40)); }),
+            'and keep their shape');
     }
 
     public function testCapturedLegacyEpisodeUsesItsAttestedUtf8Alias()
@@ -96,6 +104,39 @@ class TorrentFileNamesTest extends TestCase
         }
         $rows = TorrentFileNames::resolve(array(array("raw\\xFF\xFF.mkv", '0','0','1','0')), str_repeat('0',40));
         $this->assertSame('raw\\\\xFF\\xFF.mkv', $rows[0][0]['name'], 'literal backslashes cannot masquerade as escaped bytes');
+        $this->assertSame(array(array(array(array('name'=>'raw\\xFF.mkv', 'pathKey'=>'raw%FF.mkv'))), array()),
+            self::quietly(function() use ($source) { return TorrentFileNames::resolve(array(array("raw\xFF.mkv")), $source->hash_info(), $source); }),
+            'a row without a size borrows nothing and raises nothing');
+        $valid = array(array('raw\\xFF.mkv', '0', '0', '1', '0'));
+        $this->assertSame($valid, TorrentFileNames::resolve($valid, str_repeat('0', 40)),
+            'a valid name that spells an escape keeps its row; rows are told apart by their bytes');
+    }
+
+    public function testTitleRequiresTheExactSourceIdentity()
+    {
+        $label = function($name, $hash, $source) {
+            $title = TorrentFileNames::title($name, $hash, $source);
+            return is_array($title) ? $title['name'] : $title;
+        };
+        $source = Torrent::fromRawBytes(TorrentEncoder::raw(array('info'=>array('name'=>"raw\xFF", 'name.utf-8'=>'серия', 'length'=>123))));
+        $hash = $source->hash_info();
+        $this->assertSame(array('name'=>'серия', 'raw'=>"raw\xFF"), TorrentFileNames::title("raw\xFF", $hash, $source),
+            'a matching title uses the declared Unicode alias and keeps the daemon name');
+        $this->assertSame('серия', $label("raw\xFF", strtolower($hash), $source), 'the daemon hash matches in either case');
+        $this->assertSame('raw\\xFF', $label("raw\xFF", str_repeat('0', 40), $source), 'an unrelated source cannot supply the title');
+        $this->assertSame('other\\xFF', $label("other\xFF", $hash, $source), 'the daemon title must match metainfo bytes');
+        $plain = Torrent::fromRawBytes(TorrentEncoder::raw(array('encoding'=>'Windows-1251', 'info'=>array('name'=>'серия', 'name.utf-8'=>'alias', 'length'=>123))));
+        $this->assertSame('серия', TorrentFileNames::title('серия', $plain->hash_info(), $plain),
+            'a UTF-8 title is its own label, whatever the metadata declares');
+        $unsafe = Torrent::fromRawBytes(TorrentEncoder::raw(array('info'=>array('name'=>"raw\xFF", 'name.utf-8'=>'a/b', 'length'=>123))));
+        $this->assertSame('raw\\xFF', $label("raw\xFF", $unsafe->hash_info(), $unsafe), 'an alias that is not one path component is not used');
+        $this->assertSame(array('raw\\xFF', array()), self::quietly(function() use ($label, $source) { return $label("raw\xFF", null, $source); }),
+            'a torrent without a hash supplies nothing and raises nothing');
+        $encoded = Torrent::fromRawBytes(TorrentEncoder::raw(array('encoding'=>'Windows-1251', 'info'=>array('name'=>"raw\xFF", 'length'=>123))));
+        $this->assertSame((extension_loaded('iconv') || extension_loaded('mbstring')) ? 'rawя' : 'raw\\xFF',
+            $label("raw\xFF", $encoded->hash_info(), $encoded), 'without an alias the title converts from the declared encoding');
+        $this->assertSame('other\\xFF', $label("other\xFF", $encoded->hash_info(), $encoded),
+            'a daemon title that differs from the metainfo name is not converted');
     }
 
     public function testRowCountPathIndexAndLengthMustMatch()

@@ -17,8 +17,8 @@ require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
  * possibly after other moves, and a link made in the meantime must not be
  * followed either.
  *
- * The tree is real: a top directory, a directory outside it, a link out and
- * a dangling link.
+ * The tree is real: a top directory, a directory outside it, a link out, a
+ * link that stays inside and a dangling link.
  *
  * In this fork these are pins: action.php and setdir.php already refuse
  * through rtDataDirRequestRefusal(), which resolves the destination's links
@@ -27,8 +27,9 @@ require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
  * correctDirectory(); these run the real one. The scripted daemon here does
  * not confirm the daemon's claim ABI, so the fork refuses every move in this
  * fixture, and "an error" proves nothing: each case pins the classified
- * reason of the top-directory refusal. Upstream's two acceptance cases are
- * not carried for the same reason; FailureVisibilityTest admits a
+ * reason of the top-directory refusal. For the same reason upstream's two
+ * acceptance cases are carried as pins that the request gets past the
+ * top-directory check to the claim check; FailureVisibilityTest admits a
  * destination below the top directory.
  */
 class SetDirTopDirectoryTest extends TestCase
@@ -60,12 +61,14 @@ class SetDirTopDirectoryTest extends TestCase
 		$this->reset();
 		$this->base = sys_get_temp_dir() . '/rutorrent-setdir-top-' . uniqid('', true);
 		@mkdir($this->base . '/top/src/mytorrent', 0777, true);
+		@mkdir($this->base . '/top/plain', 0777, true);
 		@mkdir($this->base . '/outside', 0777, true);
 		$this->base = realpath($this->base);
 		$this->top = $this->base . '/top';
 		foreach (array('1.bin', '2.bin') as $n)
 			file_put_contents($this->top . '/src/mytorrent/' . $n, 'download ' . $n);
 		symlink($this->base . '/outside', $this->top . '/out');
+		symlink($this->top . '/plain', $this->top . '/in');
 		symlink($this->base . '/nowhere', $this->top . '/dangle');
 		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies(array()),
 			$this->base . '/calls.log');
@@ -101,6 +104,36 @@ class SetDirTopDirectoryTest extends TestCase
 				json_decode($printed, true), $what . ' is refused as ' . $reason . ': ' . $printed);
 			$this->assertTrue(!in_array('execute', $this->daemon->calls(), true),
 				'and the move is not started: ' . json_encode($this->daemon->calls()));
+		}
+	}
+
+	/**
+	 * A new directory inside the top directory, and one through a link that
+	 * stays inside, are not refused for the top directory: action.php goes
+	 * on to the daemon's claim ABI, which this scripted daemon does not
+	 * confirm, and answers that refusal instead. Adapted from upstream's
+	 * testALinkThatStaysInsideIsAccepted and testANewDirectoryInsideIsAccepted.
+	 */
+	public function testDirectoriesInsideGetPastTheTopDirectoryCheck()
+	{
+		$cases = array(
+			'a link that resolves inside the top directory' => '/in/new',
+			'a new directory inside the top directory' => '/plain/new',
+		);
+		foreach ($cases as $what => $datadir) {
+			$this->makeTree();
+			// The payload trust rule refuses a destination whose directories
+			// others can write to (destination-root-untrusted).
+			foreach (array($this->base, $this->top, $this->top . '/plain') as $dir)
+				chmod($dir, 0755);
+			$printed = $this->runScript('plugins/datadir/action.php', '$HTTP_RAW_POST_DATA = '
+				. var_export('hash=' . self::HASH . '&datadir=' . rawurlencode($this->top . $datadir)
+					. '&move_addpath=1&move_datafiles=1&move_fastresume=0', true) . ';',
+				array('post' => array()));
+			$this->assertEquals(array('errors' => array(array('desc' => 'theUILang.datadirSetDirFail', 'prm' => 'daemon-claim-unconfirmed'))),
+				json_decode($printed, true), $what . ' gets past the top-directory check: ' . $printed);
+			$this->assertTrue(!in_array('execute', $this->daemon->calls(), true),
+				'and, unconfirmed, the move is not started: ' . json_encode($this->daemon->calls()));
 		}
 	}
 

@@ -89,15 +89,26 @@ class ExternalURL
 				// A special scheme always needs a host. A scheme that does not
 				// may leave it out, but not while naming a user or a port.
 				return(!$special && !$credentials && ($port===''));
-			// Special-scheme hosts decode escapes and require valid UTF-8;
-			// opaque ftps hosts keep escapes and may encode a raw DEL.
-			$host = $special ? rawurldecode($host) : $host;
-			if(preg_match('~[\x00-\x20#/:<>?@\[\\\\\]^|]~',$host)===1 ||
-				($special && (strpos($host,'%')!==false || strpos($host,"\x7F")!==false ||
-					preg_match('//u',$host)!==1 ||
-					// These valid UTF-8 code points are invalid browser domains.
-					preg_match('~[\x{0080}-\x{009F}\x{00A0}\x{00A8}\x{00AF}\x{00B4}\x{00B8}]~u',$host)===1)))
+			if(preg_match('~[\x00-\x20#/:<>?@\[\\\\\]^|]~',$host)===1)
 				return(false);
+			if($special)
+			{
+				// HTTP, HTTPS and FTP decode their domain before checking it.
+				// FTPS has an opaque host: even malformed escapes stay literal,
+				// and it may encode a raw DEL. Only a host that needs decoding
+				// needs the decoder.
+				if(strpos($host,'%')!==false)
+				{
+					if(!function_exists('rawurldecode'))
+						return(false);
+					$host = rawurldecode($host);
+				}
+				if((preg_match('~[\x00-\x20\x7f%#/:<>?@\[\\\\\]^|]~',$host)!==0) ||
+					(preg_match('//u',$host)!==1) ||
+					// These valid UTF-8 code points are invalid browser domains.
+					(preg_match('~[\x{0080}-\x{009F}\x{00A0}\x{00A8}\x{00AF}\x{00B4}\x{00B8}]~u',$host)!==0))
+					return(false);
+			}
 		}
 		if($port==='')
 			return(true);
