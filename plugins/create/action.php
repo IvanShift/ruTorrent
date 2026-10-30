@@ -203,7 +203,9 @@ if($cmd !== null)
 						'arg' => FileUtil::getFileName($path_edit),
 						'requester'=>'create',
 						'name'=>'create',
-						'path_edit'=>$requestedPath,
+						// The path that was checked: in the raw one a ".." after
+						// a link leads beside the link's target, not where it reads.
+						'path_edit'=>$path_edit,
 						'trackers'=>$_POST['trackers'],
 						'comment'=>$_POST['comment'],
 						'source'=>$_POST['source'],

@@ -337,6 +337,27 @@ class CreateTopDirectoryTest extends TestCase
 			. 'and nothing is walked: ' . json_encode($a['errors']));
 	}
 
+	public function testTheBuiltInCreatorHashesOnlyThePathThatWasChecked()
+	{
+		// out/../outside reads as <top>/outside, which is inside, but the
+		// kernel follows out first and the .. then leads beside its target.
+		$a = $this->create($this->top . '/out/../outside');
+		$this->assertTrue(!$this->refused($a), 'the path is accepted as the folder it reads as: ' . json_encode($a['errors']));
+		$params = glob($this->base . '/profile/settings/tasks/*/params') ?: array();
+		$this->assertEquals(1, count($params), 'one creator task is prepared');
+		if (count($params) !== 1) {
+			return;
+		}
+		$request = unserialize(file_get_contents($params[0]), array('allowed_classes' => false));
+		$this->assertEquals($this->top . '/outside', $request['path_edit'], 'the task holds the path that was checked');
+		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'error_reporting=0', '-d', 'max_execution_time=30',
+			$this->root . '/plugins/create/createtorrent.php', basename(dirname($params[0])))),
+			array('env' => array('RU_PROFILE_PATH' => $this->base . '/profile')));
+		$result = dirname($params[0]) . '/result.torrent';
+		$this->assertTrue(!is_file($result) || (strpos(file_get_contents($result), 'secret.bin') === false),
+			'and the built-in creator does not hash the file outside: ' . $run['out'] . $run['err']);
+	}
+
 	public function testALinkOutThatAppearsBeforeSeedingStopsSeeding()
 	{
 		$a = $this->create($this->top . '/later');
