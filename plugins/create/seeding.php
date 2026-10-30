@@ -1,5 +1,7 @@
 <?php
 
+require_once(__DIR__ . '/boundary.php');
+
 /** Shared start-seeding publication for the two create task implementations. */
 final class CreateSeeding
 {
@@ -8,7 +10,13 @@ final class CreateSeeding
         $fname = FileUtil::getUniqueUploadedFilename($torrent->info['name'] . '.torrent');
         $path_edit = trim($request['path_edit']);
         if (is_dir($path_edit)) $path_edit = FileUtil::addslash($path_edit);
-        if (rTorrentSettings::get()->correctReportedDirectory($path_edit)) {
+        // action.php checked the tree before the creator started, but links
+        // can change while it hashes, and rtorrent is about to serve them.
+        $refusal = CreateBoundary::refusal($path_edit, $entry);
+        if ($refusal !== null) {
+            CreateBoundary::log($origin . ': seeding', $refusal, $entry);
+            echo 'Seeding refused (' . $refusal . '): ' . JSON::safeEncode($entry) . "\n";
+        } else {
             $path_edit = dirname($path_edit);
             if ($resumed = rTorrent::fastResume($torrent, $path_edit))
                 $torrent = $resumed;

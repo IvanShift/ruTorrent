@@ -532,7 +532,12 @@ class AutoToolsMoveJob
             if ($src !== $job['identity'])
                 throw new RuntimeException('source-identity-ambiguous');
             try {
+                // As before the same-mount rename (reconcile()), and before the
+                // copy too: the stage is written through the destination's
+                // parent, and the copy can take long enough for a swap.
                 if (!isset($job['stage_identity'])) {
+                    if (!rTorrent::isInsideTopDirectory($job['dst']))
+                        throw new RuntimeException('destination-outside-top-directory');
                     self::discardStage($job);
                     self::copyStage($root, $job);
                 } else {
@@ -541,6 +546,8 @@ class AutoToolsMoveJob
                     self::verifyReceipt($job, $job['src'], true);
                     self::verifyReceipt($job, $job['stage'], false);
                 }
+                if (!rTorrent::isInsideTopDirectory($job['dst']))
+                    throw new RuntimeException('destination-outside-top-directory');
             } catch (Throwable $e) {
                 self::discardStage($job);
                 self::abortBeforeMove($root, $job, $token, 'cross-mount stage failed: ' . $e->getMessage());
@@ -732,6 +739,14 @@ class AutoToolsMoveJob
                 self::abortBeforeMove($root, $job, $token, 'source receipt failed: ' . $e->getMessage());
                 return false;
             }
+            // prepare() checked the destination, and a link swapped in since
+            // would carry the payload out of the top directory: its name is
+            // resolved again just before the rename. This narrows the window;
+            // nothing here holds the parent open, so it does not close it.
+            if (!rTorrent::isInsideTopDirectory($job['dst'])) {
+                self::abortBeforeMove($root, $job, $token, 'destination-outside-top-directory');
+                return false;
+            }
             if (!self::renameNoReplace($job['src'], $job['dst'])) {
                 $refusal = self::renameRefusal();
                 if (ErasedataFilesystemOps::isCrossDeviceRenameRefusal()
@@ -851,6 +866,14 @@ class AutoToolsMoveJob
         // copy.
         if (!ErasedataFilesystemOps::payloadPathTrusted($destDir, null, true))
             throw new RuntimeException('untrusted-directory: ' . erasedataLogPath(ErasedataFilesystemOps::lastPayloadRefusalPath() ?: $destDir));
+        // The rename follows links, so the destination has to stay inside the
+        // top directory once they are followed, not only as the settings spell
+        // it: the directory and the name in it, before anything is created
+        // through them. reconcile() resolves the name again before the rename.
+        $dst = $destDir . '/' . $baseName;
+        foreach (array($destDir, $dst) as $path)
+            if (!rTorrent::isInsideTopDirectory($path))
+                throw new RuntimeException('destination-outside-top-directory: ' . erasedataLogPath($path));
         // Created directories are at most 0755, like the non-move operations:
         // the umask only removes bits, so they are never group/other-writable,
         // which the payload rule refuses above the configured top.
@@ -864,7 +887,6 @@ class AutoToolsMoveJob
         foreach (array(dirname($src), $destDir) as $directory)
             if (!ErasedataFilesystemOps::payloadPathTrusted($directory))
                 throw new RuntimeException('untrusted-directory: ' . erasedataLogPath(ErasedataFilesystemOps::lastPayloadRefusalPath() ?: $directory));
-        $dst = $destDir . '/' . $baseName;
         if (realpath($src) === realpath($dst) || file_exists($dst) || is_link($dst))
             throw new RuntimeException('destination-occupied');
         $sourceStat = @lstat($src);

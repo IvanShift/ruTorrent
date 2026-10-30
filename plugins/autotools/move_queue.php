@@ -44,6 +44,13 @@ final class AutoToolsMoveQueueRecord
 
 final class AutoToolsMoveQueue
 {
+    // d.autotools.move_cancel admits only the reasons the native build knows
+    // (rtorrent rutorrent-native, src/file_jobs_commands.h) and faults on any
+    // other, which would hold the Move. A reason added on this side since is
+    // cancelled under its nearest native one; the torrent and errors.log
+    // name the added reason. An entry goes once native admits its reason.
+    private const NATIVE_CANCEL = array('destination-outside-top-directory' => 'destination-outside-finished-root');
+
     public static function call($method, $params)
     {
         $request = new rXMLRPCRequest(new rXMLRPCCommand($method, $params));
@@ -179,10 +186,10 @@ final class AutoToolsMoveQueue
         $quiet = array('configuration-declined', 'source-outside-downloads');
         if (!in_array($reason, $quiet, true)) FileUtil::toLog('autotools: move ' . $hash . ' planning held: ' . $detail);
         $permanent = array('skip-filter-match', 'destination-outside-finished-root', 'manifest-path-invalid',
-            'source-name-mismatch', 'manifest-empty');
+            'source-name-mismatch', 'manifest-empty', 'destination-outside-top-directory');
         if (in_array($reason, array_merge($quiet, $permanent), true)) {
             if (!in_array($reason, $quiet, true)) AutoToolsMoveJob::showRefusal($hash, $reason, $context);
-            self::remove($hash, $qid, $reason);
+            self::remove($hash, $qid, isset(self::NATIVE_CANCEL[$reason]) ? self::NATIVE_CANCEL[$reason] : $reason);
             FileUtil::toLog('autotools: move ' . $hash . ' cancelled: ' . $reason);
             return;
         }

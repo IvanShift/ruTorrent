@@ -38,6 +38,15 @@ if( $is_ok )
 		Debug( "path_to_watch    : ".$path_to_watch );
 		if( $path_to_watch == '' || $path_to_watch == '/' )
 			$is_ok = false;
+		// The scan, the touch and the load follow links, so the directory has
+		// to stay inside the top directory once they are followed. Refused on
+		// every pass, so the log keeps showing it until it is corrected.
+		elseif( !rTorrent::isInsideTopDirectory( $path_to_watch ) )
+		{
+			FileUtil::toLog( 'autotools: watch refused: watch-directory-outside-top-directory; no torrent is'
+				.' loaded from it until it resolves inside the top directory' );
+			$is_ok = false;
+		}
 	}
 	else $is_ok = false;
 }
@@ -63,6 +72,17 @@ if( $is_ok )
 		Debug( "save data to     : ".$dest_path );
 
 		$is_ok = true;
+		// The torrent may be a link to a file elsewhere, and its data
+		// directory is made and loaded through any link on the way. A refused
+		// torrent is set aside as .fail like any other, so the next scan does
+		// not take it up again.
+		foreach( array( 'torrent' => $torrent_file, 'data-directory' => $dest_path ) as $what => $path )
+			if( $is_ok && !rTorrent::isInsideTopDirectory( $path ) )
+			{
+				FileUtil::toLog( 'autotools: watch refused: '.$what.'-outside-top-directory; the torrent is set'
+					.' aside as .fail' );
+				$is_ok = false;
+			}
 		// rTorrent store info about all added torrents,
 		// so we must change $torrent_file's time to trick rTorrent.
 		// ( If we want to add same torrent again )

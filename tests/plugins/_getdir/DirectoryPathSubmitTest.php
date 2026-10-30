@@ -15,6 +15,7 @@ class DirectoryPathSubmitTest extends TestCase
             'private'=>'0', 'hybrid'=>'0', 'comment'=>'', 'source'=>''
         ));
         $code = 'require '.var_export($repo.'/php/utility/fileutil.php', true).'; '
+            .($action === 'create' ? 'require '.var_export($repo.'/plugins/create/boundary.php', true).'; ' : '')
             .'$_SERVER["REQUEST_METHOD"] = "POST"; $_SERVER["REMOTE_USER"] = "fixture"; '
             .'$forbidUserSettings = false; parse_str('.var_export($body, true).', $_POST); '
             .'$rootPath = "/fixture"; $topDirectory = "/fixture"; '
@@ -37,6 +38,7 @@ class rTorrentSettings {
     public function correctReportedDirectory(&$path) { $GLOBALS['validated'] = base64_encode($path); return true; }
 }
 class CreateExternalConfiguration { public static function path($mode, $path) { return $path; } }
+class rTorrent { public static function isInsideTopDirectory($path) { return true; } }
 class rCache {
     public function get($value) { return false; }
     public function set($value) { return true; }

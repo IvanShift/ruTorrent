@@ -781,8 +781,21 @@ switch($mode)
 		{
 			if($ss[$ndx][0]=='n')
 				$v = floatval($v);
-			if( ($ss[$ndx]=="sdirectory") && !rTorrentSettings::get()->correctDirectory($v) )
-				continue;
+			// A download added without a directory of its own is written
+			// there through any link along it, so it has to stay inside the
+			// top directory once they are followed, not only as written.
+			if( $ss[$ndx]=="sdirectory" )
+			{
+				require_once(__DIR__.'/../../php/rtorrent.php');
+				$refusal = !rTorrentSettings::get()->correctDirectory($v) ? "invalid-directory"
+					: (!rTorrent::isInsideTopDirectory($v) ? "outside-top-directory" : "");
+				// The answer is the same as for no setting, so say why here.
+				if( $refusal !== "" )
+				{
+					FileUtil::toLog("setsettings: refused key=sdirectory reason=".$refusal);
+					continue;
+				}
+			}
 			$socketAlloc = rTorrentSettings::get()->getSocketAllocCategory($ss[$ndx]);
 			if($ss[$ndx]=="ndht")
 				$cmd = new rXMLRPCCommand('dht',(($v==0) ? "disable" : "auto"));

@@ -399,6 +399,12 @@ public static function rtRemoveDirectory( $path, $with_files = false )
                 self::refuse($hash, $error->getMessage());
                 return $source;
             }
+            // The move follows links, so the destination has to stay inside
+            // the top directory once they are followed.
+            if (!rTorrent::isInsideTopDirectory($destination)) {
+                self::refuse($hash, 'destination-outside-top-directory');
+                return $source;
+            }
             if (!ErasedataFilesystemOps::payloadPathTrusted($destination, null, true)
                 || self::rtTakenDestination($files, $destination) !== '') {
                 FileUtil::toLog('autotools: upstream-move refused: destination-unavailable');
@@ -426,6 +432,9 @@ public static function rtRemoveDirectory( $path, $with_files = false )
             return self::refuse($hash, 'directory-publication-unconfirmed');
         try { list($torrent, $files) = self::sourceFiles($hash, $args[2] === '1', $args[1], $at); }
         catch (RuntimeException $error) { return self::refuse($hash, $error->getMessage()); }
+        // Again here: a link can be swapped in between check() and the move.
+        if (!rTorrent::isInsideTopDirectory($destination))
+            return self::refuse($hash, 'destination-outside-top-directory');
         if (!ErasedataFilesystemOps::payloadPathTrusted($destination, null, true))
             return self::refuse($hash, 'untrusted-directory');
         if (!self::rtOpFiles($files, $source, $destination, 'Move')) return self::refuse($hash, 'payload-refused');

@@ -10,6 +10,10 @@ class FileUtil
     public static function addslash($path) { return(rtrim($path, '/') . '/'); }
     public static function toLog($message) { self::$logs[] = $message; }
 }
+class JSON
+{
+    public static function safeEncode($value) { return(json_encode($value, JSON_INVALID_UTF8_SUBSTITUTE)); }
+}
 class User
 {
     public static function isLocalMode() { return(true); }
@@ -23,6 +27,8 @@ class rTorrent
 {
     public static $status;
     public static $calls = array();
+    public static $inside = true;
+    public static function isInsideTopDirectory($path) { return(self::$inside); }
     public static function fastResume($torrent, $path) {
         self::$calls[] = array('resume', $path);
         return(false);
@@ -51,6 +57,7 @@ class CreateSeedingTest extends TestCase
         require_once($helper);
         $dir = sys_get_temp_dir() . '/rutorrent-create-seed-' . getmypid();
         mkdir($dir, 0700);
+        $GLOBALS['topDirectory'] = '/';
         try {
             foreach (array('correct', 'create') as $origin) {
                 foreach (array(true, null, false) as $status) {
@@ -82,6 +89,34 @@ class CreateSeedingTest extends TestCase
         } finally {
             @unlink($dir . '/uploaded.torrent');
             @rmdir($dir);
+            unset($GLOBALS['topDirectory']);
         }
+    }
+
+    public function testAPathTheBoundaryRefusesIsNeitherSavedNorSentAndSaysWhy()
+    {
+        require_once(__DIR__ . '/../../plugins/create/seeding.php');
+        $GLOBALS['topDirectory'] = '/nonexistent/';
+        foreach (array('correct', 'create') as $origin) {
+            FileUtil::$path = '/nonexistent/uploaded.torrent';
+            FileUtil::$logs = array();
+            rTorrent::$calls = array();
+            rTorrent::$inside = false;
+            $torrent = new CreateSeedingFixtureTorrent();
+            ob_start();
+            try {
+                CreateSeeding::publish($torrent, array('path_edit' => '/nonexistent/payload'), 0666, $origin);
+            } finally {
+                $printed = ob_get_clean();
+                rTorrent::$inside = true;
+            }
+            $this->assertSame(array(), $torrent->saved, 'no copy of the torrent is kept for seeding');
+            $this->assertSame(array(), rTorrent::$calls, 'and rtorrent is given nothing to serve');
+            $this->assertSame(array($origin . ': seeding refused reason=outside-top-directory entry="\\/payload"'),
+                FileUtil::$logs, 'the log names the classified reason and the entry');
+            $this->assertSame("Seeding refused (outside-top-directory): \"\\/payload\"\n", $printed,
+                'and so does the task log, encoded like the log');
+        }
+        unset($GLOBALS['topDirectory']);
     }
 }

@@ -4,6 +4,7 @@ require_once( dirname(__FILE__).'/../_task/task.php' );
 require_once( dirname(__FILE__).'/../../php/Torrent.php' );
 require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 require_once( dirname(__FILE__).'/externals.php' );
+require_once( dirname(__FILE__).'/boundary.php' );
 eval( FileUtil::getPluginConf( 'create' ) );
 require_once(__DIR__.'/external.php');
 $pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
@@ -155,7 +156,8 @@ if($cmd !== null)
 				$path_edit = trim($requestedPath);
 				if(is_dir($path_edit))
 					$path_edit = FileUtil::addslash($path_edit);
-				if(rTorrentSettings::get()->correctReportedDirectory($path_edit))
+				$refusal = CreateBoundary::refusal($path_edit, $entry);
+				if($refusal === null)
 				{
 					$rt = recentTrackers::load();
 					$trackers = array();
@@ -229,7 +231,10 @@ if($cmd !== null)
 					break;
 				}
 				else
-					$error = 'Incorrect directory ('.mb_substr($path_edit,mb_strlen($topDirectory)-1).')';
+				{
+					CreateBoundary::log('create:', $refusal, $entry);
+					$error = 'Incorrect directory ('.$entry.')';
+				}
 			}
 			$ret = array( "no"=>-1, "pid"=>0, "status"=>255, "log"=>array(), "errors"=>array($error) );
 			break;

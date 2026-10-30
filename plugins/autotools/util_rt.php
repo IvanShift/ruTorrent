@@ -286,8 +286,8 @@ class AutoToolsFileTransaction
     // accepted at and below the configured top, the strict rule applies above
     // it, and a component of another owner, a link included, refuses
     // everywhere. With $missingTail the path may end in names that do not
-    // exist yet. The rule is loaded on first use; check.php, watch.php and
-    // label.php include this file for other helpers and never need it.
+    // exist yet. The rule is loaded on first use; watch.php and label.php
+    // include this file for other helpers and never need it.
     private static function payloadDirectory($path, $missingTail = false)
     {
         if (!class_exists('ErasedataFilesystemOps', false))

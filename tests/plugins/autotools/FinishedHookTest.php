@@ -46,6 +46,11 @@ foreach (array('rtRemoveTailSlash', 'rtRemoveLastToken', 'rtGetRelativePath', 'r
     eval(loadFunctionDefinition($util, $function));
 eval(loadClassDefinition($util, 'AutoToolsFileTransaction'));
 eval(loadClassDefinition(testFindRepoRoot() . '/plugins/autotools/hook_lib.php', 'AutoToolsFinishedHook'));
+// The top-directory check the hook calls, as the product defines it; / until
+// a case sets a top directory.
+eval(loadClassDefinition(testFindRepoRoot() . '/php/utility/user.php', 'User'));
+eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
+$GLOBALS['topDirectory'] = '/';
 // recover.php's pass, for its NonMove scope; the Move journal name is all it
 // reads of the Move transaction there.
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/recover.php', 'rtRecoverFileJobs'));
@@ -483,6 +488,108 @@ $suite->test('an untrusted destination is refused with the hash and named on the
         hookClean($root);
     }
 });
+
+// The finished directory links out of the top directory: the Copy follows
+// it, so it is refused before the finished root is created through it.
+function hookFinishedLinksOut($root)
+{
+    mkdir($root . '-out', 0700);
+    rmdir($root . '/fin');
+    symlink($root . '-out', $root . '/fin');
+    rAutoTools::$config['path_to_finished'] = $root . '/fin/pending';
+    $GLOBALS['topDirectory'] = $root . '/';
+}
+
+function hookCleanOutside($root)
+{
+    $GLOBALS['topDirectory'] = '/';
+    strictRemoveTree($root . '-out');
+}
+
+$suite->test('a Copy into a finished directory that links out is refused and named on the torrent', function () {
+    $root = hookFixture();
+    $spawned = array();
+    strictSetPrivateStatic('AutoToolsFinishedHook', 'spawn', function ($argv) use (&$spawned) { $spawned[] = $argv; });
+    try {
+        hookFinishedLinksOut($root);
+        strictAssertSame('', AutoToolsFinishedHook::hook(hookArgs($root)), 'x-dest stays empty');
+        strictAssertSame(array('autotools: file operation refused hash=' . HOOK_HASH . ': destination-outside-top-directory'),
+            FileUtil::$messages, 'the log names the download and the reason');
+        strictAssertSame(array('.', '..'), scandir($root . '-out'), 'nothing is created outside the top directory');
+        strictAssertSame(array(), hookRequests($root), 'and nothing is deferred: the refusal is final');
+        strictAssertSame(1, count($spawned), 'one notifier is started');
+        strictAssertSame('destination-outside-top-directory', $spawned[0][3], 'for this refusal');
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl'));
+        $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
+        rXMLRPCRequest::queue($write, true, false, array('0', '0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        strictAssertSame(true, AutoToolsFinishedHook::notifyRefusal(HOOK_HASH, 'Copy', $spawned[0][3], $spawned[0][5]),
+            'the refusal is shown');
+        list(, $message) = rXMLRPCRequest::requestsFor($write)[0]['commands'];
+        strictAssertSame(0, strpos($message->params[1], 'autotools: Copy refused: destination-outside-top-directory;'),
+            'with its reason: ' . $message->params[1]);
+    } finally {
+        strictSetPrivateStatic('AutoToolsFinishedHook', 'spawn', null);
+        hookCleanOutside($root);
+        hookClean($root);
+    }
+});
+
+$suite->test('a deferred multi-file Copy into a finished directory that links out is refused on the torrent', function () {
+    list($root, $args) = hookMultiFixture();
+    try {
+        hookFinishedLinksOut($root);
+        strictAssertSame('', AutoToolsFinishedHook::hook($args), 'the synchronous hook defers the selected paths');
+        rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl/Root'));
+        $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
+        rXMLRPCRequest::queue($write, true, false, array('0', '0'));
+        rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+        hookPerformDeferred($root, $args);
+        strictAssertSame(array('autotools: file operation refused hash=' . HOOK_HASH . ': destination-outside-top-directory'),
+            array_values(array_filter(FileUtil::$messages, function ($line) { return strpos($line, 'refused') !== false; })),
+            'recover.php logs the refusal once');
+        $set = rXMLRPCRequest::requestsFor($write);
+        strictAssertSame(1, count($set), 'and names it on the torrent');
+        strictAssertSame('destination-outside-top-directory',
+            json_decode(rawurldecode($set[0]['commands'][0]->params[2]), true)['reason'], 'with its reason');
+        strictAssertSame(array(), hookRequests($root), 'the request retires');
+        strictAssertSame(array('.', '..'), scandir($root . '-out'), 'nothing is created outside the top directory');
+        strictAssertSame('payload bytes', file_get_contents($root . '/dl/Root/Серия.ass'), 'the source stays');
+    } finally {
+        hookCleanOutside($root);
+        hookClean($root);
+    }
+});
+
+// A multi-file download's own name below the finished directory is part of
+// the target: the finished directory is inside, the name links out.
+foreach (array('Copy', 'HardLink', 'SoftLink') as $operation)
+    $suite->test('a deferred multi-file ' . $operation . ' whose download name links out is refused',
+        function () use ($operation) {
+            list($root, $args) = hookMultiFixture();
+            try {
+                rAutoTools::$config['fileop_type'] = $operation;
+                mkdir($root . '-out', 0700);
+                mkdir($root . '/fin/pending', 0700);
+                symlink($root . '-out', $root . '/fin/pending/Root');
+                $GLOBALS['topDirectory'] = $root . '/';
+                AutoToolsFinishedHook::hook($args);
+                rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array($root . '/dl/Root'));
+                $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
+                rXMLRPCRequest::queue($write, true, false, array('0', '0'));
+                rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+                hookPerformDeferred($root, $args);
+                strictAssertSame(array('.', '..'), scandir($root . '-out'), 'nothing is written outside the top directory');
+                strictAssertTrue(in_array('autotools: file operation refused hash=' . HOOK_HASH
+                    . ': destination-outside-top-directory', FileUtil::$messages, true), 'the refusal is logged');
+                $set = rXMLRPCRequest::requestsFor($write);
+                strictAssertSame(1, count($set), 'and named on the torrent');
+                strictAssertSame(array(), hookRequests($root), 'the request retires');
+            } finally {
+                hookCleanOutside($root);
+                hookClean($root);
+            }
+        });
 
 // recover.php performs a deferred hook in the background, where it may call
 // the daemon: a refusal there is named on the torrent directly.

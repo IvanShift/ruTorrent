@@ -9,6 +9,7 @@ class FileUtil
     public static $messages = array();
     public static function toLog($message) { self::$messages[] = $message; }
     public static function addslash($path) { return rtrim($path, '/') . '/'; }
+    public static function getFileName($path) { $parts = explode('/', $path); return end($parts); }
 }
 
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
@@ -45,6 +46,12 @@ eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/util_rt.php
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/util_rt.php', 'rtAwaitSessionSave'));
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/autotools/util_rt.php', 'rtFileJobRetryWindow'));
 eval(loadClassDefinition(testFindRepoRoot() . '/plugins/autotools/move_job_lib.php', 'AutoToolsMoveJob'));
+// The top-directory check prepare() calls, as the product defines it. A case
+// without a configured top sees /, which the payload trust rule reads as no
+// top at all, as before.
+eval(loadClassDefinition(testFindRepoRoot() . '/php/utility/user.php', 'User'));
+eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
+$GLOBALS['topDirectory'] = '/';
 
 // A helper script that records its arguments and answers with fixed statuses.
 function autoToolsHelper($root, $probeStatus, $renameStatus, $probeError = '', $renameError = '')
@@ -178,7 +185,7 @@ $suite->test('Move admits a Windows-like 0777 destination below the configured t
         autoToolsHelper($root, 0, 0);
         $job = autoToolsPrepare();
         strictAssertSame($root . '/fin/new/Named/payload.bin', $job['dst'], 'the Move is admitted');
-    } finally { unset($GLOBALS['topDirectory']); autoToolsCleanup($root); }
+    } finally { $GLOBALS['topDirectory'] = '/'; autoToolsCleanup($root); }
 });
 
 $suite->test('Move refuses a writable parent outside the configured top before any probe', function () {
@@ -197,7 +204,7 @@ $suite->test('Move refuses a writable parent outside the configured top before a
                     'the ' . $side . ' parent is refused: ' . $error->getMessage());
             }
             strictAssertSame(array(), autoToolsHelperCalls($root), 'no probe runs for an untrusted ' . $side);
-        } finally { unset($GLOBALS['topDirectory']); autoToolsCleanup($root); }
+        } finally { $GLOBALS['topDirectory'] = '/'; autoToolsCleanup($root); }
     }
 });
 
@@ -221,7 +228,7 @@ $suite->test('Move refuses a writable directory above the top in the spelled des
         }
         strictAssertSame(false, file_exists($root . '/top/fin/new'), 'nothing is created through the link');
         strictAssertSame(array(), autoToolsHelperCalls($root), 'no probe runs');
-    } finally { chmod($root . '/shared', 0700); unset($GLOBALS['topDirectory']); autoToolsCleanup($root); }
+    } finally { chmod($root . '/shared', 0700); $GLOBALS['topDirectory'] = '/'; autoToolsCleanup($root); }
 });
 
 // The daemon's own spelling of the source is checked the same way.
@@ -233,6 +240,8 @@ $suite->test('Move refuses a writable directory above the top in the spelled sou
         symlink($root . '/dl', $root . '/shared/dl');
         chmod($root . '/shared', 0777);
         rTorrentSettings::get()->directory = $root . '/shared/dl';
+        // The destination stays inside the top, so only the source is at issue.
+        rAutoTools::$config['path_to_finished'] = $root . '/top/fin/new';
         autoToolsHelper($root, 0, 0);
         $args = autoToolsMoveArgs();
         $args[1] = $root . '/shared/dl/payload.bin';
@@ -246,7 +255,7 @@ $suite->test('Move refuses a writable directory above the top in the spelled sou
         }
         strictAssertSame(array(), autoToolsHelperCalls($root), 'no probe runs');
         strictAssertSame('payload bytes', file_get_contents($root . '/dl/payload.bin'), 'the payload stays');
-    } finally { chmod($root . '/shared', 0700); unset($GLOBALS['topDirectory']); autoToolsCleanup($root); }
+    } finally { chmod($root . '/shared', 0700); $GLOBALS['topDirectory'] = '/'; autoToolsCleanup($root); }
 });
 
 // R3-OWN-02: rTorrent 0.16 publishes a new download's session copy seconds

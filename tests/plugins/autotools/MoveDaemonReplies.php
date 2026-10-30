@@ -68,6 +68,12 @@ class AutoToolsMoveDaemonReplies
                 if (!empty($s['busy'])) { $answer = array('busy:owner'); break; }
                 $s['lease'] = 'active'; $s['active'] = 0; $s['open'] = 0;
                 if (!empty($s['collision'])) file_put_contents($s['destination'], 'foreign payload');
+                // A directory moved away and a link left in its place, once,
+                // after the worker has planned its destination.
+                if (!empty($s['swapAtBegin'])) {
+                    foreach ($s['swapAtBegin'] as $from => $to) { rename($from, $to); symlink($to, $from); }
+                    $s['swapAtBegin'] = array();
+                }
                 $answer = array('active|' . $receipt); break;
             case 'd.directory.base.set_if_stop_close_claim':
                 $s['directory'] = $args[2]; $answer = array('1'); break;
@@ -91,7 +97,13 @@ class AutoToolsMoveDaemonReplies
             case 'd.autotools.move_finish':
                 if ($s['lease'] !== 'absent') return FakeRtorrentDaemon::fault('lease held', -500);
                 $s['queued'] = false; $answer = array('finished'); break;
-            case 'd.autotools.move_cancel': $s['queued'] = false; $answer = array('cancelled'); break;
+            case 'd.autotools.move_cancel':
+                // The reasons native admits (rutorrent-native src/file_jobs_commands.h).
+                if (!isset($args[2]) || !in_array($args[2], array('configuration-declined', 'source-outside-downloads',
+                    'skip-filter-match', 'destination-outside-finished-root', 'manifest-path-invalid',
+                    'source-name-mismatch', 'manifest-empty'), true))
+                    return FakeRtorrentDaemon::fault('autotools: move cancel reason invalid', -500);
+                $s['queued'] = false; $answer = array('cancelled'); break;
             case 'd.autotools.move_defer':
                 if ($args[1] !== $s['qid'] || $args[2] !== $s['retry'] || $s['lease'] !== 'absent')
                     return FakeRtorrentDaemon::fault('CAS refused', -500);

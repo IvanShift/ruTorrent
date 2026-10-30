@@ -86,7 +86,7 @@ class ExternalConfigurationTest extends TestCase
         $action = file_get_contents(dirname(__DIR__, 3) . '/plugins/create/action.php');
         $header = preg_replace('/^<\?php/', '', substr($action, 0, strpos($action, 'class recentTrackers')), 1);
         $header = preg_replace('/^require_once\([^;]+;\s*$/m', '', $header, -1, $replaced);
-        $this->assertEquals(5, $replaced, 'The fixture supplies dependencies before the real action configuration');
+        $this->assertEquals(6, $replaced, 'The fixture supplies dependencies before the real action configuration');
         $fallback = substr($action, strpos($action, 'if(!$pathToCreatetorrent'));
         $fallback = substr($fallback, 0, strpos($fallback, 'if($useExternal=="mktorrent")'));
         foreach (array(array('mktorrent', '', '/usr/local/bin/mktorrent'),

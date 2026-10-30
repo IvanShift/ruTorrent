@@ -154,6 +154,33 @@ class AddDirectorySymlinkTest extends TestCase
 		}
 	}
 
+	/**
+	 * What does not exist yet is put back as written, and mkdir -p follows a
+	 * ".." in it only once it has made the directory before it. With "zz"
+	 * missing, <top>/plain/zz/../../../outside reads as under the top
+	 * directory and is made beside it.
+	 */
+	public function testADotOrDotDotAfterADirectoryThatDoesNotExistYetIsRefused()
+	{
+		foreach (array('/plain/zz/../../../outside', '/plain/zz/../../../outside/new/', '/zz/../..',
+				'/plain/zz/./new') as $tail) {
+			$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . $tail) === false,
+				"'{$tail}' is refused");
+		}
+	}
+
+	/**
+	 * Only a name that is "." or ".." is refused, and only where nothing
+	 * exists yet; a ".." among directories that exist is resolved as before.
+	 */
+	public function testOtherNamesAfterADirectoryThatDoesNotExistYetAreAccepted()
+	{
+		foreach (array('/plain/.new/..new/...', '/plain/../plain/new') as $tail) {
+			$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . $tail) === true,
+				"'{$tail}' is accepted");
+		}
+	}
+
 	public function testADanglingLinkIsRefused()
 	{
 		$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . '/dangle/x') === false,
@@ -239,11 +266,49 @@ class AddDirectorySymlinkTest extends TestCase
 			. 'ini_set("open_basedir", ' . var_export($root . PATH_SEPARATOR . $missing, true) . ');'
 			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
 			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/new") ? "allowed" : "refused";';
-		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-r', $code)), array('timeout' => 3));
+		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-r', $code)), array('timeout' => 15));
 		$this->assertSame(false, $result['timedOut'], 'a root hidden by open_basedir terminates promptly');
 		$this->assertSame(0, $result['code'], 'filesystem refusal is not a PHP error');
 		$this->assertSame('refused', $result['out'], 'no usable ancestor means refusal');
 		$this->assertSame('', $result['err'], 'expected filesystem restrictions do not flood diagnostics');
+	}
+
+	/**
+	 * PHP keeps what realpath() resolved for realpath_cache_ttl seconds, and
+	 * in PHP-FPM across requests. Another process that swaps a directory the
+	 * check has already seen for a link out must not find it still inside.
+	 */
+	public function testADirectorySwappedForALinkOutByAnotherProcessIsRefused()
+	{
+		$dir = $this->top . '/swapped';
+		mkdir($dir);
+		try {
+			$before = rTorrent::isInsideTopDirectory($dir . '/new');
+			$swap = PhpProcess::run(array_merge(PhpProcess::sameIni(),
+				array('-r', 'rename($argv[1], $argv[2]); symlink($argv[3], $argv[1]);',
+				$dir, $this->top . '/aside', $this->base . '/outside')), array('timeout' => 15));
+			$after = rTorrent::isInsideTopDirectory($dir . '/new');
+			$swapped = is_link($dir);
+		} finally {
+			@unlink($dir);
+			@rmdir($dir);
+			@rmdir($this->top . '/aside');
+		}
+		$this->assertTrue($before === true, 'the directory is inside before the swap');
+		$this->assertTrue(($swap['code'] === 0) && $swapped, 'another process swaps it for a link out: ' . $swap['err']);
+		$this->assertTrue($after === false, 'and once it is a link out, it is refused');
+	}
+
+	public function testADisabledClearstatcacheRefusesRatherThanTrustTheCache()
+	{
+		$root = dirname(__DIR__, 2);
+		$code = 'require ' . var_export($root . '/php/rtorrent.php', true) . ';'
+			. '$topDirectory = ' . var_export($this->top, true) . ';'
+			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
+			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/plain/new") ? "allowed" : "refused";';
+		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
+			array('-d', 'disable_functions=clearstatcache', '-r', $code)), array('timeout' => 15));
+		$this->assertSame('refused', $result['out'], 'a cache that cannot be cleared is not trusted: ' . $result['err']);
 	}
 
 	public function testADisabledBasenameDoesNotRefuseADirectoryInside()

@@ -45,9 +45,10 @@ function moveWorkerRun($state, $actor = 'worker')
         . '$r=new ReflectionClass("rTorrentSettings"); $s=$r->newInstanceWithoutConstructor();'
         . '$s->iVersion=0x1019; $s->aliases=array(); $s->linkExist=true; $s->directory=' . var_export($root.'/dl',true)
         . '; $s->session=' . var_export($root.'/session',true) . '; $p=$r->getProperty("theSettings"); $p->setAccessible(true); $p->setValue(null,$s);'
+        . (isset($state['topDirectory']) ? '$topDirectory=' . var_export($state['topDirectory'], true) . ';' : '')
         . '$scgi_host="127.0.0.1"; $scgi_port=' . $daemon->port() . '; $rpcTimeOut=1; $rpcLogCalls=false;'
         . 'require_once "./move_job_lib.php"; $at=new rAutoTools(); $at->enable_move=1; $at->fileop_type="Move"; $at->skip_move_for_files="";'
-        . '$at->path_to_finished=' . var_export($root.'/fin',true) . ';'
+        . '$at->path_to_finished=' . var_export(isset($state['finished']) ? $state['finished'] : $root.'/fin',true) . ';'
         . (isset($state['autoFilter']) ? '$at->automove_filter=' . var_export($state['autoFilter'],true) . ';' : '')
         . (isset($state['skipFilter']) ? '$at->skip_move_for_files=' . var_export($state['skipFilter'],true) . ';' : '')
         . '$at->store();'

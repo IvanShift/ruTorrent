@@ -879,9 +879,10 @@ class rTorrent
 	 * correctDirectory() compares the path as written; rtorrent's "mkdir -p"
 	 * and its file writes follow links. So the deepest part of $dir that
 	 * exists is resolved and the rest, which mkdir will create, re-attached.
-	 * A part that exists but does not resolve -- a dangling link, or a link
-	 * into a directory this user cannot enter -- is refused rather than read
-	 * as a plain name.
+	 * That rest is compared as written, so it has to be plain names: a "."
+	 * or ".." in it is refused. A part that exists but does not resolve -- a
+	 * dangling link, or a link into a directory this user cannot enter -- is
+	 * refused rather than read as a plain name.
 	 *
 	 * Only a local rtorrent shares this filesystem, so for a remote one the
 	 * text check is all there is. A top directory that does not exist is
@@ -893,8 +894,10 @@ class rTorrent
 		$top = FileUtil::addslash($topDirectory);
 		if(($top === '/') || !User::isLocalMode())
 			return(true);
-		foreach(array('realpath', 'file_exists', 'is_link', 'dirname') as $function)
+		foreach(array('clearstatcache', 'realpath', 'file_exists', 'is_link', 'dirname') as $function)
 			if(!function_exists($function)) return false;
+		// The realpath cache outlives a request in PHP-FPM; links may have changed since.
+		clearstatcache(true);
 		$realTop = @realpath($top);
 		$realTop = FileUtil::addslash(is_string($realTop) ? $realTop : $top);
 		if(!is_string($dir) || ($dir === '') || ($dir[0] !== '/') || strpos($dir, "\0") !== false)
@@ -907,6 +910,10 @@ class rTorrent
 			$name = FileUtil::getFileName($path);
 			// An inaccessible root is not a missing directory we can keep climbing.
 			if(!is_string($parent) || $parent === '' || $parent === $path)
+				return false;
+			// The rest is compared as written, so a "." or ".." in it is
+			// refused rather than resolved.
+			if(($name === '.') || ($name === '..'))
 				return false;
 			$rest = '/'.$name.$rest;
 			$path = $parent;

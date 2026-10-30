@@ -142,6 +142,22 @@ class rUnpack
 		}
 	}
 
+	// unrar and unzip write through any symbolic link along the directory
+	// they are given, so it has to stay inside the top directory once those
+	// links are followed, not only as written. The refusal is logged whatever
+	// $unpack_debug_enabled says, since an automatic unpack has no one to
+	// answer.
+	protected static function outsideTopDirectory( $outPath, $how, $hash )
+	{
+		if(rTorrent::isInsideTopDirectory($outPath))
+			return(false);
+		// A manual unpack's hash comes from the request: only a well-formed
+		// one is copied into the log.
+		$hash = preg_match('/^[0-9A-Fa-f]{40}$/D', (string)$hash) ? strtoupper($hash) : "invalid";
+		FileUtil::toLog("unpack: ".$how." unpack refused hash=".$hash." reason=output-outside-top-directory");
+		return(true);
+	}
+
 	protected static function isDryRun()
 	{
 		global $unpack_debug_enabled;
@@ -263,6 +279,8 @@ class rUnpack
         			$outPath.=FileUtil::addslash($label);
 	        	if($this->addName && ($name!=''))
 				$outPath.=FileUtil::addslash($name);
+			if(self::outsideTopDirectory($outPath, "automatic", $hash))
+				return;
 			if($unpackToTemp)
 			{
 				$randTempDirectory = FileUtil::addslash( FileUtil::getTempFilename('unpack') );
@@ -335,6 +353,8 @@ class rUnpack
 			{
 				if($outPath=='')
 					$outPath = dirname($filename);
+				if(self::outsideTopDirectory($outPath, "manual", $hash))
+					return(array_merge($ret, array("errors"=>array("Invalid directory."))));
 
 				$commands = array();
 				$arh = Utility::getExternal( ($mode == "zip") ? 'unzip' : 'unrar' );
@@ -417,6 +437,8 @@ class rUnpack
 				        		$outPath.=FileUtil::addslash($label);
 				        	if($this->addName && ($tname!=''))
 				        		$outPath.=FileUtil::addslash($tname);
+						if(self::outsideTopDirectory($outPath, "manual", $hash))
+							return(array_merge($ret, array("errors"=>array("Invalid directory."))));
 
 						$commands[] = Utility::escapeShellArg($rootPath.'/plugins/unpack/un'.$mode.$postfix.'.sh')." ".
 							Utility::escapeShellArg($arh)." ".

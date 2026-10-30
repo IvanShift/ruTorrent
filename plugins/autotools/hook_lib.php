@@ -190,6 +190,13 @@ final class AutoToolsFinishedHook
         }
         if (self::skipped($at->skip_move_for_files, $files, $dbg) || $source === $target || !is_dir($source))
             return $none;
+        // The copy and the links are made through any link on the way, so the
+        // target has to stay inside the top directory once links are followed;
+        // checked before the finished root is created through it.
+        if (!rTorrent::isInsideTopDirectory($target)) {
+            FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': destination-outside-top-directory');
+            return self::refused($op, 'destination-outside-top-directory');
+        }
         if (!rtMkDir($finished, 0755)) {
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': finished-root-unavailable');
             return self::refused($op, 'finished-root-unavailable');
@@ -301,6 +308,10 @@ final class AutoToolsFinishedHook
             case 'source-context-changed':
                 return 'autotools: ' . $op . ' refused: source-context-changed; the download source or job token'
                     . ' changed after its finished hook; source data is retained';
+            case 'destination-outside-top-directory':
+                return 'autotools: ' . $op . ' refused: destination-outside-top-directory; the destination does'
+                    . ' not resolve inside the top directory (a link out of it, or a path that cannot be resolved)'
+                    . $nothing . '; check the AutoTools finished directory and the links on its way';
             case 'source-context-unconfirmed':
                 return 'autotools: ' . $op . ' refused: source-context-unconfirmed; rTorrent did not confirm'
                     . ' the captured source within the retry window; source data is retained';
