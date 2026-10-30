@@ -212,8 +212,12 @@ class RpcStringConsumersTest extends TestCase
 			$entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/' . $directory,
 				FilesystemIterator::SKIP_DOTS));
 			foreach ($entries as $entry) {
-				if ($entry->isFile() && !$entry->isLink() && $entry->getExtension() === 'php') {
-					$files[] = substr($entry->getPathname(), strlen($root) + 1);
+				$file = substr($entry->getPathname(), strlen($root) + 1);
+				// conf/users ships empty; tests running beside this one create
+				// and remove per-user configs there.
+				if ($entry->isFile() && !$entry->isLink() && $entry->getExtension() === 'php'
+					&& strpos($file, 'conf/users/') !== 0) {
+					$files[] = $file;
 				}
 			}
 		}
