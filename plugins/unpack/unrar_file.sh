@@ -9,9 +9,8 @@
 
 . "$(dirname "$0")/stage.sh"
 
-# -ol- skips symbolic links. unrar 7.23 accepts a chain of relative links
-# one at a time that together lead out of its directory, and follows the
-# chain for a hard link and for a file then written over that link.
+# -ol-: unrar creates no symbolic links. stage.sh lists them first and
+# refuses an archive that holds one, as for zip.
 unpack_rar_links "$1" "$2"
 unpack_extract "" "$1" x -ai -c- -kb -o+ -ol- -p- -y -v -- "$2"
 ret=$?

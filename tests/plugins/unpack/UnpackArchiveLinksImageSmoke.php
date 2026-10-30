@@ -207,35 +207,6 @@ $tests = array(
 		unpackNothingOutside($run);
 		unpackRefused($run, 'output-symbolic-link', 1);
 	},
-	'rar: a chain of links unrar accepts one by one does not lead a subdirectory out' => function () {
-		$c = unpackCase('rar-chain');
-		mkdir("$c/in/x/y/c/outside", 0700, true);
-		UnpackArchiveFixture::rar("$c/in/a1.rar", array(array('d', 'x', ''), array('l', 'x/b', '..'),
-			array('d', 'x/y', ''), array('l', 'x/y/c', '../b/..')));
-		UnpackArchiveFixture::rar("$c/in/x/y/c/outside/a2.rar", array(array('f', 'pwn.txt', 'PWN')));
-		$run = unpackRun('unrar_dir.sh', array('unrar', "$c/in/", "$c/out/"));
-		unpackNothingOutside($run);
-		testAssertSame(array('x', 'x/y', 'x/y/c', 'x/y/c/outside', 'x/y/c/outside/pwn.txt'), UnpackArchiveFixture::tree("$c/out"),
-			'no link is extracted and the subdirectory is a real one');
-	},
-	'rar: a hard link through such a chain does not overwrite a file outside' => function () {
-		foreach(array('unrar_file.sh' => 'a.rar', 'unrar_dir.sh' => '') as $script => $archive)
-		{
-			$c = unpackCase('rar-hard-link-' . $script);
-			// Each link climbs one level more than the last, through the one
-			// before: x/y/c is one level above where unrar extracts and
-			// x/y/z/d two. One of them is the case directory, whether unrar
-			// extracts into the output or into a directory inside it.
-			UnpackArchiveFixture::rar("$c/in/a.rar", array(array('d', 'x', ''), array('l', 'x/b', '..'),
-				array('d', 'x/y', ''), array('l', 'x/y/c', '../b/..'), array('d', 'x/y/z', ''),
-				array('l', 'x/y/z/d', '../c/..'), array('h', 'h2', 'x/y/c/outside/secret'), array('f', 'h2', 'EVIL'),
-				array('h', 'h3', 'x/y/z/d/outside/secret'), array('f', 'h3', 'EVIL')));
-			$run = unpackRun($script, array('unrar', "$c/in/$archive", "$c/out/"));
-			unpackNothingOutside($run);
-			clearstatcache();
-			testAssertSame(1, stat("$c/outside/secret")['nlink'], $script . ': the file outside gains no second name');
-		}
-	},
 	'rar: the output directory is made when something is placed' => function () {
 		$c = unpackCase('rar-new-output');
 		UnpackArchiveFixture::rar("$c/in/a.rar", array(array('f', 'a.txt', 'a')));

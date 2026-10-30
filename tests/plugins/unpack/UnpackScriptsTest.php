@@ -108,6 +108,9 @@ class UnpackScriptsTest extends TestCase
 		file_put_contents($this->base . '/in/a.zip', 'zip');
 		$run = $this->script('unall_dir.sh', array($unrar, $this->base . '/in/', $this->base . '/out/', $unzip));
 		$this->assertSame(array('lt', 'x'), $this->calls('unrar'), 'unrar lists, then extracts');
+		$args = file($this->base . '/unrar.args', FILE_IGNORE_NEW_LINES);
+		$this->assertTrue(isset($args[1]) && strpos(' ' . $args[1] . ' ', ' -ol- ') !== false,
+			'unrar_dir.sh extracts without creating symbolic links: ' . json_encode($args));
 		$this->assertSame(array('-o'), $this->calls('unzip'), 'unzip extracts');
 		$line = 'unpack: automatic unpack refused hash=' . self::HASH . ' reason=archive-symbolic-link entries=1';
 		$this->assertSame(array($line, $line), self::lines($run['log']), 'each script logs its refusal as the user');
@@ -122,6 +125,8 @@ class UnpackScriptsTest extends TestCase
 			$this->base . '/in/a.rar'));
 		$this->assertSame(1, $run['code'], 'the unpack fails: ' . json_encode($run));
 		$args = file($this->base . '/unrar.args', FILE_IGNORE_NEW_LINES);
+		$this->assertTrue(isset($args[1]) && strpos(' ' . $args[1] . ' ', ' -ol- ') !== false,
+			'unrar extracts without creating symbolic links: ' . json_encode($args));
 		$this->assertTrue(strpos($args[0], 'lt -v -p- -- ') === 0, 'every volume is listed, without a password prompt: ' . $args[0]);
 		$this->assertTrue(strpos($run['err'], 'Type: Junction') === false, 'a file named like a type is not refused: ' . $run['err']);
 		foreach (array('lib.so', 'winlink', 'junction') as $name)
