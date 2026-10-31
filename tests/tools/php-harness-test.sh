@@ -708,4 +708,259 @@ if [ "${#sleepers[@]}" -ne 2 ] || [ "$runner_code" != 143 ] || [ -n "$alive" ] \
     exit 1
 fi
 rm -rf -- "$fixture_dir"/{Sleeper,SecondSleeper,FinishedBeforeTerm}Test.php "$scratch/sleepers" "$scratch/interrupt-tmp"
-echo 'php-harness-test.sh: source paths, empty classes, early exits, skipped TestCase methods, and parallel jobs passed'
+
+# The checks below came with upstream's harness (051340a48); each checks one
+# run of the runner over one fixture file, with the same status and output
+# judgement in both modes unless a check says otherwise.
+rm -rf -- "${scratch:?}/tests/plugins/"*
+mkdir -p "$scratch/bin"
+failures=0
+checks=0
+test_file="$scratch/tests/plugins/FixtureTest.php"
+
+check_run() {
+	local name="$1" expected_status="$2" code=0 expected
+	shift 2
+	(cd "$scratch" && bash tests/php-test.sh) > "$scratch/output" 2>&1 || code=$?
+	checks=$((checks + 1))
+	if { [[ "$expected_status" == pass && "$code" -ne 0 ]] \
+		|| [[ "$expected_status" == fail && "$code" -eq 0 ]]; }; then
+		printf 'not ok - %s (exit %s)\n' "$name" "$code" >&2
+		cat "$scratch/output" >&2
+		failures=$((failures + 1))
+		return
+	fi
+	for expected in "$@"; do
+		if ! grep -Fq -- "$expected" "$scratch/output"; then
+			printf 'not ok - %s (missing %s)\n' "$name" "$expected" >&2
+			cat "$scratch/output" >&2
+			failures=$((failures + 1))
+			return
+		fi
+	done
+}
+
+printf '<?php\n' > "$test_file"
+check_run 'file without tests fails' fail
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+class EmptyMethodTest extends TestCase { public function testEmpty() {} }
+PHP
+check_run 'method without assertions or result fails' fail
+cat > "$test_file" <<'PHP'
+<?php
+echo "ok - deliberate nonzero status\n1 tests, 0 failures\n";
+exit(7);
+PHP
+check_run 'nonzero status overrides a passing summary' fail 'ok - deliberate nonzero status'
+
+for error in Exception Error; do
+	cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+class ThrowingConstructorTest extends TestCase {
+    public function __construct() { $error = getenv('HARNESS_ERROR'); throw new $error('deliberate constructor failure'); }
+    public function testFirst() { $this->assertTrue(true, 'never runs'); }
+}
+class LaterTest extends TestCase {
+    public function testLaterClass() { $this->assertTrue(true, 'later class ran'); }
+}
+PHP
+	HARNESS_ERROR="$error" check_run "$error during constructor is counted and later class runs" fail \
+		'deliberate constructor failure' 'Passed: later class ran'
+done
+
+# A later shutdown callback may exit zero before the guard's deferred exit.
+# STDERR bypasses output buffering, but its short/failed writes need coverage.
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+echo "ok - child\n1 tests, 0 failures\n";
+ob_start(function ($bytes) { return ''; });
+class ShutdownExitTest extends TestCase {
+    public function testUnreachable() { $this->assertTrue(false, 'must execute'); }
+}
+class DiagnosticFilter extends php_user_filter {
+    public function filter($in, $out, &$consumed, $closing): int {
+        file_put_contents(__DIR__ . '/filter-entered', 'yes');
+        if (getenv('HARNESS_STDERR_MODE') === 'failed') return PSFS_ERR_FATAL;
+        if (getenv('HARNESS_STDERR_MODE') === 'zero') return PSFS_PASS_ON;
+        while ($bucket = stream_bucket_make_writeable($in)) {
+            $bucket->data = substr($bucket->data, 0, 3);
+            $consumed += strlen($bucket->data);
+            stream_bucket_append($out, $bucket);
+        }
+        return PSFS_PASS_ON;
+    }
+}
+$mode = getenv('HARNESS_STDERR_MODE');
+if ($mode === 'closed') fclose(STDERR);
+elseif ($mode !== 'normal') {
+    stream_filter_register('harness-diagnostic', 'DiagnosticFilter');
+    stream_filter_append(STDERR, 'harness-diagnostic', STREAM_FILTER_WRITE);
+}
+register_shutdown_function(function () {
+    file_put_contents(__DIR__ . '/cleanup', 'done');
+    exit(0);
+});
+exit(0);
+PHP
+for mode in normal partial failed zero closed; do
+	export HARNESS_STDERR_MODE="$mode"
+	if [[ "$mode" == normal ]]; then
+		check_run "cleanup exit zero cannot hide unfinished runner ($mode STDERR)" fail 'Failed: TestCase runner did not finish before shutdown'
+	else
+		check_run "unfinished diagnostic fails closed ($mode STDERR)" fail
+	fi
+	# PHP 7.4 can refuse a user filter during shutdown before calling filter().
+	# That is a failed write; partial-write completion is checked when admitted.
+	if [[ "$mode" == normal || ( "$mode" == partial && -f "$scratch/tests/plugins/filter-entered" ) ]]; then
+		if ! grep -Fq 'Failed: TestCase runner did not finish before shutdown' "$scratch/output" \
+			|| [[ ! -f "$scratch/tests/plugins/cleanup" ]]; then
+			printf 'not ok - %s diagnostic skipped shutdown cleanup\n' "$mode" >&2
+			failures=$((failures + 1))
+		fi
+	fi
+	rm -f "$scratch/tests/plugins/cleanup" "$scratch/tests/plugins/filter-entered"
+done
+unset HARNESS_STDERR_MODE
+
+# Counted Throwables must fail even when an output buffer hides both their
+# diagnostic and the runner's class/method output after a child summary.
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+echo "ok - child\n1 tests, 0 failures\n";
+ob_start(function ($bytes) { return ''; });
+class BufferedThrowableTest extends TestCase {
+    private function maybeThrow($phase) {
+        if (getenv('HARNESS_PHASE') === $phase) throw new Error('buffered ' . $phase);
+    }
+    public function __construct() { $this->maybeThrow('constructor'); }
+    public function setUp() { $this->maybeThrow('setUp'); }
+    public function testThrows() { $this->maybeThrow('test'); }
+    public function tearDown() { $this->maybeThrow('tearDown'); }
+}
+PHP
+for phase in constructor setUp test tearDown; do
+	HARNESS_PHASE="$phase" check_run "buffered $phase Throwable fails by status" fail
+done
+
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+class UnfinishedTest extends TestCase {
+    public function testUnreachable() { $this->assertTrue(false, 'must execute'); }
+}
+echo "ok - child\n1 tests, 0 failures\n";
+exit(0);
+PHP
+real_php="$(command -v php)"
+for dependency in getenv ini_get basename register_shutdown_function defined get_declared_classes is_subclass_of getmypid; do
+	printf '#!/usr/bin/env bash\nexec %q -d disable_functions=%q "$@"\n' "$real_php" "$dependency" > "$scratch/bin/php"
+	chmod +x "$scratch/bin/php"
+	PATH="$scratch/bin:$PATH" check_run "disabled $dependency cannot hide an unfinished run" fail "Required test function unavailable: $dependency"
+done
+rm "$scratch/bin/php"
+
+# Diagnostic output is not an independent status channel: a buffer can discard
+# disabled-function warnings before the TestCase guard ever registers itself.
+cat > "$test_file" <<'PHP'
+<?php
+echo "ok - child\n1 tests, 0 failures\n";
+ob_start(function ($bytes) { return ''; });
+require_once(__DIR__ . '/../php/TestCase.php');
+class BufferedUnfinishedTest extends TestCase {
+    public function testUnreachable() { $this->assertTrue(false, 'must execute'); }
+}
+exit(0);
+PHP
+for dependency in function_exists getenv ini_get basename register_shutdown_function get_declared_classes is_subclass_of fwrite strlen getmypid; do
+	printf '#!/usr/bin/env bash\nexec %q -d disable_functions=%q "$@"\n' "$real_php" "$dependency" > "$scratch/bin/php"
+	chmod +x "$scratch/bin/php"
+	PATH="$scratch/bin:$PATH" check_run "buffered disabled $dependency still fails by status" fail
+done
+rm "$scratch/bin/php"
+
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+class PassingTest extends TestCase {
+    public function testPass() { $this->assertTrue(true, 'method executed'); }
+}
+PHP
+for dependency in array_values array_filter get_class_methods strncasecmp strcasecmp count call_user_func; do
+	printf '#!/usr/bin/env bash\nexec %q -d disable_functions=%q "$@"\n' "$real_php" "$dependency" > "$scratch/bin/php"
+	chmod +x "$scratch/bin/php"
+	PATH="$scratch/bin:$PATH" check_run "disabled $dependency cannot fake method execution" fail
+done
+rm "$scratch/bin/php"
+
+# A pcntl_fork() child inherits the shutdown hook; its exit() must not fail the run.
+if php -c "$scratch/tests/php-test.ini" -r 'exit(function_exists("pcntl_fork") ? 0 : 1);'; then
+	cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+class ForkedChildExitTest extends TestCase {
+    public function testChildExit() {
+        $pid = pcntl_fork();
+        if ($pid === 0) exit(0);
+        $this->assertTrue($pid > 0 && pcntl_waitpid($pid, $status) === $pid && pcntl_wexitstatus($status) === 0,
+            'forked child exits with its own status');
+    }
+}
+PHP
+	check_run 'forked child exit keeps a passing run' pass 'Passed: forked child exits with its own status'
+else
+	printf 'skip - forked child exit keeps a passing run (no pcntl)\n'
+fi
+
+for cases in 0 1; do
+	cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+$cases = array();
+if (getenv('HARNESS_CASES') === '1') $cases['standalone passes'] = function () { testAssertTrue(true, 'passes'); };
+exit(testRunCases($cases));
+PHP
+	if [[ "$cases" == 0 ]]; then
+		HARNESS_CASES="$cases" check_run 'zero standalone cases fail' fail '0 tests, 0 failures'
+	else
+		HARNESS_CASES="$cases" check_run 'a standalone suite with a case passes' pass 'ok - standalone passes' '1 tests, 0 failures'
+	fi
+done
+rm "$test_file"
+
+# Pin both aggregate status and continuing to the next file after a failure.
+cat > "$test_file" <<'PHP'
+<?php
+require_once(__DIR__ . '/../php/TestCase.php');
+exit(testRunCases(array('first file fails' => function () { testAssertTrue(false, 'expected failure'); })));
+PHP
+printf '<?php echo "ok - later file ran\n1 tests, 0 failures\n";\n' > "$scratch/tests/plugins/LaterTest.php"
+cat > "$scratch/bin/find" <<'BIN'
+#!/usr/bin/env bash
+printf 'plugins/FixtureTest.php\0plugins/LaterTest.php\0'
+BIN
+chmod +x "$scratch/bin/find"
+PATH="$scratch/bin:$PATH" check_run 'failed status survives a later passing file' fail 'not ok - first file fails' 'ok - later file ran'
+rm "$scratch/bin/find" "$scratch/tests/plugins/LaterTest.php" "$test_file"
+
+# A failed enumeration must not accept the partial list written before failure.
+cat > "$scratch/bin/find" <<'BIN'
+#!/usr/bin/env bash
+printf 'plugins/PartialTest.php\0'
+exit 1
+BIN
+chmod +x "$scratch/bin/find"
+printf '<?php echo "ok - partial\n1 tests, 0 failures\n";\n' > "$scratch/tests/plugins/PartialTest.php"
+PATH="$scratch/bin:$PATH" check_run 'failed discovery with partial results fails' fail
+rm "$scratch/bin/find" "$scratch/tests/plugins/PartialTest.php"
+
+if [ "$failures" -ne 0 ]; then
+	printf 'php-harness-test.sh: %s of %s single-run checks failed\n' "$failures" "$checks" >&2
+	exit 1
+fi
+
+echo "php-harness-test.sh: source paths, empty classes, early exits, skipped TestCase methods, parallel jobs and $checks single-run checks passed"

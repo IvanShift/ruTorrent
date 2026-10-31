@@ -865,9 +865,11 @@ class rTorrent
 	 * and its file writes follow links. So the deepest part of $dir that
 	 * exists is resolved and the rest, which mkdir will create, re-attached.
 	 * That rest is compared as written, so it has to be plain names: a "."
-	 * or ".." in it is refused. A part that exists but does not resolve -- a
-	 * dangling link, or a link into a directory this user cannot enter -- is
-	 * refused rather than read as a plain name.
+	 * or ".." in it is refused. So is a path no part of which can be seen to
+	 * exist, as under an open_basedir that hides the root.
+	 * A part that exists but does not resolve -- a dangling link, or a link
+	 * into a directory this user cannot enter -- is refused rather than read
+	 * as a plain name.
 	 *
 	 * Only a local rtorrent shares this filesystem, so for a remote one the
 	 * text check is all there is. A top directory that does not exist is

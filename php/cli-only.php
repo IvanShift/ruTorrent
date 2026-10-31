@@ -12,5 +12,9 @@ function rutorrent_require_cli($entry)
     }
     error_log('cli-only: refused web entry: '.basename($entry));
     http_response_code(403);
-    exit('Forbidden');
+    echo 'Forbidden';
+    // A worker's caller reads the status: a CGI binary run with a request's
+    // environment must fail too, or an unpack script reports success, and with
+    // $deleteAutoArchives deletes its archives, although nothing was placed.
+    exit(1);
 }

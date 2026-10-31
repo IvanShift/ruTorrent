@@ -190,20 +190,41 @@ function testRunCases(array $tests, $beforeEach = null)
 	return $failures === 0 ? 0 : 1;
 }
 
-// PHP skips auto_append_file when a test calls exit(). At shutdown, flag any
-// declared TestCase that never reached the shared runner's final marker.
+// exit() skips auto_append_file. Fail an interrupted TestCase even when its
+// output buffer discards the diagnostic, while allowing later cleanup hooks.
+// PHP 7.4 disabled functions return NULL; warnings alone can be buffered away.
+foreach (array('function_exists', 'getenv', 'basename', 'ini_get', 'register_shutdown_function',
+	'defined', 'get_declared_classes', 'is_subclass_of', 'array_values', 'array_filter',
+	'get_class_methods', 'substr', 'count', 'call_user_func', 'fwrite', 'strlen', 'getmypid') as $function) {
+	if (function_exists($function) !== true) {
+		throw new RuntimeException("Required test function unavailable: {$function}");
+	}
+}
 if (getenv('RUTORRENT_PHP_TEST_RUNNER') === '1'
 	&& basename((string) ini_get('auto_append_file')) === 'TestCaseRunner.php') {
-	register_shutdown_function(function () {
-		if (defined('RUTORRENT_TESTCASE_RUNNER_FINISHED')) return;
+	// pcntl_fork() children inherit this hook; only the runner's process reports.
+	register_shutdown_function(function ($owner) {
+		if (defined('RUTORRENT_TESTCASE_RUNNER_FINISHED') || getmypid() !== $owner) return;
 		foreach (get_declared_classes() as $cls) {
 			if (is_subclass_of($cls, 'TestCase') && (new ReflectionClass($cls))->isInstantiable()) {
-				echo "\nFailed: TestCase runner did not finish before shutdown\n";
-				// Let later shutdown cleanups run before forcing a failing exit code.
-				// An output buffer may discard the diagnostic itself.
+				// A later cleanup may exit(0) before our deferred failing exit.
+				// STDERR also preserves the refusal when output buffers discard it.
+				$message = "\nFailed: TestCase runner did not finish before shutdown\n";
+				$written = 0;
+				try {
+					while ($written < strlen($message)) {
+						$remaining = substr($message, $written);
+						$count = @fwrite(STDERR, $remaining);
+						// Without a complete refusal, a later exit(0) could hide us.
+						if ($count <= 0) exit(1);
+						$written += $count;
+					}
+				} catch (Throwable $error) {
+					exit(1);
+				}
 				register_shutdown_function(function () { exit(1); });
 				return;
 			}
 		}
-	});
+	}, getmypid());
 }

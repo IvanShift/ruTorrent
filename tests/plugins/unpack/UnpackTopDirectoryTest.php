@@ -81,6 +81,7 @@ class UnpackTopDirectoryTest extends TestCase
 		$log = $this->base . '/application.log';
 		return array(
 			'started' => count(PluginEntryDriver::taskScripts($this->base)) > 0,
+			'scripts' => implode("\n", PluginEntryDriver::taskScripts($this->base)),
 			'ret' => json_decode($out, true),
 			'printed' => $out,
 			'log' => is_file($log) ? file_get_contents($log) : '',
@@ -227,5 +228,21 @@ class UnpackTopDirectoryTest extends TestCase
 			'nor is a manual unpack of the whole download: ' . $manual['printed']);
 		$this->assertSame(array('Invalid directory.'), $manual['ret']['errors'] ?? null,
 			'which answers with the plugin\'s directory error: ' . $manual['printed']);
+	}
+
+	/** A new label is made under the directory: the refusal above must not reach it. */
+	public function testAutoUnpackIntoANewLabelIsStarted()
+	{
+		$r = $this->drive('plugins/unpack/update.php', array('enabled' => 1, 'addLabel' => 1), array(),
+			array('update.php', $this->top . '/plain', 'a.zip', '0', 'Фильмы/2026', 'a', self::HASH, ''));
+		$this->assertTrue($r['started'] && (strpos($r['scripts'], '/plain/Фильмы/2026/') !== false),
+			'an archive is unpacked into its label, made under the directory: ' . $r['log'] . $r['scripts']);
+	}
+
+	public function testManualUnpackOfAWholeDownloadIntoANewLabelIsStarted()
+	{
+		$r = $this->whole('', $this->top . '/plain/a.zip', rawurlencode('Фильмы/2026'), array('addLabel' => 1));
+		$this->assertTrue($r['started'] && (strpos($r['scripts'], '/plain/Фильмы/2026/') !== false),
+			'a whole download is unpacked into its label, made under the directory: ' . $r['printed'] . $r['scripts']);
 	}
 }

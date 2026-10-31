@@ -180,10 +180,10 @@ class rUnpack
 	// into $output (place.php, run by the unpack scripts). Every symbolic
 	// link the archive brought is dropped first, even one that resolves
 	// inside for now, since a directory is then moved whole; $skipped more
-	// were left out by the extractor itself (unrar -ol-) and count the same.
-	// Nothing is written into or through a symbolic link in $output. Each
-	// refusal is named on stderr, the task's output, and counted by reason
-	// in the log. Returns the exit status.
+	// symbolic links were left out by the extractor itself (unrar -ol-) and
+	// count the same. Nothing is written into or through a symbolic link in
+	// $output. Each refusal is named on stderr, the task's output, and
+	// counted by reason in the log. Returns the exit status.
 	public static function place( $how, $hash, $stage, $output, $skipped )
 	{
 		$refused = ($skipped > 0) ? array("archive-symbolic-link"=>$skipped) : array();

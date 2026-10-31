@@ -257,6 +257,11 @@ class AddDirectorySymlinkTest extends TestCase
 			'and rtorrent was sent nothing; it saw ' . json_encode($this->daemon->calls()));
 	}
 
+	/**
+	 * With an open_basedir that hides every directory above a top directory
+	 * that does not exist, no part of the path can be seen to exist, not even
+	 * the root. The child is stopped after fifteen seconds if it does not end.
+	 */
 	public function testAnInaccessibleRootRefusesInsteadOfLooping()
 	{
 		$missing = $this->base . '/not-created';

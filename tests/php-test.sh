@@ -1,7 +1,7 @@
 #!/bin/bash
 
-script_dir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
-cd "$script_dir" || exit 1
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+cd -- "$script_dir" || exit 1
 
 # Exit non-zero if any test file fails, so the suite can gate CI. Counted
 # TestCase and self-running TestLib failures set a non-zero exit; the output

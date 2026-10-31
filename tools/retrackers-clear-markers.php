@@ -10,7 +10,9 @@ if(is_file($cliGuard)) {
         exit(1);
     }
     http_response_code(403);
-    exit('Forbidden');
+    echo 'Forbidden';
+    // A caller may read the status: a refusal is never a success.
+    exit(1);
 }
 
 

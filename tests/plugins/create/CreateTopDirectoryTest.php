@@ -289,6 +289,22 @@ class CreateTopDirectoryTest extends TestCase
 			'a folder is not hashed when its links cannot be checked');
 	}
 
+	/** The path check needs these too, so it refuses before the walk would. */
+	public function testAFolderIsRefusedWithoutWhatThePathCheckNeeds()
+	{
+		$this->assertRefusedAs('outside-top-directory', '/clean', $this->create($this->top . '/clean', array('disable' => 'is_link')),
+			'a folder is not hashed without is_link()');
+		// util.php needs realpath() for $rootPath: PHP 8 stops there, and on
+		// 7.4 the log's place is lost with it, so only the answer is checked.
+		$a = $this->create($this->top . '/clean', array('disable' => 'realpath', 'mayFail' => true));
+		$this->assertEquals(array(), $a['tasks'], 'without realpath() no creator task is prepared');
+		if ($a['errors'] === null) {
+			echo "NOT CHECKED: the refusal answer without realpath(); PHP 8 stops in util.php\n";
+			return;
+		}
+		$this->assertTrue($this->refused($a), 'a folder is not hashed without realpath(): ' . json_encode($a['errors']));
+	}
+
 	public function testNoFolderIsSkippedWhenIsDirIsUnavailable()
 	{
 		$a = $this->create($this->top . '/deep', array('disable' => 'is_dir', 'mayFail' => true));
@@ -332,9 +348,11 @@ class CreateTopDirectoryTest extends TestCase
 
 	public function testATopDirectoryOfRootRefusesNothing()
 	{
-		$a = $this->create($this->top . '/pack', array('top' => '/', 'disable' => 'scandir'));
-		$this->assertTrue(!$this->refused($a), 'with "/" as the top directory nothing is outside it, '
-			. 'and nothing is walked: ' . json_encode($a['errors']));
+		foreach (array('scandir', 'is_link') as $function) {
+			$a = $this->create($this->top . '/pack', array('top' => '/', 'disable' => $function));
+			$this->assertTrue(!$this->refused($a), 'with "/" as the top directory nothing is outside it, '
+				. 'and nothing is walked, without ' . $function . '(): ' . json_encode($a['errors']));
+		}
 	}
 
 	public function testTheBuiltInCreatorHashesOnlyThePathThatWasChecked()

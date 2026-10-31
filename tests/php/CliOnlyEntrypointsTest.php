@@ -158,6 +158,28 @@ class CliOnlyEntrypointsTest extends TestCase
         $this->assertTrue(strpos($err,'CLI binary')!==false,'failure names the required runtime correction');
     }
 
+    /**
+     * A CGI binary whose environment holds a request looks like a web entry
+     * to the guard. The unpack scripts read the status of place.php: on a zero
+     * they report success, and with $deleteAutoArchives delete their archives,
+     * although nothing was placed.
+     */
+    public function testAWebRefusalAlsoFailsByStatus()
+    {
+        $shared = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__,2).'/php/cli-only.php'),1);
+        $shared .= ' rutorrent_require_cli("worker.php");';
+        $standalone = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__,2).'/tools/retrackers-clear-markers.php'),1);
+        $standalone = str_replace('dirname(__DIR__)', '"/nonexistent"', $standalone);
+        foreach(array('shared guard'=>$shared, 'standalone copy'=>$standalone) as $what=>$source) {
+            $code = '$_SERVER["REQUEST_METHOD"]="GET"; '.str_replace('PHP_SAPI', var_export('cgi-fcgi',true), $source).' echo "continued";';
+            $process = proc_open(array(PHP_BINARY,'-r',$code),array(1=>array('pipe','w'),2=>array('pipe','w')),$pipes);
+            $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+            stream_get_contents($pipes[2]); fclose($pipes[2]);
+            $this->assertEquals(1,proc_close($process),$what.' fails by status');
+            $this->assertEquals('Forbidden',$out,$what.' answers with the refusal body only');
+        }
+    }
+
     public function testStandaloneCopyRejectsCgiWorkerWithNonzeroExit()
     {
         $path = tempnam(sys_get_temp_dir(),'standalone-cgi-');

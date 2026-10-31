@@ -3,6 +3,7 @@
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/PhpProcess.php');
 require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
+require_once(__DIR__ . '/../../php/TestHttpServer.php');
 require_once(__DIR__ . '/UnpackArchiveFixture.php');
 
 /**
@@ -45,10 +46,10 @@ class UnpackPlaceTest extends TestCase
 	}
 
 	/** place.php in $mode with $arguments after the context; the user is $this->user. */
-	private function placePhp($mode, array $arguments, array $ini = array())
+	private function placePhp($mode, array $arguments, array $ini = array(), $hash = self::HASH)
 	{
 		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), $ini, array(
-			dirname(__DIR__, 3) . '/plugins/unpack/place.php', 'automatic', self::HASH, (string)$this->user, $mode),
+			dirname(__DIR__, 3) . '/plugins/unpack/place.php', 'automatic', $hash, (string)$this->user, $mode),
 			$arguments), array('env' => array('RU_PROFILE_PATH' => $this->base . '/profile',
 				'RU_LOG_FILE' => $this->base . '/errors.log')));
 		$log = $this->base . '/errors.log';
@@ -284,6 +285,79 @@ class UnpackPlaceTest extends TestCase
 			$this->assertSame(2, $run['code'], 'a short command is a usage error: ' . json_encode($run));
 			$this->assertSame(0, strpos($run['err'], 'usage: place.php '), 'which says how to call it');
 		}
+	}
+
+	public function testWhatCannotBeMovedIsRefused()
+	{
+		mkdir($this->base . '/stage/d');
+		file_put_contents($this->base . '/stage/f', 'f');
+		chmod($this->base . '/out', 0500);
+		$this->assertTrue(!is_writable($this->base . '/out'), 'precondition: not run as root');
+		$run = $this->place();
+		chmod($this->base . '/out', 0700);
+		$this->assertSame(array(), $this->tree($this->base . '/out'), 'nothing is placed: ' . json_encode($run));
+		$this->assertRefused($run, 'move-failed', 2, array('d', 'f'));
+	}
+
+	public function testAMalformedHashIsNotCopiedIntoTheLog()
+	{
+		// A manual unpack's hash comes from the request.
+		$hashes = array("x\nforged", self::HASH . "\n", substr(self::HASH, 1), strtolower(self::HASH));
+		foreach ($hashes as $hash)
+			$run = $this->placePhp('refuse', array('reason', 'name'), array(), $hash);
+		$line = 'unpack: automatic unpack refused hash=%s reason=reason entries=1';
+		$lines = array_values(array_filter(array_map(function ($entry) {
+			return preg_replace('/^\[[^\]]*\] /', '', $entry);
+		}, explode("\n", $run['log'])), 'strlen'));
+		$this->assertSame(array(sprintf($line, 'invalid'), sprintf($line, 'invalid'), sprintf($line, 'invalid'),
+			sprintf($line, self::HASH)), $lines, 'only 40 hex digits and nothing after them are logged, in upper case');
+	}
+
+	/**
+	 * With $pathToExternals['php'] naming php-cgi, place.php refuses, and the
+	 * refusal fails: the unpack script then keeps the archives. A request in
+	 * the environment takes the guard's web branch, which has to fail the same
+	 * way.
+	 */
+	public function testARefusalOutsideTheCommandLineFails()
+	{
+		$cgi = dirname(PHP_BINARY) . '/php-cgi';
+		if (!is_executable($cgi)) {
+			echo "NOT CHECKED: no php-cgi beside " . PHP_BINARY . "\n";
+			return;
+		}
+		$place = dirname(__DIR__, 3) . '/plugins/unpack/place.php';
+		file_put_contents($this->base . '/stage/f', 'f');
+		$arguments = implode(' ', array_map('escapeshellarg', array_merge(array($cgi, '-q'), PhpProcess::sameIni(),
+			array('-d', 'cgi.force_redirect=0', '-f', $place, 'automatic', self::HASH, '', 'place',
+			$this->base . '/stage', $this->base . '/out/', '0'))));
+		foreach (array('no request' => array('', 'CLI binary'),
+			'a request in the environment' => array('REQUEST_METHOD=GET SCRIPT_FILENAME=' . escapeshellarg($place) . ' ', 'Forbidden')) as $what => $case) {
+			$output = array();
+			exec($case[0] . $arguments . ' 2>&1', $output, $code);
+			$this->assertSame(1, $code, 'with ' . $what . ' it fails: ' . json_encode($output));
+			$this->assertTrue(strpos(implode("\n", $output), $case[1]) !== false, 'and says why: ' . json_encode($output));
+			$this->assertSame(array('f'), $this->tree($this->base . '/stage'), 'with ' . $what . ' nothing is moved');
+			$this->assertSame(array(), $this->tree($this->base . '/out'), 'and nothing is placed');
+		}
+	}
+
+	/** It moves what it is told to, so a web request must not run it. */
+	public function testAWebRequestIsRefused()
+	{
+		mkdir($this->base . '/web');
+		file_put_contents($this->base . '/stage/f', 'f');
+		$server = TestHttpServer::start($this->base . '/web', array(), array(),
+			dirname(__DIR__, 3) . '/plugins/unpack/place.php');
+		try {
+			$response = TestHttpServer::rawGet($server->port(), '/place.php?automatic+' . self::HASH . '++place+'
+				. rawurlencode($this->base . '/stage') . '+' . rawurlencode($this->base . '/out/') . '+0');
+		} finally {
+			$server->close();
+		}
+		$this->assertTrue(strpos($response['status'], ' 403 ') !== false, 'it is forbidden: ' . json_encode($response));
+		$this->assertSame(array('f'), $this->tree($this->base . '/stage'), 'and nothing is moved');
+		$this->assertSame(array(), $this->tree($this->base . '/out'), 'or placed');
 	}
 
 	public function testTheUsersOwnLogGetsTheLine()

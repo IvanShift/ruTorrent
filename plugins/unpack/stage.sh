@@ -1,6 +1,6 @@
 # Sourced by the unpack scripts. unzip writes through a symbolic link it
-# finds below the directory it extracts into, one an earlier archive made
-# included, and unrar through one at that directory itself. So every
+# finds below the directory it extracts into, including one an earlier
+# archive made, and unrar through one at that directory itself. So every
 # extractor run gets an empty private directory, and place.php then moves
 # what was written there into the output: it drops every symbolic link an
 # archive brought and writes nothing into or through a link in the output.
@@ -29,10 +29,12 @@ unpack_php()
 # unpack_skipped, so that they are refused like a zip's.
 unpack_rar_links()
 {
-	# -v lists every volume, -p- never asks for a password.
+	# -v lists every volume, -p- never asks for a password. A directory's
+	# volumes are each listed again with -v, so a name is counted once.
 	unpack_skipped=$("$1" lt -v -p- -- "$2" 2>/dev/null | awk '
 		/^ *Name: / { sub(/^ *Name: /, ""); name = $0; next }
-		tolower($0) ~ /^ *type: .*(symbolic link|junction)/ {
+		tolower($0) ~ /^ *type: .*(symbolic link|junction)/ && !(name in seen) {
+			seen[name] = 1
 			print "unpack: refused archive-symbolic-link: " name > "/dev/stderr"; n++ }
 		END { print n + 0 }')
 }

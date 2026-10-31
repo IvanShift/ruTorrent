@@ -9,15 +9,16 @@ foreach (get_declared_classes() as $cls) {
 	if (is_subclass_of($cls, 'TestCase') && (new ReflectionClass($cls))->isInstantiable()) {
 		$classes++;
 		echo "Test: {$cls}\n";
-		$obj = new $cls();
-		$expected = $obj->runnableMethodCount();
-		if ($expected === 0) {
-			echo "Test {$cls} has no test methods\n";
-			$failures++;
-			continue;
-		}
+		$obj = null;
 		$classReady = false;
 		try {
+			$obj = new $cls();
+			$expected = $obj->runnableMethodCount();
+			if ($expected === 0) {
+				echo "Test {$cls} has no test methods\n";
+				$failures++;
+				continue;
+			}
 			$obj->setUpClass();
 			$classReady = true;
 			$executed = $obj->run();
@@ -37,7 +38,9 @@ foreach (get_declared_classes() as $cls) {
 				$failures++;
 			}
 		}
-		$failures += $obj->failureCount();
+		if ($obj !== null) {
+			$failures += $obj->failureCount();
+		}
 	}
 }
 define('RUTORRENT_TESTCASE_RUNNER_FINISHED', true);
