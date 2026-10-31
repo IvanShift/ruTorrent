@@ -203,4 +203,74 @@ $suite->test('only a native EXDEV rename refusal permits staged cross-mount copy
     } finally { strictRemoveTree($root); }
 });
 
+$suite->test('the logged action of a probe timeout names the flock, and only there', function () {
+    $root = renameStatusRoot();
+    try {
+        $files = new RenameHelperStatusScript();
+        $flock = 'another process held the named parent\'s flock';
+        foreach (array(array('probe', 110, true), array('probe', 13, false), array('rename', 110, false)) as $case) {
+            RenameHelperStatusScript::$helper = renameStatusHelper($root, 4, 'errno=' . $case[1]);
+            if ($case[0] === 'probe') $files->probeRenameParent($root);
+            else $files->renameNoReplace($root . '/from', $root . '/to');
+            $report = ErasedataFilesystemOps::renameRefusalReport();
+            strictAssertSame(0, strpos($report, 'rename-noreplace-error path='
+                . erasedataLogPath($case[0] === 'probe' ? $root : $root . '/from')), 'the class and the path format stay: ' . $report);
+            strictAssertTrue(strpos($report, ' errno=' . $case[1] . ';') !== false, 'the errno stays: ' . $report);
+            strictAssertSame($case[2], strpos($report, $flock) !== false, $case[0] . ' errno ' . $case[1] . ': ' . $report);
+            strictAssertSame($case[2], strpos($report, "find the holder's pid by the parent's inode in /proc/locks, stop it and retry") !== false,
+                'the action is an instruction: ' . $report);
+            strictAssertTrue(strpos($report, 'torrent and payload retained') !== false, 'the consequence stays: ' . $report);
+            strictAssertSame(!$case[2], strpos($report, 'permissions') !== false, 'other errors keep their action: ' . $report);
+        }
+        RenameHelperStatusScript::$helper = renameStatusHelper($root, 3, 'errno=110');
+        $files->probeRenameParent($root);
+        strictAssertSame(false, strpos(ErasedataFilesystemOps::renameRefusalReport(), $flock),
+            'another class keeps its own action even with this errno');
+    } finally { strictRemoveTree($root); }
+});
+
+// A helper that counts its runs in a file and times out on one parent.
+function renameStatusCountingHelper($root, $stuck, $count)
+{
+    $path = $root . '/counting-helper';
+    file_put_contents($path, "#!/bin/sh\n"
+        . 'echo "$2" >> ' . escapeshellarg($count) . "\n"
+        . '[ "$2" = ' . escapeshellarg($stuck) . " ] || exit 0\n"
+        . "echo 'rename-noreplace-error: errno=110' >&2\nexit 4\n");
+    chmod($path, 0700);
+    return $path;
+}
+
+$suite->test('a preflight replays a refused parent without running the helper again', function () {
+    $root = renameStatusRoot();
+    try {
+        $stuck = $root . '/stuck';
+        $free = $root . '/free';
+        mkdir($stuck, 0700);
+        mkdir($free, 0700);
+        $count = $root . '/runs';
+        RenameHelperStatusScript::$helper = renameStatusCountingHelper($root, $stuck, $count);
+        $files = new RenameHelperStatusScript();
+        $probed = array();
+        $runs = function () use ($count) { return array_map('trim', file($count)); };
+        strictAssertSame(false, $files->preflightParents(array($free, $stuck), $probed), 'the stuck parent refuses');
+        $first = ErasedataFilesystemOps::lastRenameRefusalContext();
+        strictAssertSame(array($free, $stuck), $runs(), 'each parent ran the helper once');
+        strictAssertSame(false, $files->preflightParents(array($free, $stuck), $probed), 'the answer is replayed');
+        strictAssertSame(array($free, $stuck), $runs(), 'and neither parent ran the helper again');
+        strictAssertSame('rename-noreplace-error', ErasedataFilesystemOps::lastRenameRefusal(), 'the class is replayed');
+        strictAssertSame($first, ErasedataFilesystemOps::lastRenameRefusalContext(), 'the path and errno are replayed');
+        strictAssertTrue(strpos(ErasedataFilesystemOps::renameRefusalReport(), "named parent's flock") !== false,
+            'and so is the probe timeout\'s action');
+        symlink($stuck, $root . '/alias');
+        strictAssertSame(false, $files->preflightParents(array($root . '/alias'), $probed), 'an alias of the parent is the same answer');
+        strictAssertSame($first, ErasedataFilesystemOps::lastRenameRefusalContext(), 'naming the resolved parent, as the first answer did');
+        strictAssertSame(array($free, $stuck), $runs(), 'without another helper run');
+        strictAssertSame(true, $files->preflightParents(array($free), $probed), 'another member under a free parent proceeds');
+        $fresh = array();
+        strictAssertSame(false, $files->preflightParents(array($stuck), $fresh), 'a new operation asks again');
+        strictAssertSame(3, count($runs()), 'with one more helper run');
+    } finally { strictRemoveTree($root); }
+});
+
 exit($suite->run());

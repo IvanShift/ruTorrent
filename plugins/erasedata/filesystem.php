@@ -140,6 +140,11 @@ class ErasedataFilesystemOps
 			return('');
 		if(self::$renameRefusal === 'rename-noreplace-collision')
 			$action = 'preserve both entries; inspect the occupied destination before retrying';
+		// ETIMEDOUT from --probe. The helper's own wait for the flock reports it,
+		// and a network filesystem can answer it for itself.
+		elseif(self::$renameRefusal === 'rename-noreplace-error' && self::$renameProbe && self::$renameErrno === 110)
+			$action = "another process held the named parent's flock past the helper's limit, or the filesystem timed out;"
+				." find the holder's pid by the parent's inode in /proc/locks, stop it and retry; torrent and payload retained";
 		// Since the locked fallback, status 3 no longer means a missing
 		// RENAME_NOREPLACE flag. Plain renameat itself refused (EINVAL for a
 		// directory moved into its own subtree, ENOSYS, EOPNOTSUPP), or the
@@ -365,7 +370,9 @@ class ErasedataFilesystemOps
 	// by the same rule, so a link inside a payload tree cannot point the probe
 	// elsewhere. Bind aliases may carry different mount permissions, so a
 	// probe answer is reused only for the same resolved path and physical
-	// identity, through the caller's $probed within one operation. A refusal
+	// identity, through the caller's $probed within one operation. A refusal is
+	// an answer too: a parent whose helper waited out its limit must not cost
+	// that wait again for each member of a pass that holds its locks. A refusal
 	// leaves its classified reason in lastRenameRefusal() and
 	// lastRenameRefusalContext() and logs nothing: the caller reports it.
 	public function preflightParents(array $directories, array &$probed, $root = null)
@@ -387,9 +394,16 @@ class ErasedataFilesystemOps
 				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
 			$key = $physical.'|'.$key['dev'].':'.$key['ino'];
 			if(isset($probed[$key]))
-				continue;
+			{
+				if($probed[$key] === true)
+					continue;
+				return(self::renameDiagnostic($probed[$key][0], $physical, null, $probed[$key][1]));
+			}
 			if(!$this->probeRenameParent($physical))
+			{
+				$probed[$key] = array(self::$renameRefusal, self::$renameErrno);
 				return(false);
+			}
 			$probed[$key] = true;
 		}
 		return(true);

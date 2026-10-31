@@ -52,6 +52,15 @@ expect_status() {
   [[ "$actual" == "$expected" ]] || { echo "expected status $expected, got $actual: $*" >&2; exit 1; }
 }
 
+wait_until_stopped() {
+  local attempt
+  for attempt in {1..500}; do
+    if [[ -r "/proc/$1/status" ]] && grep -q '^State:.*T' "/proc/$1/status"; then return 0; fi
+    sleep 0.01
+  done
+  return 1
+}
+
 probe_usable "$binary" "$run"
 
 # Eight helpers must recover the same 32 dead workspaces without reopening a
@@ -72,14 +81,7 @@ if [[ "$source_cuts" == true ]]; then
 fi
 "$first_binary" --probe "$concurrent_parent" &
 probe_pid=$!
-if [[ "$source_cuts" == true ]]; then
-  stopped=0
-  for attempt in {1..100}; do
-    if [[ -r "/proc/$probe_pid/status" ]] && grep -q '^State:.*T' "/proc/$probe_pid/status"; then stopped=1; break; fi
-    sleep 0.01
-  done
-  [[ "$stopped" == 1 ]]
-fi
+if [[ "$source_cuts" == true ]]; then wait_until_stopped "$probe_pid"; fi
 concurrent_pids=("$probe_pid")
 # Every waited status is the helper's own, so a fallback filesystem's 5 counts.
 for index in {1..7}; do "$binary" --probe "$concurrent_parent" & concurrent_pids+=("$!"); done
@@ -145,20 +147,42 @@ compile_helper "$run/interrupted" -DRUTORRENT_RENAME_TEST_STOP_AFTER_CREATE
 mkdir -m 0700 "$run/crash-parent"
 "$run/interrupted" --probe "$run/crash-parent" &
 probe_pid=$!
-stopped=0
-for attempt in {1..100}; do
-  if [[ -r "/proc/$probe_pid/status" ]] && grep -q '^State:.*T' "/proc/$probe_pid/status"; then
-    stopped=1; break
-  fi
-  sleep 0.01
-done
-[[ "$stopped" == 1 ]]
+wait_until_stopped "$probe_pid"
 kill -KILL "$probe_pid"
 wait "$probe_pid" 2>/dev/null || true
 probe_pid=''
 [[ -n "$(find "$run/crash-parent" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
 probe_usable "$binary" "$run/crash-parent"
 [[ -z "$(find "$run/crash-parent" -maxdepth 1 -name '.rutorrent-rename-probe-*' -print)" ]]
+
+# A stopped helper holds its parent's flock. The next one waits for a limit that
+# only a build-time define shortens, then refuses with a classified error; the cut
+# starts it with SIGALRM blocked and requires the alarm to be gone after the lock.
+compile_helper "$run/bounded" "$root/tests/plugins/erasedata/ParentLockCut.c" \
+  -DRUTORRENT_RENAME_TEST_PARENT_LOCK_SECONDS=1 -Wl,--wrap=mkdirat
+mkdir -m 0700 "$run/held-parent"
+"$run/interrupted" --probe "$run/held-parent" &
+probe_pid=$!
+wait_until_stopped "$probe_pid"
+bound_started=$(date +%s%N)
+bound_status=0
+timeout 30 "$run/bounded" --probe "$run/held-parent" 2>"$run/bounded.stderr" || bound_status=$?
+bound_ms=$(( ($(date +%s%N) - bound_started) / 1000000 ))
+[[ "$bound_status" == "$STATUS_ERROR" ]] || { echo "expected a bounded refusal, got $bound_status" >&2; exit 1; }
+grep -q '^rename-noreplace-error: errno=110 ' "$run/bounded.stderr" || { cat "$run/bounded.stderr" >&2; exit 1; }
+(( bound_ms >= 900 )) || { echo "the refusal did not wait for the lock: $bound_ms ms" >&2; exit 1; }
+kill -KILL "$probe_pid"
+wait "$probe_pid" 2>/dev/null || true
+probe_pid=''
+probe_usable "$run/bounded" "$run/held-parent"
+[[ -z "$(ls -A "$run/held-parent")" ]]
+echo 'ok - a held parent lock ends in a classified refusal, and the next probe recovers'
+
+# The production limit, read from the alarm it arms: nothing waits for it here.
+compile_helper "$run/limit" "$root/tests/plugins/erasedata/ParentLockLimitCut.c" -Wl,--wrap=alarm
+mkdir -m 0700 "$run/limit-parent"
+"$run/limit" --probe "$run/limit-parent"
+echo 'ok - the production helper arms its 60 second limit'
 
 fi
 

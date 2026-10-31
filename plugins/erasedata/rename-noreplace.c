@@ -244,6 +244,39 @@ static int recover_workspaces(int parent)
     return 0;
 }
 
+#ifdef RUTORRENT_RENAME_TEST_PARENT_LOCK_SECONDS
+#define PARENT_LOCK_SECONDS RUTORRENT_RENAME_TEST_PARENT_LOCK_SECONDS
+#else
+#define PARENT_LOCK_SECONDS 60
+#endif
+
+static void parent_lock_timed_out(int signal_number)
+{
+    (void)signal_number;
+}
+
+/* A stopped helper, a stopped reader or any other holder must not stall the
+ * caller, which can hold hash locks while it waits for this process. The handler
+ * has no SA_RESTART, so the alarm ends the flock with EINTR; it is the only handler
+ * here, so that is reported as ETIMEDOUT. A caller's signal mask is inherited and
+ * can block SIGALRM, so it is unblocked here. */
+static int lock_parent(int parent)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = parent_lock_timed_out;
+    sigset_t alarm_signal;
+    if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGALRM, &action, NULL) != 0
+        || sigemptyset(&alarm_signal) != 0 || sigaddset(&alarm_signal, SIGALRM) != 0
+        || sigprocmask(SIG_UNBLOCK, &alarm_signal, NULL) != 0) return -1;
+    alarm(PARENT_LOCK_SECONDS);
+    int result = flock(parent, LOCK_EX);
+    int error = errno;
+    alarm(0);
+    errno = error == EINTR ? ETIMEDOUT : error;
+    return result;
+}
+
 static int probe(const char *path)
 {
     int parent = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -251,7 +284,7 @@ static int probe(const char *path)
     /* Serialize recovery and publication on the actual parent inode. A per-
      * workspace lock alone leaves a gap after its name is unlinked, and before
      * a new workspace obtains its lock. Process death releases this flock. */
-    if (flock(parent, LOCK_EX) != 0) { int error = errno; close(parent); return error_status(error); }
+    if (lock_parent(parent) != 0) { int error = errno; close(parent); return error_status(error); }
     if (recover_workspaces(parent) != 0) { int error = errno; close(parent); return error_status(error); }
     unsigned char random_bytes[8];
     int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);

@@ -6,6 +6,16 @@ require_once(__DIR__ . '/../../php/PermissionsBiteFixture.php');
 // metainfo source and the scripted ErasedataFilesystemOps subclass.
 require_once(__DIR__ . '/CollectorFixture.php');
 
+// The real process runner and probe cache behind a scripted helper that counts its runs.
+class ErasedataCountedHelperFilesystem extends ErasedataCollectorFixture
+{
+	public static $helper = null;
+
+	public function __construct() { parent::__construct(array()); }
+	public static function renameHelperPath() { return(self::$helper); }
+	protected function renameCapability($directory) { return(static::canRenameNoReplace($directory, false)); }
+}
+
 class ErasedataScheduleSettingsFake
 {
 	public $calls = array();
@@ -18345,6 +18355,55 @@ class RemoveWithDataTest extends TestCase
 		$this->assertNote($notes, 'descriptor-unavailable', $generation, $hash,
 			'obligation-retained-nothing-erased',
 			'the pre-erase capability refusal is classified against its own hash');
+	}
+
+	// A helper that waited out its limit on a stuck parent cost that wait once per
+	// member while the pass held the state lock and every hash lock. One parent
+	// gets one helper run, and each member still gets its classified outcome.
+	public function testADrainPassRunsTheHelperOncePerStuckParent()
+	{
+		$this->reset();
+		$base = $this->dir.'/stuck-parent';
+		mkdir($base);
+		file_put_contents($base.'/payload', 'preserve');
+		$queue = $this->queuePath();
+		$generation = '0000000000000001';
+		$hashes = array($this->hash('A'), $this->hash('B'), $this->hash('C'));
+		$state = erasedataDefaultDrainState();
+		$state['user'] = User::getUser();
+		$state['generation'] = $generation;
+		$state['acknowledged'] = $generation;
+		$state['phase'] = 'armed';
+		$this->assertTrue(erasedataWriteDrainState($queue, $state), 'the fixture has an acknowledged durable arm');
+		foreach($hashes as $hash)
+			$this->assertTrue(erasedataQueueRequest($queue, $hash, 2, $generation), 'the fixture has a real marker');
+		$this->frozen(true, array($base, 1, $base.'/payload'));
+		$this->probe(true, false, array());
+		foreach($hashes as $hash)
+			rXMLRPCRequest::$responses['d.hash']['byHash'][$hash] = array('runResult' => true, 'fault' => false, 'val' => array($hash));
+		$this->eraseOk();
+		$runs = $this->dir.'/helper-runs';
+		$helper = $this->dir.'/counting-helper';
+		file_put_contents($helper, "#!/bin/sh\n".'echo "$2" >> '.escapeshellarg($runs)."\n"
+			.'[ "$2" = '.escapeshellarg($base)." ] || exit 0\n"
+			."echo 'rename-noreplace-error: errno=110' >&2\nexit 4\n");
+		chmod($helper, 0700);
+		ErasedataCountedHelperFilesystem::$helper = $helper;
+		$notes = array();
+		$outcome = erasedataDrainGenerationPass($queue, User::getUser(), $generation,
+			array('hashes' => $hashes, 'force' => 2), new ErasedataCountedHelperFilesystem(), $notes);
+		$probes = array_map('trim', file($runs));
+		$this->assertEquals(1, count(array_keys($probes, $base, true)), 'the stuck parent ran the helper once: '.json_encode($probes));
+		$this->assertTrue(is_array($outcome) && $outcome['retained'] === 3 && $outcome['published'] === 0,
+			'all three members are retained: '.json_encode($outcome));
+		foreach($hashes as $hash)
+		{
+			$this->assertNote($notes, 'rename-capability', $generation, $hash,
+				'obligation-retained-nothing-erased', 'the member has its own classified outcome');
+			$this->assertTrue(erasedataPendingMarkerStands($queue, $hash, $generation), 'and keeps its marker');
+		}
+		$this->assertEquals('preserve', file_get_contents($base.'/payload'), 'and the payload stays');
+		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'and nothing reaches d.erase');
 	}
 
 	// The force-2 preflight refusals are visible, not a silent stall.
