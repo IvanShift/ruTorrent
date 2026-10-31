@@ -1072,9 +1072,24 @@ function erasedataRenameProbeName($name)
 }
 
 // A probe workspace can hold only finite infrastructure. It never licenses a
-// deletion, and the native helper alone recovers it under its private flock.
+// deletion, and the native helper alone recovers it, under its exclusive flock on
+// the workspace's parent directory (probe() in rename-noreplace.c). This asks that
+// flock without waiting. Busy: someone live holds the parent's lock, so the read is
+// skipped and the answer is valid. Obtained: no helper runs and none can pass the
+// lock, so the read is stable and strict, except that a helper may have finished
+// after the caller's listing: a root that a lookup answers is gone is no refusal.
+// The description closes with this frame at every exit, which releases the lock. A
+// lock that cannot be asked for proves nothing, so the same strict read runs without
+// one, and a live probe can make it refuse, visibly, until a later pass.
 function erasedataRenameProbeWorkspaceValid($path, $uid)
 {
+	$parent = function_exists('fopen') && function_exists('flock') ? @fopen(dirname($path), 're') : false;
+	$wouldBlock = 0;
+	$locked = is_resource($parent) && flock($parent, LOCK_SH | LOCK_NB, $wouldBlock);
+	if($wouldBlock)
+		return(true);
+	if($locked && !erasedataPathExists($path) && erasedataPathLookupAnswers($path))
+		return(true);
 	$root = @lstat($path);
 	if(!is_array($root) || ($root['mode'] & 0170000) !== 0040000
 		|| ($root['mode'] & 07777) !== 0700 || $root['uid'] !== $uid)
