@@ -73,12 +73,12 @@ try {
         scheduleDriverWire($base, $legacy ? 'schedule2' : 'schedule',
             array('', 'checker-proof-' . $index, '1', '60', $command));
         $deadline = microtime(true) + 8;
-        while (!file_exists($base . '/argv.json') && microtime(true) < $deadline) {
+        // The child creates the file before it writes it.
+        while (!is_array($got = json_decode((string)@file_get_contents($base . '/argv.json'), true)) && microtime(true) < $deadline) {
             scheduleDriverWire($base, 'system.client_version');
             usleep(20000);
         }
-        if (!is_file($base . '/argv.json')) throw new RuntimeException('scheduled child did not complete: ' . file_get_contents($base . '/daemon.log'));
-        $got = json_decode(file_get_contents($base . '/argv.json'), true);
+        if (!is_array($got)) throw new RuntimeException('scheduled child did not complete: ' . file_get_contents($base . '/daemon.log'));
         if ($got[0] !== array_merge(array($recorder), $arguments)) throw new RuntimeException('argv changed');
         if (file_exists($base . '/forbidden')) throw new RuntimeException('shell side effect escaped');
         echo 'PASS mode=' . $mode . ' child_rpc=alive argv=exact elapsed=' . round(microtime(true) - $before, 3) . "\n";

@@ -300,9 +300,9 @@ PHP;
 		$this->assertTrue(is_resource($server), 'SCGI stall fixture starts');
 		try
 		{
-			for($i = 0; $i < 100 && !is_file($this->root.'/stall-port'); $i++)
+			// The server creates the file before it writes the port.
+			for($i = 0; $i < 100 && ($port = (int)@file_get_contents($this->root.'/stall-port')) <= 0; $i++)
 				usleep(10000);
-			$port = (int)@file_get_contents($this->root.'/stall-port');
 			$this->assertTrue($port > 0, 'SCGI stall fixture publishes its port');
 			$urls = array();
 			$body = 'mode=history';

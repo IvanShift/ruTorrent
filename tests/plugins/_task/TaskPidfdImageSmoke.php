@@ -41,10 +41,10 @@ $result = $task->start(array('setsid sh -c '.escapeshellarg($middle).' & wait'),
 $dir = rTask::formatPath($task->id);
 $grandchild = 0;
 try {
-    for ($attempt=0; $attempt<200 && !is_file($marker); ++$attempt) usleep(10000);
-    if (!is_file($marker)) throw new RuntimeException('The image did not start the detached grandchild');
-    $grandchild = (int)trim(file_get_contents($marker));
-    if ($grandchild<=1 || $result['status'] !== -1 || !is_file($dir.'/supervisor.version')
+    // The shell creates the marker before it writes the PID.
+    for ($attempt=0; $attempt<200 && ($grandchild=(int)trim((string)@file_get_contents($marker)))<=1; ++$attempt) usleep(10000);
+    if ($grandchild<=1) throw new RuntimeException('The image did not start the detached grandchild');
+    if ($result['status'] !== -1 || !is_file($dir.'/supervisor.version')
         || !is_file($dir.'/pid.identity')) {
         throw new RuntimeException('The image did not start a supervised process tree: '.json_encode($result['errors']));
     }

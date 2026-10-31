@@ -38,6 +38,17 @@ class TaskSupervisorTest extends TestCase
         return is_file($path);
     }
 
+    // A shell creates a marker before it writes the PID into it.
+    private function waitForPid($path, $attempts = 200)
+    {
+        for ($i=0; $i<$attempts; ++$i) {
+            $pid = (int)trim((string)@file_get_contents($path));
+            if ($pid > 1) return $pid;
+            usleep(10000);
+        }
+        return 0;
+    }
+
     private function stopWitness($pid, $identity, $directory)
     {
         if ($pid <= 1 || $identity === null || !is_dir('/proc/'.$pid)) return;
@@ -68,9 +79,9 @@ class TaskSupervisorTest extends TestCase
         try {
             $this->assertEquals(true, $this->waitFor($dir.'/pid'), 'Supervisor publishes its PID');
             $this->assertEquals(true, $this->waitFor($dir.'/pid.identity'), 'Supervisor publishes identity');
-            $this->assertEquals(true, $this->waitFor($grandchild), 'Three-generation worker started');
+            $childPid = $this->waitForPid($grandchild);
+            $this->assertEquals(true, $childPid > 1, 'Three-generation worker started');
             $this->assertEquals(false, is_file($dir.'/supervisor.complete'), 'Live grandchild blocks completion');
-            $childPid = (int)trim(file_get_contents($grandchild));
             $childIdentity = file_get_contents('/proc/sys/kernel/random/boot_id').
                 file_get_contents('/proc/'.$childPid.'/stat');
             $pid = trim(file_get_contents($dir.'/pid'));
@@ -115,9 +126,9 @@ class TaskSupervisorTest extends TestCase
         try {
             $this->assertEquals(true, $this->waitFor($dir.'/pid'), 'Supervisor published its PID');
             $this->assertEquals(true, $this->waitFor($dir.'/pid.identity'), 'Supervisor started');
-            $this->assertEquals(true, $this->waitFor($marker), 'Double fork created detached worker');
-            if (!is_file($marker)) return;
-            $orphan = (int)trim(file_get_contents($marker));
+            $orphan = $this->waitForPid($marker);
+            $this->assertEquals(true, $orphan > 1, 'Double fork created detached worker');
+            if ($orphan <= 1) return;
             $identity = file_get_contents('/proc/sys/kernel/random/boot_id').
                 file_get_contents('/proc/'.$orphan.'/stat');
             for ($i=0; $i<100; ++$i) {
@@ -202,8 +213,8 @@ class TaskSupervisorTest extends TestCase
                 'External SIGCONT can arrive while cancellation is paused');
             $writer = fopen($fifo, 'w');
             fwrite($writer, "go\n"); fclose($writer);
-            $this->assertEquals(true, $this->waitFor($childMarker), 'Direct child forked after enumeration');
-            $latePid = (int)trim(file_get_contents($childMarker));
+            $latePid = $this->waitForPid($childMarker);
+            $this->assertEquals(true, $latePid > 1, 'Direct child forked after enumeration');
             file_put_contents($go, "go\n");
             $completed = $this->waitFor($dir.'/supervisor.complete');
             $this->assertEquals(true, $completed, 'Supervisor waits for the late child too');
@@ -246,12 +257,12 @@ class TaskSupervisorTest extends TestCase
         $grandchild = null;
         $grandchildIdentity = null;
         try {
-            $this->assertEquals(true, $this->waitFor($marker), 'Started task created a grandchild');
+            $grandchild = $this->waitForPid($marker);
+            $this->assertEquals(true, $grandchild > 1, 'Started task created a grandchild');
             $this->assertEquals(true, is_file($dir.'/supervisor.version'),
                 'The task is explicitly marked as supervised');
             $this->assertEquals(-1, rTask::check($task->id)['status'],
                 'Task remains active while its grandchild is alive');
-            $grandchild = (int)trim(file_get_contents($marker));
             $grandchildIdentity = file_get_contents('/proc/sys/kernel/random/boot_id').
                 file_get_contents('/proc/'.$grandchild.'/stat');
             $this->assertEquals(true, rTask::kill($task->id),

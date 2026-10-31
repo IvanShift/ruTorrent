@@ -27,10 +27,10 @@ class RtorrentLoadConfirmationFixture
 		if (!is_resource($fixture->process))
 			throw new RuntimeException('could not start load fixture peer');
 		for ($attempt = 0; $attempt < 200; $attempt++) {
-			if (is_file($fixture->root . '/port')) {
-				$fixture->port = (int)file_get_contents($fixture->root . '/port');
+			// The peer creates the file before it writes the port.
+			$fixture->port = (int)@file_get_contents($fixture->root . '/port');
+			if ($fixture->port > 0)
 				return $fixture;
-			}
 			usleep(10000);
 		}
 		$error = @file_get_contents($fixture->root . '/stderr');
