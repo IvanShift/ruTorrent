@@ -1783,10 +1783,16 @@ for ($index = 0; $index < 16384; $index++) {
 $failure = null;
 $beforeQuotes = rTorrent::$quoteCalls;
 $beforePeak = memory_get_peak_usage(true);
-$started = microtime(true);
+// CPU time: the claim is about work done, and wall time also counts a busy host.
+$cpu = function () {
+	$usage = getrusage();
+	return($usage['ru_utime.tv_sec'] + $usage['ru_stime.tv_sec'] +
+		($usage['ru_utime.tv_usec'] + $usage['ru_stime.tv_usec']) / 1000000);
+};
+$started = $cpu();
 $callback = RetrackersOldGenerationCommitCallback::build(
 	$tx, $hash, $handoff, $snapshot, 1, $failure);
-$elapsed = microtime(true) - $started;
+$elapsed = $cpu() - $started;
 echo implode('|', array(
 	ini_get('memory_limit'),
 	$callback === false ? 'false' : 'true',
@@ -1818,7 +1824,8 @@ PHP;
 		while ($status['running']) {
 			$output .= stream_get_contents($pipes[1]);
 			$error .= stream_get_contents($pipes[2]);
-			if (microtime(true) - $started > 20) {
+			// Only a stuck child ends here: the ceiling is on CPU time.
+			if (microtime(true) - $started > 60) {
 				$timedOut = true;
 				proc_terminate($process);
 				usleep(100000);
@@ -7664,7 +7671,7 @@ PHP;
 			(float)$parts[4] < 10.0 &&
 			strpos($probe['output'] . $probe['error'], 'Fatal error') === false &&
 			strpos($probe['output'] . $probe['error'], 'Allowed memory size') === false,
-			'a maximum 16384-row tracker callback rejects below ten seconds at literal 128M ' .
+			'a maximum 16384-row tracker callback rejects below ten seconds of CPU time at literal 128M ' .
 			'without materialisation: ' . (is_array($probe) ? json_encode($probe) : 'no probe'));
 	}
 

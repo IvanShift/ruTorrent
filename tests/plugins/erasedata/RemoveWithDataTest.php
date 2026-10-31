@@ -7411,7 +7411,8 @@ class RemoveWithDataTest extends TestCase
 			});
 		try
 		{
-			$this->assertTrue(erasedataArmObsoleteCleanupRun($this->dependencies(), $job),
+			// The child parses this whole file first; the wait ends at its acknowledgement.
+			$this->assertTrue(erasedataArmObsoleteCleanupRun($this->dependencies(array('ackTimeout' => 30)), $job),
 				'an independently started PHP child acknowledges the durable generation');
 		}
 		finally
@@ -14948,8 +14949,9 @@ class RemoveWithDataTest extends TestCase
 	{
 		foreach($processes as $name => $process)
 		{
-			$this->assertSame(0, isset($codes[$name]) ? $codes[$name] : null,
-				$label.': '.$name.' exits normally');
+			$code = isset($codes[$name]) ? $codes[$name] : null;
+			$this->assertSame(0, $code,
+				$label.': '.$name.' exits normally, code '.json_encode($code));
 			$this->assertSame('', trim($process->err),
 				$label.': '.$name.' emits no stderr');
 		}
