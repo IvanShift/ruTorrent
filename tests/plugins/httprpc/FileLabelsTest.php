@@ -18,7 +18,7 @@ class FileLabelsTest extends TestCase
 	}
 
 	// The claim is about metadata, so only its commands decide. The whole list is
-	// in the message because hosted PHP 8.1 twice saw a list other than the exact one.
+	// in the message: this is how PHP 8.1's tracing JIT breaking UTF::isValid() showed.
 	private function assertListedWithoutMetadata($label)
 	{
 		$calls = $this->daemon->calls();

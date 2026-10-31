@@ -39,8 +39,10 @@ class UTF
 		$minimum = $first === "\xE0" ? "\xA0" : ($first === "\xF0" ? "\x90" : "\x80");
 		$maximum = $first === "\xED" ? "\x9F" : ($first === "\xF4" ? "\x8F" : "\xBF");
 		if($text[$offset + 1] < $minimum || $text[$offset + 1] > $maximum) return 0;
-		for($part = 2; $part < $length; $part++)
-			if($text[$offset + $part] < "\x80" || $text[$offset + $part] > "\xBF") return 0;
+		// Not a loop: under PHP 8.1.34's tracing JIT a for loop here started at
+		// $part = 0 and refused valid text.
+		if($length > 2 && ($text[$offset + 2] < "\x80" || $text[$offset + 2] > "\xBF")) return 0;
+		if($length > 3 && ($text[$offset + 3] < "\x80" || $text[$offset + 3] > "\xBF")) return 0;
 		return $length;
 	}
 

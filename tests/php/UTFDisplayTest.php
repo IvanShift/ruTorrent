@@ -72,6 +72,14 @@ class UTFDisplayTest extends TestCase
 		$this->assertTrue((UTF::display(12) === '12') && (UTF::display(null) === ''), 'display() shows a scalar as its string');
 	}
 
+	// The last byte of a three- and a four-byte sequence, just outside its range.
+	public function testEveryContinuationByteOfALongSequenceIsChecked()
+	{
+		foreach(array("\xE0\xA0\x7F", "\xE0\xA0\xC0", "\xF0\x90\x7F\x80", "\xF0\x90\xC0\x80",
+			"\xF0\x90\x80\x7F", "\xF0\x90\x80\xC0") as $text)
+			$this->assertSame(false, UTF::isValid($text), 'rejected: '.bin2hex($text));
+	}
+
 	public function testEveryOneAndTwoByteSequenceAgreesWithPcre()
 	{
 		$mismatches = 0;
