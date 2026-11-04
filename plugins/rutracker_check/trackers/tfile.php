@@ -13,20 +13,24 @@ class TfileCheckImpl
         // is a separate question, and the answer is the configured origin.
         if (preg_match('`^https?://tfile\.me/forum/viewtopic\.php\?p=(?P<id>\d+)$`', $url, $matches)) {
             $origin = self::origin();
-            if ($origin === '') { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
-            $client = ruTrackerChecker::makeClient($origin . "/forum/viewtopic.php?p=".$matches["id"]);
-            if ($client->status != 200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            if ($origin === '') {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
+            $client = ruTrackerChecker::makeClient($origin . "/forum/viewtopic.php?p=" . $matches["id"]);
+            if ($client->status != 200) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
             if (preg_match('`Info hash:</td><td><strong>(?P<hash>[0-9A-Fa-f]{40})</strong></td>`', $client->results, $matches)) {
                 // Strict comparison, as the Kinozal handler's hash check documents: a
                 // loose == reads a hex hash shaped like scientific notation
                 // as a number ('1E' + 38 zeros == '00...01'), so two
                 // different 40-char hashes could pass as equal.
-                if (strtoupper($matches["hash"])===$hash) {
+                if (strtoupper($matches["hash"]) === $hash) {
                     return  ruTrackerChecker::STE_UPTODATE;
                 }
                 if (preg_match('`\"download.php\?id=(?P<id>\d+)`', $client->results, $matches)) {
                     $client->setcookies();
-                    if (!$client->fetchComplex($origin . "/forum/download.php?id=".$matches["id"])) {
+                    if (!$client->fetchComplex($origin . "/forum/download.php?id=" . $matches["id"])) {
                         $reason = RuTrackerFetchError::classify($client->error);
                         ruTrackerChecker::logDebug('[Tfile] download fetch returned false: error='
                             . ($reason === '' ? 'none' : $reason));

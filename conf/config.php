@@ -1,160 +1,169 @@
 <?php
-	// Persisted config directories may live outside the application tree.
-	$readEnvironment = static function($name, $fallback = null) {
-		if(array_key_exists($name, $_ENV)) {
-			return $_ENV[$name]; }
-		$value = getenv($name);
-		return $value === false ? $fallback : $value;
-	};
-	// configuration parameters
 
-	// for snoopy client
-	$httpUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
-	$httpTimeOut = 30;			// in seconds
-	$httpUseGzip = true;		// Advertise and decode gzip over HTTP and HTTPS when zlib is available.
-	// Largest response body Snoopy accepts, in bytes. It is applied to the body
-	// as it arrives and again to a gzip body once inflated; a larger answer is
-	// refused outright rather than truncated, so a caller cannot mistake a
-	// cut-off document for a complete one. Raise it where legitimate downloads
-	// are bigger -- the metainfo of a very large torrent runs to several
-	// megabytes of piece hashes alone -- bearing in mind that an inflated body
-	// is held in memory and so has to fit within PHP's memory_limit.
-	$httpMaxResponseLength = 4194304;	// 4 MiB
-	$httpIP = null;				// IP string. Or null for any.
-	$httpProxy = 
-	[
-		'use'	=> false,
-		'proto'	=> 'http',		// 'http' or 'https'
-		'host'	=> 'PROXY_HOST_HERE',
-		'port'	=> 3128,
-	];
-	// Refuse to fetch URLs that resolve to a private or otherwise non-public
-	// address. Off by default: feeds and torrent links commonly point at an
-	// indexer on localhost or the LAN. Turn it on where the URLs come from
-	// someone you do not want reaching services the web server can see.
-	$httpBlockPrivateNetworks = false;
-	// Hosts exempt from the check above, matched against the URL host verbatim,
-	// e.g. array( '127.0.0.1', 'jackett.lan' ).
-	$httpPrivateNetworkAllowlist = [];
-	// Check the certificate an HTTPS server presents. Earlier releases passed
-	// curl -k on every HTTPS fetch and could not be told not to, so an
-	// indexer with a self-signed or expired certificate worked without anyone
-	// arranging it. Those installs have to set this to false, or install the
-	// certificate authority the server's certificate is signed by. Off means
-	// every HTTPS fetch -- feeds, torrent downloads, tracker logins with their
-	// passwords -- can be read and changed by anything on the path.
-	$httpVerifyCertificates = true;
+// Persisted config directories may live outside the application tree.
+$readEnvironment = static function ($name, $fallback = null) {
+    if (array_key_exists($name, $_ENV)) {
+        return $_ENV[$name];
+    }
+    $value = getenv($name);
+    return $value === false ? $fallback : $value;
+};
+// configuration parameters
 
-	// for xmlrpc actions
-	$rpcTimeOut = 5;			// connect timeout, in seconds; unusable values mean 30
-	// One total budget covers the complete request write and response read.
-	// null uses the larger of the connect timeout and PHP's positive
-	// default_socket_timeout (or 60). For slow, large replies, set a finite
-	// positive value such as 180 and raise PHP/web-server timeouts too.
-	// Maximum: 2147483 seconds; no unlimited mode. env_check.php reports
-	// unusable settings. A daemon's own deadline may still discard a reply.
-	$rpcTransferTimeOut = null;
-	// Maximum daemon response body, in integer bytes: default 64 MiB,
-	// up to rTorrent's 100 MiB wire ceiling. Invalid values refuse the call.
-	// Without a usable temporary directory, a large response needs about
-	// twice its size in PHP memory.
-	$rpcMaxResponseBytes = 67108864;
-	$rpcLogCalls = false;
-	$rpcLogFaults = true;
+// for snoopy client
+$httpUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
+$httpTimeOut = 30;			// in seconds
+$httpUseGzip = true;		// Advertise and decode gzip over HTTP and HTTPS when zlib is available.
+// Largest response body Snoopy accepts, in bytes. It is applied to the body
+// as it arrives and again to a gzip body once inflated; a larger answer is
+// refused outright rather than truncated, so a caller cannot mistake a
+// cut-off document for a complete one. Raise it where legitimate downloads
+// are bigger -- the metainfo of a very large torrent runs to several
+// megabytes of piece hashes alone -- bearing in mind that an inflated body
+// is held in memory and so has to fit within PHP's memory_limit.
+$httpMaxResponseLength = 4194304;	// 4 MiB
+$httpIP = null;				// IP string. Or null for any.
+$httpProxy
+= [
+    'use' => false,
+    'proto' => 'http',		// 'http' or 'https'
+    'host' => 'PROXY_HOST_HERE',
+    'port' => 3128,
+];
+// Refuse to fetch URLs that resolve to a private or otherwise non-public
+// address. Off by default: feeds and torrent links commonly point at an
+// indexer on localhost or the LAN. Turn it on where the URLs come from
+// someone you do not want reaching services the web server can see.
+$httpBlockPrivateNetworks = false;
+// Hosts exempt from the check above, matched against the URL host verbatim,
+// e.g. array( '127.0.0.1', 'jackett.lan' ).
+$httpPrivateNetworkAllowlist = [];
+// Check the certificate an HTTPS server presents. Earlier releases passed
+// curl -k on every HTTPS fetch and could not be told not to, so an
+// indexer with a self-signed or expired certificate worked without anyone
+// arranging it. Those installs have to set this to false, or install the
+// certificate authority the server's certificate is signed by. Off means
+// every HTTPS fetch -- feeds, torrent downloads, tracker logins with their
+// passwords -- can be read and changed by anything on the path.
+$httpVerifyCertificates = true;
 
-	// for php
-	$phpUseGzip = false;
-	$phpGzipLevel = 2;
+// for xmlrpc actions
+$rpcTimeOut = 5;			// connect timeout, in seconds; unusable values mean 30
+// One total budget covers the complete request write and response read.
+// null uses the larger of the connect timeout and PHP's positive
+// default_socket_timeout (or 60). For slow, large replies, set a finite
+// positive value such as 180 and raise PHP/web-server timeouts too.
+// Maximum: 2147483 seconds; no unlimited mode. env_check.php reports
+// unusable settings. A daemon's own deadline may still discard a reply.
+$rpcTransferTimeOut = null;
+// Maximum daemon response body, in integer bytes: default 64 MiB,
+// up to rTorrent's 100 MiB wire ceiling. Invalid values refuse the call.
+// Without a usable temporary directory, a large response needs about
+// twice its size in PHP memory.
+$rpcMaxResponseBytes = 67108864;
+$rpcLogCalls = false;
+$rpcLogFaults = true;
 
-	$schedule_rand = 10;			// rand for schedulers start, +0..X seconds
+// for php
+$phpUseGzip = false;
+$phpGzipLevel = 2;
 
-	$do_diagnostic = true;			// Diagnose ruTorrent. Recommended to keep enabled, unless otherwise required.
-	$al_diagnostic = true;			// Diagnose auto-loader. Set to "false" to make composer plugins work.
+$schedule_rand = 10;			// rand for schedulers start, +0..X seconds
 
-	// Shared application log for errors, operational notices and explicitly
-	// enabled plugin diagnostics. The historical filename remains the default.
-	$log_file = $readEnvironment('RU_LOG_FILE', '/tmp/errors.log'); // absolute path or stream URI; leave blank to disable logging
+$do_diagnostic = true;			// Diagnose ruTorrent. Recommended to keep enabled, unless otherwise required.
+$al_diagnostic = true;			// Diagnose auto-loader. Set to "false" to make composer plugins work.
 
-	$saveUploadedTorrents = true;		// Save uploaded torrents to profile/torrents directory or not
-	$overwriteUploadedTorrents = false;	// Overwrite existing uploaded torrents in profile/torrents directory or make unique name
+// Shared application log for errors, operational notices and explicitly
+// enabled plugin diagnostics. The historical filename remains the default.
+$log_file = $readEnvironment('RU_LOG_FILE', '/tmp/errors.log'); // absolute path or stream URI; leave blank to disable logging
 
-	$topDirectory = $readEnvironment('RU_TOP_DIR', '/');			// Upper available directory. Absolute path with trail slash.
-	$forbidUserSettings = false;
+$saveUploadedTorrents = true;		// Save uploaded torrents to profile/torrents directory or not
+$overwriteUploadedTorrents = false;	// Overwrite existing uploaded torrents in profile/torrents directory or make unique name
 
-	$scgi_port = $readEnvironment('RU_SCGI_PORT', 5000);
-	$scgi_host = $readEnvironment('RU_SCGI_HOST', '127.0.0.1');
+$topDirectory = $readEnvironment('RU_TOP_DIR', '/');			// Upper available directory. Absolute path with trail slash.
+$forbidUserSettings = false;
 
-	// For web->rtorrent link through unix domain socket
-	// (scgi_local in rtorrent conf file), change variables
-	// above to something like this:
-	//
-	// $scgi_port = 0;
-	// $scgi_host = "unix:///tmp/rpc.socket";
+$scgi_port = $readEnvironment('RU_SCGI_PORT', 5000);
+$scgi_host = $readEnvironment('RU_SCGI_HOST', '127.0.0.1');
 
-	$XMLRPCMountPoint = "/RPC2";		// DO NOT DELETE THIS LINE!!! DO NOT COMMENT THIS LINE!!!
+// For web->rtorrent link through unix domain socket
+// (scgi_local in rtorrent conf file), change variables
+// above to something like this:
+//
+// $scgi_port = 0;
+// $scgi_host = "unix:///tmp/rpc.socket";
 
-	$throttleMaxSpeed = 327625*1024;	// DO NOT EDIT THIS LINE!!! DO NOT COMMENT THIS LINE!!!
-	// Can't be greater then 327625*1024 due to limitation in libtorrent ResourceManager::set_max_upload_unchoked function.
+$XMLRPCMountPoint = "/RPC2";		// DO NOT DELETE THIS LINE!!! DO NOT COMMENT THIS LINE!!!
 
-	$pathToExternals = [
-		"php"	=> '',			// Something like /usr/bin/php. If empty, will be found in PATH.
-		"curl"	=> '',			// Something like /usr/bin/curl. If empty, will be found in PATH.
-		"gzip"	=> '',			// Something like /usr/bin/gzip. If empty, will be found in PATH.
-		"id"	=> '',			// Something like /usr/bin/id. If empty, will be found in PATH.
-		"stat"	=> '',			// Something like /usr/bin/stat. If empty, will be found in PATH.
-	];
+$throttleMaxSpeed = 327625 * 1024;	// DO NOT EDIT THIS LINE!!! DO NOT COMMENT THIS LINE!!!
+// Can't be greater then 327625*1024 due to limitation in libtorrent ResourceManager::set_max_upload_unchoked function.
 
-	$localHostedMode = false;		// Set to true if rTorrent is hosted on the SAME machine as ruTorrent
+$pathToExternals = [
+    "php" => '',			// Something like /usr/bin/php. If empty, will be found in PATH.
+    "curl" => '',			// Something like /usr/bin/curl. If empty, will be found in PATH.
+    "gzip" => '',			// Something like /usr/bin/gzip. If empty, will be found in PATH.
+    "id" => '',			// Something like /usr/bin/id. If empty, will be found in PATH.
+    "stat" => '',			// Something like /usr/bin/stat. If empty, will be found in PATH.
+];
 
-	$cachedPluginLoading = false;		// Set to true to enable rapid cached loading of ruTorrent plugins
-										// Required to clear web browser cache when upgrading versions
+$localHostedMode = false;		// Set to true if rTorrent is hosted on the SAME machine as ruTorrent
 
-	$pluginMinification = true; 	// Stable change to reduce loading times by minimizing JavaScript networked
-									// Only recommended to disable when required for debuging purposes
+$cachedPluginLoading = false;		// Set to true to enable rapid cached loading of ruTorrent plugins
+// Required to clear web browser cache when upgrading versions
 
-	$localhosts = [			// list of local interfaces
-		"::1",
-		"127.0.0.1",
-		"localhost",
-	];
+$pluginMinification = true; 	// Stable change to reduce loading times by minimizing JavaScript networked
+// Only recommended to disable when required for debuging purposes
 
-	$environmentLocalhost = $readEnvironment('RU_LOCALHOSTS', '');
-	if($environmentLocalhost !== '') {
-		$localhosts[] = $environmentLocalhost; }
+$localhosts = [			// list of local interfaces
+    "::1",
+    "127.0.0.1",
+    "localhost",
+];
 
-	$profilePath = $readEnvironment('RU_PROFILE_PATH', '../../share');		// Path to user profiles
-	// Environment values are strings; parse the documented octal notation before using it as a file mode.
-	// An unset, empty, or malformed RU_PROFILE_MASK uses the documented 0777 default -- and a mask that
-	// was set but could not be read names the value it rejected, because the default is wider than any
-	// mask worth setting and naming only the variable leaves the operator to find where it was set.
-	// json_encode quotes the value and escapes anything non-printable in it, so one error_log() call
-	// stays one entry and trailing whitespace is visible; a mask is four characters, so 32 bounds what
-	// a wrong setting writes to the error log on every request that loads this file.
-	$profileMask = $readEnvironment('RU_PROFILE_MASK', '');
-	if(($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask)) {
-		error_log('RU_PROFILE_MASK is not three or four octal digits: '
-			.json_encode(substr($profileMask, 0, 32), JSON_INVALID_UTF8_SUBSTITUTE).'; using the 0777 default.'); }
-	$profileMask = preg_match('/^0?[0-7]{3}$/D', $profileMask) ? intval($profileMask, 8) : 0777;
-						// Both Webserver and rtorrent users must have read-write access to it.
-						// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.
+$environmentLocalhost = $readEnvironment('RU_LOCALHOSTS', '');
+if ($environmentLocalhost !== '') {
+    $localhosts[] = $environmentLocalhost;
+}
 
-	$tempDirectory = $readEnvironment('RU_TEMP_DIRECTORY'); // Temp directory. Absolute path. If null, then autodetect will be used.
+$profilePath = $readEnvironment('RU_PROFILE_PATH', '../../share');		// Path to user profiles
+// Environment values are strings; parse the documented octal notation before using it as a file mode.
+// An unset, empty, or malformed RU_PROFILE_MASK uses the documented 0777 default -- and a mask that
+// was set but could not be read names the value it rejected, because the default is wider than any
+// mask worth setting and naming only the variable leaves the operator to find where it was set.
+// json_encode quotes the value and escapes anything non-printable in it, so one error_log() call
+// stays one entry and trailing whitespace is visible; a mask is four characters, so 32 bounds what
+// a wrong setting writes to the error log on every request that loads this file.
+$profileMask = $readEnvironment('RU_PROFILE_MASK', '');
+if (($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask)) {
+    error_log('RU_PROFILE_MASK is not three or four octal digits: '
+        . json_encode(substr($profileMask, 0, 32), JSON_INVALID_UTF8_SUBSTITUTE) . '; using the 0777 default.');
+}
+$profileMask = preg_match('/^0?[0-7]{3}$/D', $profileMask) ? intval($profileMask, 8) : 0777;
+// Both Webserver and rtorrent users must have read-write access to it.
+// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.
 
-	$canUseXSendFile = false;		// If true then use X-Sendfile feature if it exist
+$tempDirectory = $readEnvironment('RU_TEMP_DIRECTORY'); // Temp directory. Absolute path. If null, then autodetect will be used.
 
-	$locale = "UTF8";
+$canUseXSendFile = false;		// If true then use X-Sendfile feature if it exist
 
-	$enableCSRFCheck = false;		// If true then Origin and Referer will be checked
-	$enabledOrigins = [];		// List of enabled domains for CSRF check (only hostnames, without protocols, port etc.).
-						// Legacy host-only POST exceptions; untrusted forwarded hosts are ignored.
-	// Exact public origins for a proxy that changes Host/scheme, and optional browser extensions.
-	$trustedOrigins = preg_split('/\s*,\s*/', (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
-		-1, PREG_SPLIT_NO_EMPTY);
-	// Absolute public application base, including its proxy prefix, for RSS links.
-	// A nonempty RU_PUBLIC_URL environment variable overrides local configuration.
-	$publicURL = $readEnvironment('RU_PUBLIC_URL', '');
+$locale = "UTF8";
 
-	// Load local deployment overrides if present
-	$configLocalPath = dirname(__FILE__)."/config.local.php";
-	if(is_file($configLocalPath) && is_readable($configLocalPath)) {
-		require($configLocalPath); }
+$enableCSRFCheck = false;		// If true then Origin and Referer will be checked
+$enabledOrigins = [];		// List of enabled domains for CSRF check (only hostnames, without protocols, port etc.).
+// Legacy host-only POST exceptions; untrusted forwarded hosts are ignored.
+// Exact public origins for a proxy that changes Host/scheme, and optional browser extensions.
+$trustedOrigins = preg_split(
+    '/\s*,\s*/',
+    (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
+    -1,
+    PREG_SPLIT_NO_EMPTY,
+);
+// Absolute public application base, including its proxy prefix, for RSS links.
+// A nonempty RU_PUBLIC_URL environment variable overrides local configuration.
+$publicURL = $readEnvironment('RU_PUBLIC_URL', '');
+
+// Load local deployment overrides if present
+$configLocalPath = dirname(__FILE__) . "/config.local.php";
+if (is_file($configLocalPath) && is_readable($configLocalPath)) {
+    require($configLocalPath);
+}

@@ -3,10 +3,9 @@
 // Imports expose collector services; only the actual worker entry may run them.
 $erasedataScript = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : null;
 $erasedataIsEntryPoint = is_string($erasedataScript) && realpath($erasedataScript) === __FILE__;
-if($erasedataIsEntryPoint)
-{
-	require_once(dirname(__DIR__, 2).'/php/cli-only.php');
-	rutorrent_require_cli(__FILE__);
+if ($erasedataIsEntryPoint) {
+    require_once(dirname(__DIR__, 2) . '/php/cli-only.php');
+    rutorrent_require_cli(__FILE__);
 }
 
 // Guarded, not a bare count(): under a web SAPI $argv does not exist, and
@@ -14,22 +13,24 @@ if($erasedataIsEntryPoint)
 // therefore used to die here, three lines in, leaving the SAPI guard below
 // unreachable on the runtime production actually uses -- fail-closed by
 // accident, silently, and differently per version.
-if( isset( $argv ) && is_array( $argv ) && count( $argv ) > 1 ) {
-	$_SERVER['REMOTE_USER'] = $argv[1]; }
+if (isset($argv) && is_array($argv) && count($argv) > 1) {
+    $_SERVER['REMOTE_USER'] = $argv[1];
+}
 
-if(!class_exists('rXMLRPCRequest')) {
-	require_once( dirname(__FILE__)."/../../php/xmlrpc.php" ); }
-require_once( dirname(__FILE__)."/filesystem.php" );
-require_once( dirname(__FILE__)."/manifest.php" );
+if (!class_exists('rXMLRPCRequest')) {
+    require_once(dirname(__FILE__) . "/../../php/xmlrpc.php");
+}
+require_once(dirname(__FILE__) . "/filesystem.php");
+require_once(dirname(__FILE__) . "/manifest.php");
 // The obligation store the drain worker below reads and discharges. It is
 // loaded here, unconditionally and at file scope, and never behind the
 // condition that decides which mode this invocation runs in: a conditional
 // include is how a worker ends up present in the source, reachable from the
 // tests and dead in production, with the guard that was supposed to reach it
 // silently false on every real tick.
-require_once( dirname(__FILE__)."/pending.php" );
-require_once( dirname(__FILE__)."/removewithdata.php" );
-require_once( dirname(__FILE__)."/collector.php" );
+require_once(dirname(__FILE__) . "/pending.php");
+require_once(dirname(__FILE__) . "/removewithdata.php");
+require_once(dirname(__FILE__) . "/collector.php");
 eval(FileUtil::getPluginConf('erasedata'));
 
 // Production wiring: the collector receives the live filesystem seam, the live
@@ -37,9 +38,14 @@ eval(FileUtil::getPluginConf('erasedata'));
 // configured force-deletion policy.
 function erasedataCollectorService(ErasedataFilesystemOps $filesystem)
 {
-	global $enableForceDeletion;
-	return(new ErasedataCollector($filesystem, 'erasedataTorrentPresence',
-		'erasedataCollectPaths', 'eLog', !empty($enableForceDeletion)));
+    global $enableForceDeletion;
+    return(new ErasedataCollector(
+        $filesystem,
+        'erasedataTorrentPresence',
+        'erasedataCollectPaths',
+        'eLog',
+        !empty($enableForceDeletion),
+    ));
 }
 
 // Public entry point for other plugins: collect one list directory, optionally
@@ -49,51 +55,45 @@ function erasedataCollectorService(ErasedataFilesystemOps $filesystem)
 // way erasedataCollectorMain() below does.
 function erasedataRunCollector($listPath, $onlyHash = null)
 {
-	if(!erasedataEnsureQueueDirectory($listPath)) {
-		return(false); }
-	$service = erasedataCollectorService(new ErasedataFilesystemOps());
-	$service->run($listPath, $onlyHash);
+    if (!erasedataEnsureQueueDirectory($listPath)) {
+        return(false);
+    }
+    $service = erasedataCollectorService(new ErasedataFilesystemOps());
+    $service->run($listPath, $onlyHash);
 }
 
 function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 {
-	global $argv;
-	$listPath = erasedataQueuePath();
-	if(!erasedataEnsureQueueDirectory($listPath))
-	{
-		erasedataRetireRefusedCollector();
-		return(false);
-	}
-	$onlyHash = null;
-	if(is_array($argv) && count($argv) > 2)
-	{
-		$onlyHash = erasedataCanonicalHash($argv[2]);
-		if($onlyHash === false)
-		{
-			eLog('Invalid targeted collector hash.');
-			return;
-		}
-	}
-	$schedulerLockPath = $listPath.'/scheduler.lock';
-	$schedulerLock = @fopen($schedulerLockPath, 'c');
-	if($schedulerLock === false) {
-		eLog('Could not open scheduler lock.'); }
-	else
-	{
-		erasedataRepairFileMode($schedulerLockPath);
-		if(@flock($schedulerLock, LOCK_EX | LOCK_NB))
-		{
-			$service = erasedataCollectorService($filesystem);
-			$service->run($listPath, $onlyHash);
-			@flock($schedulerLock, LOCK_UN);
-			@fclose($schedulerLock);
-		}
-		else
-		{
-			eLog('Busy, wait for next time.');
-			@fclose($schedulerLock);
-		}
-	}
+    global $argv;
+    $listPath = erasedataQueuePath();
+    if (!erasedataEnsureQueueDirectory($listPath)) {
+        erasedataRetireRefusedCollector();
+        return(false);
+    }
+    $onlyHash = null;
+    if (is_array($argv) && count($argv) > 2) {
+        $onlyHash = erasedataCanonicalHash($argv[2]);
+        if ($onlyHash === false) {
+            eLog('Invalid targeted collector hash.');
+            return;
+        }
+    }
+    $schedulerLockPath = $listPath . '/scheduler.lock';
+    $schedulerLock = @fopen($schedulerLockPath, 'c');
+    if ($schedulerLock === false) {
+        eLog('Could not open scheduler lock.');
+    } else {
+        erasedataRepairFileMode($schedulerLockPath);
+        if (@flock($schedulerLock, LOCK_EX | LOCK_NB)) {
+            $service = erasedataCollectorService($filesystem);
+            $service->run($listPath, $onlyHash);
+            @flock($schedulerLock, LOCK_UN);
+            @fclose($schedulerLock);
+        } else {
+            eLog('Busy, wait for next time.');
+            @fclose($schedulerLock);
+        }
+    }
 }
 
 // The scheduler spawns this file as a CLI script, and nothing else may start
@@ -121,13 +121,14 @@ function erasedataCollectorMain(ErasedataFilesystemOps $filesystem)
 // carries the tick's own decision without dying, so a refusal can never be
 // mistaken for a crash.
 $erasedataDrainTick = isset($argv) && is_array($argv) && count($argv) > 2
-	&& $argv[2] === 'drain';
-if(erasedataMayStartCollector(PHP_SAPI, $erasedataScript, __FILE__))
-{
-	if($erasedataDrainTick) {
-		exit(erasedataDrainWorkerMain(
-			isset($argv[1]) && is_string($argv[1]) ? $argv[1] : '') ? 0 : 1); }
-	erasedataCollectorMain(new ErasedataFilesystemOps());
+    && $argv[2] === 'drain';
+if (erasedataMayStartCollector(PHP_SAPI, $erasedataScript, __FILE__)) {
+    if ($erasedataDrainTick) {
+        exit(erasedataDrainWorkerMain(
+            isset($argv[1]) && is_string($argv[1]) ? $argv[1] : '',
+        ) ? 0 : 1);
+    }
+    erasedataCollectorMain(new ErasedataFilesystemOps());
 }
 // Only when this file IS the entry point: being required by another plugin for
 // erasedataRunCollector() is ordinary and says nothing. Reaching here otherwise
@@ -135,8 +136,9 @@ if(erasedataMayStartCollector(PHP_SAPI, $erasedataScript, __FILE__))
 // otherwise silent case -- conf/config.php invites $pathToExternals["php"] =
 // "/usr/bin/php-cgi", whose SAPI is cgi-fcgi, so the scheduled collector would
 // be refused every cycle for ever while payload accumulated.
-elseif($erasedataIsEntryPoint) {
-	FileUtil::toLog('erasedata: update.php was started under the ' . PHP_SAPI
-		. ' SAPI, and only cli may start the collector, so nothing was done;'
-		. ' if this is the scheduler, point $pathToExternals["php"] at a CLI'
-		. ' binary rather than a CGI one'); }
+elseif ($erasedataIsEntryPoint) {
+    FileUtil::toLog('erasedata: update.php was started under the ' . PHP_SAPI
+        . ' SAPI, and only cli may start the collector, so nothing was done;'
+        . ' if this is the scheduler, point $pathToExternals["php"] at a CLI'
+        . ' binary rather than a CGI one');
+}

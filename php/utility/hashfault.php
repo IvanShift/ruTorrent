@@ -37,70 +37,75 @@
  */
 class HashFault
 {
-	public const LEGACY_CODE = '-501';
-	public const LEGACY_MESSAGE = 'Could not find info-hash.';
-	public const CURRENT_MESSAGE = 'invalid parameters: info-hash not found';
-	// The 0.15+ text per backend: TinyXML2 -500, xmlrpc-c -503.
-	public const CURRENT_CODES = ['tinyxml2' => '-500', 'xmlrpc-c' => '-503'];
+    public const LEGACY_CODE = '-501';
+    public const LEGACY_MESSAGE = 'Could not find info-hash.';
+    public const CURRENT_MESSAGE = 'invalid parameters: info-hash not found';
+    // The 0.15+ text per backend: TinyXML2 -500, xmlrpc-c -503.
+    public const CURRENT_CODES = ['tinyxml2' => '-500', 'xmlrpc-c' => '-503'];
 
-	public const PRESENT = 1;
-	public const ABSENT = 0;
-	public const UNKNOWN = -1;
+    public const PRESENT = 1;
+    public const ABSENT = 0;
+    public const UNKNOWN = -1;
 
-	public static function isMissing($code, $message, $legacy = null)
-	{
-		$code = self::code($code);
-		if($code === false || !is_string($message)) {
-			return(false); }
-		$old = $message === self::LEGACY_MESSAGE && ($code === null || $code === self::LEGACY_CODE);
-		$new = $message === self::CURRENT_MESSAGE &&
-			($code === null || in_array($code, self::CURRENT_CODES, true));
-		if($legacy === null) {
-			return($old || $new); }
-		return($legacy ? $old : $new);
-	}
+    public static function isMissing($code, $message, $legacy = null)
+    {
+        $code = self::code($code);
+        if ($code === false || !is_string($message)) {
+            return(false);
+        }
+        $old = $message === self::LEGACY_MESSAGE && ($code === null || $code === self::LEGACY_CODE);
+        $new = $message === self::CURRENT_MESSAGE
+            && ($code === null || in_array($code, self::CURRENT_CODES, true));
+        if ($legacy === null) {
+            return($old || $new);
+        }
+        return($legacy ? $old : $new);
+    }
 
-	// xmlrpc-c serializes every generation's answer, TinyXML2 only 0.15+.
-	public static function isMissingFromBackend($backend, $code, $message)
-	{
-		$code = self::code($code);
-		if(!is_string($backend) || !isset(self::CURRENT_CODES[$backend]) || !is_string($code) || !is_string($message)) {
-			return(false); }
-		return(($message === self::CURRENT_MESSAGE && $code === self::CURRENT_CODES[$backend]) ||
-			($backend === 'xmlrpc-c' && $message === self::LEGACY_MESSAGE && $code === self::LEGACY_CODE));
-	}
+    // xmlrpc-c serializes every generation's answer, TinyXML2 only 0.15+.
+    public static function isMissingFromBackend($backend, $code, $message)
+    {
+        $code = self::code($code);
+        if (!is_string($backend) || !isset(self::CURRENT_CODES[$backend]) || !is_string($code) || !is_string($message)) {
+            return(false);
+        }
+        return(($message === self::CURRENT_MESSAGE && $code === self::CURRENT_CODES[$backend])
+            || ($backend === 'xmlrpc-c' && $message === self::LEGACY_MESSAGE && $code === self::LEGACY_CODE));
+    }
 
-	/**
-	 * Whether rTorrent holds a torrent with this hash now: one d.hash read.
-	 * Only the missing-hash answer above is absence; a transport failure, any
-	 * other fault or a malformed answer is unknown, and only a d.hash that
-	 * names the same hash is presence.
-	 */
-	public static function presence($hash)
-	{
-		$probe = new rXMLRPCRequest( new rXMLRPCCommand( getCmd("d.hash"), $hash ) );
-		$probe->important = false;
-		if(!$probe->run()) {
-			return(self::UNKNOWN); }
-		if($probe->fault)
-		{
-			// The raw, untrimmed text decides; the trimmed copy only stands in
-			// for a transport that leaves the raw one unset.
-			$msg = isset($probe->rawFaultString) && is_string($probe->rawFaultString)
-				? $probe->rawFaultString
-				: (isset($probe->faultString) && is_string($probe->faultString) ? $probe->faultString : '');
-			$code = is_array($probe->val) && isset($probe->val[0]) ? $probe->val[0] : null;
-			return(self::isMissing($code, $msg) ? self::ABSENT : self::UNKNOWN);
-		}
-		if(count($probe->val) !== 1 || !is_string($probe->val[0])) {
-			return(self::UNKNOWN); }
-		return(strcasecmp($probe->val[0], $hash) === 0 ? self::PRESENT : self::UNKNOWN);
-	}
+    /**
+     * Whether rTorrent holds a torrent with this hash now: one d.hash read.
+     * Only the missing-hash answer above is absence; a transport failure, any
+     * other fault or a malformed answer is unknown, and only a d.hash that
+     * names the same hash is presence.
+     */
+    public static function presence($hash)
+    {
+        $probe = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.hash"), $hash));
+        $probe->important = false;
+        if (!$probe->run()) {
+            return(self::UNKNOWN);
+        }
+        if ($probe->fault) {
+            // The raw, untrimmed text decides; the trimmed copy only stands in
+            // for a transport that leaves the raw one unset.
+            $msg = isset($probe->rawFaultString) && is_string($probe->rawFaultString)
+                ? $probe->rawFaultString
+                : (isset($probe->faultString) && is_string($probe->faultString) ? $probe->faultString : '');
+            $code = is_array($probe->val) && isset($probe->val[0]) ? $probe->val[0] : null;
+            return(self::isMissing($code, $msg) ? self::ABSENT : self::UNKNOWN);
+        }
+        if (count($probe->val) !== 1 || !is_string($probe->val[0])) {
+            return(self::UNKNOWN);
+        }
+        return(strcasecmp($probe->val[0], $hash) === 0 ? self::PRESENT : self::UNKNOWN);
+    }
 
-	private static function code($code)
-	{
-		if(is_int($code)) {
-			$code = (string)$code; }
-		return(($code === null || is_string($code)) ? $code : false);
-	}
+    private static function code($code)
+    {
+        if (is_int($code)) {
+            $code = (string) $code;
+        }
+        return(($code === null || is_string($code)) ? $code : false);
+    }
 }

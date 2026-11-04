@@ -1,83 +1,82 @@
 <?php
-require_once(dirname(__DIR__, 2).'/php/cli-only.php');
+
+require_once(dirname(__DIR__, 2) . '/php/cli-only.php');
 rutorrent_require_cli(__FILE__);
 
-if( count( $argv ) > 2 ) {
-	$_SERVER['REMOTE_USER'] = $argv[2]; }
-if( count( $argv ) > 1 )
-{
-	require_once( dirname(__FILE__).'/../../php/xmlrpc.php' );
-	require_once( dirname(__FILE__).'/../../php/Torrent.php' );
-	require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
-	require_once( dirname(__FILE__).'/../_task/task.php' );
-	require_once( dirname(__FILE__).'/../../php/torrenttrackers.php' );
-	require_once( dirname(__FILE__).'/seeding.php' );
-	eval(FileUtil::getPluginConf('create'));
+if (count($argv) > 2) {
+    $_SERVER['REMOTE_USER'] = $argv[2];
+}
+if (count($argv) > 1) {
+    require_once(dirname(__FILE__) . '/../../php/xmlrpc.php');
+    require_once(dirname(__FILE__) . '/../../php/Torrent.php');
+    require_once(dirname(__FILE__) . '/../../php/rtorrent.php');
+    require_once(dirname(__FILE__) . '/../_task/task.php');
+    require_once(dirname(__FILE__) . '/../../php/torrenttrackers.php');
+    require_once(dirname(__FILE__) . '/seeding.php');
+    eval(FileUtil::getPluginConf('create'));
 
-	if(function_exists('ini_set'))
-	{
-		ini_set('display_errors',true);
-		ini_set('log_errors',false);
-	}
+    if (function_exists('ini_set')) {
+        ini_set('display_errors', true);
+        ini_set('log_errors', false);
+    }
 
-	$taskNo = $argv[1];
-	$fname = rTask::formatPath($taskNo).'/params';
-	$tname = rTask::formatPath($taskNo)."/temp.torrent";
-	if(is_file($fname) && is_readable($fname) &&
-		is_file($tname) && is_readable($tname))
-	{
-		$request = unserialize(file_get_contents( $fname ), [ 'allowed_classes'=>false ]);
-		$comment = '';
-		$parsedTrackers = TorrentTrackerTiers::fromLines(isset($request['trackers']) ?
-			explode("\r", $request['trackers']) : []);
-		$announce_list = $parsedTrackers['tiers'];
-		$trackersCount = $parsedTrackers['count'];
-		// Correcting a torrent is an edit, not a re-creation, so the author's
-		// name and date stay on it. The file opened below is not a stranger's:
-		// each of the six *.sh wrappers that can reach this script runs an
-		// external hasher over the user's own files into temp.torrent and, when
-		// that succeeds, runs correct.php on the result. So what is corrected
-		// here is the output of ruTorrent's own create task, not a .torrent that
-		// arrived from outside. What settles the question is where the hashing
-		// happened, and it did not happen here: this script reads no payload --
-		// 'pieces', 'length' and 'name' all come out of temp.torrent unchanged --
-		// and the setters below make the same kind of edit
-		// plugins/edit/action.php makes on a torrent rtorrent already holds:
-		// trackers, comment, private flag, and here a source tag as well. So
-		// 'created by' and 'creation date' go on naming the hasher that did read
-		// the data, and Torrent::touch() leaves them alone because this object
-		// was decoded rather than built. createtorrent.php is the other case: it
-		// hashes the files itself, so this class signs what it built.
-       		$torrent = new Torrent($tname);
-       		$torrent->clear_announce();
-       		if(count($announce_list)>0)
-       		{
-       			$torrent->announce($announce_list[0][0]);
-			if($trackersCount>1) {
-				$torrent->announce_list($announce_list); }
-       		}
-		if(isset($request['comment']))
-		{
-			$comment = trim($request['comment']);
-			if(strlen($comment)) {
-				$torrent->comment($comment); }
-		}
-	        if($request['private'])
-		{
-			$torrent->is_private(true);
-		}
-		if(isset($request['source']))
-		{
-			$source = trim($request['source']);
-			if(strlen($source)) {
-				$torrent->source($source); }
-		}
-		$fname = rTask::formatPath($taskNo)."/result.torrent";
-		$torrent->save($fname);
+    $taskNo = $argv[1];
+    $fname = rTask::formatPath($taskNo) . '/params';
+    $tname = rTask::formatPath($taskNo) . "/temp.torrent";
+    if (is_file($fname) && is_readable($fname)
+        && is_file($tname) && is_readable($tname)) {
+        $request = unserialize(file_get_contents($fname), [ 'allowed_classes' => false ]);
+        $comment = '';
+        $parsedTrackers = TorrentTrackerTiers::fromLines(isset($request['trackers'])
+            ? explode("\r", $request['trackers']) : []);
+        $announce_list = $parsedTrackers['tiers'];
+        $trackersCount = $parsedTrackers['count'];
+        // Correcting a torrent is an edit, not a re-creation, so the author's
+        // name and date stay on it. The file opened below is not a stranger's:
+        // each of the six *.sh wrappers that can reach this script runs an
+        // external hasher over the user's own files into temp.torrent and, when
+        // that succeeds, runs correct.php on the result. So what is corrected
+        // here is the output of ruTorrent's own create task, not a .torrent that
+        // arrived from outside. What settles the question is where the hashing
+        // happened, and it did not happen here: this script reads no payload --
+        // 'pieces', 'length' and 'name' all come out of temp.torrent unchanged --
+        // and the setters below make the same kind of edit
+        // plugins/edit/action.php makes on a torrent rtorrent already holds:
+        // trackers, comment, private flag, and here a source tag as well. So
+        // 'created by' and 'creation date' go on naming the hasher that did read
+        // the data, and Torrent::touch() leaves them alone because this object
+        // was decoded rather than built. createtorrent.php is the other case: it
+        // hashes the files itself, so this class signs what it built.
+        $torrent = new Torrent($tname);
+        $torrent->clear_announce();
+        if (count($announce_list) > 0) {
+            $torrent->announce($announce_list[0][0]);
+            if ($trackersCount > 1) {
+                $torrent->announce_list($announce_list);
+            }
+        }
+        if (isset($request['comment'])) {
+            $comment = trim($request['comment']);
+            if (strlen($comment)) {
+                $torrent->comment($comment);
+            }
+        }
+        if ($request['private']) {
+            $torrent->is_private(true);
+        }
+        if (isset($request['source'])) {
+            $source = trim($request['source']);
+            if (strlen($source)) {
+                $torrent->source($source);
+            }
+        }
+        $fname = rTask::formatPath($taskNo) . "/result.torrent";
+        $torrent->save($fname);
 
-		if($request['start_seeding']) {
-			CreateSeeding::publish($torrent, $request, $profileMask, 'correct'); }
-		exit(0);
-	}
-	exit(1);
+        if ($request['start_seeding']) {
+            CreateSeeding::publish($torrent, $request, $profileMask, 'correct');
+        }
+        exit(0);
+    }
+    exit(1);
 }

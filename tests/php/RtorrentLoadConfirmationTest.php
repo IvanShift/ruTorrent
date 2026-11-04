@@ -6,388 +6,608 @@ require_once(__DIR__ . '/RtorrentLoadConfirmationFixture.php');
 // The settle window is a courtesy to the daemon. The fixture confirms a late
 // proof by query count, not by time, so 20 ms polls leave its third query far
 // inside a 0.8 s window and spare each unconfirmed load 1.2 s of waiting.
-if (!defined('RTORRENT_LOAD_WAIT_DELAY_US')) { define('RTORRENT_LOAD_WAIT_DELAY_US', 20000); }
+if (!defined('RTORRENT_LOAD_WAIT_DELAY_US')) {
+    define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);
+}
 require_once(__DIR__ . '/../../php/rtorrent.php');
 require_once(__DIR__ . '/../../plugins/rss/rss.php');
 
 class RtorrentLoadConfirmationSettings extends rTorrentSettings
 {
-	use PermissiveDirectorySettings;
+    use PermissiveDirectorySettings;
 
-	public function loadLegacyAliases()
-	{
-		include(__DIR__ . '/../../php/methods-0.9.4.php');
-	}
+    public function loadLegacyAliases()
+    {
+        include(__DIR__ . '/../../php/methods-0.9.4.php');
+    }
 }
 
 class RtorrentLoadConfirmationTest extends TestCase
 {
-	private $settingsBefore;
-	private $torrentFile;
-	private $hash;
-	private $logBefore;
-	private $log;
+    private $settingsBefore;
+    private $torrentFile;
+    private $hash;
+    private $logBefore;
+    private $log;
 
-	public function setUp()
-	{
-		// sendTorrent() logs every unconfirmed load. Without a log of its own
-		// the test appended to the shared /tmp/errors.log of the host (O-3).
-		$this->logBefore = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
-		$this->log = tempnam(sys_get_temp_dir(), 'rtlc-app-');
-		$GLOBALS['log_file'] = $this->log;
+    public function setUp()
+    {
+        // sendTorrent() logs every unconfirmed load. Without a log of its own
+        // the test appended to the shared /tmp/errors.log of the host (O-3).
+        $this->logBefore = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
+        $this->log = tempnam(sys_get_temp_dir(), 'rtlc-app-');
+        $GLOBALS['log_file'] = $this->log;
 
-		$settings = (new ReflectionClass('RtorrentLoadConfirmationSettings'))
-			->newInstanceWithoutConstructor();
-		$settings->iVersion = 0x1016;
-		$settings->aliases = [];
-		$settings->loadLegacyAliases();
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
-		$this->settingsBefore = $property->getValue();
-		$property->setValue(null, $settings);
+        $settings = (new ReflectionClass('RtorrentLoadConfirmationSettings'))
+            ->newInstanceWithoutConstructor();
+        $settings->iVersion = 0x1016;
+        $settings->aliases = [];
+        $settings->loadLegacyAliases();
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
+        $this->settingsBefore = $property->getValue();
+        $property->setValue(null, $settings);
 
-		// PHP's Torrent parser accepts this real lab rejection case, while
-		// rTorrent 0.16.22 replies success to load and then rejects info.name="".
-		$info = 'd6:lengthi1e4:name0:12:piece lengthi16384e6:pieces20:'
-			. str_repeat("\x02", 20) . 'e';
-		$raw = 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
-		$this->torrentFile = tempnam(sys_get_temp_dir(), 'rtlc');
-		rename($this->torrentFile, $this->torrentFile . '.torrent');
-		$this->torrentFile .= '.torrent';
-		file_put_contents($this->torrentFile, $raw);
-		$torrent = new Torrent($this->torrentFile);
-		$this->assertTrue(!$torrent->errors(), 'the lab rejection payload passes the PHP parser');
-		$this->hash = $torrent->hash_info();
-		$this->assertTrue($this->hash === '4215B8A00E6C948FC92C8985F207A87B929E1594',
-			'the fixture is the empty-name payload observed in the local lab');
-	}
+        // PHP's Torrent parser accepts this real lab rejection case, while
+        // rTorrent 0.16.22 replies success to load and then rejects info.name="".
+        $info = 'd6:lengthi1e4:name0:12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\x02", 20) . 'e';
+        $raw = 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
+        $this->torrentFile = tempnam(sys_get_temp_dir(), 'rtlc');
+        rename($this->torrentFile, $this->torrentFile . '.torrent');
+        $this->torrentFile .= '.torrent';
+        file_put_contents($this->torrentFile, $raw);
+        $torrent = new Torrent($this->torrentFile);
+        $this->assertTrue(!$torrent->errors(), 'the lab rejection payload passes the PHP parser');
+        $this->hash = $torrent->hash_info();
+        $this->assertTrue(
+            $this->hash === '4215B8A00E6C948FC92C8985F207A87B929E1594',
+            'the fixture is the empty-name payload observed in the local lab',
+        );
+    }
 
-	public function tearDown()
-	{
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
-		$property->setValue(null, $this->settingsBefore);
-		@unlink($this->torrentFile);
-		if ($this->logBefore === null) { unset($GLOBALS['log_file']); }
-		else { $GLOBALS['log_file'] = $this->logBefore; }
-		@unlink($this->log);
-	}
+    public function tearDown()
+    {
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
+        $property->setValue(null, $this->settingsBefore);
+        @unlink($this->torrentFile);
+        if ($this->logBefore === null) {
+            unset($GLOBALS['log_file']);
+        } else {
+            $GLOBALS['log_file'] = $this->logBefore;
+        }
+        @unlink($this->log);
+    }
 
-	public function testLegacyAliasMapProvidesBothProofCommands()
-	{
-		$this->assertEquals('d.custom.set', getCmd('d.set_custom'),
-			'the 0.9.4+ alias map supplies the deferred setter');
-		$this->assertEquals('d.custom', getCmd('d.get_custom'),
-			'the 0.9.4+ alias map supplies the exact receipt getter');
-	}
+    public function testLegacyAliasMapProvidesBothProofCommands()
+    {
+        $this->assertEquals(
+            'd.custom.set',
+            getCmd('d.set_custom'),
+            'the 0.9.4+ alias map supplies the deferred setter',
+        );
+        $this->assertEquals(
+            'd.custom',
+            getCmd('d.get_custom'),
+            'the 0.9.4+ alias map supplies the exact receipt getter',
+        );
+    }
 
-	public function testUnknownRpcAnswersWriteClassifiedReasonsOnly()
-	{
-		$receipt = ['hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
-		$oldLog = $GLOBALS['log_file'] ?? null;
-		$oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
-		$GLOBALS['rpcLogCalls'] = false;
-		try {
-			foreach (['absent' => 'rpc-fault',
-				'malformed-response' => 'unusable-response'] as $mode => $reason) {
-				$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
-				$GLOBALS['log_file'] = $path;
-				try {
-					$this->withPeer($mode, function () use ($receipt) {
-						$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-							'unusable daemon answer cannot clear a receipt');
-						$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-							'repeated unusable answer remains unknown');
-					});
-					$allLines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-					$lines = array_values(array_filter($allLines, function ($line) {
-						return strpos($line, 'rtorrent: pending load status unknown: ') !== false;
-					}));
-					$this->assertSame(1, count($lines),
-						$mode . ' produces one pending-load classified diagnostic');
-					$this->assertTrue(strpos($lines[0] ?? '',
-						'rtorrent: pending load status unknown: ' . $reason) !== false,
-						$mode . ' names its classified reason');
-					$this->assertTrue(strpos(implode("\n", $allLines), 'info-hash not found') === false,
-						$mode . ' never logs raw remote fault text');
-				} finally {
-					@unlink($path);
-				}
-			}
-		} finally {
-			if ($oldLog === null) { unset($GLOBALS['log_file']); }
-			else { $GLOBALS['log_file'] = $oldLog; }
-			if ($oldRpcLog === null) { unset($GLOBALS['rpcLogCalls']); }
-			else { $GLOBALS['rpcLogCalls'] = $oldRpcLog; }
-		}
-	}
+    public function testUnknownRpcAnswersWriteClassifiedReasonsOnly()
+    {
+        $receipt = ['hash' => $this->hash,
+            'key' => 'ru-load-proof-' . str_repeat('a', 32)];
+        $oldLog = $GLOBALS['log_file'] ?? null;
+        $oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
+        $GLOBALS['rpcLogCalls'] = false;
+        try {
+            foreach (['absent' => 'rpc-fault',
+                'malformed-response' => 'unusable-response'] as $mode => $reason) {
+                $path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
+                $GLOBALS['log_file'] = $path;
+                try {
+                    $this->withPeer($mode, function () use ($receipt) {
+                        $this->assertSame(
+                            'unknown',
+                            rTorrent::pendingLoadStatus($receipt),
+                            'unusable daemon answer cannot clear a receipt',
+                        );
+                        $this->assertSame(
+                            'unknown',
+                            rTorrent::pendingLoadStatus($receipt),
+                            'repeated unusable answer remains unknown',
+                        );
+                    });
+                    $allLines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                    $lines = array_values(array_filter($allLines, function ($line) {
+                        return strpos($line, 'rtorrent: pending load status unknown: ') !== false;
+                    }));
+                    $this->assertSame(
+                        1,
+                        count($lines),
+                        $mode . ' produces one pending-load classified diagnostic',
+                    );
+                    $this->assertTrue(
+                        strpos(
+                            $lines[0] ?? '',
+                            'rtorrent: pending load status unknown: ' . $reason,
+                        ) !== false,
+                        $mode . ' names its classified reason',
+                    );
+                    $this->assertTrue(
+                        strpos(implode("\n", $allLines), 'info-hash not found') === false,
+                        $mode . ' never logs raw remote fault text',
+                    );
+                } finally {
+                    @unlink($path);
+                }
+            }
+        } finally {
+            if ($oldLog === null) {
+                unset($GLOBALS['log_file']);
+            } else {
+                $GLOBALS['log_file'] = $oldLog;
+            }
+            if ($oldRpcLog === null) {
+                unset($GLOBALS['rpcLogCalls']);
+            } else {
+                $GLOBALS['rpcLogCalls'] = $oldRpcLog;
+            }
+        }
+    }
 
-	public function testNilResultCannotProveForeignOwnership()
-	{
-		$receipt = ['hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
-		$this->withPeer('nil-response', function () use ($receipt) {
-			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-				'a nil result cannot prove a foreign load');
-		});
-	}
+    public function testNilResultCannotProveForeignOwnership()
+    {
+        $receipt = ['hash' => $this->hash,
+            'key' => 'ru-load-proof-' . str_repeat('a', 32)];
+        $this->withPeer('nil-response', function () use ($receipt) {
+            $this->assertSame(
+                'unknown',
+                rTorrent::pendingLoadStatus($receipt),
+                'a nil result cannot prove a foreign load',
+            );
+        });
+    }
 
-	public function testOnlyCapturedAbsentHashFaultsProveMissing()
-	{
-		$receipt = ['hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
-		// Exact fault strings captured from current 0.16.24 and legacy 0.9.8.
-		foreach (['missing-current', 'missing-legacy'] as $mode) {
-			$this->withPeer($mode, function () use ($receipt, $mode) {
-				$this->assertSame('missing', rTorrent::pendingLoadStatus($receipt),
-					$mode . ' positively proves the hash is absent');
-			}); }
-		$this->withPeer('absent', function () use ($receipt) {
-			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-				'other daemon faults cannot prove that the hash is absent');
-		});
-	}
+    public function testOnlyCapturedAbsentHashFaultsProveMissing()
+    {
+        $receipt = ['hash' => $this->hash,
+            'key' => 'ru-load-proof-' . str_repeat('a', 32)];
+        // Exact fault strings captured from current 0.16.24 and legacy 0.9.8.
+        foreach (['missing-current', 'missing-legacy'] as $mode) {
+            $this->withPeer($mode, function () use ($receipt, $mode) {
+                $this->assertSame(
+                    'missing',
+                    rTorrent::pendingLoadStatus($receipt),
+                    $mode . ' positively proves the hash is absent',
+                );
+            });
+        }
+        $this->withPeer('absent', function () use ($receipt) {
+            $this->assertSame(
+                'unknown',
+                rTorrent::pendingLoadStatus($receipt),
+                'other daemon faults cannot prove that the hash is absent',
+            );
+        });
+    }
 
-	public function testScgiConnectFailureCannotProveMissing()
-	{
-		$oldHost = $GLOBALS['scgi_host'] ?? null;
-		$oldPort = $GLOBALS['scgi_port'] ?? null;
-		$oldLog = $GLOBALS['log_file'] ?? null;
-		$oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
-		$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
-		$GLOBALS['log_file'] = $path;
-		$GLOBALS['rpcLogCalls'] = false;
-		$GLOBALS['scgi_host'] = 'unix://' . sys_get_temp_dir()
-			. '/rutorrent-load-absent-' . bin2hex(random_bytes(8)) . '.sock';
-		$GLOBALS['scgi_port'] = 0;
-		try {
-			$receipt = ['hash' => $this->hash,
-				'key' => 'ru-load-proof-' . str_repeat('a', 32)];
-			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-				'connect-failed means the receipt remains unresolved');
-			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
-				'a repeated connection failure leaves the receipt unresolved');
-			$request = new rXMLRPCRequest(new rXMLRPCCommand('system.client_version'));
-			$this->assertSame(false, $request->run(), 'the stopped daemon still refuses the core request');
-			$this->assertSame('connect-failed', $request->transportFailure,
-				'the request retains its classified failure without a routine log line');
-			$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-			$this->assertSame(1, count($lines), 'an unresolved receipt logs its transport failure once across repeated polls');
-			$this->assertTrue(strpos($lines[0] ?? '', 'rtorrent: pending load status unknown: connect-failed') !== false,
-				'the pending-load diagnostic names its classified transport failure');
-			$this->assertTrue(strpos(implode("\n", $lines), 'rXMLRPCRequest: connect-failed') === false,
-				'the ordinary core connection refusal adds no duplicate polling log line');
-		} finally {
-			if ($oldLog === null) { unset($GLOBALS['log_file']); }
-			else { $GLOBALS['log_file'] = $oldLog; }
-			if ($oldRpcLog === null) { unset($GLOBALS['rpcLogCalls']); }
-			else { $GLOBALS['rpcLogCalls'] = $oldRpcLog; }
-			@unlink($path);
-			if ($oldHost === null) { unset($GLOBALS['scgi_host']); }
-			else { $GLOBALS['scgi_host'] = $oldHost; }
-			if ($oldPort === null) { unset($GLOBALS['scgi_port']); }
-			else { $GLOBALS['scgi_port'] = $oldPort; }
-		}
-	}
+    public function testScgiConnectFailureCannotProveMissing()
+    {
+        $oldHost = $GLOBALS['scgi_host'] ?? null;
+        $oldPort = $GLOBALS['scgi_port'] ?? null;
+        $oldLog = $GLOBALS['log_file'] ?? null;
+        $oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
+        $path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
+        $GLOBALS['log_file'] = $path;
+        $GLOBALS['rpcLogCalls'] = false;
+        $GLOBALS['scgi_host'] = 'unix://' . sys_get_temp_dir()
+            . '/rutorrent-load-absent-' . bin2hex(random_bytes(8)) . '.sock';
+        $GLOBALS['scgi_port'] = 0;
+        try {
+            $receipt = ['hash' => $this->hash,
+                'key' => 'ru-load-proof-' . str_repeat('a', 32)];
+            $this->assertSame(
+                'unknown',
+                rTorrent::pendingLoadStatus($receipt),
+                'connect-failed means the receipt remains unresolved',
+            );
+            $this->assertSame(
+                'unknown',
+                rTorrent::pendingLoadStatus($receipt),
+                'a repeated connection failure leaves the receipt unresolved',
+            );
+            $request = new rXMLRPCRequest(new rXMLRPCCommand('system.client_version'));
+            $this->assertSame(false, $request->run(), 'the stopped daemon still refuses the core request');
+            $this->assertSame(
+                'connect-failed',
+                $request->transportFailure,
+                'the request retains its classified failure without a routine log line',
+            );
+            $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $this->assertSame(1, count($lines), 'an unresolved receipt logs its transport failure once across repeated polls');
+            $this->assertTrue(
+                strpos($lines[0] ?? '', 'rtorrent: pending load status unknown: connect-failed') !== false,
+                'the pending-load diagnostic names its classified transport failure',
+            );
+            $this->assertTrue(
+                strpos(implode("\n", $lines), 'rXMLRPCRequest: connect-failed') === false,
+                'the ordinary core connection refusal adds no duplicate polling log line',
+            );
+        } finally {
+            if ($oldLog === null) {
+                unset($GLOBALS['log_file']);
+            } else {
+                $GLOBALS['log_file'] = $oldLog;
+            }
+            if ($oldRpcLog === null) {
+                unset($GLOBALS['rpcLogCalls']);
+            } else {
+                $GLOBALS['rpcLogCalls'] = $oldRpcLog;
+            }
+            @unlink($path);
+            if ($oldHost === null) {
+                unset($GLOBALS['scgi_host']);
+            } else {
+                $GLOBALS['scgi_host'] = $oldHost;
+            }
+            if ($oldPort === null) {
+                unset($GLOBALS['scgi_port']);
+            } else {
+                $GLOBALS['scgi_port'] = $oldPort;
+            }
+        }
+    }
 
-	public function testBeforeDispatchReceiptVetoSendsNoLoad()
-	{
-		$this->withPeer('absent', function ($fixture) {
-			$receipt = null;
-			$called = 0;
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false, true, null, $receipt,
-				function ($candidate) use (&$called) {
-					$called++;
-					$this->assertSame($this->hash, $candidate['hash'] ?? null,
-						'pre-dispatch callback receives the exact torrent hash');
-					$this->assertTrue(isset($candidate['key']) &&
-						strpos($candidate['key'], 'ru-load-proof-') === 0,
-						'callback receives the generated proof key');
-					return false;
-				});
-			$this->assertSame(1, $called, 'callback runs once before dispatch');
-			$this->assertSame(false, $result, 'failed durable reservation vetoes load');
-			$this->assertSame(null, $receipt, 'veto does not report a dispatched receipt');
-			$this->assertSame(0, count($fixture->requests()),
-				'no XMLRPC reaches the daemon after a reservation veto');
-		});
-	}
+    public function testBeforeDispatchReceiptVetoSendsNoLoad()
+    {
+        $this->withPeer('absent', function ($fixture) {
+            $receipt = null;
+            $called = 0;
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+                true,
+                null,
+                $receipt,
+                function ($candidate) use (&$called) {
+                    $called++;
+                    $this->assertSame(
+                        $this->hash,
+                        $candidate['hash'] ?? null,
+                        'pre-dispatch callback receives the exact torrent hash',
+                    );
+                    $this->assertTrue(
+                        isset($candidate['key'])
+                        && strpos($candidate['key'], 'ru-load-proof-') === 0,
+                        'callback receives the generated proof key',
+                    );
+                    return false;
+                },
+            );
+            $this->assertSame(1, $called, 'callback runs once before dispatch');
+            $this->assertSame(false, $result, 'failed durable reservation vetoes load');
+            $this->assertSame(null, $receipt, 'veto does not report a dispatched receipt');
+            $this->assertSame(
+                0,
+                count($fixture->requests()),
+                'no XMLRPC reaches the daemon after a reservation veto',
+            );
+        });
+    }
 
-	public function testAcceptedReservationExposesReceiptWhenRpcFaults()
-	{
-		$this->withPeer('load-fault', function ($fixture) {
-			$receipt = null;
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false, true, null, $receipt,
-				function ($candidate) { return true; });
-			$this->assertSame(false, $result, 'a load RPC fault retains its false result');
-			$this->assertSame($this->hash, $receipt['hash'] ?? null,
-				'accepted pre-dispatch proof remains available after an RPC fault');
-			$this->assertSame(true, $receipt['raw'] ?? null,
-				'the caller can safely clean a raw source after dispatch');
-			$this->assertTrue(!isset($receipt['rejected']),
-				'a post-dispatch fault cannot discard the accepted proof');
-			$this->assertTrue(count($fixture->requests()) >= 1,
-				'the RPC was attempted after the callback accepted its proof');
-		});
-	}
+    public function testAcceptedReservationExposesReceiptWhenRpcFaults()
+    {
+        $this->withPeer('load-fault', function ($fixture) {
+            $receipt = null;
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+                true,
+                null,
+                $receipt,
+                function ($candidate) {
+                    return true;
+                },
+            );
+            $this->assertSame(false, $result, 'a load RPC fault retains its false result');
+            $this->assertSame(
+                $this->hash,
+                $receipt['hash'] ?? null,
+                'accepted pre-dispatch proof remains available after an RPC fault',
+            );
+            $this->assertSame(
+                true,
+                $receipt['raw'] ?? null,
+                'the caller can safely clean a raw source after dispatch',
+            );
+            $this->assertTrue(
+                !isset($receipt['rejected']),
+                'a post-dispatch fault cannot discard the accepted proof',
+            );
+            $this->assertTrue(
+                count($fixture->requests()) >= 1,
+                'the RPC was attempted after the callback accepted its proof',
+            );
+        });
+    }
 
-	public function testAcceptedLoadWithNoDaemonDownloadIsPending()
-	{
-		$this->withPeer('absent', function ($fixture) {
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false);
-			$this->assertTrue($result === null,
-				'load RPC success without a daemon download is unknown, not a confirmed hash');
-			$this->assertTrue(count($fixture->requests()) >= 2,
-				'confirmation reads the daemon after dispatch');
-		});
-	}
+    public function testAcceptedLoadWithNoDaemonDownloadIsPending()
+    {
+        $this->withPeer('absent', function ($fixture) {
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+            );
+            $this->assertTrue(
+                $result === null,
+                'load RPC success without a daemon download is unknown, not a confirmed hash',
+            );
+            $this->assertTrue(
+                count($fixture->requests()) >= 2,
+                'confirmation reads the daemon after dispatch',
+            );
+        });
+    }
 
-	public function testExistingHashCannotConfirmASecondLoad()
-	{
-		$this->withPeer('foreign', function ($fixture) {
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false);
-			$this->assertTrue($result === null,
-				'an existing download with another marker is not proof of this load');
-		});
-	}
+    public function testExistingHashCannotConfirmASecondLoad()
+    {
+        $this->withPeer('foreign', function ($fixture) {
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+            );
+            $this->assertTrue(
+                $result === null,
+                'an existing download with another marker is not proof of this load',
+            );
+        });
+    }
 
-	public function testDelayedExactMarkerConfirmsTheHash()
-	{
-		$this->withPeer('delayed', function ($fixture) {
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false);
-			$this->assertTrue($result === $this->hash,
-				'a matching marker after deferred insertion confirms the computed hash');
-			$requests = $fixture->requests();
-			$this->assertTrue(count($requests) >= 4,
-				'two misses and a matching marker were observed');
-			$this->assertTrue((bool)preg_match('~ru-load-proof-[0-9a-f]{32},1~', $requests[0]),
-				'the load includes a unique namespaced proof key');
-		});
-	}
+    public function testDelayedExactMarkerConfirmsTheHash()
+    {
+        $this->withPeer('delayed', function ($fixture) {
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+            );
+            $this->assertTrue(
+                $result === $this->hash,
+                'a matching marker after deferred insertion confirms the computed hash',
+            );
+            $requests = $fixture->requests();
+            $this->assertTrue(
+                count($requests) >= 4,
+                'two misses and a matching marker were observed',
+            );
+            $this->assertTrue(
+                (bool) preg_match('~ru-load-proof-[0-9a-f]{32},1~', $requests[0]),
+                'the load includes a unique namespaced proof key',
+            );
+        });
+    }
 
-	public function testHashMayAppearBeforeItsDeferredProofCommand()
-	{
-		$this->withPeer('transient-foreign', function ($fixture) {
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false);
-			$this->assertTrue($result === $this->hash,
-				'a temporary empty marker must not win over the later exact proof');
-			$this->assertTrue(count($fixture->requests()) >= 4,
-				'confirmation polls through the transient hash state');
-		});
-	}
+    public function testHashMayAppearBeforeItsDeferredProofCommand()
+    {
+        $this->withPeer('transient-foreign', function ($fixture) {
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+            );
+            $this->assertTrue(
+                $result === $this->hash,
+                'a temporary empty marker must not win over the later exact proof',
+            );
+            $this->assertTrue(
+                count($fixture->requests()) >= 4,
+                'confirmation polls through the transient hash state',
+            );
+        });
+    }
 
-	public function testUnconfirmedRawLoadKeepsItsInputFile()
-	{
-		$source = tempnam(sys_get_temp_dir(), 'rtlp');
-		rename($source, $source . '.torrent');
-		$source .= '.torrent';
-		copy($this->torrentFile, $source);
-		try {
-			$this->withPeer('absent', function () use ($source) {
-				$result = rTorrent::sendTorrent($source, true, true,
-					'', null, false, false);
-				$this->assertSame(null, $result,
-					'the daemon did not confirm the raw load; got ' . var_export($result, true));
-				$this->assertTrue(is_file($source),
-					'the caller retains its input file while the load remains unknown');
-			});
-		} finally {
-			@unlink($source);
-		}
-	}
+    public function testUnconfirmedRawLoadKeepsItsInputFile()
+    {
+        $source = tempnam(sys_get_temp_dir(), 'rtlp');
+        rename($source, $source . '.torrent');
+        $source .= '.torrent';
+        copy($this->torrentFile, $source);
+        try {
+            $this->withPeer('absent', function () use ($source) {
+                $result = rTorrent::sendTorrent(
+                    $source,
+                    true,
+                    true,
+                    '',
+                    null,
+                    false,
+                    false,
+                );
+                $this->assertSame(
+                    null,
+                    $result,
+                    'the daemon did not confirm the raw load; got ' . var_export($result, true),
+                );
+                $this->assertTrue(
+                    is_file($source),
+                    'the caller retains its input file while the load remains unknown',
+                );
+            });
+        } finally {
+            @unlink($source);
+        }
+    }
 
-	public function testConfirmedRawLoadCanRemoveItsInputFile()
-	{
-		$source = tempnam(sys_get_temp_dir(), 'rtlc');
-		rename($source, $source . '.torrent');
-		$source .= '.torrent';
-		copy($this->torrentFile, $source);
-		try {
-			$this->withPeer('own', function () use ($source) {
-				$result = rTorrent::sendTorrent($source, true, true,
-					'', null, false, false);
-				$this->assertTrue($result === $this->hash,
-					'the fake daemon confirms the raw load');
-				$this->assertTrue(!file_exists($source),
-					'a confirmed raw load follows the configured source cleanup');
-			});
-		} finally {
-			@unlink($source);
-		}
-	}
+    public function testConfirmedRawLoadCanRemoveItsInputFile()
+    {
+        $source = tempnam(sys_get_temp_dir(), 'rtlc');
+        rename($source, $source . '.torrent');
+        $source .= '.torrent';
+        copy($this->torrentFile, $source);
+        try {
+            $this->withPeer('own', function () use ($source) {
+                $result = rTorrent::sendTorrent(
+                    $source,
+                    true,
+                    true,
+                    '',
+                    null,
+                    false,
+                    false,
+                );
+                $this->assertTrue(
+                    $result === $this->hash,
+                    'the fake daemon confirms the raw load',
+                );
+                $this->assertTrue(
+                    !file_exists($source),
+                    'a confirmed raw load follows the configured source cleanup',
+                );
+            });
+        } finally {
+            @unlink($source);
+        }
+    }
 
-	public function testRssPersistsPendingReceiptWithoutClaimingLoaded()
-	{
-		$this->withPeer('absent', function () {
-			$source = tempnam(sys_get_temp_dir(), 'rtlr');
-			rename($source, $source . '.torrent');
-			$source .= '.torrent';
-			copy($this->torrentFile, $source);
-			$previousSave = isset($GLOBALS['saveUploadedTorrents'])
-				? $GLOBALS['saveUploadedTorrents'] : null;
-			$GLOBALS['saveUploadedTorrents'] = false;
-			try {
-				$href = 'https://tracker.example/download?id=fb3';
-				$feed = new class extends rRSS {
-					public $source;
-					public function getTorrent($href) { return $this->source; }
-				};
-				$feed->source = $source;
-				$feed->items[$href] = ['timestamp' => 100, 'guid' => 'fb3-item'];
-				$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
-				$manager->rssList = new rRSSMetaList();
-				$manager->history = new rRSSHistory();
-				$manager->getTorrents($feed, $href, true, true,
-					'', '', '', '', false);
-				$entry = $manager->history->lst[$href];
-				$this->assertEquals('Pending', $entry['hash'],
-					'RSS does not record an accepted but absent load as loaded');
-				$this->assertEquals($this->hash, $entry['receipt']['hash'],
-					'RSS retains the exact load receipt for later recheck');
-				$this->assertTrue(!file_exists($source),
-					'RSS removes its disposable download while the receipt remains');
-			} finally {
-				if($previousSave === null) { unset($GLOBALS['saveUploadedTorrents']); }
-				else { $GLOBALS['saveUploadedTorrents'] = $previousSave; }
-				@unlink($source);
-			}
-		});
-	}
+    public function testRssPersistsPendingReceiptWithoutClaimingLoaded()
+    {
+        $this->withPeer('absent', function () {
+            $source = tempnam(sys_get_temp_dir(), 'rtlr');
+            rename($source, $source . '.torrent');
+            $source .= '.torrent';
+            copy($this->torrentFile, $source);
+            $previousSave = isset($GLOBALS['saveUploadedTorrents'])
+                ? $GLOBALS['saveUploadedTorrents'] : null;
+            $GLOBALS['saveUploadedTorrents'] = false;
+            try {
+                $href = 'https://tracker.example/download?id=fb3';
+                $feed = new class extends rRSS {
+                    public $source;
+                    public function getTorrent($href)
+                    {
+                        return $this->source;
+                    }
+                };
+                $feed->source = $source;
+                $feed->items[$href] = ['timestamp' => 100, 'guid' => 'fb3-item'];
+                $manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+                $manager->rssList = new rRSSMetaList();
+                $manager->history = new rRSSHistory();
+                $manager->getTorrents(
+                    $feed,
+                    $href,
+                    true,
+                    true,
+                    '',
+                    '',
+                    '',
+                    '',
+                    false,
+                );
+                $entry = $manager->history->lst[$href];
+                $this->assertEquals(
+                    'Pending',
+                    $entry['hash'],
+                    'RSS does not record an accepted but absent load as loaded',
+                );
+                $this->assertEquals(
+                    $this->hash,
+                    $entry['receipt']['hash'],
+                    'RSS retains the exact load receipt for later recheck',
+                );
+                $this->assertTrue(
+                    !file_exists($source),
+                    'RSS removes its disposable download while the receipt remains',
+                );
+            } finally {
+                if ($previousSave === null) {
+                    unset($GLOBALS['saveUploadedTorrents']);
+                } else {
+                    $GLOBALS['saveUploadedTorrents'] = $previousSave;
+                }
+                @unlink($source);
+            }
+        });
+    }
 
-	public function testLoadRpcFaultReturnsFalseWithoutCallback()
-	{
-		$this->withPeer('load-fault', function ($fixture) {
-			$result = rTorrent::sendTorrent($this->torrentFile, true, true,
-				'', null, true, false);
-			$this->assertTrue($result === false,
-				'an RPC fault retains the legacy false return without a callback');
-			$this->assertTrue(count($fixture->requests()) === 1,
-				'a faulted RPC is not polled without a callback');
-		});
-	}
+    public function testLoadRpcFaultReturnsFalseWithoutCallback()
+    {
+        $this->withPeer('load-fault', function ($fixture) {
+            $result = rTorrent::sendTorrent(
+                $this->torrentFile,
+                true,
+                true,
+                '',
+                null,
+                true,
+                false,
+            );
+            $this->assertTrue(
+                $result === false,
+                'an RPC fault retains the legacy false return without a callback',
+            );
+            $this->assertTrue(
+                count($fixture->requests()) === 1,
+                'a faulted RPC is not polled without a callback',
+            );
+        });
+    }
 
-	private function withPeer($mode, $callback)
-	{
-		$fixture = RtorrentLoadConfirmationFixture::start($mode);
-		$oldHost = isset($GLOBALS['scgi_host']) ? $GLOBALS['scgi_host'] : null;
-		$oldPort = isset($GLOBALS['scgi_port']) ? $GLOBALS['scgi_port'] : null;
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['scgi_port'] = $fixture->port();
-		try {
-			return $callback($fixture);
-		} finally {
-			if ($oldHost === null) { unset($GLOBALS['scgi_host']); }
-			else { $GLOBALS['scgi_host'] = $oldHost; }
-			if ($oldPort === null) { unset($GLOBALS['scgi_port']); }
-			else { $GLOBALS['scgi_port'] = $oldPort; }
-			$fixture->close();
-		}
-	}
+    private function withPeer($mode, $callback)
+    {
+        $fixture = RtorrentLoadConfirmationFixture::start($mode);
+        $oldHost = isset($GLOBALS['scgi_host']) ? $GLOBALS['scgi_host'] : null;
+        $oldPort = isset($GLOBALS['scgi_port']) ? $GLOBALS['scgi_port'] : null;
+        $GLOBALS['scgi_host'] = '127.0.0.1';
+        $GLOBALS['scgi_port'] = $fixture->port();
+        try {
+            return $callback($fixture);
+        } finally {
+            if ($oldHost === null) {
+                unset($GLOBALS['scgi_host']);
+            } else {
+                $GLOBALS['scgi_host'] = $oldHost;
+            }
+            if ($oldPort === null) {
+                unset($GLOBALS['scgi_port']);
+            } else {
+                $GLOBALS['scgi_port'] = $oldPort;
+            }
+            $fixture->close();
+        }
+    }
 }

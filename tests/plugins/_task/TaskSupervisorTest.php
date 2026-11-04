@@ -1,19 +1,20 @@
 <?php
 
-$_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir().'/rutorrent-supervisor-'.getmypid().'-'.bin2hex(random_bytes(4));
-require_once(__DIR__.'/../../php/TestCase.php');
-require_once(__DIR__.'/TaskNativeHelperFixture.php');
-require_once(__DIR__.'/TaskNativeSupervisorFixture.php');
+$_ENV['RU_PROFILE_PATH'] = sys_get_temp_dir() . '/rutorrent-supervisor-' . getmypid() . '-' . bin2hex(random_bytes(4));
+require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__ . '/TaskNativeHelperFixture.php');
+require_once(__DIR__ . '/TaskNativeSupervisorFixture.php');
 define('RTASK_KILL_HELPER', taskNativeHelperFixture());
 define('RTASK_SUPERVISOR_HELPER', taskNativeSupervisorFixture());
-require_once(__DIR__.'/../../../plugins/_task/task.php');
+require_once(__DIR__ . '/../../../plugins/_task/task.php');
 
 class TaskSupervisorTest extends TestCase
 {
     public function setUpClass()
     {
         if (!mkdir($_ENV['RU_PROFILE_PATH'], 0700)) {
-            throw new RuntimeException('Could not create isolated supervisor profile'); }
+            throw new RuntimeException('Could not create isolated supervisor profile');
+        }
     }
 
     public function tearDownClass()
@@ -24,46 +25,59 @@ class TaskSupervisorTest extends TestCase
     public function testSupervisorReapsAnOrphanedGrandchildBeforePublishingCompletion()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-tree-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-tree-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        $grandchild = $dir.'/grandchild';
-        $script = $dir.'/start.sh';
-        $inner = 'sleep 30 & printf "%s\\n" "$!" > '.escapeshellarg($grandchild).'; wait';
-        file_put_contents($script, '#!/bin/sh'."\n".'sh -c '.escapeshellarg($inner).' & wait' . "\n");
+        $grandchild = $dir . '/grandchild';
+        $script = $dir . '/start.sh';
+        $inner = 'sleep 30 & printf "%s\\n" "$!" > ' . escapeshellarg($grandchild) . '; wait';
+        file_put_contents($script, '#!/bin/sh' . "\n" . 'sh -c ' . escapeshellarg($inner) . ' & wait' . "\n");
         chmod($script, 0700);
-        $process = proc_open([$binary, $dir], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'], 2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not launch supervisor'); }
+        $process = proc_open([$binary, $dir], [0 => ['file','/dev/null','r'],
+            1 => ['file','/dev/null','w'], 2 => ['file','/dev/null','w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not launch supervisor');
+        }
         $childPid = null;
         $childIdentity = null;
         try {
-            $this->assertEquals(true, $this->waitFor($dir.'/pid'), 'Supervisor publishes its PID');
-            $this->assertEquals(true, $this->waitFor($dir.'/pid.identity'), 'Supervisor publishes identity');
+            $this->assertEquals(true, $this->waitFor($dir . '/pid'), 'Supervisor publishes its PID');
+            $this->assertEquals(true, $this->waitFor($dir . '/pid.identity'), 'Supervisor publishes identity');
             $childPid = $this->waitForPid($grandchild);
             $this->assertEquals(true, $childPid > 1, 'Three-generation worker started');
-            $this->assertEquals(false, is_file($dir.'/supervisor.complete'), 'Live grandchild blocks completion');
-            $childIdentity = file_get_contents('/proc/sys/kernel/random/boot_id').
-                file_get_contents('/proc/'.$childPid.'/stat');
-            $pid = trim(file_get_contents($dir.'/pid'));
-            $request = proc_open([RTASK_KILL_HELPER, $pid, $dir.'/pid.identity', '--supervisor-cancel', $binary],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $requestPipes);
+            $this->assertEquals(false, is_file($dir . '/supervisor.complete'), 'Live grandchild blocks completion');
+            $childIdentity = file_get_contents('/proc/sys/kernel/random/boot_id')
+                . file_get_contents('/proc/' . $childPid . '/stat');
+            $pid = trim(file_get_contents($dir . '/pid'));
+            $request = proc_open(
+                [RTASK_KILL_HELPER, $pid, $dir . '/pid.identity', '--supervisor-cancel', $binary],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $requestPipes,
+            );
             $this->assertEquals(0, proc_close($request), 'Identity-bound cancellation request reaches supervisor');
-            $completed = $this->waitFor($dir.'/supervisor.complete');
+            $completed = $this->waitFor($dir . '/supervisor.complete');
             $this->assertEquals(true, $completed, 'Supervisor proves all descendants gone before completion');
-            if (!$completed) { return; }
+            if (!$completed) {
+                return;
+            }
             $this->assertEquals(0, proc_close($process), 'Supervisor exits after cancellation');
             $process = null;
-            $this->assertEquals(false, is_dir('/proc/'.$childPid), 'Grandchild was reaped');
+            $this->assertEquals(false, is_dir('/proc/' . $childPid), 'Grandchild was reaped');
         } finally {
             if (is_resource($process)) {
                 $info = proc_get_status($process);
-                if ($info['running'] && $info['pid'] > 1) { proc_terminate($process, 9); }
+                if ($info['running'] && $info['pid'] > 1) {
+                    proc_terminate($process, 9);
+                }
                 proc_close($process);
             }
-            if ($childPid !== null) { $this->stopWitness($childPid, $childIdentity, $dir); }
+            if ($childPid !== null) {
+                $this->stopWitness($childPid, $childIdentity, $dir);
+            }
             foreach (['start.sh','pid','pid.identity','supervisor.version','supervisor.complete',
-                'status','grandchild','errors'] as $name) { @unlink($dir.'/'.$name); }
+                'status','grandchild','errors'] as $name) {
+                @unlink($dir . '/' . $name);
+            }
             @rmdir($dir);
         }
     }
@@ -71,57 +85,79 @@ class TaskSupervisorTest extends TestCase
     public function testDoubleForkAcrossSetsidRemainsUnderSupervisor()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-setsid-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-setsid-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        $marker = $dir.'/orphan-pid';
-        $leaf = 'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($marker);
-        $middle = 'sh -c '.escapeshellarg($leaf).' & wait';
-        file_put_contents($dir.'/start.sh', '#!/bin/sh'."\n".
-            'setsid sh -c '.escapeshellarg($middle).' & wait'."\n");
-        $process = proc_open([$binary, $dir], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'], 2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start setsid tree'); }
+        $marker = $dir . '/orphan-pid';
+        $leaf = 'sleep 30 & printf "%s\n" "$!" > ' . escapeshellarg($marker);
+        $middle = 'sh -c ' . escapeshellarg($leaf) . ' & wait';
+        file_put_contents($dir . '/start.sh', '#!/bin/sh' . "\n"
+            . 'setsid sh -c ' . escapeshellarg($middle) . ' & wait' . "\n");
+        $process = proc_open([$binary, $dir], [0 => ['file','/dev/null','r'],
+            1 => ['file','/dev/null','w'], 2 => ['file','/dev/null','w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start setsid tree');
+        }
         $orphan = null;
         $identity = null;
         try {
-            $this->assertEquals(true, $this->waitFor($dir.'/pid'), 'Supervisor published its PID');
-            $this->assertEquals(true, $this->waitFor($dir.'/pid.identity'), 'Supervisor started');
+            $this->assertEquals(true, $this->waitFor($dir . '/pid'), 'Supervisor published its PID');
+            $this->assertEquals(true, $this->waitFor($dir . '/pid.identity'), 'Supervisor started');
             $orphan = $this->waitForPid($marker);
             $this->assertEquals(true, $orphan > 1, 'Double fork created detached worker');
-            if ($orphan <= 1) { return; }
-            $identity = file_get_contents('/proc/sys/kernel/random/boot_id').
-                file_get_contents('/proc/'.$orphan.'/stat');
-            for ($i=0; $i<100; ++$i) {
-                $stat = @file_get_contents('/proc/'.$orphan.'/stat');
-                if ($stat !== false && preg_match('/^'.(int)$orphan.' \(.+\) [A-Z] (\d+) /', $stat, $m)
-                    && (int)$m[1] === (int)trim(file_get_contents($dir.'/pid'))) { break; }
+            if ($orphan <= 1) {
+                return;
+            }
+            $identity = file_get_contents('/proc/sys/kernel/random/boot_id')
+                . file_get_contents('/proc/' . $orphan . '/stat');
+            for ($i = 0; $i < 100; ++$i) {
+                $stat = @file_get_contents('/proc/' . $orphan . '/stat');
+                if ($stat !== false && preg_match('/^' . (int) $orphan . ' \(.+\) [A-Z] (\d+) /', $stat, $m)
+                    && (int) $m[1] === (int) trim(file_get_contents($dir . '/pid'))) {
+                    break;
+                }
                 usleep(10000);
             }
-            $this->assertEquals((int)trim(file_get_contents($dir.'/pid')), isset($m[1]) ? (int)$m[1] : 0,
-                'Subreaper adopted worker after double fork and setsid');
-            $this->assertEquals(false, is_file($dir.'/supervisor.complete'),
-                'Detached worker blocks normal completion');
-            $request = proc_open([RTASK_KILL_HELPER, trim(file_get_contents($dir.'/pid')),
-                $dir.'/pid.identity', '--supervisor-cancel', $binary],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $requestPipes);
+            $this->assertEquals(
+                (int) trim(file_get_contents($dir . '/pid')),
+                isset($m[1]) ? (int) $m[1] : 0,
+                'Subreaper adopted worker after double fork and setsid',
+            );
+            $this->assertEquals(
+                false,
+                is_file($dir . '/supervisor.complete'),
+                'Detached worker blocks normal completion',
+            );
+            $request = proc_open(
+                [RTASK_KILL_HELPER, trim(file_get_contents($dir . '/pid')),
+                    $dir . '/pid.identity', '--supervisor-cancel', $binary],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $requestPipes,
+            );
             $this->assertEquals(0, proc_close($request), 'Cancellation reached detached tree');
-            $completed = $this->waitFor($dir.'/supervisor.complete');
+            $completed = $this->waitFor($dir . '/supervisor.complete');
             $this->assertEquals(true, $completed, 'Detached worker is reaped before completion');
-            if (!$completed) { return; }
+            if (!$completed) {
+                return;
+            }
             $this->assertEquals(0, proc_close($process), 'Supervisor exited after proof');
             $process = null;
-            $this->assertEquals(false, is_dir('/proc/'.$orphan), 'Detached worker is gone');
+            $this->assertEquals(false, is_dir('/proc/' . $orphan), 'Detached worker is gone');
         } finally {
             if (is_resource($process)) {
                 $info = proc_get_status($process);
-                if ($info['running'] && $info['pid'] > 1) { proc_terminate($process, 9); }
+                if ($info['running'] && $info['pid'] > 1) {
+                    proc_terminate($process, 9);
+                }
                 proc_close($process);
             }
-            if ($orphan !== null) { $this->stopWitness($orphan, $identity, $dir); }
+            if ($orphan !== null) {
+                $this->stopWitness($orphan, $identity, $dir);
+            }
             foreach (['start.sh','pid','pid.identity','supervisor.version',
                 'supervisor.complete','status','errors','orphan-pid'] as $name) {
-                @unlink($dir.'/'.$name); }
+                @unlink($dir . '/' . $name);
+            }
             @rmdir($dir);
         }
     }
@@ -129,78 +165,112 @@ class TaskSupervisorTest extends TestCase
     public function testLateChildAfterEnumerationIsReapedBeforeCompletion()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-late-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-late-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        $fifo = $dir.'/trigger';
-        $ready = $dir.'/enumerated';
-        $go = $dir.'/resume';
-        $childMarker = $dir.'/late-pid';
-        if (!posix_mkfifo($fifo, 0600)) { throw new RuntimeException('Could not make trigger FIFO'); }
-        $script = $dir.'/start.sh';
-        file_put_contents($script, '#!/bin/sh'."\n".'read line < '.escapeshellarg($fifo)."\n"
-            .'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($childMarker).'; wait'."\n");
+        $fifo = $dir . '/trigger';
+        $ready = $dir . '/enumerated';
+        $go = $dir . '/resume';
+        $childMarker = $dir . '/late-pid';
+        if (!posix_mkfifo($fifo, 0600)) {
+            throw new RuntimeException('Could not make trigger FIFO');
+        }
+        $script = $dir . '/start.sh';
+        file_put_contents($script, '#!/bin/sh' . "\n" . 'read line < ' . escapeshellarg($fifo) . "\n"
+            . 'sleep 30 & printf "%s\n" "$!" > ' . escapeshellarg($childMarker) . '; wait' . "\n");
         chmod($script, 0700);
-        $environment = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_READY'=>$ready,
-            'RTASK_SUPERVISOR_TEST_GO'=>$go]);
-        $process = proc_open([$binary, $dir], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'], 2=>['file','/dev/null','w']],
-            $pipes, null, $environment);
-        if (!is_resource($process)) { throw new RuntimeException('Could not launch late-fork supervisor'); }
+        $environment = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_READY' => $ready,
+            'RTASK_SUPERVISOR_TEST_GO' => $go]);
+        $process = proc_open(
+            [$binary, $dir],
+            [0 => ['file','/dev/null','r'],
+                1 => ['file','/dev/null','w'], 2 => ['file','/dev/null','w']],
+            $pipes,
+            null,
+            $environment,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not launch late-fork supervisor');
+        }
         $latePid = null;
         try {
-            $this->assertEquals(true, $this->waitFor($dir.'/pid'), 'Supervisor published its PID');
-            $this->assertEquals(true, $this->waitFor($dir.'/pid.identity'), 'Supervisor started');
-            $pid = trim(file_get_contents($dir.'/pid'));
-            $childrenPath = '/proc/'.$pid.'/task/'.$pid.'/children';
-            for ($attempt=0; $attempt<100 && trim((string)@file_get_contents($childrenPath))===''; ++$attempt) {
-                usleep(10000); }
-            $this->assertEquals(true, trim((string)@file_get_contents($childrenPath))!=='',
-                'Paused task shell exists before cancellation');
-            $request = proc_open([RTASK_KILL_HELPER, $pid, $dir.'/pid.identity',
-                '--supervisor-cancel', $binary], [0=>['file','/dev/null','r'],
-                1=>['file','/dev/null','w'],2=>['file','/dev/null','w']], $requestPipes);
+            $this->assertEquals(true, $this->waitFor($dir . '/pid'), 'Supervisor published its PID');
+            $this->assertEquals(true, $this->waitFor($dir . '/pid.identity'), 'Supervisor started');
+            $pid = trim(file_get_contents($dir . '/pid'));
+            $childrenPath = '/proc/' . $pid . '/task/' . $pid . '/children';
+            for ($attempt = 0; $attempt < 100 && trim((string) @file_get_contents($childrenPath)) === ''; ++$attempt) {
+                usleep(10000);
+            }
+            $this->assertEquals(
+                true,
+                trim((string) @file_get_contents($childrenPath)) !== '',
+                'Paused task shell exists before cancellation',
+            );
+            $request = proc_open([RTASK_KILL_HELPER, $pid, $dir . '/pid.identity',
+                '--supervisor-cancel', $binary], [0 => ['file','/dev/null','r'],
+                    1 => ['file','/dev/null','w'],2 => ['file','/dev/null','w']], $requestPipes);
             $this->assertEquals(0, proc_close($request), 'Cancellation request was delivered');
             $reached = $this->waitFor($ready);
             $this->assertEquals(true, $reached, 'Supervisor enumerated its children');
-            if (!$reached) { return; }
-            $children = trim((string)file_get_contents('/proc/'.$pid.'/task/'.$pid.'/children'));
-            $direct = (int)strtok($children, " ");
-            if ($direct <= 1) { throw new RuntimeException('Could not identify direct child'); }
-            $continue = proc_open(['sh', '-c', 'kill -CONT "$1"', 'sh', (string)$direct],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $signalPipes);
-            $this->assertEquals(0, proc_close($continue),
-                'External SIGCONT can arrive while cancellation is paused');
+            if (!$reached) {
+                return;
+            }
+            $children = trim((string) file_get_contents('/proc/' . $pid . '/task/' . $pid . '/children'));
+            $direct = (int) strtok($children, " ");
+            if ($direct <= 1) {
+                throw new RuntimeException('Could not identify direct child');
+            }
+            $continue = proc_open(
+                ['sh', '-c', 'kill -CONT "$1"', 'sh', (string) $direct],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $signalPipes,
+            );
+            $this->assertEquals(
+                0,
+                proc_close($continue),
+                'External SIGCONT can arrive while cancellation is paused',
+            );
             $writer = fopen($fifo, 'w');
-            fwrite($writer, "go\n"); fclose($writer);
+            fwrite($writer, "go\n");
+            fclose($writer);
             $latePid = $this->waitForPid($childMarker);
             $this->assertEquals(true, $latePid > 1, 'Direct child forked after enumeration');
             file_put_contents($go, "go\n");
-            $completed = $this->waitFor($dir.'/supervisor.complete');
+            $completed = $this->waitFor($dir . '/supervisor.complete');
             $this->assertEquals(true, $completed, 'Supervisor waits for the late child too');
-            if (!$completed) { return; }
+            if (!$completed) {
+                return;
+            }
             $this->assertEquals(0, proc_close($process), 'Supervisor exits with proof');
             $process = null;
-            $this->assertEquals(false, is_dir('/proc/'.$latePid), 'Late child is reaped');
+            $this->assertEquals(false, is_dir('/proc/' . $latePid), 'Late child is reaped');
         } finally {
             @file_put_contents($go, "go\n");
             if (is_resource($process)) {
                 $info = proc_get_status($process);
-                if ($info['running'] && $info['pid'] > 1) { proc_terminate($process, 9); }
+                if ($info['running'] && $info['pid'] > 1) {
+                    proc_terminate($process, 9);
+                }
                 proc_close($process);
             }
-            if ($latePid !== null && is_dir('/proc/'.$latePid)) {
-                $identity = $dir.'/late.identity';
-                file_put_contents($identity, file_get_contents('/proc/sys/kernel/random/boot_id').
-                    file_get_contents('/proc/'.$latePid.'/stat'));
-                $cleanup = proc_open([RTASK_KILL_HELPER, (string)$latePid, $identity],
-                    [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                        2=>['file','/dev/null','w']], $cleanupPipes);
-                if (is_resource($cleanup)) { proc_close($cleanup); }
+            if ($latePid !== null && is_dir('/proc/' . $latePid)) {
+                $identity = $dir . '/late.identity';
+                file_put_contents($identity, file_get_contents('/proc/sys/kernel/random/boot_id')
+                    . file_get_contents('/proc/' . $latePid . '/stat'));
+                $cleanup = proc_open(
+                    [RTASK_KILL_HELPER, (string) $latePid, $identity],
+                    [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                        2 => ['file','/dev/null','w']],
+                    $cleanupPipes,
+                );
+                if (is_resource($cleanup)) {
+                    proc_close($cleanup);
+                }
             }
             foreach (['trigger','start.sh','pid','pid.identity','supervisor.version',
                 'supervisor.complete','status','errors','enumerated','resume','late-pid','late.identity'] as $file) {
-                @unlink($dir.'/'.$file); }
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
@@ -208,32 +278,45 @@ class TaskSupervisorTest extends TestCase
     public function testStartedTaskUsesSupervisorForThreeGenerationCancellation()
     {
         $profile = $_ENV['RU_PROFILE_PATH'];
-        if (!is_dir($profile)) { mkdir($profile, 0777, true); }
-        $marker = $profile.'/started-grandchild-pid';
-        $inner = 'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($marker).'; wait';
-        $task = new rTask(['name'=>'supervised tree']);
-        $task->start(['sh -c '.escapeshellarg($inner)], rTask::FLG_RUN_AS_WEB);
+        if (!is_dir($profile)) {
+            mkdir($profile, 0777, true);
+        }
+        $marker = $profile . '/started-grandchild-pid';
+        $inner = 'sleep 30 & printf "%s\n" "$!" > ' . escapeshellarg($marker) . '; wait';
+        $task = new rTask(['name' => 'supervised tree']);
+        $task->start(['sh -c ' . escapeshellarg($inner)], rTask::FLG_RUN_AS_WEB);
         $dir = rTask::formatPath($task->id);
         $grandchild = null;
         $grandchildIdentity = null;
         try {
             $grandchild = $this->waitForPid($marker);
             $this->assertEquals(true, $grandchild > 1, 'Started task created a grandchild');
-            $this->assertEquals(true, is_file($dir.'/supervisor.version'),
-                'The task is explicitly marked as supervised');
-            $this->assertEquals(-1, rTask::check($task->id)['status'],
-                'Task remains active while its grandchild is alive');
-            $grandchildIdentity = file_get_contents('/proc/sys/kernel/random/boot_id').
-                file_get_contents('/proc/'.$grandchild.'/stat');
-            $this->assertEquals(true, rTask::kill($task->id),
-                'Cancellation is acknowledged after complete-tree proof');
+            $this->assertEquals(
+                true,
+                is_file($dir . '/supervisor.version'),
+                'The task is explicitly marked as supervised',
+            );
+            $this->assertEquals(
+                -1,
+                rTask::check($task->id)['status'],
+                'Task remains active while its grandchild is alive',
+            );
+            $grandchildIdentity = file_get_contents('/proc/sys/kernel/random/boot_id')
+                . file_get_contents('/proc/' . $grandchild . '/stat');
+            $this->assertEquals(
+                true,
+                rTask::kill($task->id),
+                'Cancellation is acknowledged after complete-tree proof',
+            );
             $this->assertEquals(false, is_dir($dir), 'Completed cancelled task record is removed');
-            $this->assertEquals(false, is_dir('/proc/'.$grandchild), 'The grandchild is reaped');
+            $this->assertEquals(false, is_dir('/proc/' . $grandchild), 'The grandchild is reaped');
         } finally {
-            if ($grandchild !== null) { $this->stopWitness($grandchild, $grandchildIdentity, $profile); }
-            if (is_dir($dir) && is_file($dir.'/pid') && is_file($dir.'/pid.identity')) {
-                $pid = (int)trim(file_get_contents($dir.'/pid'));
-                $this->stopWitness($pid, file_get_contents($dir.'/pid.identity'), $profile);
+            if ($grandchild !== null) {
+                $this->stopWitness($grandchild, $grandchildIdentity, $profile);
+            }
+            if (is_dir($dir) && is_file($dir . '/pid') && is_file($dir . '/pid.identity')) {
+                $pid = (int) trim(file_get_contents($dir . '/pid'));
+                $this->stopWitness($pid, file_get_contents($dir . '/pid.identity'), $profile);
             }
             @unlink($marker);
         }
@@ -244,16 +327,16 @@ class TaskSupervisorTest extends TestCase
         // A task shell with three children, as a pipeline has. Each command
         // gets the task's log redirection appended, so the shell's own
         // marker is written inside a group.
-        $base = $_ENV['RU_PROFILE_PATH'].'/every-child-'.bin2hex(random_bytes(4));
-        $markers = ['task shell' => $base.'-shell'];
+        $base = $_ENV['RU_PROFILE_PATH'] . '/every-child-' . bin2hex(random_bytes(4));
+        $markers = ['task shell' => $base . '-shell'];
         $stages = [];
         foreach ([31, 32, 33] as $index => $seconds) {
-            $markers['pipeline command '.($index + 1)] = $base.'-'.$seconds;
-            $stages[] = 'sh -c '.escapeshellarg('printf "%s\n" "$$" > "$0"; exec sleep '.$seconds).
-                ' '.escapeshellarg($base.'-'.$seconds);
+            $markers['pipeline command ' . ($index + 1)] = $base . '-' . $seconds;
+            $stages[] = 'sh -c ' . escapeshellarg('printf "%s\n" "$$" > "$0"; exec sleep ' . $seconds)
+                . ' ' . escapeshellarg($base . '-' . $seconds);
         }
         $this->assertCancelReachesEveryProcess([
-            '{ printf "%s\n" "$$" > '.escapeshellarg($markers['task shell']).'; }',
+            '{ printf "%s\n" "$$" > ' . escapeshellarg($markers['task shell']) . '; }',
             implode(' | ', $stages)], $markers);
     }
 
@@ -262,19 +345,19 @@ class TaskSupervisorTest extends TestCase
         // A task shell running a plugin script, which runs the program that
         // does the work as its own child, as createtorrent.sh runs the
         // torrent creator or unrar_file.sh runs unrar.
-        $base = $_ENV['RU_PROFILE_PATH'].'/plugin-script-'.bin2hex(random_bytes(4));
-        $markers = ['task shell' => $base.'-shell', 'plugin script' => $base.'-script',
-            'program the script started' => $base.'-program'];
-        file_put_contents($base.'.sh', '#!/bin/sh'."\n".
-            'printf "%s\n" "$$" > "$1-script"'."\n".
-            'sh -c '.escapeshellarg('printf "%s\n" "$$" > "$0-program"; exec sleep 34').' "$1"'."\n");
-        chmod($base.'.sh', 0755);
+        $base = $_ENV['RU_PROFILE_PATH'] . '/plugin-script-' . bin2hex(random_bytes(4));
+        $markers = ['task shell' => $base . '-shell', 'plugin script' => $base . '-script',
+            'program the script started' => $base . '-program'];
+        file_put_contents($base . '.sh', '#!/bin/sh' . "\n"
+            . 'printf "%s\n" "$$" > "$1-script"' . "\n"
+            . 'sh -c ' . escapeshellarg('printf "%s\n" "$$" > "$0-program"; exec sleep 34') . ' "$1"' . "\n");
+        chmod($base . '.sh', 0755);
         try {
             $this->assertCancelReachesEveryProcess([
-                '{ printf "%s\n" "$$" > '.escapeshellarg($markers['task shell']).'; }',
-                escapeshellarg($base.'.sh').' '.escapeshellarg($base)], $markers);
+                '{ printf "%s\n" "$$" > ' . escapeshellarg($markers['task shell']) . '; }',
+                escapeshellarg($base . '.sh') . ' ' . escapeshellarg($base)], $markers);
         } finally {
-            @unlink($base.'.sh');
+            @unlink($base . '.sh');
         }
     }
 
@@ -284,18 +367,24 @@ class TaskSupervisorTest extends TestCase
         $mode = fileperms($binary) & 0777;
         chmod($binary, 0600);
         try {
-            $task = new rTask(['name'=>'unavailable supervisor']);
+            $task = new rTask(['name' => 'unavailable supervisor']);
             $result = $task->start(['true'], rTask::FLG_RUN_AS_WEB | rTask::FLG_WAIT);
             $dir = rTask::formatPath($task->id);
             $this->assertEquals(255, $result['status'], 'Task refuses to launch without supervisor');
-            $this->assertEquals(true, strpos(implode(' ', $result['errors']), 'supervisor unavailable') !== false,
-                'The launch response names the missing supervisor');
-            $this->assertEquals(false, is_file($dir.'/pid'), 'No shell or task PID was started');
-            $this->assertEquals(true, is_file($dir.'/errors'), 'The refusal is saved in the task log');
+            $this->assertEquals(
+                true,
+                strpos(implode(' ', $result['errors']), 'supervisor unavailable') !== false,
+                'The launch response names the missing supervisor',
+            );
+            $this->assertEquals(false, is_file($dir . '/pid'), 'No shell or task PID was started');
+            $this->assertEquals(true, is_file($dir . '/errors'), 'The refusal is saved in the task log');
             $listed = rTask::check($task->id);
             $this->assertEquals(255, $listed['status'], 'Task list shows failed startup');
-            $this->assertEquals(true, strpos(implode(' ', $listed['errors']), 'supervisor unavailable') !== false,
-                'Task list carries the saved refusal');
+            $this->assertEquals(
+                true,
+                strpos(implode(' ', $listed['errors']), 'supervisor unavailable') !== false,
+                'Task list carries the saved refusal',
+            );
         } finally {
             chmod($binary, $mode);
         }
@@ -303,32 +392,53 @@ class TaskSupervisorTest extends TestCase
 
     public function testSupervisorDeathLeavesVisibleUnprovedTaskRecord()
     {
-        $task = new rTask(['name'=>'supervisor death']);
+        $task = new rTask(['name' => 'supervisor death']);
         $task->start(['exec sleep 30'], rTask::FLG_RUN_AS_WEB);
         $dir = rTask::formatPath($task->id);
-        $this->assertEquals(true, is_file($dir.'/pid.identity'), 'Supervisor identity was published');
-        $pid = (int)trim(file_get_contents($dir.'/pid'));
+        $this->assertEquals(true, is_file($dir . '/pid.identity'), 'Supervisor identity was published');
+        $pid = (int) trim(file_get_contents($dir . '/pid'));
         try {
-            $stop = proc_open([RTASK_KILL_HELPER, (string)$pid, $dir.'/pid.identity'],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $pipes);
-            if (!is_resource($stop)) { throw new RuntimeException('Could not stop isolated supervisor'); }
+            $stop = proc_open(
+                [RTASK_KILL_HELPER, (string) $pid, $dir . '/pid.identity'],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $pipes,
+            );
+            if (!is_resource($stop)) {
+                throw new RuntimeException('Could not stop isolated supervisor');
+            }
             proc_close($stop);
-            for ($i=0; $i<100 && is_file('/proc/'.$pid.'/stat'); ++$i) { usleep(10000); }
+            for ($i = 0; $i < 100 && is_file('/proc/' . $pid . '/stat'); ++$i) {
+                usleep(10000);
+            }
             $result = rTask::check($task->id);
-            $this->assertEquals(-2, $result['status'],
-                'A dead supervisor without completion is reported as uncertain');
-            $this->assertEquals(true, strpos(implode(' ', $result['errors']), 'supervisor exited') !== false,
-                'The uncertain state names the missing proof');
-            $this->assertEquals(false, rTask::kill($task->id),
-                'An unproved tree cannot report cancellation success');
+            $this->assertEquals(
+                -2,
+                $result['status'],
+                'A dead supervisor without completion is reported as uncertain',
+            );
+            $this->assertEquals(
+                true,
+                strpos(implode(' ', $result['errors']), 'supervisor exited') !== false,
+                'The uncertain state names the missing proof',
+            );
+            $this->assertEquals(
+                false,
+                rTask::kill($task->id),
+                'An unproved tree cannot report cancellation success',
+            );
             $this->assertEquals(true, is_dir($dir), 'Task record remains for diagnosis');
         } finally {
-            if (is_file('/proc/'.$pid.'/stat')) {
-                $stop = proc_open([RTASK_KILL_HELPER, (string)$pid, $dir.'/pid.identity'],
-                    [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                        2=>['file','/dev/null','w']], $pipes);
-                if (is_resource($stop)) { proc_close($stop); }
+            if (is_file('/proc/' . $pid . '/stat')) {
+                $stop = proc_open(
+                    [RTASK_KILL_HELPER, (string) $pid, $dir . '/pid.identity'],
+                    [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                        2 => ['file','/dev/null','w']],
+                    $pipes,
+                );
+                if (is_resource($stop)) {
+                    proc_close($stop);
+                }
             }
         }
     }
@@ -338,47 +448,67 @@ class TaskSupervisorTest extends TestCase
         $id = uniqid(time(), true);
         $dir = rTask::formatPath($id);
         mkdir($dir, 0777, true);
-        file_put_contents($dir.'/pid', '999999');
-        file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-        file_put_contents($dir.'/status', "0\n");
-        file_put_contents($dir.'/supervisor.version', "1\n");
-        file_put_contents($dir.'/supervisor.complete', "1\n");
-        file_put_contents($dir.'/supervisor.outcome', "normal\n");
-        file_put_contents($dir.'/supervisor.notify-pending', "1\n");
-        $this->assertEquals(false, rTask::kill($id),
-            'Finished record remains until its detached notification completes');
+        file_put_contents($dir . '/pid', '999999');
+        file_put_contents($dir . '/flags', (string) rTask::FLG_RUN_AS_WEB);
+        file_put_contents($dir . '/status', "0\n");
+        file_put_contents($dir . '/supervisor.version', "1\n");
+        file_put_contents($dir . '/supervisor.complete', "1\n");
+        file_put_contents($dir . '/supervisor.outcome', "normal\n");
+        file_put_contents($dir . '/supervisor.notify-pending', "1\n");
+        $this->assertEquals(
+            false,
+            rTask::kill($id),
+            'Finished record remains until its detached notification completes',
+        );
         $this->assertEquals(true, is_dir($dir), 'Notification still has access to task parameters');
-        $this->assertEquals(true, strpos(implode(' ', rTask::check($id)['errors']),
-            'notification is still pending') !== false, 'Pending notification is visible');
-        unlink($dir.'/supervisor.notify-pending');
+        $this->assertEquals(true, strpos(
+            implode(' ', rTask::check($id)['errors']),
+            'notification is still pending',
+        ) !== false, 'Pending notification is visible');
+        unlink($dir . '/supervisor.notify-pending');
         $this->assertEquals(true, rTask::kill($id), 'Finished record can be cleaned after notification');
         $this->assertEquals(false, is_dir($dir), 'Task record is then removed');
     }
 
     public function testMatchingPidBirthOfWrongExecutableIsNotSupervisorProof()
     {
-        $process = proc_open(['sleep','30'], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'],2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start wrong-executable witness'); }
+        $process = proc_open(['sleep','30'], [0 => ['file','/dev/null','r'],
+            1 => ['file','/dev/null','w'],2 => ['file','/dev/null','w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start wrong-executable witness');
+        }
         try {
             $pid = proc_get_status($process)['pid'];
-            if ($pid <= 1 || $pid === getmypid()) { throw new RuntimeException('Unsafe witness PID'); }
+            if ($pid <= 1 || $pid === getmypid()) {
+                throw new RuntimeException('Unsafe witness PID');
+            }
             $id = uniqid(time(), true);
             $dir = rTask::formatPath($id);
             mkdir($dir, 0777, true);
-            file_put_contents($dir.'/pid', (string)$pid);
-            file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-            file_put_contents($dir.'/pid.identity', file_get_contents('/proc/sys/kernel/random/boot_id').
-                file_get_contents('/proc/'.$pid.'/stat'));
-            file_put_contents($dir.'/supervisor.version', "1\n");
-            $this->assertEquals(-2, rTask::check($id)['status'],
-                'A reused PID running another executable is uncertain');
-            $this->assertEquals(false, rTask::kill($id),
-                'Wrong executable cannot receive supervisor cancellation signal');
-            $this->assertEquals(true, proc_get_status($process)['running'],
-                'Unrelated process remains alive');
+            file_put_contents($dir . '/pid', (string) $pid);
+            file_put_contents($dir . '/flags', (string) rTask::FLG_RUN_AS_WEB);
+            file_put_contents($dir . '/pid.identity', file_get_contents('/proc/sys/kernel/random/boot_id')
+                . file_get_contents('/proc/' . $pid . '/stat'));
+            file_put_contents($dir . '/supervisor.version', "1\n");
+            $this->assertEquals(
+                -2,
+                rTask::check($id)['status'],
+                'A reused PID running another executable is uncertain',
+            );
+            $this->assertEquals(
+                false,
+                rTask::kill($id),
+                'Wrong executable cannot receive supervisor cancellation signal',
+            );
+            $this->assertEquals(
+                true,
+                proc_get_status($process)['running'],
+                'Unrelated process remains alive',
+            );
         } finally {
-            if (proc_get_status($process)['running']) { proc_terminate($process); }
+            if (proc_get_status($process)['running']) {
+                proc_terminate($process);
+            }
             proc_close($process);
         }
     }
@@ -388,88 +518,127 @@ class TaskSupervisorTest extends TestCase
         $id = uniqid(time(), true);
         $dir = rTask::formatPath($id);
         mkdir($dir, 0777, true);
-        file_put_contents($dir.'/pid', '999999');
-        file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-        file_put_contents($dir.'/status', "0\n");
-        file_put_contents($dir.'/supervisor.version', "1\n");
-        file_put_contents($dir.'/supervisor.complete', "corrupt\n");
-        $this->assertEquals(false, rTask::kill($id),
-            'A corrupt completion marker cannot authorize cleanup');
+        file_put_contents($dir . '/pid', '999999');
+        file_put_contents($dir . '/flags', (string) rTask::FLG_RUN_AS_WEB);
+        file_put_contents($dir . '/status', "0\n");
+        file_put_contents($dir . '/supervisor.version', "1\n");
+        file_put_contents($dir . '/supervisor.complete', "corrupt\n");
+        $this->assertEquals(
+            false,
+            rTask::kill($id),
+            'A corrupt completion marker cannot authorize cleanup',
+        );
         $this->assertEquals(true, is_dir($dir), 'Corrupt completion keeps task evidence');
-        $this->assertEquals(true, strpos(implode(' ', rTask::check($id)['errors']),
-            'supervisor.complete') !== false, 'The corrupt key is named to the user');
+        $this->assertEquals(true, strpos(
+            implode(' ', rTask::check($id)['errors']),
+            'supervisor.complete',
+        ) !== false, 'The corrupt key is named to the user');
     }
 
     public function testLegacyTaskCannotClaimCompleteTreeCancellation()
     {
-        $process = proc_open(['sleep', '30'], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'], 2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start witness'); }
+        $process = proc_open(['sleep', '30'], [0 => ['file','/dev/null','r'],
+            1 => ['file','/dev/null','w'], 2 => ['file','/dev/null','w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start witness');
+        }
         try {
             $pid = proc_get_status($process)['pid'];
-            if ($pid <= 1 || $pid === getmypid()) { throw new RuntimeException('Unsafe witness PID'); }
+            if ($pid <= 1 || $pid === getmypid()) {
+                throw new RuntimeException('Unsafe witness PID');
+            }
             $id = uniqid(time(), true);
             $dir = rTask::formatPath($id);
             mkdir($dir, 0777, true);
-            file_put_contents($dir.'/pid', (string)$pid);
-            file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-            file_put_contents($dir.'/pid.identity', file_get_contents('/proc/sys/kernel/random/boot_id').
-                file_get_contents('/proc/'.$pid.'/stat'));
+            file_put_contents($dir . '/pid', (string) $pid);
+            file_put_contents($dir . '/flags', (string) rTask::FLG_RUN_AS_WEB);
+            file_put_contents($dir . '/pid.identity', file_get_contents('/proc/sys/kernel/random/boot_id')
+                . file_get_contents('/proc/' . $pid . '/stat'));
             $this->assertEquals(false, rTask::kill($id), 'Unsupervised task cannot claim tree completion');
             $this->assertEquals(true, is_dir($dir), 'Legacy record remains for diagnosis');
             $this->assertEquals(true, proc_get_status($process)['running'], 'Legacy refusal sends no signal');
-            $this->assertEquals(true, strpos(file_get_contents($dir.'/errors'), 'legacy') !== false,
-                'The refusal identifies the legacy task');
-            $this->assertEquals(true, strpos(implode(' ', rTask::check($id)['errors']), 'legacy task') !== false,
-                'Polling makes the unproved legacy task visible');
+            $this->assertEquals(
+                true,
+                strpos(file_get_contents($dir . '/errors'), 'legacy') !== false,
+                'The refusal identifies the legacy task',
+            );
+            $this->assertEquals(
+                true,
+                strpos(implode(' ', rTask::check($id)['errors']), 'legacy task') !== false,
+                'Polling makes the unproved legacy task visible',
+            );
         } finally {
-            if (proc_get_status($process)['running']) { proc_terminate($process); }
+            if (proc_get_status($process)['running']) {
+                proc_terminate($process);
+            }
             proc_close($process);
         }
     }
     public function testCancelAtNormalCompletionKeepsNormalOutcomeAndNotification()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-terminal-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-terminal-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
-        $notify = $dir.'/notify.php';
-        file_put_contents($notify, '<?php file_put_contents($argv[2]."/notified", "yes\n"); ' .
-            'unlink($argv[2]."/supervisor.notify-pending");');
-        $ready = $dir.'/commit-ready';
-        $go = $dir.'/commit-go';
-        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_COMMIT_READY'=>$ready,
-            'RTASK_SUPERVISOR_TEST_COMMIT_GO'=>$go]);
-        $process = proc_open([$binary, $dir, PHP_BINARY, $notify, 'test'],
-            [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                2=>['file','/dev/null','w']], $pipes, null, $env);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start terminal-race witness'); }
+        file_put_contents($dir . '/start.sh', "#!/bin/sh\ntrue\n");
+        $notify = $dir . '/notify.php';
+        file_put_contents($notify, '<?php file_put_contents($argv[2]."/notified", "yes\n"); '
+            . 'unlink($argv[2]."/supervisor.notify-pending");');
+        $ready = $dir . '/commit-ready';
+        $go = $dir . '/commit-go';
+        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_COMMIT_READY' => $ready,
+            'RTASK_SUPERVISOR_TEST_COMMIT_GO' => $go]);
+        $process = proc_open(
+            [$binary, $dir, PHP_BINARY, $notify, 'test'],
+            [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                2 => ['file','/dev/null','w']],
+            $pipes,
+            null,
+            $env,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start terminal-race witness');
+        }
         try {
             $this->assertEquals(true, $this->waitFor($ready), 'Normal completion reserved notification before commit');
-            if (!is_file($ready)) { return; }
-            $request = proc_open([RTASK_KILL_HELPER, trim(file_get_contents($dir.'/pid')),
-                $dir.'/pid.identity', '--supervisor-cancel', $binary],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $requestPipes);
+            if (!is_file($ready)) {
+                return;
+            }
+            $request = proc_open(
+                [RTASK_KILL_HELPER, trim(file_get_contents($dir . '/pid')),
+                    $dir . '/pid.identity', '--supervisor-cancel', $binary],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $requestPipes,
+            );
             $this->assertEquals(0, proc_close($request), 'Cancellation request arrived at terminal boundary');
             file_put_contents($go, "go\n");
-            $this->assertEquals(true, $this->waitFor($dir.'/supervisor.complete'), 'Completion is committed');
-            $this->assertEquals("normal\n", @file_get_contents($dir.'/supervisor.outcome'),
-                'Normal outcome cannot become a false TaskKill');
-            $this->assertEquals(true, $this->waitFor($dir.'/notified'),
-                'The reserved normal notification runs');
+            $this->assertEquals(true, $this->waitFor($dir . '/supervisor.complete'), 'Completion is committed');
+            $this->assertEquals(
+                "normal\n",
+                @file_get_contents($dir . '/supervisor.outcome'),
+                'Normal outcome cannot become a false TaskKill',
+            );
+            $this->assertEquals(
+                true,
+                $this->waitFor($dir . '/notified'),
+                'The reserved normal notification runs',
+            );
             $this->assertEquals(0, proc_close($process), 'Supervisor exits cleanly');
             $process = null;
         } finally {
             @file_put_contents($go, "go\n");
             if (is_resource($process)) {
                 $info = proc_get_status($process);
-                if ($info['running'] && $info['pid'] > 1) { proc_terminate($process, 9); }
+                if ($info['running'] && $info['pid'] > 1) {
+                    proc_terminate($process, 9);
+                }
                 proc_close($process);
             }
             foreach (['start.sh','notify.php','commit-ready','commit-go','pid','pid.identity',
                 'supervisor.version','supervisor.notify-pending','supervisor.outcome',
-                'supervisor.complete','status','notified','errors'] as $file) { @unlink($dir.'/'.$file); }
+                'supervisor.complete','status','notified','errors'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
@@ -477,24 +646,35 @@ class TaskSupervisorTest extends TestCase
     public function testFailedCompletionDirectorySyncDoesNotLeaveValidProof()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-sync-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-sync-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
-        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_FAIL_COMPLETE_FSYNC'=>'1']);
-        $process = proc_open([$binary, $dir], [0=>['file','/dev/null','r'],
-            1=>['file','/dev/null','w'],2=>['file','/dev/null','w']], $pipes, null, $env);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start fsync witness'); }
+        file_put_contents($dir . '/start.sh', "#!/bin/sh\ntrue\n");
+        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_FAIL_COMPLETE_FSYNC' => '1']);
+        $process = proc_open([$binary, $dir], [0 => ['file','/dev/null','r'],
+            1 => ['file','/dev/null','w'],2 => ['file','/dev/null','w']], $pipes, null, $env);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start fsync witness');
+        }
         try {
             $this->assertEquals(4, proc_close($process), 'Directory sync failure withholds completion');
             $process = null;
-            $this->assertEquals(false, is_file($dir.'/supervisor.complete'),
-                'Failed durable write cannot leave an authorizing marker');
-            $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'),
-                'task retained') !== false, 'The refusal is visible');
+            $this->assertEquals(
+                false,
+                is_file($dir . '/supervisor.complete'),
+                'Failed durable write cannot leave an authorizing marker',
+            );
+            $this->assertEquals(true, strpos(
+                (string) @file_get_contents($dir . '/errors'),
+                'task retained',
+            ) !== false, 'The refusal is visible');
         } finally {
-            if (is_resource($process)) { proc_close($process); }
+            if (is_resource($process)) {
+                proc_close($process);
+            }
             foreach (['start.sh','pid','pid.identity','supervisor.version',
-                'supervisor.outcome','supervisor.complete','status','errors'] as $file) { @unlink($dir.'/'.$file); }
+                'supervisor.outcome','supervisor.complete','status','errors'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
@@ -502,29 +682,49 @@ class TaskSupervisorTest extends TestCase
     public function testNotifierExecFailureIsVisibleAndRetainsPendingWork()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-notify-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-notify-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
-        $process = proc_open([$binary, $dir, '/no/such/php', '/no/such/notify.php', 'test'],
-            [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start notifier failure witness'); }
+        file_put_contents($dir . '/start.sh', "#!/bin/sh\ntrue\n");
+        $process = proc_open(
+            [$binary, $dir, '/no/such/php', '/no/such/notify.php', 'test'],
+            [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                2 => ['file','/dev/null','w']],
+            $pipes,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start notifier failure witness');
+        }
         try {
             $this->assertEquals(0, proc_close($process), 'Task completion is independent of notifier startup');
             $process = null;
-            $this->assertEquals(true, $this->waitFor($dir.'/supervisor.notify-failed'),
-                'Notifier exec failure creates a classified failure marker');
-            $this->assertEquals("exec-failed\n", @file_get_contents($dir.'/supervisor.notify-failed'),
-                'Notifier failure reason is explicit');
-            $this->assertEquals(true, is_file($dir.'/supervisor.notify-pending'),
-                'Unnotified task stays retained');
-            $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'),
-                'exec failed') !== false, 'Notifier failure is logged');
+            $this->assertEquals(
+                true,
+                $this->waitFor($dir . '/supervisor.notify-failed'),
+                'Notifier exec failure creates a classified failure marker',
+            );
+            $this->assertEquals(
+                "exec-failed\n",
+                @file_get_contents($dir . '/supervisor.notify-failed'),
+                'Notifier failure reason is explicit',
+            );
+            $this->assertEquals(
+                true,
+                is_file($dir . '/supervisor.notify-pending'),
+                'Unnotified task stays retained',
+            );
+            $this->assertEquals(true, strpos(
+                (string) @file_get_contents($dir . '/errors'),
+                'exec failed',
+            ) !== false, 'Notifier failure is logged');
         } finally {
-            if (is_resource($process)) { proc_close($process); }
+            if (is_resource($process)) {
+                proc_close($process);
+            }
             foreach (['start.sh','pid','pid.identity','supervisor.version',
                 'supervisor.notify-pending','supervisor.notify-failed','supervisor.outcome',
-                'supervisor.complete','status','errors'] as $file) { @unlink($dir.'/'.$file); }
+                'supervisor.complete','status','errors'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
@@ -534,36 +734,58 @@ class TaskSupervisorTest extends TestCase
     public function testNotifierFailureIsLoggedBeforeItsMarker()
     {
         $binary = taskNativeSupervisorFixture(true);
-        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_MARKER_DELAY_US'=>'300000']);
+        $env = array_merge($_ENV, ['RTASK_SUPERVISOR_TEST_MARKER_DELAY_US' => '300000']);
         $cases = [
             'exec' => ['/no/such/php', null, "exec-failed\n", 'notifier exec failed'],
             'exit' => [PHP_BINARY, '<?php exit(3);', "exit-failed\n", 'notifier exited unsuccessfully'],
         ];
         foreach ($cases as $case => $expected) {
             list($php, $script, $reason, $line) = $expected;
-            $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-order-'.$case.'-'.bin2hex(random_bytes(4));
+            $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-order-' . $case . '-' . bin2hex(random_bytes(4));
             mkdir($dir, 0700);
-            file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
-            $notify = $dir.'/notify.php';
-            if ($script !== null) { file_put_contents($notify, $script); }
-            $process = proc_open([$binary, $dir, $php, $notify, 'test'],
-                [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                    2=>['file','/dev/null','w']], $pipes, null, $env);
-            if (!is_resource($process)) { throw new RuntimeException('Could not start notifier order witness'); }
+            file_put_contents($dir . '/start.sh', "#!/bin/sh\ntrue\n");
+            $notify = $dir . '/notify.php';
+            if ($script !== null) {
+                file_put_contents($notify, $script);
+            }
+            $process = proc_open(
+                [$binary, $dir, $php, $notify, 'test'],
+                [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                    2 => ['file','/dev/null','w']],
+                $pipes,
+                null,
+                $env,
+            );
+            if (!is_resource($process)) {
+                throw new RuntimeException('Could not start notifier order witness');
+            }
             try {
                 $this->assertEquals(0, proc_close($process), "Task completion is independent of the notifier ($case)");
                 $process = null;
-                $this->assertEquals(true, $this->waitFor($dir.'/supervisor.notify-failed', 1000),
-                    "The notifier failure is marked ($case)");
-                $this->assertEquals($reason, @file_get_contents($dir.'/supervisor.notify-failed'),
-                    "The marker names the failure ($case)");
-                $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'), $line) !== false,
-                    "The failure was logged before the marker appeared ($case)");
+                $this->assertEquals(
+                    true,
+                    $this->waitFor($dir . '/supervisor.notify-failed', 1000),
+                    "The notifier failure is marked ($case)",
+                );
+                $this->assertEquals(
+                    $reason,
+                    @file_get_contents($dir . '/supervisor.notify-failed'),
+                    "The marker names the failure ($case)",
+                );
+                $this->assertEquals(
+                    true,
+                    strpos((string) @file_get_contents($dir . '/errors'), $line) !== false,
+                    "The failure was logged before the marker appeared ($case)",
+                );
             } finally {
-                if (is_resource($process)) { proc_close($process); }
+                if (is_resource($process)) {
+                    proc_close($process);
+                }
                 foreach (['start.sh','notify.php','pid','pid.identity','supervisor.version',
                     'supervisor.notify-pending','supervisor.notify-failed','supervisor.outcome',
-                    'supervisor.complete','status','errors'] as $file) { @unlink($dir.'/'.$file); }
+                    'supervisor.complete','status','errors'] as $file) {
+                    @unlink($dir . '/' . $file);
+                }
                 @rmdir($dir);
             }
         }
@@ -572,57 +794,90 @@ class TaskSupervisorTest extends TestCase
     public function testNotifierPhpFatalIsVisibleAndRetainsPendingWork()
     {
         $binary = taskNativeSupervisorFixture();
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-supervisor-fatal-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-supervisor-fatal-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        file_put_contents($dir.'/start.sh', "#!/bin/sh\ntrue\n");
-        $notify = $dir.'/fatal.php';
+        file_put_contents($dir . '/start.sh', "#!/bin/sh\ntrue\n");
+        $notify = $dir . '/fatal.php';
         file_put_contents($notify, '<?php undefined_rtask_notifier_function();');
-        $process = proc_open([$binary, $dir, PHP_BINARY, $notify, 'test'],
-            [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start PHP-fatal witness'); }
+        $process = proc_open(
+            [$binary, $dir, PHP_BINARY, $notify, 'test'],
+            [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                2 => ['file','/dev/null','w']],
+            $pipes,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start PHP-fatal witness');
+        }
         try {
             $this->assertEquals(0, proc_close($process), 'Task completion is independent of notifier exit');
             $process = null;
-            $this->assertEquals(true, $this->waitFor($dir.'/supervisor.notify-failed'),
-                'Nonzero notifier exit creates a failure marker');
-            $this->assertEquals("exit-failed\n", @file_get_contents($dir.'/supervisor.notify-failed'),
-                'The exit classification is explicit');
-            $this->assertEquals(true, is_file($dir.'/supervisor.notify-pending'),
-                'Failed delivery retains pending work');
-            $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'),
-                'Fatal error') !== false, 'The underlying PHP fatal reaches the task log');
+            $this->assertEquals(
+                true,
+                $this->waitFor($dir . '/supervisor.notify-failed'),
+                'Nonzero notifier exit creates a failure marker',
+            );
+            $this->assertEquals(
+                "exit-failed\n",
+                @file_get_contents($dir . '/supervisor.notify-failed'),
+                'The exit classification is explicit',
+            );
+            $this->assertEquals(
+                true,
+                is_file($dir . '/supervisor.notify-pending'),
+                'Failed delivery retains pending work',
+            );
+            $this->assertEquals(true, strpos(
+                (string) @file_get_contents($dir . '/errors'),
+                'Fatal error',
+            ) !== false, 'The underlying PHP fatal reaches the task log');
         } finally {
-            if (is_resource($process)) { proc_close($process); }
+            if (is_resource($process)) {
+                proc_close($process);
+            }
             foreach (['start.sh','fatal.php','pid','pid.identity','supervisor.version',
                 'supervisor.notify-pending','supervisor.notify-failed','supervisor.outcome',
-                'supervisor.complete','status','errors'] as $file) { @unlink($dir.'/'.$file); }
+                'supervisor.complete','status','errors'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
 
     public function testNotifierRejectsMissingTaskParametersAndRetainsPendingWork()
     {
-        $dir = $_ENV['RU_PROFILE_PATH'].'/task-notify-params-'.bin2hex(random_bytes(4));
+        $dir = $_ENV['RU_PROFILE_PATH'] . '/task-notify-params-' . bin2hex(random_bytes(4));
         mkdir($dir, 0700);
-        file_put_contents($dir.'/supervisor.notify-pending', "1\n");
-        $process = proc_open([PHP_BINARY, __DIR__.'/../../../plugins/_task/notify.php',
-            '0', $dir, 'test'], [0=>['file','/dev/null','r'],
-                1=>['file','/dev/null','w'],2=>['file','/dev/null','w']], $pipes);
-        if (!is_resource($process)) { throw new RuntimeException('Could not start real notifier'); }
+        file_put_contents($dir . '/supervisor.notify-pending', "1\n");
+        $process = proc_open([PHP_BINARY, __DIR__ . '/../../../plugins/_task/notify.php',
+            '0', $dir, 'test'], [0 => ['file','/dev/null','r'],
+                1 => ['file','/dev/null','w'],2 => ['file','/dev/null','w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start real notifier');
+        }
         try {
             $this->assertEquals(1, proc_close($process), 'Invalid task parameters refuse notification');
             $process = null;
-            $this->assertEquals("event-failed\n", @file_get_contents($dir.'/supervisor.notify-failed'),
-                'The failure classification is persisted');
-            $this->assertEquals(true, is_file($dir.'/supervisor.notify-pending'),
-                'Invalid parameters keep notification pending');
-            $this->assertEquals(true, strpos((string)@file_get_contents($dir.'/errors'),
-                'invalid task parameters') !== false, 'The refusal names the bad task document');
+            $this->assertEquals(
+                "event-failed\n",
+                @file_get_contents($dir . '/supervisor.notify-failed'),
+                'The failure classification is persisted',
+            );
+            $this->assertEquals(
+                true,
+                is_file($dir . '/supervisor.notify-pending'),
+                'Invalid parameters keep notification pending',
+            );
+            $this->assertEquals(true, strpos(
+                (string) @file_get_contents($dir . '/errors'),
+                'invalid task parameters',
+            ) !== false, 'The refusal names the bad task document');
         } finally {
-            if (is_resource($process)) { proc_close($process); }
+            if (is_resource($process)) {
+                proc_close($process);
+            }
             foreach (['supervisor.notify-pending','supervisor.notify-failed','errors'] as $file) {
-                @unlink($dir.'/'.$file); }
+                @unlink($dir . '/' . $file);
+            }
             @rmdir($dir);
         }
     }
@@ -630,26 +885,35 @@ class TaskSupervisorTest extends TestCase
     private function removeTree($path)
     {
         if (is_link($path) || !is_dir($path)) {
-            if (file_exists($path) || is_link($path)) { unlink($path); }
+            if (file_exists($path) || is_link($path)) {
+                unlink($path);
+            }
             return;
         }
         foreach (new DirectoryIterator($path) as $entry) {
-            if (!$entry->isDot()) { $this->removeTree($entry->getPathname()); } }
+            if (!$entry->isDot()) {
+                $this->removeTree($entry->getPathname());
+            }
+        }
         rmdir($path);
     }
 
     private function waitFor($path, $attempts = 200)
     {
-        for ($i=0; $i<$attempts && !is_file($path); ++$i) { usleep(10000); }
+        for ($i = 0; $i < $attempts && !is_file($path); ++$i) {
+            usleep(10000);
+        }
         return is_file($path);
     }
 
     // A shell creates a marker before it writes the PID into it.
     private function waitForPid($path, $attempts = 200)
     {
-        for ($i=0; $i<$attempts; ++$i) {
-            $pid = (int)trim((string)@file_get_contents($path));
-            if ($pid > 1) { return $pid; }
+        for ($i = 0; $i < $attempts; ++$i) {
+            $pid = (int) trim((string) @file_get_contents($path));
+            if ($pid > 1) {
+                return $pid;
+            }
             usleep(10000);
         }
         return 0;
@@ -657,13 +921,20 @@ class TaskSupervisorTest extends TestCase
 
     private function stopWitness($pid, $identity, $directory)
     {
-        if ($pid <= 1 || $identity === null || !is_dir('/proc/'.$pid)) { return; }
-        $path = $directory.'/cleanup-'.$pid.'.identity';
+        if ($pid <= 1 || $identity === null || !is_dir('/proc/' . $pid)) {
+            return;
+        }
+        $path = $directory . '/cleanup-' . $pid . '.identity';
         file_put_contents($path, $identity);
-        $process = proc_open([RTASK_KILL_HELPER, (string)$pid, $path],
-            [0=>['file','/dev/null','r'],1=>['file','/dev/null','w'],
-                2=>['file','/dev/null','w']], $pipes);
-        if (is_resource($process)) { proc_close($process); }
+        $process = proc_open(
+            [RTASK_KILL_HELPER, (string) $pid, $path],
+            [0 => ['file','/dev/null','r'],1 => ['file','/dev/null','w'],
+                2 => ['file','/dev/null','w']],
+            $pipes,
+        );
+        if (is_resource($process)) {
+            proc_close($process);
+        }
         @unlink($path);
     }
 
@@ -675,32 +946,44 @@ class TaskSupervisorTest extends TestCase
     private function assertCancelReachesEveryProcess($commands, $markers)
     {
         $profile = $_ENV['RU_PROFILE_PATH'];
-        $task = new rTask(['name'=>'process tree']);
+        $task = new rTask(['name' => 'process tree']);
         $task->start($commands, rTask::FLG_RUN_AS_WEB);
         $dir = rTask::formatPath($task->id);
         $witnesses = [];
         try {
             foreach ($markers as $name => $marker) {
                 $pid = $this->waitForPid($marker, 1000);
-                $this->assertEquals(true, $pid > 1, 'The '.$name.' started');
-                if ($pid <= 1) { return; }
-                $witnesses[$name] = [$pid, file_get_contents('/proc/sys/kernel/random/boot_id').
-                    file_get_contents('/proc/'.$pid.'/stat')];
+                $this->assertEquals(true, $pid > 1, 'The ' . $name . ' started');
+                if ($pid <= 1) {
+                    return;
+                }
+                $witnesses[$name] = [$pid, file_get_contents('/proc/sys/kernel/random/boot_id')
+                    . file_get_contents('/proc/' . $pid . '/stat')];
             }
-            $this->assertEquals(true, rTask::kill($task->id),
-                'Cancellation is acknowledged after complete-tree proof');
+            $this->assertEquals(
+                true,
+                rTask::kill($task->id),
+                'Cancellation is acknowledged after complete-tree proof',
+            );
             $this->assertEquals(false, is_dir($dir), 'The cancelled task record is removed');
             foreach ($witnesses as $name => $witness) {
-                $this->assertEquals(false, is_dir('/proc/'.$witness[0]), 'The '.$name.' is gone'); }
+                $this->assertEquals(false, is_dir('/proc/' . $witness[0]), 'The ' . $name . ' is gone');
+            }
         } finally {
             // A case that stopped early still cancels the whole tree first.
-            if (is_dir($dir)) { rTask::kill($task->id); }
-            foreach ($witnesses as $witness) { $this->stopWitness($witness[0], $witness[1], $profile); }
-            if (is_dir($dir) && is_file($dir.'/pid') && is_file($dir.'/pid.identity')) {
-                $pid = (int)trim(file_get_contents($dir.'/pid'));
-                $this->stopWitness($pid, file_get_contents($dir.'/pid.identity'), $profile);
+            if (is_dir($dir)) {
+                rTask::kill($task->id);
             }
-            foreach ($markers as $marker) { @unlink($marker); }
+            foreach ($witnesses as $witness) {
+                $this->stopWitness($witness[0], $witness[1], $profile);
+            }
+            if (is_dir($dir) && is_file($dir . '/pid') && is_file($dir . '/pid.identity')) {
+                $pid = (int) trim(file_get_contents($dir . '/pid'));
+                $this->stopWitness($pid, file_get_contents($dir . '/pid.identity'), $profile);
+            }
+            foreach ($markers as $marker) {
+                @unlink($marker);
+            }
         }
     }
 }

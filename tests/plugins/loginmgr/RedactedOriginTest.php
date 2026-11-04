@@ -6,7 +6,9 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts/Redacted.php');
 
-register_shutdown_function(function () { @unlink($_ENV['RU_LOG_FILE']); });
+register_shutdown_function(function () {
+    @unlink($_ENV['RU_LOG_FILE']);
+});
 
 class RedactedOriginClient
 {
@@ -20,7 +22,8 @@ class RedactedOriginClient
     {
         $this->events[] = ['fetch', $url, $method, $contentType, $body, $this->referer];
         if (!$this->answers) {
-            throw new RuntimeException('Unexpected request'); }
+            throw new RuntimeException('Unexpected request');
+        }
         $answer = array_shift($this->answers);
         $this->status = $answer[0];
         $this->results = $answer[1];
@@ -35,7 +38,6 @@ class RedactedOriginClient
 
 class RedactedOriginTest extends TestCase
 {
-
     public function setUp()
     {
         // The captured current site is chosen explicitly; no origin ships trusted.
@@ -71,13 +73,21 @@ class RedactedOriginTest extends TestCase
         $client->answers = [[200,
             '<html><title>redacted.ch</title><p>This domain may be for sale.</p></html>', true]];
         $fetched = null;
-        $this->assertSame(false, $this->invokeLogin($account, $client, $fetched),
-            'Unrecognized login page refuses credential POST');
-        $this->assertSame([['fetch', 'https://redacted.sh/login.php', 'GET', '', '', '']],
-            $client->events, 'Only an anonymous GET is sent');
+        $this->assertSame(
+            false,
+            $this->invokeLogin($account, $client, $fetched),
+            'Unrecognized login page refuses credential POST',
+        );
+        $this->assertSame(
+            [['fetch', 'https://redacted.sh/login.php', 'GET', '', '', '']],
+            $client->events,
+            'Only an anonymous GET is sent',
+        );
         $log = is_file($_ENV['RU_LOG_FILE']) ? file_get_contents($_ENV['RU_LOG_FILE']) : '';
-        $this->assertTrue(strpos($log, 'loginmgr: Redacted login refused: unexpected-login-form') !== false,
-            'Refusal has a classified log reason');
+        $this->assertTrue(
+            strpos($log, 'loginmgr: Redacted login refused: unexpected-login-form') !== false,
+            'Refusal has a classified log reason',
+        );
         $this->assertSame(false, strpos($log, 'secret&value') !== false, 'Log contains no password');
     }
 
@@ -103,8 +113,11 @@ class RedactedOriginTest extends TestCase
 
         $failed = new RedactedOriginClient();
         $failed->answers = [[500, $form, true]];
-        $this->assertSame(false, $this->invokeLogin($account, $failed, $fetched),
-            'An HTTP failure with copied form never receives credentials');
+        $this->assertSame(
+            false,
+            $this->invokeLogin($account, $failed, $fetched),
+            'An HTTP failure with copied form never receives credentials',
+        );
         $this->assertSame(1, count($failed->events), 'Failed GET is the only request');
     }
 
@@ -118,8 +131,11 @@ class RedactedOriginTest extends TestCase
             $client = new RedactedOriginClient();
             $client->answers = [[200, $form, true], [$status, 'Refused', true]];
             $fetched = null;
-            $this->assertSame(false, $this->invokeLogin($account, $client, $fetched),
-                'HTTP ' . $status . ' POST is a login refusal');
+            $this->assertSame(
+                false,
+                $this->invokeLogin($account, $client, $fetched),
+                'HTTP ' . $status . ' POST is a login refusal',
+            );
             $this->assertSame([
                 ['fetch', 'https://redacted.sh/login.php', 'GET', '', '', ''],
                 ['setcookies'],
@@ -129,10 +145,15 @@ class RedactedOriginTest extends TestCase
                     'https://redacted.sh/login.php'],
             ], $client->events, 'HTTP ' . $status . ' POST saves no response cookies');
             $log = is_file($_ENV['RU_LOG_FILE']) ? file_get_contents($_ENV['RU_LOG_FILE']) : '';
-            $this->assertTrue(strpos($log, 'loginmgr: Redacted login refused: credential-post-failed') !== false,
-                'HTTP ' . $status . ' POST refusal is classified');
-            $this->assertSame(false, strpos($log, 'secret&value') !== false,
-                'HTTP ' . $status . ' POST log hides credentials');
+            $this->assertTrue(
+                strpos($log, 'loginmgr: Redacted login refused: credential-post-failed') !== false,
+                'HTTP ' . $status . ' POST refusal is classified',
+            );
+            $this->assertSame(
+                false,
+                strpos($log, 'secret&value') !== false,
+                'HTTP ' . $status . ' POST log hides credentials',
+            );
         }
     }
     private function invokeLogin($account, $client, &$fetched)

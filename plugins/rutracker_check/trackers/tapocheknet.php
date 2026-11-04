@@ -17,8 +17,10 @@ class TapochekNetCheckImpl
     public static function download_torrent($url, $hash, $old_torrent)
     {
         if (preg_match('`^https?://tapochek\.net/viewtopic\.php\?p=(?P<id>\d+)$`', $url, $matches)) {
-            $client = ruTrackerChecker::makeClient("https://tapochek.net/viewtopic.php?p=".$matches["id"]);
-            if ($client->status != 200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            $client = ruTrackerChecker::makeClient("https://tapochek.net/viewtopic.php?p=" . $matches["id"]);
+            if ($client->status != 200) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
             $rendered = self::renderedMarkup($client->results);
 
             if (preg_match('`btih:(?P<hash>[0-9A-Fa-f]{40})&dn`', $rendered, $matches)) {
@@ -26,12 +28,12 @@ class TapochekNetCheckImpl
                 // loose == reads a hex hash shaped like scientific notation
                 // as a number ('1E' + 38 zeros == '00...01'), so two
                 // different 40-char hashes could pass as equal.
-                if (strtoupper($matches["hash"])===$hash) {
+                if (strtoupper($matches["hash"]) === $hash) {
                     return  ruTrackerChecker::STE_UPTODATE;
                 }
                 if (preg_match('`\"download.php\?id=(?P<id>\d+)\"`', $rendered, $matches)) {
                     $client->setcookies();
-                    if (!$client->fetchComplex("https://tapochek.net/download.php?id=".$matches["id"])) {
+                    if (!$client->fetchComplex("https://tapochek.net/download.php?id=" . $matches["id"])) {
                         $reason = RuTrackerFetchError::classify($client->error);
                         ruTrackerChecker::logDebug('[TapochekNet] download fetch returned false: error='
                             . ($reason === '' ? 'none' : $reason));
@@ -43,7 +45,8 @@ class TapochekNetCheckImpl
 
             // Consult the deletion marker only when no valid live evidence (btih) is present
             if (self::isMissingAnswer($rendered)) {
-                return ruTrackerChecker::STE_DELETED; }
+                return ruTrackerChecker::STE_DELETED;
+            }
 
             // The topic URL is ours and the tracker answered 200, but nothing
             // in the page could be read: no removal marker, no info hash, or a
@@ -68,8 +71,11 @@ class TapochekNetCheckImpl
     private static function renderedMarkup($body)
     {
         // A template comment or script literal cannot prove this topic is live.
-        return preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
-            '', (string) $body);
+        return preg_replace(
+            '`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
+            '',
+            (string) $body,
+        );
     }
 
     private static function hasLivePageSignal($body)
@@ -82,10 +88,14 @@ class TapochekNetCheckImpl
     // is an Information system message whose td contains only that sentence.
     private static function isMissingAnswer($body)
     {
-        if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) { return false; }
+        if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) {
+            return false;
+        }
         // Find each table's own close tag. A lazy whole-table regex consumes
         // a nested system message as part of its outer layout table.
-        if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) { return false; }
+        if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) {
+            return false;
+        }
         $stack = [];
         foreach ($tags[0] as $tag) {
             if (strpos($tag[0], '</') !== 0) {
@@ -93,14 +103,21 @@ class TapochekNetCheckImpl
                     'start' => $tag[1] + strlen($tag[0])];
                 continue;
             }
-            if (!$stack) { continue; }
+            if (!$stack) {
+                continue;
+            }
             $table = array_pop($stack);
             $table['body'] = substr($body, $table['start'], $tag[1] - $table['start']);
             if (!preg_match('`\bclass\s*=\s*(["\'])(?P<class>.*?)\1`is', $table['attrs'], $classMatch)) {
-                continue; }
+                continue;
+            }
             $classes = preg_split('/\s+/', strtolower(trim($classMatch['class'])));
-            if (!in_array('forumline', $classes, true) || !in_array('message', $classes, true)) { continue; }
-            if (!preg_match_all('`<th\b[^>]*>(.*?)</th>`is', $table['body'], $heads)) { continue; }
+            if (!in_array('forumline', $classes, true) || !in_array('message', $classes, true)) {
+                continue;
+            }
+            if (!preg_match_all('`<th\b[^>]*>(.*?)</th>`is', $table['body'], $heads)) {
+                continue;
+            }
             $information = false;
             foreach ($heads[1] as $head) {
                 if (in_array(self::plainText($head), ['Информация', self::INFORMATION_CP1251], true)) {
@@ -108,11 +125,15 @@ class TapochekNetCheckImpl
                     break;
                 }
             }
-            if (!$information || !preg_match_all('`<td\b[^>]*>(.*?)</td>`is', $table['body'], $cells)) { continue; }
+            if (!$information || !preg_match_all('`<td\b[^>]*>(.*?)</td>`is', $table['body'], $cells)) {
+                continue;
+            }
             foreach ($cells[1] as $cell) {
                 $text = self::plainText($cell);
                 if (in_array($text, [self::MISSING_MARKER, self::MISSING_MARKER . '.',
-                    self::MISSING_MARKER_CP1251, self::MISSING_MARKER_CP1251 . '.'], true)) { return true; }
+                    self::MISSING_MARKER_CP1251, self::MISSING_MARKER_CP1251 . '.'], true)) {
+                    return true;
+                }
             }
         }
         return false;

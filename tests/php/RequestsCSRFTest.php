@@ -28,8 +28,11 @@ class RequestsCSRFTest extends TestCase
 
     public function testOpaqueOriginIsRefused()
     {
-        $this->assertEquals('Forbidden', $this->probe(['HTTP_ORIGIN' => 'null']),
-            'sandboxed and data pages may use an opaque Origin');
+        $this->assertEquals(
+            'Forbidden',
+            $this->probe(['HTTP_ORIGIN' => 'null']),
+            'sandboxed and data pages may use an opaque Origin',
+        );
     }
 
     public function testSameHostDifferentPortIsRefused()
@@ -77,8 +80,11 @@ class RequestsCSRFTest extends TestCase
             'SCRIPT_NAME' => '/plugins/httprpc/action.php',
             'SCRIPT_FILENAME' => __DIR__ . '/../../plugins/httprpc/action.php',
         ]), 'legacy raw httprpc clients can omit browser origin headers');
-        $this->assertEquals('Forbidden', $this->probe([]),
-            'other browser action routes still require an origin');
+        $this->assertEquals(
+            'Forbidden',
+            $this->probe([]),
+            'other browser action routes still require an origin',
+        );
     }
 
     public function testHeaderlessRpc2ClientUsesOnlyServerOwnedEndpointMarker()
@@ -155,76 +161,116 @@ class RequestsCSRFTest extends TestCase
             'HTTP_REFERER' => 'https://panel.example:8443/rutorrent/',
             'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];
         $trusted = ['https://panel.example:8443'];
-        $this->assertEquals('ALLOW', $this->probe($headers, [], true, false, $trusted),
-            'configured frontend origin authorizes proxy POST');
+        $this->assertEquals(
+            'ALLOW',
+            $this->probe($headers, [], true, false, $trusted),
+            'configured frontend origin authorizes proxy POST',
+        );
         $headers['REQUEST_METHOD'] = 'GET';
-        $this->assertEquals('ALLOW', $this->probe($headers, [], true, false, $trusted, true),
-            'the same frontend origin authorizes AJAX bootstrap');
+        $this->assertEquals(
+            'ALLOW',
+            $this->probe($headers, [], true, false, $trusted, true),
+            'the same frontend origin authorizes AJAX bootstrap',
+        );
     }
 
     public function testConfiguredFullOriginKeepsSchemeAndPortBoundaries()
     {
         foreach (['http://panel.example:8443', 'https://panel.example:8444',
-            'https://other.example:8443', 'null'] as $source)
-        {
+            'https://other.example:8443', 'null'] as $source) {
             $headers = ['HTTP_ORIGIN' => $source, 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];
             $trusted = ['https://panel.example:8443'];
-            $this->assertEquals('Forbidden', $this->probe($headers, [], true, false, $trusted),
-                'configured origin does not grant another scheme/host/port: '.$source);
-            $this->assertEquals('Forbidden', $this->probe($headers, [], true, false, $trusted, true),
-                'bootstrap applies the same boundary: '.$source);
+            $this->assertEquals(
+                'Forbidden',
+                $this->probe($headers, [], true, false, $trusted),
+                'configured origin does not grant another scheme/host/port: ' . $source,
+            );
+            $this->assertEquals(
+                'Forbidden',
+                $this->probe($headers, [], true, false, $trusted, true),
+                'bootstrap applies the same boundary: ' . $source,
+            );
         }
     }
 
     public function testOnlyExplicitExtensionOriginCanAuthorizePost()
     {
         $trusted = ['moz-extension://configured-extension'];
-        $this->assertEquals('ALLOW', $this->probe([
-            'HTTP_ORIGIN' => 'moz-extension://configured-extension'], [], true, false, $trusted),
-            'operator can authorize one browser extension origin');
-        $this->assertEquals('Forbidden', $this->probe([
-            'HTTP_ORIGIN' => 'moz-extension://another-extension'], [], true, false, $trusted),
-            'another extension has no grant');
+        $this->assertEquals(
+            'ALLOW',
+            $this->probe([
+                'HTTP_ORIGIN' => 'moz-extension://configured-extension'], [], true, false, $trusted),
+            'operator can authorize one browser extension origin',
+        );
+        $this->assertEquals(
+            'Forbidden',
+            $this->probe([
+                'HTTP_ORIGIN' => 'moz-extension://another-extension'], [], true, false, $trusted),
+            'another extension has no grant',
+        );
     }
 
     public function testConfiguredOriginsRejectAmbiguousUrlValues()
     {
         foreach (['https://user@panel.example:8443',
             'https://panel.example:8443/path', 'https://panel.example:8443?query',
-            'https://panel.example:8443#fragment', 'https://*.example:8443'] as $grant)
-        {
+            'https://panel.example:8443#fragment', 'https://*.example:8443'] as $grant) {
             $headers = ['HTTP_ORIGIN' => 'https://panel.example:8443',
                 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];
-            $this->assertEquals('Forbidden', $this->probe($headers, [], true, false, [$grant]),
-                'a full origin setting cannot contain credentials/path/query/fragment/wildcard: '.$grant);
-            $this->assertEquals('Forbidden', $this->probe($headers, [], true, false, [$grant], true),
-                'bootstrap rejects the same ambiguous configured value: '.$grant);
+            $this->assertEquals(
+                'Forbidden',
+                $this->probe($headers, [], true, false, [$grant]),
+                'a full origin setting cannot contain credentials/path/query/fragment/wildcard: ' . $grant,
+            );
+            $this->assertEquals(
+                'Forbidden',
+                $this->probe($headers, [], true, false, [$grant], true),
+                'bootstrap rejects the same ambiguous configured value: ' . $grant,
+            );
         }
     }
 
     public function testExplicitTrustedOriginWorksForForwardedProtocolList()
     {
-        $headers = ['HTTP_HOST'=>'backend:8080', 'HTTP_X_FORWARDED_PROTO'=>'https, http',
-            'HTTP_ORIGIN'=>'https://panel.example:8443', 'HTTP_X_REQUESTED_WITH'=>'XMLHttpRequest'];
+        $headers = ['HTTP_HOST' => 'backend:8080', 'HTTP_X_FORWARDED_PROTO' => 'https, http',
+            'HTTP_ORIGIN' => 'https://panel.example:8443', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];
         $trusted = ['https://panel.example:8443'];
-        $this->assertEquals('ALLOW', $this->probe($headers, [], true, false, $trusted),
-            'explicit origin grants work independently of an ambiguous proxy scheme');
-        $this->assertEquals('ALLOW', $this->probe($headers, [], true, false, $trusted, true),
-            'bootstrap and POST apply the same explicit origin grant');
+        $this->assertEquals(
+            'ALLOW',
+            $this->probe($headers, [], true, false, $trusted),
+            'explicit origin grants work independently of an ambiguous proxy scheme',
+        );
+        $this->assertEquals(
+            'ALLOW',
+            $this->probe($headers, [], true, false, $trusted, true),
+            'bootstrap and POST apply the same explicit origin grant',
+        );
         unset($headers['HTTP_ORIGIN']);
-        $this->assertEquals('Forbidden', $this->probe($headers, [], true, false, $trusted, true),
-            'ambiguous proxy scheme without a source origin cannot authorize bootstrap');
+        $this->assertEquals(
+            'Forbidden',
+            $this->probe($headers, [], true, false, $trusted, true),
+            'ambiguous proxy scheme without a source origin cannot authorize bootstrap',
+        );
     }
 
     public function testMalformedTrustedOriginNamesConfigurationRefusal()
     {
         foreach (['panel.example', 'https://panel.example/path'] as $grant) {
-            $this->assertEquals('Forbidden', $this->probe(['HTTP_ORIGIN'=>'https://panel.example'],
-                [], true, false, [$grant]), 'invalid setting cannot authorize a request');
-            $this->assertTrue(strpos($this->probeErrors, 'trusted-origin-invalid') !== false,
-                'invalid origin configuration has a classified diagnostic');
-            $this->assertTrue(strpos($this->probeErrors, 'trustedOrigins') !== false,
-                'diagnostic names the configuration to repair');
+            $this->assertEquals('Forbidden', $this->probe(
+                ['HTTP_ORIGIN' => 'https://panel.example'],
+                [],
+                true,
+                false,
+                [$grant],
+            ), 'invalid setting cannot authorize a request');
+            $this->assertTrue(
+                strpos($this->probeErrors, 'trusted-origin-invalid') !== false,
+                'invalid origin configuration has a classified diagnostic',
+            );
+            $this->assertTrue(
+                strpos($this->probeErrors, 'trustedOrigins') !== false,
+                'diagnostic names the configuration to repair',
+            );
         }
     }
 
@@ -419,11 +465,17 @@ class RequestsCSRFTest extends TestCase
                 'HTTP_REFERER' => 'https://rutorrent.example/rutorrent/',
             ], ['rutorrent.example']],
         ] as $page => list($headers, $origins)) {
-            $this->assertEquals('ALLOW', $this->probe($headers, $origins),
-                'the Referer of ' . $page . ' alone is admitted');
+            $this->assertEquals(
+                'ALLOW',
+                $this->probe($headers, $origins),
+                'the Referer of ' . $page . ' alone is admitted',
+            );
             $headers['HTTP_ORIGIN'] = 'null';
-            $this->assertEquals('Forbidden', $this->probe($headers, $origins),
-                'and with "Origin: null" a POST from ' . $page . ' is refused');
+            $this->assertEquals(
+                'Forbidden',
+                $this->probe($headers, $origins),
+                'and with "Origin: null" a POST from ' . $page . ' is refused',
+            );
         }
     }
 
@@ -450,9 +502,13 @@ class RequestsCSRFTest extends TestCase
             'CSRF_TEST_ENABLED' => $enabled ? '1' : '0',
             'CSRF_TEST_REQUIRE_POST' => $requirePost ? '1' : '0',
         ];
-        $process = proc_open([PHP_BINARY, '-d', 'log_errors=1', '-r', $code],
+        $process = proc_open(
+            [PHP_BINARY, '-d', 'log_errors=1', '-r', $code],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, null, $environment);
+            $pipes,
+            null,
+            $environment,
+        );
         $this->assertTrue(is_resource($process), 'child PHP started');
         fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]);

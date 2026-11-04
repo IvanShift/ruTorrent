@@ -1,4 +1,5 @@
 <?php
+
 // AutoTools Move, native and upstream mode, keeps the payload inside
 // $topDirectory once links are followed. A finished directory, a directory on
 // the way or the download's own name that links out of it is refused visibly
@@ -35,7 +36,8 @@ function topOutside($state)
         foreach (array_diff(scandir($dir), ['.', '..']) as $entry) {
             $found[] = $prefix . $entry;
             if (!is_link($dir . '/' . $entry) && is_dir($dir . '/' . $entry)) {
-                $walk($dir . '/' . $entry, $prefix . $entry . '/'); }
+                $walk($dir . '/' . $entry, $prefix . $entry . '/');
+            }
         }
     };
     $walk($state['outside'], '');
@@ -86,15 +88,19 @@ function topAssertCancelled($state, $after, $calls, $bodies)
     strictAssertSame(false, $after['queued'], 'the Move is cancelled for good: ' . topLog($state));
     strictAssertTrue(strpos(topLog($state), 'autotools: move ' . $state['hash']
         . ' cancelled: destination-outside-top-directory') !== false, 'errors.log names the reason');
-    strictAssertTrue(in_array('d.set_custom', $calls, true)
+    strictAssertTrue(
+        in_array('d.set_custom', $calls, true)
         && strpos(implode('', $bodies), 'autotools: move refused: destination-outside-top-directory') !== false,
-        'and the refusal is kept on the torrent');
+        'and the refusal is kept on the torrent',
+    );
     $cancel = array_values(array_filter($bodies, function ($body) {
         return strpos($body, '<methodName>d.autotools.move_cancel</methodName>') !== false;
     }));
     strictAssertSame(1, count($cancel), 'one cancel reaches native');
-    strictAssertTrue(strpos($cancel[0], '<string>destination-outside-finished-root</string>') !== false,
-        'under the native reason the added one maps to');
+    strictAssertTrue(
+        strpos($cancel[0], '<string>destination-outside-finished-root</string>') !== false,
+        'under the native reason the added one maps to',
+    );
 }
 
 $suite = new StrictTestSuite();
@@ -111,11 +117,15 @@ foreach ([false, true] as $multi) {
             strictAssertSame(0, $exit, 'the refusal completes: ' . $output);
             topAssertCancelled($state, $after, $calls, $bodies);
             strictAssertSame([], topOutside($state), 'nothing is created or written outside the top directory');
-        } finally { topClean($state); }
-    }); }
+        } finally {
+            topClean($state);
+        }
+    });
+}
 
 foreach ([false, true] as $multi) {
-    $suite->test('native Move refuses a download name in the finished directory that links out multi=' . (int) $multi,
+    $suite->test(
+        'native Move refuses a download name in the finished directory that links out multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
@@ -124,8 +134,12 @@ foreach ([false, true] as $multi) {
                 strictAssertSame(0, $exit, 'the refusal completes: ' . $output);
                 topAssertCancelled($state, $after, $calls, $bodies);
                 strictAssertSame([], topOutside($state), 'nothing is written outside the top directory');
-            } finally { topClean($state); }
-        }); }
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 $suite->test('native Move refuses a directory on the way in the finished directory that links out', function () {
     $state = topFixture();
@@ -136,7 +150,9 @@ $suite->test('native Move refuses a directory on the way in the finished directo
         strictAssertSame(0, $exit, 'the refusal completes: ' . $output);
         topAssertCancelled($state, $after, $calls, $bodies);
         strictAssertSame([], topOutside($state), 'nothing is written outside the top directory');
-    } finally { topClean($state); }
+    } finally {
+        topClean($state);
+    }
 });
 
 // The name links back inside, so only the directory itself shows the way out.
@@ -151,7 +167,9 @@ $suite->test('native Move judges the destination directory, not only a name that
         strictAssertSame(0, $exit, 'the refusal completes: ' . $output);
         topAssertCancelled($state, $after, $calls, $bodies);
         strictAssertSame([$state['basename']], topOutside($state), 'nothing else is written outside');
-    } finally { topClean($state); }
+    } finally {
+        topClean($state);
+    }
 });
 
 $suite->test('with the top directory at / a finished directory link is followed as before', function () {
@@ -163,9 +181,14 @@ $suite->test('with the top directory at / a finished directory link is followed 
         list($exit, $after) = moveWorkerRun($state);
         strictAssertSame(0, $exit, 'the Move completes: ' . topLog($state));
         strictAssertSame(false, $after['queued'], 'and finishes');
-        strictAssertSame('payload', @file_get_contents($state['outside'] . '/' . $state['basename']),
-            'no top directory means no refusal');
-    } finally { topClean($state); }
+        strictAssertSame(
+            'payload',
+            @file_get_contents($state['outside'] . '/' . $state['basename']),
+            'no top directory means no refusal',
+        );
+    } finally {
+        topClean($state);
+    }
 });
 
 // The control, ported from upstream 2446f4827 (AutoToolsTopDirectoryTest):
@@ -174,24 +197,33 @@ $suite->test('with the top directory at / a finished directory link is followed 
 // name in the finished directory is not there yet, so each check resolves a
 // missing tail.
 foreach ([false, true] as $multi) {
-    $suite->test('native Move into a finished directory inside the top directory completes multi=' . (int) $multi,
+    $suite->test(
+        'native Move into a finished directory inside the top directory completes multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
                 list($exit, $after) = moveWorkerRun($state);
                 strictAssertSame(0, $exit, 'the Move completes: ' . topLog($state));
                 strictAssertSame(false, $after['queued'], 'and finishes');
-                strictAssertSame('payload', @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
-                    'the payload is in the finished directory');
+                strictAssertSame(
+                    'payload',
+                    @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
+                    'the payload is in the finished directory',
+                );
                 strictAssertSame(false, file_exists($state['source']), 'and not left at the source');
                 strictAssertSame(false, strpos(topLog($state), 'outside-top-directory'), 'nothing is refused');
-            } finally { topClean($state); }
-        }); }
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 // The daemon's begin answer is where the probe swapped the link in: after
 // prepare() planned and checked the destination, before the rename.
 foreach ([false, true] as $multi) {
-    $suite->test('native Move catches a finished directory swapped for a link out after planning multi=' . (int) $multi,
+    $suite->test(
+        'native Move catches a finished directory swapped for a link out after planning multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
@@ -203,20 +235,30 @@ foreach ([false, true] as $multi) {
                 strictAssertSame(true, $after['queued'], 'the queue keeps the Move');
                 strictAssertSame('absent', $after['lease'], 'the claim is released');
                 strictAssertSame(1, preg_match('/:1:[0-9]+:preflight-refused$/D', $after['retry']), 'one counted retry');
-                strictAssertTrue(strpos(topLog($state), 'publication held: destination-outside-top-directory') !== false,
-                    'errors.log names the reason');
-            } finally { topClean($state); }
-        }); }
+                strictAssertTrue(
+                    strpos(topLog($state), 'publication held: destination-outside-top-directory') !== false,
+                    'errors.log names the reason',
+                );
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 // A cross-mount Move writes a stage through the destination's parent first.
 // The outside directory's time shows whether anything was ever written there.
 foreach ([false, true] as $multi) {
-    $suite->test('a cross-mount Move resumed after a swap writes no stage outside multi=' . (int) $multi,
+    $suite->test(
+        'a cross-mount Move resumed after a swap writes no stage outside multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
                 moveWorkerSeed($state, 'claimed', 'active');
-                topEditJob($state, function ($job) { $job['cross'] = true; return $job; });
+                topEditJob($state, function ($job) {
+                    $job['cross'] = true;
+                    return $job;
+                });
                 topSwapFinished($state);
                 touch($state['outside'] . '/fin', 1000000000);
                 list($exit, $after, $calls, $output) = moveWorkerRun($state);
@@ -226,15 +268,22 @@ foreach ([false, true] as $multi) {
                 strictAssertSame(['fin'], topOutside($state), 'nothing is left outside the top directory');
                 strictAssertSame(1000000000, filemtime($state['outside'] . '/fin'), 'nor ever written there');
                 strictAssertSame(true, $after['queued'], 'the queue keeps the Move');
-                strictAssertTrue(strpos(topLog($state), 'cross-mount stage failed: destination-outside-top-directory') !== false,
-                    'errors.log names the reason');
-            } finally { topClean($state); }
-        }); }
+                strictAssertTrue(
+                    strpos(topLog($state), 'cross-mount stage failed: destination-outside-top-directory') !== false,
+                    'errors.log names the reason',
+                );
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 // A stage copied before the swap moved out with its directory and kept its
 // identity: only the name's resolution shows it is outside now.
 foreach ([false, true] as $multi) {
-    $suite->test('a staged cross-mount Move resumed after a swap does not publish outside multi=' . (int) $multi,
+    $suite->test(
+        'a staged cross-mount Move resumed after a swap does not publish outside multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
@@ -242,7 +291,9 @@ foreach ([false, true] as $multi) {
                 if ($multi) {
                     mkdir($job['stage'], 0700);
                     copy($state['source'] . '/item', $job['stage'] . '/item');
-                } else { copy($state['source'], $job['stage']); }
+                } else {
+                    copy($state['source'], $job['stage']);
+                }
                 $stat = lstat($job['stage']);
                 topEditJob($state, function ($job) use ($stat) {
                     $job['cross'] = true;
@@ -255,10 +306,16 @@ foreach ([false, true] as $multi) {
                 strictAssertTrue(topPayloadInPlace($state), 'the payload stays where it is');
                 strictAssertSame(['fin'], topOutside($state), 'nothing is published outside, and the stage is discarded');
                 strictAssertSame(true, $after['queued'], 'the queue keeps the Move');
-                strictAssertTrue(strpos(topLog($state), 'cross-mount stage failed: destination-outside-top-directory') !== false,
-                    'errors.log names the reason');
-            } finally { topClean($state); }
-        }); }
+                strictAssertTrue(
+                    strpos(topLog($state), 'cross-mount stage failed: destination-outside-top-directory') !== false,
+                    'errors.log names the reason',
+                );
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 // Upstream mode: check names the directory rTorrent records, move carries the
 // data there; both run synchronously inside rTorrent and call no daemon.
@@ -283,8 +340,11 @@ foreach ([false, true] as $multi) {
             symlink($state['outside'], $state['root'] . '/fin');
             topUpstream($state, $multi ? $state['source'] . '/' : $state['root'] . '/dl/');
             strictAssertSame([], topOutside($state), 'nothing is written outside the top directory');
-        } finally { topClean($state); }
-    }); }
+        } finally {
+            topClean($state);
+        }
+    });
+}
 
 // A single file's name is checked as a taken destination; a multi-file
 // download's name is its directory.
@@ -294,7 +354,9 @@ $suite->test('upstream mode refuses a multi-file download name that links out', 
         symlink($state['outside'], $state['destination']);
         topUpstream($state, $state['source'] . '/');
         strictAssertSame([], topOutside($state), 'nothing is written outside the top directory');
-    } finally { topClean($state); }
+    } finally {
+        topClean($state);
+    }
 });
 
 $suite->test('upstream mode refuses a directory on the way that links out', function () {
@@ -304,28 +366,41 @@ $suite->test('upstream mode refuses a directory on the way that links out', func
         symlink($state['outside'], $state['root'] . '/fin/sub');
         topUpstream($state, $state['root'] . '/dl/sub/');
         strictAssertSame([], topOutside($state), 'nothing is written outside the top directory');
-    } finally { topClean($state); }
+    } finally {
+        topClean($state);
+    }
 });
 
 // The control for upstream mode: check names the finished directory and move
 // carries the data there.
 foreach ([false, true] as $multi) {
-    $suite->test('upstream mode moves into a finished directory inside the top directory multi=' . (int) $multi,
+    $suite->test(
+        'upstream mode moves into a finished directory inside the top directory multi=' . (int) $multi,
         function () use ($multi) {
             $state = topFixture($multi);
             try {
                 list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-check');
-                strictAssertSame($multi ? $state['destination'] . '/' : $state['root'] . '/fin/', $output,
-                    'check names the finished directory');
+                strictAssertSame(
+                    $multi ? $state['destination'] . '/' : $state['root'] . '/fin/',
+                    $output,
+                    'check names the finished directory',
+                );
                 $state['upstreamDirectory'] = rtrim($output, '/');
                 list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-move');
                 strictAssertSame(0, $exit, 'move completes: ' . $output);
-                strictAssertSame('payload', @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
-                    'and carries the data there');
+                strictAssertSame(
+                    'payload',
+                    @file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']),
+                    'and carries the data there',
+                );
                 strictAssertSame(false, file_exists($state['source']), 'and not left at the source');
                 strictAssertSame(false, strpos(topLog($state), 'refused'), 'nothing is refused');
-            } finally { topClean($state); }
-        }); }
+            } finally {
+                topClean($state);
+            }
+        },
+    );
+}
 
 $suite->test('upstream move refuses a finished directory swapped for a link out after its check', function () {
     $state = topFixture();
@@ -338,7 +413,9 @@ $suite->test('upstream move refuses a finished directory swapped for a link out 
         strictAssertSame(['fin'], topOutside($state), 'nothing is published outside the top directory');
         strictAssertTrue(strpos(topLog($state), 'autotools: upstream-move ' . $state['hash']
             . ' refused: destination-outside-top-directory') !== false, 'errors.log names the reason');
-    } finally { topClean($state); }
+    } finally {
+        topClean($state);
+    }
 });
 
 exit($suite->run());

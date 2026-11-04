@@ -8,12 +8,12 @@
  */
 trait PermissiveDirectorySettings
 {
-	public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
-	}
-	public function correctReportedDirectory(&$dir, $resolve_links = false, $preserve_top = false)
-	{
-		return true;
-	}
+    public function correctDirectory(&$dir, $resolve_links = false, $preserve_top = false)
+    {
+        return true;
+    }
+    public function correctReportedDirectory(&$dir, $resolve_links = false, $preserve_top = false)
+    {
+        return true;
+    }
 }

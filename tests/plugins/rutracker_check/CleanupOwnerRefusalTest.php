@@ -18,16 +18,21 @@ foreach (['blocking owner', 'unknown fleet'] as $scene) {
             ErasedataCollectorTestState::$fleetSources = [];
             $owner = str_repeat('D', 40);
             if ($scene === 'blocking owner') {
-                rXMLRPCRequest::queue('d.multicall', true, false, [$owner, '', '', '', '']); }
+                rXMLRPCRequest::queue('d.multicall', true, false, [$owner, '', '', '', '']);
+            }
             $old = new ErasedataCollectorTestSource(['hash' => str_repeat('A', 40),
                 'info' => ['name' => 'old.bin', 'length' => 3]]);
             $new = new ErasedataCollectorTestSource(['hash' => str_repeat('B', 40),
                 'info' => ['name' => 'new.bin', 'length' => 3]]);
             foreach (['old.bin', 'new.bin'] as $name) {
-                rXMLRPCRequest::queueRaw(['d.get_base_path', 'd.is_multi_file', 'f.multicall'],
-                    ErasedataCollectorRpcWire::physicalBatch([$root . '/' . $name, 0, $root . '/' . $name]));
-                rXMLRPCRequest::queueRaw(['d.get_directory', 'd.is_multi_file', 'f.multicall'],
-                    ErasedataCollectorRpcWire::physicalBatch([$root, 0, $name]));
+                rXMLRPCRequest::queueRaw(
+                    ['d.get_base_path', 'd.is_multi_file', 'f.multicall'],
+                    ErasedataCollectorRpcWire::physicalBatch([$root . '/' . $name, 0, $root . '/' . $name]),
+                );
+                rXMLRPCRequest::queueRaw(
+                    ['d.get_directory', 'd.is_multi_file', 'f.multicall'],
+                    ErasedataCollectorRpcWire::physicalBatch([$root, 0, $name]),
+                );
             }
             $result = strictInvoke('ruTrackerChecker', 'buildObsoleteCleanupFiles', [
                 $old, $new, $root, str_repeat('A', 40), str_repeat('B', 40), str_repeat('a', 32),
@@ -36,9 +41,12 @@ foreach (['blocking owner', 'unknown fleet'] as $scene) {
             $reason = $scene === 'blocking owner'
                 ? 'owner-session-copy-unreadable-daemon-paths-unconfirmed owner=' . $owner
                 : 'owner-snapshot-unconfirmed';
-            strictAssertSame(['rutracker_check: obsolete cleanup refused old=' . str_repeat('A', 40)
-                . ' new=' . str_repeat('B', 40) . ' reason=' . $reason], FileUtil::$log,
-                'the actual producer consumes the snapshot reason and emits it once');
+            strictAssertSame(
+                ['rutracker_check: obsolete cleanup refused old=' . str_repeat('A', 40)
+                . ' new=' . str_repeat('B', 40) . ' reason=' . $reason],
+                FileUtil::$log,
+                'the actual producer consumes the snapshot reason and emits it once',
+            );
             strictAssertSame('old', file_get_contents($root . '/old.bin'), 'refusal preserves obsolete payload');
             strictAssertSame([], rXMLRPCRequest::requestsFor('d.erase'), 'refusal never erases a torrent');
             foreach (['d.get_base_path', 'd.get_directory'] as $getter) {

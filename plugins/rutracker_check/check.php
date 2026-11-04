@@ -1,2989 +1,3310 @@
 <?php
 
-require_once( "../../php/Snoopy.class.inc" );
-require_once( "../../php/rtorrent.php" );
-require_once( "../../php/util.php" );
+require_once("../../php/Snoopy.class.inc");
+require_once("../../php/rtorrent.php");
+require_once("../../php/util.php");
 
-require_once( "trackers/rutracker.php" );
-require_once( "trackers/anidub.php" );
-require_once( "trackers/kinozal.php" );
-require_once( "trackers/nnmclub.php" );
-require_once( "trackers/tapocheknet.php" );
-require_once( "trackers/tfile.php" );
-require_once( "trackers/toloka.php" );
-require_once( dirname(__FILE__) . "/fetcherror.php" );
-require_once( dirname(__FILE__) . "/runstate.php" );
-require_once( dirname(__FILE__) . "/../../php/xmlrpc_path.php" );
-require_once( dirname(__FILE__) . "/../erasedata/removewithdata.php" );
-require_once( "metafetch.php" );
+require_once("trackers/rutracker.php");
+require_once("trackers/anidub.php");
+require_once("trackers/kinozal.php");
+require_once("trackers/nnmclub.php");
+require_once("trackers/tapocheknet.php");
+require_once("trackers/tfile.php");
+require_once("trackers/toloka.php");
+require_once(dirname(__FILE__) . "/fetcherror.php");
+require_once(dirname(__FILE__) . "/runstate.php");
+require_once(dirname(__FILE__) . "/../../php/xmlrpc_path.php");
+require_once(dirname(__FILE__) . "/../erasedata/removewithdata.php");
+require_once("metafetch.php");
 
-eval(FileUtil::getPluginConf( "rutracker_check" ));
+eval(FileUtil::getPluginConf("rutracker_check"));
 
 // Tests shorten this courtesy delay without changing the production wait budget.
-if(!defined('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US')) { define('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US', 50000); }
+if (!defined('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US')) {
+    define('RUTRACKER_CHECK_LOAD_WAIT_DELAY_US', 50000);
+}
 
 class ruTrackerChecker
 {
-	public const STE_INPROGRESS		= 1;
-	public const STE_UPDATED		= 2;
-	public const STE_UPTODATE		= 3;
-	public const STE_DELETED		= 4;
-	public const STE_CANT_REACH_TRACKER	= 5;
-	public const STE_ERROR			= 6;
-	public const STE_NOT_NEED		= 7;
-	public const STE_IGNORED		= 8;
-	public const STE_META_PENDING		= 9;
-	public const STE_ABSORBED		= 10;
-
-	// awaitMetadata()'s polling interval, and the default seconds it waits
-	// when $rutrackerMetaWait is not set.
-	public const METADATA_POLL_US		= 500000;
-	public const METADATA_WAIT_DEFAULT	= 10;
-
-	// And its upper bound. conf.php promises out-of-range values are clamped,
-	// but this one had a floor only. The wait happens INSIDE the per-hash claim,
-	// whose lease is MAX_LOCK_TIME, so a mistyped value can outlive its own
-	// claim and hand the hash to a second worker while the first is still in
-	// it. A minute is already sixty times the median metadata wait measured on
-	// the live fleet, so anything past it is a typo, not a preference.
-	public const METADATA_WAIT_MAX		= 60;
-
-	// Not a status: a handler answers this when it has no data to judge by and
-	// the verdict already stored must be left alone. Negative on purpose -- the
-	// stored values are the STE_* above, and 0 means "never checked", both of
-	// which a handler may legitimately want restored.
-	public const STE_UNCHANGED		= -1;
-	// Not a stored status either: a handler returns this only when the URL it
-	// received is outside its jurisdiction. The dispatcher may then ask another
-	// handler; a real STE_NOT_NEED verdict is terminal and must not be overwritten
-	// by a tracker from a cross-seed announce row.
-	public const STE_DECLINED		= -2;
-
-	// chk-msg carries a machine token, never prose: "<token>|<parameter>".
-	// The sentence itself is localised in the browser (init.js renders
-	// theUILang.chkMessages[token] with the parameter substituted for its
-	// %s), so a message written here reads in the user's own language
-	// instead of the language of whoever wrote the handler. Anything that
-	// is only of interest while debugging goes to logDebug() instead, and
-	// clears chk-msg.
-	public const CHKMSG_SUPERSEDED		= 'superseded';		// param: 40-hex successor hash
-	public const CHKMSG_SUCCESSOR_MISSING = 'successor-missing'; // param: 40-hex missing hash
-	public const CHKMSG_DELETING		= 'deleting';		// param: "N/M" confirmation cycles
-	public const CHKMSG_TOPIC_STATUS	= 'topic-status';	// param: dump tor_status
-	public const CHKMSG_FUSE		= 'fuse';		// param: announce host
-	public const CHKMSG_ABSORBED		= 'absorbed';		// param: topic id
-
-	public const MAX_LOCK_TIME		= 900;	// 15 min
-	public const ORPHAN_SWEEP_BATCH	= 16;	// max direct presence probes per cycle
-	public const ORPHAN_SWEEP_BUDGET_NS = 2000000000;	// stop after a slow probe
-
-	// load_raw inserts the torrent from a deferred rTorrent event-loop task,
-	// so waiting for the staged copy to appear is the only wait in the
-	// replacement transaction; every other command is synchronous.
-	public const LOAD_WAIT_ATTEMPTS	= 40;
-	public const REPLACEMENT_MARKER_KEY	= 'chk-replacement';
-	public const REUSE_KEY			= 'chk-reuse';
-
-	// Marker and record bind a staged or reused successor to this transaction
-	// and the predecessor's run policy. Reused successors additionally carry
-	// REUSE_KEY: their run state and download record never belong to rollback.
-	public const INHERIT_KEY		= 'chk-replaces';
-
-	// Written on the PREDECESSOR, in the same multicall that stops and closes
-	// it, and cleared once it is safely back. Everything else this transaction
-	// records lives on the staged copy -- which does not exist yet at that
-	// point -- so without this the window between "stopped and closed" and
-	// "staged copy loaded" left the user's torrent invisible: outside the
-	// "seeding" view the cycle scans, carrying no marker either sweep looks
-	// for, and with nothing anywhere recording why it stopped.
-	//
-	// Same encoding as INHERIT_KEY, read with decodeInheritance(), but the
-	// hash field names the SUCCESSOR rather than the predecessor.
-	public const REPLACING_KEY		= 'chk-replacing';
-
-	public const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-		. "AppleWebKit/537.36 (KHTML, like Gecko) "
-		. "Chrome/120.0.0.0 Safari/537.36";
-
-	private static $TRACKERS = [];
-	// One operator-visible line per uninterrupted storage outage. A successful
-	// update resets the latch, so a later independent outage is reported too.
-	private static $claimStoreFailureLogged = false;
-	// Stage the handler's message while a terminal verdict remains visible.
-	// It is published with a definitive new verdict or discarded on retry.
-	private static $activeRunIdentity = null;
-	private static $terminalMessageHash = null;
-	private static $pendingTerminalMessage = null;
-	private static $missingSuccessorMarker = null;
-	private static $obsoleteCleanupSummary = [
-		'old' => 0,
-		'new' => 0,
-		'obsolete' => 0,
-		'missing' => 0,
-	];
-
-	/**
-	 * Register a tracker handler. The first registration of a comment filter
-	 * wins; later registrations of that same filter are ignored.
-	 *
-	 * Registration order is ownership order: run() asks the handlers whose
-	 * comment filter matches in this order, and the first that does not
-	 * decline owns the torrent. check.php registers RuTracker first.
-	 *
-	 * @param string      $commentFilter     Regex pattern for torrent comment
-	 * @param string      $announceFilter    Regex pattern for announce URL list
-	 * @param callable    $handler           Handler function: handler($url, $hash, $torrent)
-	 * @param array|null  $announceAuthority Optional. Declares that on this
-	 *        tracker a successful announce proves the topic is still current,
-	 *        so the scheduler may answer UPTODATE from the counters it already
-	 *        holds. It is the LIST OF HOSTS on which that holds -- each, or a
-	 *        subdomain of it, matched whole through UrlHost -- rather than a
-	 *        flag: see RuTrackerDetector::announceVerdict() for why the loose
-	 *        $announceFilter must not be the one to certify a topic alive.
-	 * @param string|null $topicPattern      The EXACT test the handler applies
-	 *        to a comment before it does anything -- the pattern it would
-	 *        decline on. ownerOf() reads it whether or not an authority is
-	 *        declared, so a handler may state it alone to make the owner walk
-	 *        exact; an authority, on the other hand, is never reached without
-	 *        it. $commentFilter is a loose substring test that decides who is
-	 *        asked first, not who owns the torrent: run() moves on when the
-	 *        handler it asked declines, and a Kinozal filter matches an NNMClub
-	 *        topic URL that merely mentions kinozal.tv. The scheduler cannot
-	 *        ask a handler without spending a request, so a handler that wants
-	 *        the free pass states its acceptance test here and ownerOf() reads
-	 *        it. An authority declared without this test is never reached:
-	 *        ownerOf() answers null at a handler that declared no test, and
-	 *        the free pass is granted to owners only.
-	 * @param callable|null $cycleQuota      Optional. Answers how many of this
-	 *        handler's topics one scheduler pass may dispatch for an ordinary
-	 *        check (a positive int), or null for no limit; asked once per pass.
-	 *        Recovery of an interrupted check and forum corrections are not
-	 *        counted. Like the free pass it is granted to owners only, through
-	 *        ownerOf(), so $topicPattern is required.
-	 */
-	public static function registerTracker($commentFilter, $announceFilter, $handler,
-		$announceAuthority = null, $topicPattern = null, $cycleQuota = null)
-	{
-		if(!array_key_exists($commentFilter, self::$TRACKERS))
-		{
-			self::$TRACKERS[$commentFilter] = [
-				'announceFilter' => $announceFilter,
-				'handler' => $handler,
-				'announceAuthority' => $announceAuthority,
-				'topicPattern' => $topicPattern,
-				'cycleQuota' => $cycleQuota,
-			];
-		}
-	}
-
-	/**
-	 * The registry record of the handler that owns a torrent, read from its
-	 * comment the way run() reads it -- declared rather than performed.
-	 *
-	 * The walk is run()'s walk made without asking anyone: a handler that
-	 * declared its topic pattern is taken to accept exactly what the pattern
-	 * accepts and to decline the rest; one that declared none cannot be
-	 * second-guessed, so the answer is null rather than a guess. The contract
-	 * -- why the comment filter decides who is asked and not who owns -- is
-	 * stated once, at registerTracker()'s $topicPattern.
-	 *
-	 * @return array|null the owner's registry record, or null when the owner
-	 *                    cannot be told from the comment alone
-	 */
-	public static function ownerOf($comment)
-	{
-		$comment = (string)$comment;
-		if($comment === '') {
-			return null; }
-		foreach(self::$TRACKERS as $commentFilter => $tracker)
-		{
-			if(!preg_match($commentFilter, $comment)) {
-				continue; }
-			if(empty($tracker['topicPattern'])) {
-				return null; }
-			if(preg_match($tracker['topicPattern'], $comment)) {
-				return $tracker; }
-		}
-		return null;
-	}
-
-	/**
-	 * The jurisdiction filter and authority hosts declared by the handler
-	 * that owns this comment. announceVerdict() is the single place that
-	 * checks enabled rows in that jurisdiction and trusted announce hosts.
-	 *
-	 * @param string $comment topic comment used to resolve ownership
-	 * @return array|null owner's jurisdiction and authority, or null when no
-	 *                    owner can be established or it has not opted in
-	 */
-	public static function announceAuthorityFor($comment)
-	{
-		$owner = self::ownerOf($comment);
-		if($owner === null || empty($owner['announceAuthority'])) {
-			return null; }
-		return [
-			'jurisdiction' => $owner['announceFilter'],
-			'authority' => $owner['announceAuthority'],
-		];
-	}
-
-	// A scheduling/telemetry bucket records the first handler asked by run_ex().
-	// The filter is not proof that this handler owns the topic.
-	public static function schedulingBucket($comment)
-	{
-		foreach(self::$TRACKERS as $commentFilter => $tracker) {
-			if(preg_match($commentFilter, (string)$comment)) { return $commentFilter; } }
-		return 'fallback';
-	}
-
-	public static function supportedTrackers()
-	{
-		return array_values(array_column(self::$TRACKERS, 'announceFilter'));
-	}
-
-	// Shared by the scheduler rest gate and run()'s retryable-verdict guard.
-	// A foreign DELETED/ABSORBED state is not a final RuTracker topic answer;
-	// its only settled state here is a known successor pointer.
-	public static function isSettledStatus($state, $time, $message, $foreign = false)
-	{
-		if($time <= 0) { return false; }
-		if(!$foreign && ($state === self::STE_DELETED || $state === self::STE_ABSORBED)) {
-			return true; }
-		if($state !== self::STE_NOT_NEED) { return false; }
-		$token = explode('|', (string)$message, 2)[0];
-		if($token === self::CHKMSG_SUPERSEDED) { return true; }
-		return !$foreign && $token === self::CHKMSG_TOPIC_STATUS;
-	}
-
-	// A missing comment cannot establish ownership. If any enabled row may
-	// belong to another registered handler, the scheduler must dispatch rather
-	// than certify RuTracker from a successful cross-seed announce.
-	public static function hasForeignAnnounceRow($trackers)
-	{
-		foreach(self::$TRACKERS as $tracker)
-		{
-			if($tracker['handler'] === 'RuTrackerCheckImpl::download_torrent') { continue; }
-			foreach((array)$trackers as $row) {
-				if(!empty($row['enabled']) && isset($row['url'])
-					&& preg_match($tracker['announceFilter'], (string)$row['url'])) { return true; } }
-		}
-		return false;
-	}
-
-	public static function isForeignComment($comment)
-	{
-		if((string)$comment === '') {
-			return false; }
-		if(count(self::$TRACKERS) > 0)
-		{
-			foreach(self::$TRACKERS as $commentFilter => $tracker)
-			{
-				if($tracker['handler'] !== 'RuTrackerCheckImpl::download_torrent' &&
-					preg_match($commentFilter, (string)$comment))
-				{
-					return true;
-				}
-			}
-		}
-		if(preg_match('/kinozal\.|nnmclub\.|nnm-club\.|toloka\.|tfile\.|anidub\.|tapochek\./i', (string)$comment))
-		{
-			return true;
-		}
-		return false;
-	}
-
-	/**
-	 * The comment of a torrent's session copy, or '' when it cannot be read.
-	 *
-	 * The scheduler's cycle multicall carries tracker rows and no comment.
-	 * This file read gives the conservative dispatch gate and the announce
-	 * authority gate the same comment once per row per cycle; handlers in
-	 * run() make the final ownership decision.
-	 */
-	public static function sessionComment($hash)
-	{
-		if(!class_exists('rTorrentSettings') || !method_exists('rTorrentSettings', 'get')) {
-			return ''; }
-		$settings = rTorrentSettings::get();
-		if(!$settings || empty($settings->session)) {
-			return ''; }
-		$fname = $settings->session . $hash . ".torrent";
-		if(!is_file($fname)) {
-			return ''; }
-		$torrent = @new Torrent($fname);
-		if($torrent->errors()) {
-			return ''; }
-		return (string) $torrent->comment();
-	}
-
-	/**
-	 * Check whether rTorrent still knows a hash.
-	 *
-	 * @return bool|null true when present, false when the target is missing,
-	 *                   null when presence cannot be proved either way
-	 */
-	public static function torrentExists( $hash )
-	{
-		$presence = erasedataTorrentPresence($hash);
-		if($presence === ERASEDATA_TORRENT_PRESENT) {
-			return(true); }
-		if($presence === ERASEDATA_TORRENT_ABSENT) {
-			return(false); }
-		return(null);
-	}
-
-	public static function setState( $hash, $state, $localId = null, $expectedCustoms = [] )
-	{
-		return(self::writeCustomProjection($hash,
-			self::stateCommands($hash, $state, time()), "setState", $localId, $expectedCustoms));
-	}
-
-	/**
-	 * Persist one fast-path verdict as one small daemon request.
-	 *
-	 * A scheduler-supplied local id guards the whole projection in one daemon
-	 * branch. Other callers retain the existing multicall path. Either reply
-	 * can be lost or truncated after effects landed, so read back the selected
-	 * fields, and the local id when guarded, before accepting an unknown result.
-	 * A confirmed missing hash is the sole null outcome.
-	 *
-	 * @return bool|null true when the whole desired projection is observed,
-	 *                   null when the target is confirmed absent, false otherwise
-	 */
-	public static function setFastVerdict($hash, $state, $message = null, $clearDeletion = false,
-		$localId = null, $expectedCustoms = [])
-	{
-		$now = time();
-		$commands = self::stateCommands($hash, $state, $now);
-		if($message !== null) {
-			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-				[$hash, "chk-msg", (string) $message]); }
-		if($clearDeletion) {
-			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-				[$hash, "chk-del", ""]); }
-
-		return(self::writeCustomProjection($hash, $commands, "setFastVerdict", $localId,
-			$expectedCustoms));
-	}
-
-	// Replace a disproved successor token with a durable retry marker before
-	// asking later layers. A retained terminal's ordinary setMessage() buffer
-	// cannot do this: an inconclusive answer would discard the clear.
-	public static function recordMissingSuccessor($hash, $successor)
-	{
-		$localId = self::activeRunLocalId($hash);
-		if($localId === null || !is_string($successor)
-			|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
-		{
-			self::logUnrepairable('recordMissingSuccessor: ' . $hash
-				. ' invalid run identity or successor; chk-msg superseded verdict retained');
-			return(false);
-		}
-		$marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
-		$write = self::writeCustomProjection($hash, [
-			new rXMLRPCCommand(getCmd('d.set_custom'),
-				[$hash, 'chk-msg', $marker])], 'recordMissingSuccessor', $localId);
-		if($write !== true)
-		{
-			self::logUnrepairable('recordMissingSuccessor: ' . $hash
-				. ' chk-msg marker write unconfirmed; successor verdict needs retry');
-			return(false);
-		}
-		self::logRoutine('recordMissingSuccessor: ' . $hash . ' successor-missing=' . $successor
-			. '; durable marker published; retry pending');
-		return(self::retainMissingSuccessor($hash, $successor));
-	}
-
-	// A worker may resume after the marker landed but before ERROR did.
-	// Confirm the same daemon generation before allowing later layers to
-	// replace it, and buffer their messages until a final verdict exists.
-	public static function retainMissingSuccessor($hash, $successor)
-	{
-		$localId = self::activeRunLocalId($hash);
-		if($localId === null || !is_string($successor)
-			|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
-		{
-			self::logUnrepairable('retainMissingSuccessor: ' . $hash
-				. ' invalid run identity or successor; chk-msg marker cannot be confirmed');
-			return(false);
-		}
-		$marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
-		$read = new rXMLRPCRequest([
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, 'chk-msg']),
-			new rXMLRPCCommand(getCmd('d.get_local_id'), [$hash])]);
-		$read->important = false;
-		if(!$read->success() || $read->fault || !is_array($read->val)
-			|| count($read->val) !== 2 || $read->val[0] !== $marker
-			|| $read->val[1] !== $localId)
-		{
-			self::logUnrepairable('retainMissingSuccessor: ' . $hash
-				. ' chk-msg marker readback unconfirmed; successor verdict needs retry');
-			return(false);
-		}
-		self::$missingSuccessorMarker = $marker;
-		self::$terminalMessageHash = $hash;
-		self::$pendingTerminalMessage = '';
-		return(true);
-	}
-
-	// Writes chk-msg outside a retained-terminal dispatch. Inside it, stage
-	// the last token (or empty clear) until the new state and clock are known.
-	public static function setMessage( $hash, $message )
-	{
-		if(self::$terminalMessageHash === $hash)
-		{
-			self::$pendingTerminalMessage = (string) $message;
-			return(true);
-		}
-		return(self::writeHandlerCustom($hash, "chk-msg", $message));
-	}
-
-	// The hash alone cannot identify a torrent after erase + same-hash readd.
-	public static function activeRunLocalId($hash)
-	{
-		return(self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
-			? self::$activeRunIdentity['localId'] : null);
-	}
-
-	// Handler writes share the run() identity captured with live state. Outside
-	// a run, retain the ordinary single-field setter.
-	public static function writeHandlerCustom($hash, $field, $value)
-	{
-		if(!in_array($field, ["chk-msg", "chk-del", "chk-topic"], true)) { return(false); }
-		$command = new rXMLRPCCommand(getCmd("d.set_custom"),
-			[$hash, $field, (string) $value]);
-		$localId = self::activeRunLocalId($hash);
-		if($localId !== null) {
-			return(self::writeCustomProjection($hash, [$command], "writeHandlerCustom",
-				$localId) === true); }
-		$req = new rXMLRPCRequest($command);
-		$req->important = false;
-		return($req->success());
-	}
-
-	// Observe tokenized foreign generations even if nobody checks their hash
-	// again. A missing hash is proved outside the state lock; the final write
-	// still requires the exact generation and observation seen before the probe.
-	public static function sweepOrphanClaims()
-	{
-		$candidates = [];
-		$clockUnavailable = false;
-		$stored = RuTrackerState::update('meta-claims', function($claims) use (&$candidates, &$clockUnavailable) {
-			$clock = self::claimClock();
-			if($clock === null)
-			{
-				$clockUnavailable = true;
-				return($claims);
-			}
-			foreach($claims as $hash => $entry)
-			{
-				if(!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash) || !is_array($entry)) {
-					continue; }
-				$since = self::claimSince($entry);
-				$token = $entry['token'] ?? null;
-				if($since === null || !is_string($token) || !preg_match('/^[0-9a-f]{16}$/D', $token)) {
-					continue; }
-				$observed = $entry['orphan_observed'] ?? null;
-				if(!self::claimObservationMatches($observed, $since, $token, $clock))
-				{
-					$entry['orphan_observed'] = self::claimObservation($since, $token, $clock);
-					$claims[$hash] = $entry;
-				}
-				elseif(($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000) {
-					$candidates[] = ['hash' => $hash, 'since' => $since, 'token' => $token,
-						'observed' => $observed]; }
-			}
-			return($claims);
-		});
-		if(!$stored || $clockUnavailable)
-		{
-			self::logUnrepairable('sweepOrphanClaims: meta-claims could not be observed; '
-				. ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
-			return(false);
-		}
-		if(!$candidates) { return(true); }
-		usort($candidates, function($a, $b) {
-			return($a['observed']['mono'] <=> $b['observed']['mono']);
-		});
-		$batchStarted = hrtime(true);
-		foreach(array_slice($candidates, 0, self::ORPHAN_SWEEP_BATCH) as $candidate)
-		{
-			if(hrtime(true) - $batchStarted >= self::ORPHAN_SWEEP_BUDGET_NS) { break; }
-			$presence = self::torrentExists($candidate['hash']);
-			$removed = false;
-			$requeued = false;
-			$clockUnavailable = false;
-			$settled = RuTrackerState::update('meta-claims', function($claims) use ($candidate, $presence, &$removed, &$requeued, &$clockUnavailable) {
-				$hash = $candidate['hash'];
-				$entry = $claims[$hash] ?? null;
-				if(!is_array($entry) || self::claimSince($entry) !== $candidate['since']
-					|| ($entry['token'] ?? null) !== $candidate['token']
-					|| ($entry['orphan_observed'] ?? null) !== $candidate['observed']) {
-					return($claims); }
-				$clock = self::claimClock();
-				if($clock === null)
-				{
-					$clockUnavailable = true;
-					return($claims);
-				}
-				if(!self::claimObservationMatches($candidate['observed'],
-					$candidate['since'], $candidate['token'], $clock)
-					|| ($clock['mono'] - $candidate['observed']['mono']) <= self::MAX_LOCK_TIME * 1000000000) {
-					return($claims); }
-				if($presence === false)
-				{
-					unset($claims[$hash]);
-					$removed = true;
-				}
-				else
-				{
-					// Requeue a present or uncertain hash behind other aged candidates.
-					$entry['orphan_observed'] = self::claimObservation(
-						$candidate['since'], $candidate['token'], $clock);
-					$claims[$hash] = $entry;
-					$requeued = true;
-				}
-				return($claims);
-			});
-			if(!$settled || $clockUnavailable)
-			{
-				self::logUnrepairable('sweepOrphanClaims: meta-claims could not be settled; '
-					. ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
-				return(false);
-			}
-			if($removed) { self::logDebug('sweepOrphanClaims: reaped absent hash ' . $candidate['hash']); }
-			elseif($requeued && $presence === null) {
-				self::logUnrepairable('sweepOrphanClaims: retained ' . $candidate['hash'] . ': presence-unknown'); }
-		}
-		return(true);
-	}
-
-	public static function claimCheckForWorker($hash, $now)
-	{
-		return(self::claimCheck($hash, $now));
-	}
-
-	public static function releaseCheckForWorker($hash, $token)
-	{
-		if(!is_string($token) || $token === '') {
-			return(false); }
-		self::releaseCheck($hash, $token);
-		return(true);
-	}
-
-	// The same release serves immediate rollback and the background sweep.
-	// A pre-existing successor may lose our keys, never its download record.
-	public static function discardReplacement($hash, $marker = null, $record = null)
-	{
-		if($marker === null || $record === null
-			|| (string) $marker === '' || (string) $record === '') {
-			return(RuTrackerAtomicOwnership::UNKNOWN); }
-		return(RuTrackerAtomicOwnership::closeReplacement($hash, (string) $marker,
-			(string) $record, [], true));
-	}
-
-	// Null means the exact tuple could not be established, never ordinary ownership.
-	public static function reusedReplacement($hash, $marker, $record)
-	{
-		if(!self::isPluginReplacementMarker($marker) || self::decodeInheritance($record) === null) {
-			return(null); }
-		$read = new rXMLRPCRequest([
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::REPLACEMENT_MARKER_KEY]),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::INHERIT_KEY]),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::REUSE_KEY]),
-		]);
-		$read->important = false;
-		if(!$read->success() || $read->fault || !is_array($read->val) || count($read->val) !== 3
-			|| $read->val[0] !== $marker || $read->val[1] !== $record || !is_string($read->val[2])) {
-			return(null); }
-		return($read->val[2] === '' ? false : ($read->val[2] === $marker ? true : null));
-	}
-
-	// Call only after OLD is known absent and the exact replacement generation
-	// has closed. Cleanup completion is reported separately by its queue owner.
-	public static function logReplacementComplete($oldHash, $newHash, $reused = false)
-	{
-		try
-		{
-			self::logRoutine('replacement complete old=' . $oldHash . ' new=' . $newHash
-				. ' successor=' . ($reused ? 'reused' : 'loaded'));
-		}
-		catch(Throwable $error)
-		{
-			// An optional success log cannot undo an already closed transaction.
-		}
-	}
-
-	public static function logUnrepairable($message)
-	{
-		self::logRoutine($message);
-	}
-
-	/**
-	 * Close the replacement transaction: the marker and the record go away
-	 * together, so the invariant a later cycle relies on holds -- a non-empty
-	 * record can only accompany a non-empty marker.
-	 *
-	 * Called only where the transaction is known to be over: after a confirmed
-	 * activation, and where a live torrent turns out to carry a stale marker.
-	 * Never on a row whose fate is unknown -- clearing is the irreversible
-	 * step: after it, reuse requires a fresh current candidate and installed
-	 * source proof rather than this transaction's recovery authority.
-	 */
-	public static function clearReplacementRecord($hash, $marker = null, $record = null,
-		$expectedValues = [])
-	{
-		if($marker === null || $record === null
-			|| (string) $marker === '' || (string) $record === '') {
-			return(false); }
-		return(RuTrackerAtomicOwnership::closeReplacement($hash, (string) $marker,
-			(string) $record, $expectedValues) === RuTrackerAtomicOwnership::ACTED);
-	}
-
-	/**
-	 * The predecessor's identity and run state, as one comma-free string.
-	 *
-	 * Three fields, each earning its place: the hash separates "the commit
-	 * never happened" (the predecessor is still there) from "the commit
-	 * happened and the activation did not" (it is gone); the token is the
-	 * (started, open) pair read at the commit point, which until now died with
-	 * the PHP process; the epoch lets a sweep tell a crashed transaction from
-	 * one that is simply still running.
-	 *
-	 * Hyphen-separated: a 40-hex hash, a lowercase token and an integer
-	 * contain none, so the split is unambiguous, and the whole value stays
-	 * comma-free -- d.custom.set splits its own arguments on commas.
-	 */
-	public static function encodeInheritance($oldHash, $wasStarted, $wasOpen, $now)
-	{
-		return(RuTrackerReplacementRecord::encode($oldHash, $wasStarted, $wasOpen, $now));
-	}
-
-	public static function isPluginReplacementMarker($value)
-	{
-		return(RuTrackerReplacementRecord::isPluginMarker($value));
-	}
-
-	/**
-	 * The record, or null when the value is not one this class wrote.
-	 *
-	 * null is the legacy signal -- the row predates the record, or its load
-	 * command list aborted before the record landed -- and every caller must
-	 * route it according to whether the raw value was absent (legacy) or
-	 * non-empty but malformed (fail closed). Unknown run tokens are malformed:
-	 * silently converting one to stopped can authorize an erase or key clear.
-	 */
-	public static function decodeInheritance($value, &$shaped = null)
-	{
-		return(RuTrackerReplacementRecord::decode($value, $shaped));
-	}
-
-	// The resolved, bounded wait: the caller's override when given, otherwise
-	// $rutrackerMetaWait, otherwise the default -- clamped at both ends.
-	// Separate from awaitMetadata() so the bound can be asserted without
-	// spending the wait it describes.
-	public static function metadataWaitSeconds( $override = null )
-	{
-		global $rutrackerMetaWait;
-		$seconds = $override;
-		if(is_null($seconds)) {
-			$seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT; }
-		return(min(self::METADATA_WAIT_MAX, max(0, (int) $seconds)));
-	}
-
-	/**
-	 * Wait for a magnet download to acquire its metainfo.
-	 *
-	 * Lives here, beside createTorrent(), because it is the same kind of
-	 * service every handler may need rather than anything RuTracker-specific:
-	 * it takes a hash and answers whether rTorrent still calls that download a
-	 * metadata stub. A handler that loads a magnet can therefore finish the
-	 * replacement in the cycle it started, instead of leaving it to the next
-	 * scheduled run. Today only the RuTracker handler loads magnets -- NNMClub
-	 * and Kinozal fetch the .torrent from the site and already replace within
-	 * one cycle -- but nothing here knows which tracker is asking.
-	 *
-	 * Waiting pays because metadata almost always arrives at once: across 21
-	 * replacements measured on a live fleet the median wait was 1 second and
-	 * 20 of the 21 were under 5, the lone outlier taking 83. The default ten
-	 * seconds thus turns nearly every fetch into a same-cycle replacement,
-	 * while a slow one still falls through to whatever the caller does next.
-	 * It costs an idle cycle nothing: it runs only once a fetch has begun.
-	 *
-	 * @param  string $hash The magnet download to watch
-	 * @return bool   true once the download carries real metainfo
-	 *
-	 * No $seconds override: nothing ever passed one. The bound itself stays
-	 * testable through metadataWaitSeconds(), which is where it belongs -- a
-	 * wait is not something a test should have to sit through to assert.
-	 */
-	public static function awaitMetadata( $hash )
-	{
-		$seconds = self::metadataWaitSeconds();
-		$until = microtime(true) + $seconds;
-		$expectedHash = strtoupper((string) $hash);
-		$reason = 'metadata-pending';
-		$actualHash = '(not read)';
-		for(;;)
-		{
-			$meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
-			$meta->important = false;
-			$success = $meta->success();
-			// d.is_meta can turn zero before rTorrent atomically replaces the
-			// session file. Readiness therefore requires both the live state and
-			// parseable session bytes carrying the exact expected info-hash.
-			if($success && isset($meta->val[0])
-				&& ($meta->val[0] === 0 || $meta->val[0] === '0'))
-			{
-				$torrent = rTorrent::getSource($hash);
-				if(!is_object($torrent))
-				{
-					$reason = 'session-unreadable';
-					$actualHash = '(unreadable)';
-				}
-				elseif($torrent->errors())
-				{
-					$reason = 'session-invalid';
-					$actualHash = '(invalid)';
-				}
-				else
-				{
-					$actualHash = strtoupper((string) $torrent->hash_info());
-					if($actualHash === $expectedHash) {
-						return(true); }
-					$reason = 'session-hash-stale';
-				}
-			}
-			elseif(!$success || $meta->fault || !isset($meta->val[0]))
-			{
-				$reason = 'state-unreadable';
-				$actualHash = '(not read)';
-			}
-			else
-			{
-				$reason = 'metadata-pending';
-				$actualHash = '(not read)';
-			}
-			if(microtime(true) >= $until)
-			{
-				self::logDebug('metadata readiness: ' . $expectedHash
-					. ' outcome=wait-timeout reason=' . $reason
-					. ' expected=' . $expectedHash . ' actual=' . $actualHash);
-				return(false);
-			}
-			usleep(self::METADATA_POLL_US);
-		}
-	}
-
-	/**
-	 * The one place downloaded bytes become torrent metainfo.
-	 *
-	 * Answers with the parsed Torrent, or null when the bytes are not metainfo
-	 * at all. Null says nothing about the topic: a login wall, a ratio gate, a
-	 * protection page and a truncated download all arrive here as HTTP 200 and
-	 * all come back null, so every caller has to treat that as "could not
-	 * check" and retry. Whoever needs the torrent afterwards takes the object
-	 * returned here; decoding the same bytes twice is both wasted work and a
-	 * chance for two callers to disagree about what they hold.
-	 */
-	public static function parseMetainfo($payload)
-	{
-		if(!is_string($payload) || $payload === '') { return(null); }
-		// PHP 7.4 warns when Torrent probes binary metainfo as a filename.
-		$torrent = @new Torrent($payload);
-		if($torrent->errors()) { return(null); }
-		$hash = $torrent->hash_info();
-		if(!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)) { return(null); }
-		// An empty info.name is refused here, before the bytes can reach
-		// load.raw_start. rTorrent 0.16.20 does not decline such a torrent --
-		// it ABORTS: proven on a bench container, where the payload 0.16.21
-		// declines gracefully terminates 0.16.20 outright and takes every
-		// torrent on the daemon with it. These bytes come from a tracker, so
-		// one malformed response would be a fleet-wide outage.
-		//
-		// Deliberately NOT gated on the daemon version. On 0.16.21 the torrent
-		// is still not inserted, only quietly, so refusing it early is right
-		// there too -- and a version gate would fail OPEN exactly when the
-		// version probe is stale or unanswered, which is when it is needed.
-		// hash_info() above proves the info dictionary parsed, so a missing
-		// name is a genuinely nameless torrent, not a decode failure.
-		$name = $torrent->name();
-		if(!is_string($name) || $name === '') { return(null); }
-		return($torrent);
-	}
-
-	/**
-	 * Common validated replacement tail for HTTP download clients.
-	 *
-	 * Reusable across sibling handlers: validates HTTP 200 and parses the body
-	 * once, then hands the parsed Torrent to createTorrent(). Returns
-	 * STE_CANT_REACH_TRACKER on non-200 or non-metainfo responses, both of
-	 * which are retryable and neither of which proves a topic was removed.
-	 */
-	public static function createTorrentFromDownload($client, $hash, $oldTorrent = null)
-	{
-		if(!is_object($client) || intval($client->status) !== 200) {
-			return(self::STE_CANT_REACH_TRACKER); }
-		$torrent = self::parseMetainfo((string) $client->results);
-		if($torrent === null) {
-			return(self::STE_CANT_REACH_TRACKER); }
-		return(self::createTorrent($torrent, $hash, $oldTorrent));
-	}
-
-	/**
-	 * Replace $hash with an already parsed replacement.
-	 *
-	 * $torrent is the Torrent parseMetainfo() returned, or the one a handler
-	 * downloaded and patched itself -- never bytes. Metainfo is decoded at one
-	 * boundary and the object travels from there, so this never decodes again.
-	 *
-	 * Anything else is a caller that could not produce metainfo, and the answer
-	 * is STE_ERROR: an error to retry next cycle, with nothing changed. It is
-	 * not a deletion. A tracker that really has removed a topic says so in its
-	 * own words, and each handler recognises that signal for itself, well
-	 * before it gets here.
-	 */
-	public static function createTorrent($torrent, $hash, $oldTorrent = null){
-		global $saveUploadedTorrents;
-
-		if(!($torrent instanceof Torrent) || $torrent->errors())
-		{
-			self::logDebug("createTorrent: " . $hash . " was handed metainfo that is not a parsed"
-				. " torrent; nothing is changed and the check stays retryable");
-			return self::STE_ERROR;
-		}
-
-		$newHash = $torrent->hash_info();
-		if(!is_string($newHash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $newHash))
-		{
-			self::logDebug("createTorrent: invalid or missing info_hash in replacement metainfo");
-			return self::STE_ERROR;
-		}
-		$newHash = strtoupper($newHash);
-		if(strcasecmp($newHash, (string) $hash) === 0) { return self::STE_UPTODATE; }
-
-		$exists = self::torrentExists($newHash);
-		if($exists === null) { return self::STE_ERROR; }
-		$stagedRecord = null;
-		$reuse = null;
-		if($exists === true)
-		{
-			// Recover marked transactions first. An unmarked installed copy may
-			// be reused only after its source proves the selected current version.
-			$markerReq = new rXMLRPCRequest( [
-				new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, self::REPLACEMENT_MARKER_KEY]),
-				new rXMLRPCCommand("d.get_state", $newHash),
-				new rXMLRPCCommand("d.is_open", $newHash),
-				new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, self::INHERIT_KEY]),
-			] );
-			$markerReq->important = false;
-			// Hash membership does not establish the installed source or a prior
-			// transaction. An unreadable marker probe cannot authorize either path.
-			if(!$markerReq->success() || $markerReq->fault || !isset($markerReq->val[3]))
-			{
-				self::logDebug("createTorrent: " . $hash . " could not read the marker of the existing "
-					. $newHash . "; the replacement is abandoned with nothing changed");
-				return self::STE_ERROR;
-			}
-			if((string) $markerReq->val[0] === '')
-			{
-				$reuse = $markerReq->val[3] === '' ? self::existingReplacement($torrent, $newHash) : null;
-				if($reuse === null)
-				{
-					self::logReplacementCollision($hash, $newHash, 'unproved-existing');
-					return self::STE_ERROR;
-				}
-			}
-			else
-			{
-				if(!self::isPluginReplacementMarker((string) $markerReq->val[0]))
-				{
-					self::logReplacementCollision($hash, $newHash, 'foreign-marker');
-					return self::STE_ERROR;
-				}
-				// A nonce proves only that this plugin wrote something at this hash.
-				// Ownership of THIS replacement additionally requires the strict
-				// record to name the predecessor being replaced. Without both halves,
-				// neither a stopped copy may be erased nor live keys repaired.
-				$rawStagedRecord = (string) $markerReq->val[3];
-				$stagedRecord = self::decodeInheritance($rawStagedRecord);
-				if($stagedRecord === null
-					|| strcasecmp($stagedRecord['old'], (string) $hash) !== 0)
-				{
-					self::logReplacementCollision($hash, $newHash,
-						$stagedRecord === null ? 'invalid-record' : 'different-predecessor');
-					return self::STE_ERROR;
-				}
-				// d.get_state and d.is_open are 0/1 and nothing else, proved BEFORE
-				// any branch below erases the occupant, retires its keys or
-				// activates the replacement: intval() turned every unreadable
-				// answer into the "stopped and closed" that authorises the erase.
-				$stagedState = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[1]);
-				$stagedOpen = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[2]);
-				if(!in_array($stagedState, [0, 1], true) || !in_array($stagedOpen, [0, 1], true))
-				{
-					self::logDebug("createTorrent: " . $hash . " found " . $newHash
-						. " reporting an unreadable run state; the occupant and its keys are retained");
-					return self::STE_ERROR;
-				}
-				$wasReused = self::reusedReplacement($newHash, (string) $markerReq->val[0], $rawStagedRecord);
-				if($wasReused === null) { return self::STE_ERROR; }
-				$reconciled = self::reconcileExistingCleanup(
-					$hash, $newHash, (string) $markerReq->val[0], $rawStagedRecord);
-				if($reconciled === null) {
-					return self::STE_ERROR; }
-				if($wasReused)
-				{
-					if($reconciled === 'committed')
-					{
-						if(self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord)) {
-							self::logReplacementComplete($hash, $newHash, true); }
-						self::clearLocalRefusal($hash, $newHash);
-						return null;
-					}
-					$replacing = self::encodeInheritance($newHash, $stagedRecord['run']['started'],
-						$stagedRecord['run']['open'], $stagedRecord['staged']);
-					if(self::restoreExistingTorrent($hash, $stagedRecord['run']['open'],
-						$stagedRecord['run']['started'], $replacing)) {
-						self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord); }
-					return self::STE_ERROR;
-				}
-				if($reconciled === 'committed')
-				{
-					if($stagedState !== 0 || $stagedOpen !== 0)
-					{
-						if(self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
-							['state' => $stagedState, 'is_open' => $stagedOpen])) {
-							self::logReplacementComplete($hash, $newHash); }
-						return self::STE_ERROR;
-					}
-					elseif(self::activateReplacement($newHash, $stagedRecord['run']['open'], $stagedRecord['run']['started'],
-							(string) $markerReq->val[0], $rawStagedRecord)) {
-							self::logReplacementComplete($hash, $newHash); }
-					self::clearLocalRefusal($hash, $newHash);
-					return null;
-				}
-				if($stagedState !== 0 || $stagedOpen !== 0)
-				{
-					// OLD presence has already selected cancellation or recovery.
-					// Only after that durable state is reconciled may a live successor
-					// retire the owned keys; it is never treated as disposable.
-					self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord,
-						['state' => $stagedState, 'is_open' => $stagedOpen]);
-					return self::STE_ERROR;
-				}
-				// The record the dead run wrote at ITS commit point, read before
-				// the copy carrying it is erased. The dead run's own stop/close
-				// is what left the predecessor stopped, so for this transaction
-				// the live re-read below reports the crash, not the user -- the
-				// record is the one truthful account of the state the torrent
-				// was last in when the crashed generation selected its policy.
-				if(!self::eraseStaged($newHash, (string) $markerReq->val[0], $rawStagedRecord)) {
-					return self::STE_ERROR; }
-			}
-		}
-
-		// Direct handlers already hold the parsed predecessor from run_ex(). Use
-		// it only when its info dictionary identifies this exact hash; asynchronous
-		// callers and mismatched objects retain the live source lookup fallback.
-		if(!($oldTorrent instanceof Torrent) || $oldTorrent->errors()
-			|| strcasecmp((string) $oldTorrent->hash_info(), (string) $hash) !== 0) {
-			$oldTorrent = rTorrent::getSource($hash); }
-		if(!($oldTorrent instanceof Torrent) || $oldTorrent->errors()
-			|| strcasecmp((string) $oldTorrent->hash_info(), (string) $hash) !== 0) {
-			return self::STE_ERROR; }
-
-		try
-		{
-			$marker = bin2hex(random_bytes(16));
-		}
-		catch(Exception $error)
-		{
-			return self::STE_ERROR;
-		}
-
-		if($reuse !== null)
-		{
-			// Reuse keeps NEW's settings. Only OLD's payload directory is needed
-			// by the shared cleanup; inheritance metadata cannot gate this path.
-			$req = new rXMLRPCRequest(new rXMLRPCCommand("d.get_directory_base", $hash));
-			$req->important = false;
-			if(!$req->success() || $req->fault || !is_array($req->val) || count($req->val) !== 1
-				|| !is_string($req->val[0]) || $req->val[0] === '' || $req->val[0][0] !== '/'
-				|| strpos($req->val[0], "\0") !== false) {
-				return self::STE_ERROR; }
-			$baseDir = $req->val[0];
-		}
-		else
-		{
-			// Ratio-group membership lives in rat_N views (see plugins/ratio).
-			$viewsReq = new rXMLRPCRequest( new rXMLRPCCommand(getCmd("d.views"), $hash) );
-			$viewsReq->important = false;
-			if(!$viewsReq->success()) { return self::STE_ERROR; }
-			$ratioViews = [];
-			foreach($viewsReq->val as $view) {
-				if(is_string($view) && preg_match('/^rat_\d+$/', $view)) {
-					$ratioViews[$view] = true; } }
-			$ratioViews = array_keys($ratioViews);
-
-			// Confirm the memberships against the live view list now, while the
-			// old torrent is still running: the round trip must not lengthen the
-			// window between the stop/close below and the replacement load. It is
-			// still a check-to-load TOCTOU either way -- the hoist leaves that gap
-			// at the same order of magnitude, buildReplacementAddition() just
-			// degrades an unconfirmed membership instead of trusting it. Skipped
-			// entirely when the torrent belongs to no ratio group.
-			$existingViews = empty($ratioViews) ? null : self::existingViews();
-
-			// Snapshot only non-run metadata. Run state is deliberately absent: a UI
-			// start/stop/pause after this request must win, and the daemon-side branch
-			// below measures it at the same command boundary that writes the recovery
-			// marker and stops/closes the predecessor.
-			$req = new rXMLRPCRequest( [
-				new rXMLRPCCommand("d.get_directory_base",$hash),
-				new rXMLRPCCommand("d.get_custom1",$hash),
-				new rXMLRPCCommand("d.get_throttle_name",$hash),
-				new rXMLRPCCommand("d.get_connection_seed",$hash),
-				// Carried across the replacement, in the same request that is
-				// already being made: a replacement is the same TOPIC with new
-				// metadata, so the topic id and the forum it lives in are still
-				// true of the successor. Omitting them made every successful
-				// replacement forget where its topic lives, and the next check had
-				// to resolve the forum again -- which, when the feed does not
-				// happen to know it, is a walk of the whole tracker.
-				new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-topic"]),
-				new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-forum"]),
-			]);
-			$req->important = false;
-			if(!$req->success() || !isset($req->val[5]))
-			{
-				self::logDebug("createTorrent: " . $hash
-					. " could not have its replacement metadata snapshotted; the replacement was not committed");
-				return self::STE_ERROR;
-			}
-
-			$baseDir = $req->val[0];
-			$label = rawurldecode($req->val[1]);
-			$throttle = $req->val[2];
-			$connectionSeed = $req->val[3];
-			// These four are read in the daemon's own bytes: php/xmlrpc.php hands
-			// strings out unescaped. The directory, the throttle name and the label
-			// are free text -- a torrent author's name, rtorrent.rc, another client --
-			// and each is quoted exactly once on its way into the successor's load
-			// command list, which is rtorrent's command language, not XML: the
-			// directory by rTorrent::sendTorrent() (quoteCommandArg(), beside a
-			// typed `mkdir -p`), the throttle name and the connection seed by
-			// rTorrent::additionCommand() in buildReplacementAddition(), and the
-			// label is decoded here because sendTorrent() rawurlencode()s it.
-			// Escaping any of them a second time loads the successor into a new,
-			// empty directory beside the payload, under a throttle name nobody
-			// defined, or with a label nobody chose (round-4 AUD-ESC-02, -14, -15).
-			//
-			// The topic and forum ids are canonicalised instead. Quoting already
-			// keeps a stray comma inside its argument; the spelling is the issue:
-			// "007" names no topic to topicsAwaitingForum() or resolveForum(), so
-			// forwarding it writes a value the successor's own readers refuse.
-			// trim() only, and only on the COPY: transport whitespace is not the
-			// question, the spelling of the id is. Nothing here writes back to the
-			// predecessor's own customs, and that restraint is load-bearing for
-			// exactly ONE of these two keys. chk-forum is compared as BYTES by its
-			// only other writer: RuTrackerForumIndex::writeForumMapping() holds its
-			// lock and, on a call that is NOT authoritative, tests the stored value
-			// verbatim against $expectedForum -- a crawl's pre-sweep snapshot --
-			// answering FORUM_WRITE_SUPERSEDED on any difference. An authoritative
-			// caller skips that guard, so today only the crawl reaches it. The
-			// second byte test has no such qualifier: every call compares the
-			// stored value verbatim against the id it means to write and answers
-			// FORUM_WRITE_CURRENT on a match. Rewriting those bytes
-			// anywhere else therefore changes what that compare-and-swap sees, which
-			// is why " 22" is left as " 22" on the row it is stored on. chk-topic is
-			// the other shape: its guard canonicalises BOTH sides, so " 22" names no
-			// topic there and answers FORUM_WRITE_OBSOLETE no matter what this
-			// function does. Do not read the byte-comparison hazard onto chk-topic.
-			$topicId = RuTrackerRpcValue::canonicalPositiveInt32(trim((string) $req->val[4]));
-			$forumId = RuTrackerRpcValue::canonicalForumId((string) $req->val[5]);
-			$topic = $topicId === null ? '' : (string) $topicId;
-			$forum = $forumId === null ? '' : (string) $forumId;
-
-			// Nothing is handed over until the replacement provably claims no file
-			// on disk: rTorrent::sendTorrent() unlinks whatever filename the object
-			// carries, and getSource() may have filled that in with the user's own
-			// tied .torrent. A refusal here costs one retryable cycle; getting it
-			// wrong costs a file that was never ours.
-			$disowned = self::disownFile($torrent);
-			if($disowned === null) {
-				return self::STE_ERROR; }
-
-		}
-
-		$stagedAt = time();
-		$stoppedFallback = null;
-		if($stagedRecord !== null
-			&& ($stagedRecord['run']['started'] || $stagedRecord['run']['open']))
-		{
-			// Narrow crash-adoption exception: the predecessor's (0,0) may be
-			// the dead transaction's own stop artifact. Only that selected branch
-			// inherits the staged record; a fresh daemon-side started/open reading
-			// still wins normally.
-			$stoppedFallback = self::encodeInheritance($newHash,
-				$stagedRecord['run']['started'], $stagedRecord['run']['open'], $stagedAt);
-			self::logDebug("createTorrent: " . $hash
-				. " will use the staged copy's recorded state only if the daemon selects"
-				. " stopped/closed, inheriting the recorded state over the dead run's own stop");
-		}
-		$startedMarker = self::encodeInheritance($newHash, true, true, $stagedAt);
-		$openMarker = self::encodeInheritance($newHash, false, true, $stagedAt);
-		$stoppedMarker = $stoppedFallback !== null ? $stoppedFallback
-			: self::encodeInheritance($newHash, false, false, $stagedAt);
-		$stop = new rXMLRPCRequest(self::replacementStopCommand(
-			$hash, $newHash, $stagedAt, $stoppedFallback, self::activeRunLocalId($hash)));
-		$stop->important = false;
-		if(!$stop->success() || $stop->fault || !is_array($stop->val)
-			|| count($stop->val) !== 1 || !is_string($stop->val[0])
-			|| !in_array($stop->val[0],
-				[$startedMarker, $openMarker, $stoppedMarker], true))
-		{
-			// The reply can be lost or malformed after stop/close already ran.
-			// Read the persisted marker, then compare it again inside rollback;
-			// never infer run policy by stripping bytes from an untrusted reply.
-			$restored = false;
-			$recoveryRead = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'),
-				[$hash, self::REPLACING_KEY]));
-			$recoveryRead->important = false;
-			if($recoveryRead->success() && !$recoveryRead->fault && is_array($recoveryRead->val)
-				&& count($recoveryRead->val) === 1 && is_string($recoveryRead->val[0])
-				&& in_array($recoveryRead->val[0], [$startedMarker, $openMarker, $stoppedMarker], true))
-			{
-				$recoveryMarker = $recoveryRead->val[0];
-				$restoreStarted = $recoveryMarker === $startedMarker;
-				$restored = self::restoreExistingTorrent($hash,
-					$restoreStarted || $recoveryMarker === $openMarker, $restoreStarted, $recoveryMarker);
-			}
-			self::logUnrepairable('createTorrent: '.$hash.' stop-marker-refused restore='
-				.($restored ? 'confirmed' : 'unconfirmed'));
-			return self::STE_ERROR;
-		}
-		$selectedMarker = (string) $stop->val[0];
-		$wasStarted = ($selectedMarker === $startedMarker);
-		$wasOpen = $wasStarted || ($selectedMarker === $openMarker);
-		self::logDebug("createTorrent: " . $hash . " daemon-selected run state at stop: started="
-			. ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
-		$stagedRecordStr = self::encodeInheritance($hash, $wasStarted, $wasOpen, $stagedAt);
-		if($reuse !== null)
-		{
-			$empty = array_fill_keys([self::REPLACEMENT_MARKER_KEY, self::INHERIT_KEY,
-				self::REUSE_KEY, self::REPLACING_KEY, 'chk-meta-old', 'chk-meta-new',
-				'chk-meta-until', 'chk-meta-topic'], '');
-			$claimed = RuTrackerAtomicOwnership::setCustoms($newHash, $empty, [
-				self::REUSE_KEY => $marker,
-				self::INHERIT_KEY => $stagedRecordStr,
-				self::REPLACEMENT_MARKER_KEY => $marker,
-			], ['local_id' => $reuse['local_id'], 'is_meta' => 0], true);
-			if($claimed !== RuTrackerAtomicOwnership::ACTED)
-			{
-				// The claim may have landed despite a lost reply. Exact release
-				// follows a confirmed OLD restore and cannot dispose the occupant.
-				if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
-					self::clearReplacementRecord($newHash, $marker, $stagedRecordStr); }
-				self::logUnrepairable('createTorrent: existing successor claim '.$claimed
-					.' old='.$hash.' new='.$newHash.'; replacement retained for retry');
-				return self::STE_ERROR;
-			}
-		}
-		else
-		{
-			$addition = self::buildReplacementAddition(
-				$connectionSeed, $throttle, $ratioViews, $existingViews, self::STE_UPDATED, $marker,
-				$stagedRecordStr,
-				$topic, $forum,
-			);
-
-
-			// Stage stopped: a failed pre-commit replacement cannot write shared data.
-			$pendingReceipt = null;
-			$loadedHash = rTorrent::sendTorrent($disowned, false, false, $baseDir,
-				$label, $saveUploadedTorrents, false, true, $addition, $pendingReceipt, null, true);
-			$owner = self::waitForLoad($newHash, $marker);
-			// The checker has its own staged marker. It can confirm a core-pending
-			// load without mistaking an older download with this hash for our load.
-			if($loadedHash === false || (is_string($loadedHash)
-				&& strcasecmp($loadedHash, (string) $newHash) !== 0) || $owner !== 'ours')
-			{
-				// Restore the old torrent even when the staged status is unknown:
-				// d.start on it is safe to repeat and is the only recovery there
-				// is. Its RESULT decides what happens to the staged copy: erasing
-				// that copy also destroys the marker and record the sweep scans
-				// for, so doing it before the predecessor is known to be back
-				// would leave a stopped, closed torrent that nothing in the
-				// plugin can find again. A failed restore therefore keeps the
-				// staged copy, which is exactly what turns this into a stranded
-				// transaction the sweep knows how to finish.
-				$restored = self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker);
-				$loadResult = $loadedHash === false ? 'dispatch-failed'
-					: ($loadedHash === null ? 'pending'
-						: (is_string($loadedHash) && strcasecmp($loadedHash, $newHash) === 0
-							? 'expected-hash' : 'different-hash'));
-				self::logUnrepairable('createTorrent: ' . $hash . ' -> ' . $newHash
-					. ' staging refused: load=' . $loadResult
-					. ' owner=' . (in_array($owner, ['ours', 'foreign', 'missing'], true)
-						? $owner : 'unknown')
-					. ' restore=' . ($restored ? 'confirmed' : 'unconfirmed'));
-				// A successful restore clears its exact recovery marker inside the
-				// same conditional command. A failed restore keeps it for the sweep.
-				if($owner === 'ours')
-				{
-					if($restored) {
-						self::eraseStaged($newHash, $marker, $stagedRecordStr); }
-					else {
-						self::logDebug("createTorrent: " . $hash . " could not be restored after a failed"
-							. " staging; keeping the staged copy " . $newHash
-							. " so the sweep can finish the transaction"); }
-				}
-				return self::STE_ERROR;
-			}
-		}
-
-		$cleanupFiles = self::buildObsoleteCleanupFiles($oldTorrent, $torrent, $baseDir,
-			$hash, $newHash, $marker, $stagedRecordStr, $reuse === null ? null : $reuse['base']);
-		self::logDebug('createTorrent: cleanup prepare ' . $hash . ' -> ' . $newHash
-			. ' old=' . self::$obsoleteCleanupSummary['old']
-			. ' new=' . self::$obsoleteCleanupSummary['new']
-			. ' obsolete=' . self::$obsoleteCleanupSummary['obsolete']
-			. ' missing=' . self::$obsoleteCleanupSummary['missing']);
-		$cleanupJob = null;
-		if($cleanupFiles !== false && $cleanupFiles !== null) {
-			$cleanupJob = erasedataPrepareObsoleteCleanup(
-				$hash, $newHash, $marker, $stagedRecordStr, realpath($baseDir), $cleanupFiles); }
-		if($cleanupFiles === false || ($cleanupFiles !== null && !is_array($cleanupJob)))
-		{
-			self::logCleanupFailure('durable cleanup preparation failed for ' . $hash . ' -> ' . $newHash
-				. '; replacement was aborted before predecessor erase');
-			self::postponeLocalRefusal($hash, $newHash,
-				$cleanupFiles === false ? 'cleanup plan refused' : 'local file operation refused');
-			if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
-				self::eraseStaged($newHash, $marker, $stagedRecordStr); }
-			else {
-				self::logDebug('createTorrent: ' . $hash . ' could not be restored after cleanup preparation failed;'
-					. ' keeping staged copy ' . $newHash . ' for replacement sweep recovery'); }
-			return self::STE_ERROR;
-		}
-
-		$armReason = null;
-		if($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob, $armReason))
-		{
-			// Preparation succeeded; the arm step is what refused.
-			self::logCleanupFailure('obsolete-file cleanup was not armed ('
-				. ($armReason === null ? 'cleanup-arm-unconfirmed' : $armReason)
-				. ') before predecessor erase; replacement remains retryable');
-			// Only a proven lasting rename capability refusal escalates the
-			// scheduler backoff. No other arm refusal (job, lock, state,
-			// write, RPC, acknowledgement, unconfirmed rename) is proven
-			// lasting, so it retries on the next cycle without starting or
-			// extending a streak.
-			if($armReason === 'cleanup-rename-capability') {
-				self::postponeLocalRefusal($hash, $newHash, $armReason,
-					'obsolete-file cleanup was not armed'); }
-			if(!erasedataCancelObsoleteCleanup($cleanupJob))
-			{
-				self::logCleanupFailure('prepared obsolete cleanup cancellation failed after drain refusal; both generations and recovery markers were retained');
-				return self::STE_ERROR;
-			}
-			if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
-				self::eraseStaged($newHash, $marker, $stagedRecordStr); }
-			else {
-				self::logDebug('createTorrent: predecessor restore failed after cleanup drain refusal; keeping staged successor for sweep'); }
-			return self::STE_ERROR;
-		}
-
-		// Commit point: erase the old torrent.
-		$eraseStatus = RuTrackerAtomicOwnership::erase(
-			$hash,
-			[self::REPLACING_KEY => $selectedMarker],
-			['state' => 0, 'is_open' => 0],
-		);
-		$eraseSuccess = ($eraseStatus === RuTrackerAtomicOwnership::ACTED);
-		if(!$eraseSuccess)
-		{
-			$oldExists = self::torrentExists($hash);
-			if($oldExists === true)
-			{
-				if($cleanupJob !== null && !erasedataCancelObsoleteCleanup($cleanupJob))
-				{
-					self::logCleanupFailure('prepared obsolete cleanup cancellation failed for ' . $hash . ' -> ' . $newHash
-						. '; both generations and recovery markers were retained');
-					return self::STE_ERROR;
-				}
-				// Restore first, erase second, and only on a verified
-				// restore -- the same order and the same reason as the
-				// staging rollback above. Erasing the staged copy first
-				// destroyed the marker before anything knew whether the
-				// predecessor was coming back, and the restore's answer was
-				// then thrown away.
-				if(self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker))
-				{
-					self::eraseStaged($newHash, $marker, $stagedRecordStr);
-				}
-				else {
-					self::logDebug("createTorrent: " . $hash . " could not be restored after a failed"
-						. " commit erase; keeping the staged copy " . $newHash
-						. " so the sweep can finish the transaction"); }
-				return self::STE_ERROR;
-			}
-			if($oldExists === null)
-			{
-				// Both fates are unknowable: keep the marked staged copy so a
-				// later run can adopt it, and touch nothing else.
-				return self::STE_ERROR;
-			}
-			// The old torrent is gone despite the failed erase: proceed.
-		}
-
-		$published = false;
-		$closeTransaction = true;
-		if($cleanupJob !== null)
-		{
-			$published = erasedataPublishObsoleteCleanup($cleanupJob);
-			if(!$published)
-			{
-				$closeTransaction = false;
-				self::logCleanupFailure('durable obsolete cleanup publish failed for ' . $hash . ' -> ' . $newHash
-					. '; successor recovery markers were retained');
-			}
-		}
-
-		$activated = self::activateReplacement(
-			$newHash, $wasOpen, $wasStarted, $marker, $stagedRecordStr, $closeTransaction, $reuse !== null);
-		// The transaction is closed only once the daemon has been seen in the
-		// intended state. An unconfirmed activation keeps both keys, so the
-		// next cycle's sweep finds the row instead of a torrent that merely
-		// looks finished -- which is how a replacement sat stopped for a day.
-		if(!$activated) {
-			self::logDebug("createTorrent: ".$newHash." keeps its replacement record: activation was not confirmed"); }
-		if($published && !erasedataKickCollector($hash)) {
-			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . $hash
-				. '; the published job remains scheduled for retry'); }
-		if($activated && $closeTransaction) {
-			self::logReplacementComplete($hash, $newHash, $reuse !== null); }
-		self::clearLocalRefusal($hash, $newHash);
-		return null;
-	}
-
-	public static function run_ex($hash, $source, &$performed = null){
-		$performed = false;
-		$torrent = ($source instanceof Torrent) ? $source : new Torrent( $source );
-		// Two facts, and they used to leave through the same STE_NOT_NEED at
-		// the bottom. "The session copy does not parse" is a torrent nobody
-		// could look at -- transient in principle, since rTorrent rewrites
-		// that file -- while "no registered handler claims it" is a torrent
-		// that is genuinely none of this plugin's business. Settling the first
-		// as the second stops the plugin ever looking at the torrent again,
-		// and says so in the UI under a word that means the opposite.
-		if($torrent->errors())
-		{
-			self::logDebug("run_ex: " . $hash . " has a session copy that does not parse ("
-				. (is_string($source) ? $source : 'daemon source')
-				. "); nothing could be read from it, so nothing is concluded");
-			return self::STE_CANT_REACH_TRACKER;
-		}
-		$comment = (string) $torrent->comment();
-		// A handler says STE_DECLINED only when the URL is outside its
-		// jurisdiction. Every stored verdict, including STE_NOT_NEED, is a real
-		// answer and is final: another tracker in a cross-seed announce-list knows
-		// nothing about the topic URL that produced it.
-		$declinedFromAnnounce = false;
-		$askedAlready = [];
-
-		// A comment filter is a substring test over free text: a Kinozal
-		// torrent whose description mentions "ранее на rutracker.org" matches
-		// RuTracker's. The loop used to RETURN whatever the first match
-		// answered, so that torrent was handed to the wrong handler for good
-		// and nothing else ever got a look. A handler that declines now simply
-		// passes the torrent on.
-		foreach (self::$TRACKERS as $commentFilter => $tracker)
-		{
-			if(!preg_match($commentFilter, $comment)) { continue; }
-			$askedAlready[$commentFilter] = true;
-			$verdict = call_user_func($tracker['handler'], $comment, $hash, $torrent);
-			if($verdict !== self::STE_DECLINED)
-			{
-				$performed = true;
-				return $verdict;
-			}
-		}
-
-		$announces = [];
-		self::appendAnnounceUrls($torrent->announce(), $announces);
-		self::appendAnnounceUrls($torrent->announce_list(), $announces);
-
-		// Announce matching is a fallback only after every comment handler had
-		// a chance to claim the topic URL.
-		foreach (self::$TRACKERS as $commentFilter => $tracker)
-		{
-			// It already answered, from better input. Only two of the seven
-			// handlers -- anidub and tapochek -- register one pattern as both
-			// filters, but identity is not what makes this guard necessary: a
-			// torrent from its own tracker normally carries both a comment the
-			// comment filter matched and an announce the announce filter matches.
-			// That is what rutracker (/rutracker\./ against
-			// /rutracker\.|t-ru\.org/) and toloka (/toloka\./ against
-			// /toloka\.to/) look like -- differing patterns that still both hit
-			// the same host. So without this the same handler ran twice for one
-			// torrent -- once on the comment it is written to read, then again on
-			// an announce URL it cannot.
-			if(isset($askedAlready[$commentFilter])) { continue; }
-			foreach($announces as $announce)
-			{
-				if(!preg_match($tracker['announceFilter'], $announce)) { continue; }
-				// The handler is handed the ANNOUNCE url here, and every
-				// handler's gate parses a TOPIC url -- so the gate declines. Before
-				// STE_DECLINED existed that answer was STE_NOT_NEED, and a magnet-added
-				// torrent, or one whose comment was stripped, ended up stamped
-				// "No need to check" for ever, with no request and no log line.
-				// And it is the torrent that needs looking at most: the pass
-				// only sends a row for the full check once layer 1 calls it a
-				// candidate, which is exactly when its announces are failing.
-				$verdict = call_user_func($tracker['handler'], $announce, $hash, $torrent);
-				if($verdict !== self::STE_DECLINED)
-				{
-					$performed = true;
-					return $verdict;
-				}
-				$declinedFromAnnounce = true;
-				break;   // this handler has answered; the next announce is not a second chance
-			}
-		}
-
-		// Somebody was handed nothing but an announce URL, which no gate can
-		// turn into a topic. That is "ask again later", never "nothing to do
-		// here" -- and it outranks any comment-based decline, because it is the
-		// one answer that established nothing.
-		if($declinedFromAnnounce)
-		{
-			self::logDebug("run_ex: " . $hash . " is claimed by a registered tracker but no handler could"
-				. " identify its topic from the comment or the announce; nothing is concluded");
-			return self::STE_CANT_REACH_TRACKER;
-		}
-		// A BEP-9 .meta source is only the info dictionary: announce and
-		// comment belong to the missing outer metainfo envelope. An empty pair
-		// therefore proves no tracker ownership either way. Wait for the full
-		// source instead of permanently settling it as "not our business".
-		if($comment === '' && !count($announces))
-		{
-			self::logDebug("run_ex: " . $hash
-				. " has no tracker identity in its current source; nothing is concluded");
-			return self::STE_CANT_REACH_TRACKER;
-		}
-		// No registered filter claimed either input. A handler that reached a
-		// real terminal verdict returned it above; only jurisdiction declines
-		// can reach this dispatcher-level STE_NOT_NEED.
-		return self::STE_NOT_NEED;
-	}
-
-	// The version of the rTorrent that is answering right now, as one log
-	// fragment. rTorrentSettings::get() would answer from the cached
-	// rtorrent.dat instead -- only a browser-driven get(true) ever refreshes
-	// it -- so after an upgrade and a restart it can report the old version
-	// for days, which is the single answer this diagnostic must never give.
-	// The query is skipped entirely when the debug log is off: nothing pays
-	// for a line that is not written.
-	public static function liveVersionLabel()
-	{
-		global $rutrackerCheckDebug;
-		$unknown = "client=? api=?";
-		if(empty($rutrackerCheckDebug)) {
-			return($unknown); }
-		$req = new rXMLRPCRequest( [
-			new rXMLRPCCommand(getCmd("system.client_version")),
-			new rXMLRPCCommand(getCmd("system.api_version")),
-		] );
-		$req->important = false;
-		if(!$req->success() || !isset($req->val[0], $req->val[1])) {
-			return($unknown); }
-		return("client=".trim((string) $req->val[0])." api=".trim((string) $req->val[1]));
-	}
-
-	// The origin a handler whose tracker has no fixed domain works on, taken
-	// from the loginmgr account of the same name so that the pages this
-	// plugin reads are on the host loginmgr logs in at. '' when loginmgr is
-	// not installed, or while its setting for that account is not set or not
-	// usable -- a handler with no origin has nowhere to ask, and the account
-	// is what decides that an origin is an https one and nothing more.
-	//
-	// loginmgr is reached only when a handler asks, so this plugin still
-	// loads without it.
-	public static function accountOrigin($name)
-	{
-		$file = dirname(__FILE__)."/../loginmgr/accounts/".$name.".php";
-		$class = $name."Account";
-		if(is_file($file))
-		{
-			require_once(dirname(__FILE__)."/../loginmgr/accounts.php");
-			require_once($file);
-		}
-		// Without autoloading: what declares an account is the file above.
-		if(!class_exists($class,false)) {
-			return(''); }
-		$account = new $class();
-		return(is_string($account->url) ? $account->url : '');
-	}
-
-	public static function logDebug($message)
-	{
-		global $rutrackerCheckDebug;
-		if(!empty($rutrackerCheckDebug)) {
-			self::logRoutine($message); }
-	}
-
-	public static function transportFailureDetail($status)
-	{
-		$status = (int) $status;
-		if($status === Snoopy::RESPONSE_BODY_FAILED) {
-			// The same code covers a local request refusal and a rejected body.
-			// Only the separately classified error can distinguish them.
-			return('transport=client status=' . $status); }
-		if($status < 0)
-		{
-			$reasons = [-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create'];
-			$reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
-			return('transport=socket status=' . $status . ' reason=' . $reason);
-		}
-		// Zero is NOT a curl exit code here, and the old text said so twice
-		// over -- zero is curl's code for SUCCESS -- which made sixteen lines
-		// of a live log diagnose nothing at all.
-		//
-		// It is also not one single condition. Snoopy seeds $status with 0 and
-		// overwrites it with curl's exit code, with the code parsed out of an
-		// "HTTP/..." header line, or with fsockopen's $errno, so a surviving 0
-		// is any of four things:
-		//   (a) connected, but no parseable status line came back -- the header
-		//       loops set $status only on a line matching |^HTTP/|;
-		//   (b) the socket path failed with errno 0, which is what PHP reports
-		//       for a getaddrinfo/DNS failure (verified: fsockopen on an
-		//       unresolvable host gives errno 0);
-		//   (c) Snoopy refused before sending -- an invalid protocol, an
-		//       unresolvable host, or one resolving to a non-public address
-		//       (Snoopy.class.inc checkTarget());
-		//   (d) fetch() bailed on a URI parse_url() could not read, before
-		//       touching either field.
-		// Naming any one of them would misdiagnose the rest: an earlier draft
-		// called a DNS outage "the server sent no status line" and would have
-		// sent an operator to look at Cloudflare. So this says only what is
-		// certainly true, and makeClient() logs classifyFetchError()'s token
-		// for $client->error beside it.
-		//
-		// That token is NOT always there, and the difference matters more than
-		// it looks: Snoopy writes the message on (b) and (c) but on neither
-		// (a) nor (d), because the header loops and the early bail touch only
-		// $status. (a) is exactly what produced the sixteen log lines cited
-		// above -- they are all curl-path fetches that exited 0 with no status
-		// line parsed -- so for the motivating case the field is absent and
-		// this text is the whole diagnosis. An absent error= is therefore
-		// evidence in its own right: it narrows a status 0 to (a) or (d).
-		if($status === 0) {
-			return('transport=no-status reason=unset'); }
-		$reasons = [
-			5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
-			35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
-			56 => 'receive', 60 => 'tls-certificate',
-		];
-		$reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
-		return('transport=curl-exit code=' . $status . ' reason=' . $reason);
-	}
-
-	/**
-	 * Snoopy's failure sentence, reduced to one greppable token.
-	 *
-	 * transportFailureDetail() alone cannot separate the several conditions
-	 * that all arrive as status 0, and Snoopy has already written the one
-	 * sentence that distinguishes them.
-	 *
-	 * The rule itself lives in fetcherror.php, which the NNMClub guest path
-	 * requires too: both used to carry their own copy of the same eight
-	 * token/pattern pairs, and the copies had drifted over how they normalised
-	 * whitespace. The method stays as a delegate so that de-duplicating the
-	 * rule changed no call site's name or shape; makeClient() below is its
-	 * only caller and it may be inlined.
-	 *
-	 * @return string A token, or '' when Snoopy wrote no message
-	 */
-	public static function classifyFetchError( $error )
-	{
-		return(RuTrackerFetchError::classify($error));
-	}
-
-	public static function fetchStatusDetail($status)
-	{
-		if($status === null || $status === '') { return(''); }
-		$status = (int) $status;
-		return($status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status);
-	}
-
-	// $agent defaults to the browser agent, which reduces 403/anti-bot errors
-	// on the forum and the API. It is WRONG for an announce endpoint, where
-	// Cloudflare refuses browser agents outright -- see
-	// RuTrackerAnnounce::PROBE_USER_AGENT for the measurements and for what
-	// that silently cost. One default cannot be right for all three callers,
-	// so the one that differs says so at the call site.
-	public static function makeClient( $url, $method="GET", $content_type="", $body="", $agent=self::USER_AGENT )
-	{
-		$client = new Snoopy();
-		$client->read_timeout = 5;
-		$client->_fp_timeout  = 5;
-
-		$client->agent = (string) $agent;
-
-		@$client->fetchComplex($url, $method, $content_type, $body);
-
-		// Socket errors are negative; the https path stores curl's exit code,
-		// which is below any real HTTP status.
-		if($client->status < 100)
-		{
-			$host = @parse_url($url, PHP_URL_HOST);
-			// Snoopy's own message, classified, not just the numeric map. The
-			// number alone cannot separate the several conditions that all
-			// arrive as status 0 (see transportFailureDetail()), and Snoopy has
-			// already written the one sentence that distinguishes them --
-			// "connection failed (0)" for an unresolvable host, "Refusing to
-			// fetch: ..." when it declined to send at all. This plugin used to
-			// read $client->error nowhere at all, so that sentence was thrown
-			// away exactly when it was the only thing worth having.
-			//
-			// A token rather than the sentence, for two reasons. It is the
-			// spelling this plugin's other reader of the same Snoopy field
-			// uses (NNMClubCheckImpl::guestFetch()), so one grep now reads the
-			// field wherever the plugin writes it; two shapes needed two.
-			// And it needs no redaction audit: this plugin's hardest log rule
-			// is that a probe URL, which spells the user's passkey in its query
-			// string, must never reach the log (RuTrackerAnnounce::buildUrl
-			// strips it for the same reason), and Snoopy is a vendored file
-			// that some later merge may well teach to quote the URL it failed
-			// on. classifyFetchError() answers 'unclassified' to anything it
-			// does not recognise, so that merge cannot leak through here.
-			$error = self::classifyFetchError($client->error);
-			self::logDebug("Snoopy fetch failed: host=".(is_string($host) ? $host : 'unknown')." "
-				. self::transportFailureDetail($client->status)
-				. ($error === '' ? '' : ' error=' . $error));
-		}
-
-		return $client;
-	}
-
-	// Shared by run() below and RuTrackerUpdatePass::run()'s direct-write
-	// paths (updatepass.php), so an ignored torrent can never flap between
-	// STE_IGNORED and a scheduler-derived state depending only on which of
-	// the two ever ends up touching it in a given cycle.
-	// The label is compared decoded. d.custom1 holds it percent-encoded on
-	// every path that goes through rTorrent::sendTorrent() (php/rtorrent.php
-	// rawurlencode()s it), and createTorrent() below already rawurldecode()s
-	// it for its own use -- but getState() and update.php's fleet scan hand
-	// the raw value straight to this function, so an $ignoreLabels entry
-	// containing anything that needs escaping (a space, Cyrillic) silently
-	// never matched. The shipped defaults ('tv-sonarr', 'radarr') need no
-	// escaping, which is why this went unnoticed. A label another client
-	// wrote without encoding matches as it is: both readers hand over the
-	// daemon's own bytes (round-4 AUD-ESC-14).
-	public static function isIgnoredLabel( $label )
-	{
-		global $ignoreLabels;
-		if(is_null($label) || !isset($ignoreLabels) || !is_array($ignoreLabels)) { return(false); }
-		return( in_array($label, $ignoreLabels, true) || in_array(rawurldecode((string) $label), $ignoreLabels, true) );
-	}
-
-	public static function run( $hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null, $scheduledAt = null, &$observation = null )
-	{
-		// $performed is deliberately narrower than "this invocation changed
-		// something": it acknowledges only a real tracker-handler run. The
-		// scheduler uses it to retire durable forum-correction work, which an
-		// ignored-label decision or a metadata-pump step has not consumed.
-		$performed = false;
-		// Diagnostic output only. A successful invocation may acquire no claim,
-		// run no handler, or retain an old verdict without learning anything.
-		$observation = 'not-observed';
-		// The scheduler passes a cycle-start snapshot, while a manual check can
-		// finish and change chk-state before this row is reached. Take the real
-		// per-hash claim first, then refresh state, time and label under that same
-		// claim so the branch below is chosen from one live reading. A second
-		// claim inside either branch would deadlock against our own token.
-		$expiredPrevious = false;
-		$claimToken = self::claimCheck($hash, time(), $expiredPrevious);
-		if($claimToken === null) {
-			return(false); }
-		if($claimToken === false)
-		{
-			self::logDebug("run: " . $hash . " is already being checked by another process; leaving it to that one");
-			return(true);
-		}
-
-		$previousIdentity = self::$activeRunIdentity;
-		try
-		{
-			if(!self::getState( $hash, $state, $time, $label, $localId, $storedMessage ))
-			{
-				// The torrent is gone: a stale worker, and a successful no-op.
-				if($state == self::STE_NOT_NEED) {
-					return(true); }
-				// Anything else left getState()'s own STE_INPROGRESS default in
-				// place -- and the dispatch below reads that as "another process
-				// holds the lock", so the check is silently skipped and reported
-				// as successful. A read that failed is not a lock. Say so, and
-				// let the caller come back.
-				self::logDebug("run: " . $hash . " state could not be read; deferring the check");
-				return(false);
-			}
-
-			self::$activeRunIdentity = ['hash' => $hash, 'localId' => $localId,
-				'scheduledAt' => $scheduledAt];
-			self::$missingSuccessorMarker = null;
-
-			$recoverableP = $state == self::STE_INPROGRESS
-				&& ($expiredPrevious || (time()-$time)>self::MAX_LOCK_TIME);
-			$emptyPGuard = [];
-			$promotedMeta = false;
-			if($state == self::STE_INPROGRESS)
-			{
-				// Older workers published the owned marks before the M state.
-				// Observe the same daemon generation before an ignored label or
-				// an alive shortcut can hide that unfinished fetch.
-				$marks = new rXMLRPCRequest([
-					new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-meta-new"]),
-					new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-meta-until"]),
-					new rXMLRPCCommand(getCmd("d.get_local_id"), $hash),
-				]);
-				$marks->important = false;
-				if(!$marks->success() || $marks->fault || !is_array($marks->val)
-					|| count($marks->val) !== 3 || (string) $marks->val[2] !== $localId)
-				{
-					self::logUnrepairable('run: ' . $hash
-						. ' chk-meta-new/chk-meta-until generation read unconfirmed; deferring P verdict');
-					return(false);
-				}
-				if((string) $marks->val[0] !== '' || (string) $marks->val[1] !== '')
-				{
-					if(!$recoverableP) { return(true); } // the fresh P worker still owns this fetch
-					if(self::setState($hash, self::STE_META_PENDING, $localId) !== true)
-					{
-						self::logUnrepairable('run: ' . $hash
-							. ' chk-state META_PENDING promotion unconfirmed;'
-							. ' retaining chk-meta-new/chk-meta-until for retry');
-						return(false);
-					}
-					$state = self::STE_META_PENDING;
-					$promotedMeta = true;
-				}
-				else {
-					$emptyPGuard = ["chk-state" => (string) self::STE_INPROGRESS,
-						"chk-meta-new" => "", "chk-meta-until" => ""]; }
-			}
-
-			if($state == self::STE_META_PENDING)
-			{
-				// Keep the durable state until pump() has retired its exact
-				// generation. The per-hash claim already excludes other workers;
-				// INPROGRESS here could strand the marks after a worker crash.
-				$state = RuTrackerMetaFetch::pump($hash, time());
-				// null is pump()'s success contract: createTorrent() committed,
-				// so this hash no longer exists and there is nothing to write.
-				if(is_null($state)) { return(true); }
-				if($state == self::STE_META_PENDING) {
-					return($promotedMeta || self::setState($hash, $state, $localId) !== false); }
-				$ignored = self::isIgnoredLabel($label);
-				$written = self::setRetiredMetaVerdict($hash,
-					$ignored ? self::STE_IGNORED : $state, $ignored, $localId);
-				if($written === false)
-				{
-					self::logUnrepairable('run: ' . $hash . ' metafetch-final-verdict-unconfirmed;'
-						. ' chk-state after retired chk-meta-new/chk-meta-until needs retry');
-					return(false);
-				}
-				return($ignored || $state != self::STE_CANT_REACH_TRACKER);
-			}
-
-			// Keep the ignored state and its cleared message on the same
-			// daemon generation. The scheduler applies the same projection.
-			if(self::isIgnoredLabel($label)) {
-				return(self::setFastVerdict($hash, self::STE_IGNORED, '', false, $localId,
-					$emptyPGuard) !== false); }
-
-			// The claim may have expired on monotonic time while chk-time is still
-			// future-dated after a wall-clock rollback. Only that proved takeover
-			// may bypass the old wall-clock in-progress check.
-			if($recoverableP) { $state = 0; }
-			$recoveredEmptyP = $recoverableP && $emptyPGuard !== [];
-
-			if($state!==self::STE_INPROGRESS){
-				if($prepareOrdinaryCheck !== null && !call_user_func($prepareOrdinaryCheck, $hash)) { return(false); }
-				// The marker may predate this process. Arm its retry guard before
-				// INPROGRESS can replace the old clock or a handler can clear chk-msg.
-				if(strpos($storedMessage, self::CHKMSG_SUCCESSOR_MISSING) === 0)
-				{
-					$prefix = self::CHKMSG_SUCCESSOR_MISSING . '|';
-					$successor = substr($storedMessage, strlen($prefix));
-					if(strpos($storedMessage, $prefix) !== 0
-						|| preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1)
-					{
-						self::logUnrepairable('run: ' . $hash
-							. ' malformed chk-msg successor-missing marker; check deferred');
-						return(false);
-					}
-					if(!self::retainMissingSuccessor($hash, $successor)) { return(false); }
-				}
-				$previous = $state;
-				$terminal = in_array($previous, [self::STE_DELETED, self::STE_ABSORBED], true);
-				if($previous === self::STE_NOT_NEED && $time > 0)
-				{
-					$message = self::storedMessage($hash);
-					if($message === null) { return(false); }
-					$terminal = self::isSettledStatus($previous, $time, $message);
-				}
-				$state = self::STE_INPROGRESS;
-				// claimCheck() serializes workers. Keep a terminal verdict visible
-				// while checking. The same-value preflight leaves chk-time intact
-				// and detects a missing hash. A matching readback of this value
-				// cannot, by itself, prove that the write succeeded.
-				if($terminal) {
-					$stateWrite = self::writeCustomProjection($hash, [
-						new rXMLRPCCommand(getCmd("d.set_custom"),
-							[$hash, "chk-state", (string) $previous])], "confirmTerminalState", $localId); }
-				else {
-					$stateWrite = self::setState( $hash, $state, $localId,
-						$recoveredEmptyP ? $emptyPGuard : [] ); }
-				if($stateWrite === null) { return(true); }
-				if(!$stateWrite) { return(false); }
-				$handlerPerformed = false;
-				$handlerVerdict = null;
-				$source = rTorrent::getSource($hash);
-				$pendingMessage = null;
-				if($terminal)
-				{
-					self::$terminalMessageHash = $hash;
-					self::$pendingTerminalMessage = null;
-				}
-				try
-				{
-					if($source !== false)
-					{
-						$handlerVerdict = self::run_ex($hash, $source, $handlerPerformed);
-						$state = $handlerVerdict;
-					}
-					else { self::logDebug("run: " . $hash
-						. " has no readable session copy or tied daemon source;"
-						. " no handler verdict is available"); }
-				}
-				finally
-				{
-					if($terminal || self::$missingSuccessorMarker !== null)
-					{
-						$pendingMessage = self::$pendingTerminalMessage;
-						self::$terminalMessageHash = null;
-						self::$pendingTerminalMessage = null;
-					}
-				}
-				if($state===self::STE_UNCHANGED) { $state = $previous; }
-				if($state==self::STE_INPROGRESS) { $state=self::STE_ERROR; }
-				// A retryable failure cannot refute a terminal topic verdict.
-				// Do not refresh its rest clock without a new answer: the next
-				// scheduled recheck must still arrive at its original deadline.
-				$resultState = $state;
-				$finalPGuard = $recoveredEmptyP && $state !== self::STE_META_PENDING
-					? $emptyPGuard : [];
-				$missingRetry = self::$missingSuccessorMarker !== null
-					&& ($handlerVerdict === null || in_array($handlerVerdict,
-						[self::STE_UNCHANGED, self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true));
-				$retainedTerminal = $terminal && !$missingRetry
-					&& in_array($state, [self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true);
-				if($retainedTerminal) { $state = $previous; }
-				$finalWrite = null;
-				if($missingRetry)
-				{
-					// The marker makes even an intermediate NOT_NEED schedulable.
-					// Publish ERROR without moving the original retry deadline.
-					$state = self::STE_ERROR;
-					$resultState = self::STE_CANT_REACH_TRACKER;
-					$finalWrite = self::writeCustomProjection($hash, [
-						new rXMLRPCCommand(getCmd('d.set_custom'),
-							[$hash, 'chk-state', (string) $state]),
-						new rXMLRPCCommand(getCmd('d.set_custom'),
-							[$hash, 'chk-time', $time > 0 ? (string) $time : '']),
-						new rXMLRPCCommand(getCmd('d.set_custom'),
-							[$hash, 'chk-msg', self::$missingSuccessorMarker])],
-						'recordMissingSuccessorError', $localId, $finalPGuard);
-					if($finalWrite !== true) {
-						self::logUnrepairable('run: ' . $hash
-							. ' chk-state/chk-time/chk-msg successor-missing verdict unconfirmed; retry pending'); }
-				}
-				elseif(!is_null($state) && !($terminal
-					&& ($retainedTerminal || $handlerVerdict === self::STE_UNCHANGED)))
-				{
-					if($handlerVerdict === self::STE_UNCHANGED) {
-						// INPROGRESS briefly stamped the claim clock. An answer that
-						// learned nothing must restore it without touching chk-stime.
-						$finalWrite = self::writeCustomProjection($hash, [
-							new rXMLRPCCommand(getCmd("d.set_custom"),
-								[$hash, "chk-state", (string) $previous]),
-							new rXMLRPCCommand(getCmd("d.set_custom"),
-								[$hash, "chk-time", $time > 0 ? (string) $time : ""])], "restoreUnchanged", $localId,
-							$finalPGuard); }
-					else
-					{
-						// A conclusive answer retires a persisted missing-successor
-						// marker even if the handler had no sentence to publish.
-						$finalMessage = self::$missingSuccessorMarker !== null
-							? ($pendingMessage === null ? '' : $pendingMessage)
-							: ($terminal ? $pendingMessage : null);
-						$finalWrite = $finalMessage !== null
-							? self::setFastVerdict($hash, $state, $finalMessage, false, $localId,
-								$finalPGuard)
-							: self::setState($hash, $state, $localId, $finalPGuard);
-					}
-				}
-				// Handler invocation is not durable consumption. In particular,
-				// STE_UNCHANGED means it learned nothing, and a false/null final
-				// write leaves no verdict for a correction to acknowledge.
-				$performed = $handlerPerformed
-					&& !in_array($handlerVerdict, [self::STE_UNCHANGED,
-						self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true)
-					&& $finalWrite === true;
-				if($handlerPerformed)
-				{
-					$observation = 'unconfirmed';
-					if($handlerVerdict === self::STE_UNCHANGED && !$missingRetry
-						&& ($terminal || $finalWrite === true)) {
-						$observation = 'unchanged'; }
-					elseif(in_array($handlerVerdict, [self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true)) {
-						$observation = 'failed'; }
-					elseif($finalWrite === true)
-					{
-						if($handlerVerdict === self::STE_META_PENDING) {
-							$observation = 'pending'; }
-						elseif(in_array($handlerVerdict, [self::STE_UPDATED, self::STE_UPTODATE,
-							self::STE_DELETED, self::STE_NOT_NEED, self::STE_IGNORED, self::STE_ABSORBED], true)) {
-							$observation = 'confirmed'; }
-					}
-				}
-				return($resultState != self::STE_CANT_REACH_TRACKER);
-			}
-			return(true); // only a still-held INPROGRESS state reaches here
-		}
-		finally
-		{
-			// An early state/message read or preflight failure may skip the
-			// handler's finally block after arming this process-local buffer.
-			if(self::$terminalMessageHash === $hash)
-			{
-				self::$terminalMessageHash = null;
-				self::$pendingTerminalMessage = null;
-			}
-			self::$missingSuccessorMarker = null;
-			self::$activeRunIdentity = $previousIdentity;
-			self::releaseCheck($hash, $claimToken);
-		}
-	}
-
-	protected static function getState( $hash, &$state, &$time, &$label, &$localId = null, &$message = null )
-	{
-		$state = self::STE_INPROGRESS;
-		$time = time();
-		$label = "";
-		$localId = null;
-		$message = null;
-
-		// Read first, probe only if that fails. The existence probe used to run
-		// unconditionally ahead of the read, so every manual check paid two
-		// round trips where one answers: a custom read against a hash rTorrent
-		// does not know FAULTS (measured against the live daemon: -500), so a
-		// successful read is itself proof the torrent is there. The probe still
-		// exists for the one case that needs it -- telling "the torrent is
-		// gone" apart from "the daemon did not answer" -- it just no longer
-		// runs when nothing went wrong.
-		//
-		// Scheduler and manual checks both reach this live read under run()'s
-		// claim. A scheduler snapshot is only dispatch input and may be stale.
-		$req = new rXMLRPCRequest( [
-			new rXMLRPCCommand( getCmd("d.get_custom"), [$hash, "chk-state"]  ),
-			new rXMLRPCCommand( getCmd("d.get_custom"), [$hash, "chk-time"] ),
-			new rXMLRPCCommand( getCmd("d.get_custom1"), $hash ),
-			new rXMLRPCCommand( getCmd("d.get_local_id"), $hash ),
-			new rXMLRPCCommand( getCmd("d.get_custom"), [$hash, "chk-msg"] ),
-			]);
-		$req->important = false;
-		$readOk = $req->success();
-		$complete = $readOk && isset($req->val[0], $req->val[1], $req->val[2], $req->val[3], $req->val[4])
-			&& is_string($req->val[4]);
-		if($readOk && !$complete) {
-			self::logUnrepairable("getState: " . $hash
-				. " chk-state/chk-time/chk-msg read incomplete; deferring without state mutation"); }
-		if($complete)
-		{
-			// An UNSET custom reads back as '' -- that alone is the absent 0.
-			// A reading that will not parse is NOT state 0 ("never checked"),
-			// on which run() dispatches a full destructive check.
-			$readState = $req->val[0] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
-			$readTime = $req->val[1] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[1]);
-			if($readState === null || $readTime === null)
-			{
-				// Ungated: this one never heals. A read that merely FAILED is
-				// answered again next cycle, but bytes that will not parse are
-				// still there next cycle, and nothing rewrites them -- run()
-				// returns below before setState(), parseMulticall() drops the
-				// row out of the scheduler snapshot, and flushVerdicts() leaves
-				// it out of the fresh scan. The torrent is simply never checked
-				// again. See logUnrepairable().
-				self::logUnrepairable("getState: " . $hash . " answered with a malformed chk-state/chk-time;"
-					. " nothing rewrites it, so this torrent will not be checked again until it is cleared");
-				return(false);
-			}
-			if(!is_string($req->val[3]) || preg_match('/^[0-9A-F]{40}$/D', $req->val[3]) !== 1)
-			{
-				self::logUnrepairable("getState: " . $hash . " answered with an invalid d.local_id; deferring check");
-				return(false);
-			}
-			$state = $readState;
-			$time = $readTime;
-			$label = $req->val[2];
-			$localId = $req->val[3];
-			$message = $req->val[4];
-			return(true);
-		}
-
-		$exists = self::torrentExists($hash);
-		if($exists === false)
-		{
-			$state = self::STE_NOT_NEED;
-			self::logDebug("getState: Torrent " . $hash . " not found, skipping state read");
-			return(false);
-		}
-		return(false);
-	}
-
-	// Read a settled NOT_NEED token under the per-hash run claim. An unreadable
-	// value is not permission to overwrite a possibly settled verdict.
-	private static function storedMessage($hash)
-	{
-		$req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_custom"),
-			[$hash, "chk-msg"]));
-		$req->important = false;
-		return $req->success() && isset($req->val[0]) ? (string)$req->val[0] : null;
-	}
-
-	// One metainfo path, joined under the download's base. Each component is
-	// one name, so '..' and '/' (out of the base or into another name), NUL
-	// (the name ends there for the daemon) and '' or '.' (no name at all)
-	// are refused. A backslash is an ordinary byte of a Linux file name and
-	// is written by the daemon exactly as spelled, so it stays part of the
-	// name (round-4 AUD-ESC S4); refusing it failed the cleanup build and
-	// rolled back every replacement of such a torrent.
-	private static function makeSafeRelativePath($components)
-	{
-		if(!is_array($components) || !count($components)) {
-			return(null); }
-		$normalized = [];
-		foreach($components as $component)
-		{
-			if(!is_string($component) && !is_numeric($component)) {
-				return(null); }
-			$component = (string) $component;
-			if($component === '' || $component === '.' || $component === '..'
-				|| strpos($component, "\0") !== false || strpos($component, '/') !== false) {
-				return(null); }
-			$normalized[] = $component;
-		}
-		return(implode('/', $normalized));
-	}
-
-	private static function collectTorrentPaths($torrent)
-	{
-		if(!is_object($torrent) || !isset($torrent->info) || !is_array($torrent->info)) {
-			return(null); }
-		$info = $torrent->info;
-		$single = array_key_exists('length', $info);
-		$multi = array_key_exists('files', $info);
-		if($single === $multi) {
-			return(null); }
-		$paths = [];
-		$seen = [];
-		if($multi)
-		{
-			if(!is_array($info['files'])) {
-				return(null); }
-			foreach($info['files'] as $file)
-			{
-				if(!is_array($file) || !isset($file['path']) || !is_array($file['path'])) {
-					return(null); }
-				$path = self::makeSafeRelativePath($file['path']);
-				if($path === null) {
-					return(null); }
-				if(array_key_exists('attr', $file))
-				{
-					if(!is_string($file['attr'])) {
-						return(null); }
-					if(strpos($file['attr'], 'p') !== false) {
-						continue; }
-				}
-				$key = "p\0" . $path;
-				if(!isset($seen[$key]))
-				{
-					$seen[$key] = true;
-					$paths[] = $path;
-				}
-			}
-		}
-		elseif(array_key_exists('name', $info))
-		{
-			$path = self::makeSafeRelativePath([$info['name']]);
-			if($path === null) {
-				return(null); }
-			$paths[] = $path;
-		}
-		else {
-			return(null); }
-		return($paths);
-	}
-
-	// The daemon owns selected aliases and file renames. Metadata remains the
-	// hash-verified layout/padding authority inside the shared physical reader.
-	private static function collectCleanupPaths($hash, $torrent, $baseDir)
-	{
-		if(!is_string($baseDir) || $baseDir === '' || $baseDir[0] !== '/'
-			|| strpos($baseDir, "\0") !== false) {
-			return(false); }
-		$failure = null;
-		$owned = erasedataCollectPhysicalPaths($hash, $failure, $torrent);
-		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files'])) {
-			return(false); }
-		$prefix = rtrim($baseDir, '/').'/';
-		$paths = [];
-		foreach($owned['files'] as $file)
-		{
-			if(!is_string($file) || strpos($file, $prefix) !== 0) {
-				return(false); }
-			$relative = substr($file, strlen($prefix));
-			if(self::makeSafeRelativePath(explode('/', $relative)) !== $relative) {
-				return(false); }
-			$paths[] = $relative;
-		}
-		return($paths);
-	}
-
-	private static function fileIdentityIndexKey($identity)
-	{
-		if(!is_array($identity) || empty($identity['exists'])
-			|| !isset($identity['stat']['dev'], $identity['stat']['ino'])) {
-			return(false); }
-		return('i:' . $identity['stat']['dev'] . ':' . $identity['stat']['ino']);
-	}
-
-	private static function resolveSuccessorFileIdentity($candidate, $basePrefix)
-	{
-		$identity = XMLRPCPathResolver::filesystemIdentity($candidate);
-		if($identity === false || !isset($identity['path'], $identity['exists'])
-			|| !is_string($identity['path']) || strpos($identity['path'], $basePrefix) !== 0) {
-			return(false); }
-		if(empty($identity['exists'])) {
-			return($identity); }
-
-		clearstatcache(true, $candidate);
-		$lstat = @lstat($candidate);
-		$stat = @stat($candidate);
-		if(!is_file($candidate) || !is_array($lstat) || !is_array($stat)
-			|| !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'])
-			|| !isset($identity['lstat']['dev'], $identity['lstat']['ino'],
-				$identity['stat']['dev'], $identity['stat']['ino'])
-			|| (($lstat['mode'] & 0170000) !== 0100000 && ($lstat['mode'] & 0170000) !== 0120000)
-			|| (($stat['mode'] & 0170000) !== 0100000)
-			|| $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
-			|| $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino']) {
-			return(false); }
-		return($identity);
-	}
-
-	private static function buildObsoleteCleanupFiles($oldTorrent, $newTorrent, $baseDir,
-		$oldHash, $newHash, $marker, $record, $newBaseDir = null)
-	{
-		self::$obsoleteCleanupSummary = ['old' => 0, 'new' => 0, 'obsolete' => 0, 'missing' => 0];
-		$oldPaths = self::collectCleanupPaths($oldHash, $oldTorrent, $baseDir);
-		$newPaths = self::collectCleanupPaths($newHash, $newTorrent, $newBaseDir === null ? $baseDir : $newBaseDir);
-		if(!is_array($oldPaths) || !is_array($newPaths)) {
-			return(false); }
-		$newBase = null;
-		if($newBaseDir !== null)
-		{
-			$newBase = is_string($newBaseDir) ? @realpath($newBaseDir) : false;
-			$oldBase = is_string($baseDir) ? @realpath($baseDir) : false;
-			if($newBase === false || $oldBase === false || !is_dir($newBase)
-				|| $newBase === DIRECTORY_SEPARATOR) {
-				return(false); }
-		}
-		$newPathSet = [];
-		foreach($newPaths as $path) {
-			$newPathSet["p\0" . ($newBase === null ? '' : $newBase . DIRECTORY_SEPARATOR) . $path] = true; }
-		$obsolete = [];
-		foreach($oldPaths as $path) {
-			if(!isset($newPathSet["p\0" . ($newBase === null ? '' : $oldBase . DIRECTORY_SEPARATOR) . $path])) {
-				$obsolete[] = $path; } }
-		self::$obsoleteCleanupSummary = [
-			'old' => count($oldPaths),
-			'new' => count($newPaths),
-			'obsolete' => count($obsolete),
-			'missing' => 0,
-		];
-		if(!count($obsolete)) {
-			return(null); }
-
-		if(!is_string($baseDir) || $baseDir === '') {
-			return(false); }
-		$base = @realpath($baseDir);
-		if($base === false || !is_dir($base) || $base === DIRECTORY_SEPARATOR) {
-			return(false); }
-		$base = rtrim($base, DIRECTORY_SEPARATOR);
-		$basePrefix = $base . DIRECTORY_SEPARATOR;
-		$newBasePrefix = $newBase === null ? $basePrefix : $newBase . DIRECTORY_SEPARATOR;
-		$ownerRefusal = null;
-		$otherOwners = erasedataCleanupOtherOwnerSnapshot(
-			$oldHash, $newHash, $marker, $record, $ownerRefusal);
-		if($otherOwners === false)
-		{
-			self::logCleanupFailure('obsolete cleanup refused old=' . $oldHash . ' new=' . $newHash
-				. ' reason=' . $ownerRefusal);
-			return(false);
-		}
-		$newIdentityIndex = [];
-		foreach($newPaths as $path)
-		{
-			$identity = self::resolveSuccessorFileIdentity($newBasePrefix . $path, $newBasePrefix);
-			if($identity === false) {
-				return(false); }
-			if(!empty($identity['exists']))
-			{
-				$key = self::fileIdentityIndexKey($identity);
-				if($key === false) {
-					return(false); }
-				$newIdentityIndex[$key] = $identity;
-			}
-		}
-
-		$entries = [];
-		foreach($obsolete as $path)
-		{
-			$candidate = $basePrefix . $path;
-			$identity = XMLRPCPathResolver::filesystemIdentity($candidate);
-			if($identity === false) {
-				return(false); }
-			if(empty($identity['exists']))
-			{
-				self::$obsoleteCleanupSummary['missing']++;
-				continue;
-			}
-			clearstatcache(true, $candidate);
-			$lstat = @lstat($candidate);
-			$stat = @stat($candidate);
-			if($identity['path'] !== $candidate || strpos($candidate, $basePrefix) !== 0
-				|| is_link($candidate) || !is_file($candidate)
-				|| !is_array($lstat) || !is_array($stat)
-				|| !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'], $stat['size'], $stat['mtime'])
-				|| (($lstat['mode'] & 0170000) !== 0100000) || (($stat['mode'] & 0170000) !== 0100000)
-				|| $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
-				|| $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino']) {
-				return(false); }
-
-			$owner = erasedataCleanupOtherOwnerState($otherOwners,
-				$candidate, $identity['stat']);
-			if($owner === 'unknown') {
-				return(false); }
-			if($owner === 'claimed') {
-				continue; }
-			$key = self::fileIdentityIndexKey($identity);
-			if($key === false) {
-				return(false); }
-			if(isset($newIdentityIndex[$key]))
-			{
-				$alias = erasedataExactFileAlias($identity, $newIdentityIndex[$key]);
-				if($alias === ERASEDATA_FILE_ALIAS_UNKNOWN) {
-					return(false); }
-				if($alias === ERASEDATA_FILE_ALIAS_SAME) {
-					continue; }
-			}
-
-			$current = XMLRPCPathResolver::filesystemIdentity($candidate);
-			if($current === false || empty($current['exists']) || $current['path'] !== $candidate
-				|| $current['lstat'] !== $identity['lstat'] || $current['stat'] !== $identity['stat']) {
-				return(false); }
-			$entries[] = [
-				'path' => $candidate,
-				'identity' => [
-					'canonical' => $identity['path'],
-					'lstat' => $identity['lstat'],
-					'stat' => $identity['stat'],
-					'size' => $stat['size'],
-					'mtime' => $stat['mtime'],
-				],
-			];
-		}
-		return(count($entries) ? $entries : null);
-	}
-
-	// Build every timestamped state projection from one captured clock value.
-	// Besides avoiding a boundary-second disagreement between chk-time and
-	// chk-stime, this lets the scheduler include the same projection in its
-	// one-request fast-verdict bundle without copying setState()'s rules.
-	private static function stateCommands($hash, $state, $now)
-	{
-		$commands = [
-			new rXMLRPCCommand(getCmd("d.set_custom"), [$hash, "chk-state", (string) $state]),
-			new rXMLRPCCommand(getCmd("d.set_custom"), [$hash, "chk-time", (string) $now]),
-		];
-		if($state == self::STE_UPTODATE) {
-			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-				[$hash, "chk-stime", (string) $now]); }
-		return($commands);
-	}
-
-	/**
-	 * Write custom fields and accept success only when every command result was
-	 * returned or the exact desired projection is measured afterwards.
-	 *
-	 * The legacy XML parser can return success with a truncated value list. A
-	 * short positive response is therefore just as ambiguous as a failed one:
-	 * some setters may have landed, or the reply may have been cut short.
-	 */
-	private static function writeCustomProjection($hash, $commands, $context, $localId = null,
-		$expectedCustoms = [])
-	{
-		return(RuTrackerCustomProjection::write($hash, $commands, $context, $localId,
-			$expectedCustoms));
-	}
-
-	// Retire an empty metadata generation only while the callback has not
-	// published another claim. All predicates and writes run in one daemon
-	// branch, so a late mark callback either blocks this verdict or restores M.
-	private static function setRetiredMetaVerdict($hash, $state, $ignored, $localId)
-	{
-		$commands = self::stateCommands($hash, $state, time());
-		if($ignored) {
-			$commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-				[$hash, "chk-msg", ""]); }
-		return(self::writeCustomProjection($hash, $commands, "setRetiredMetaVerdict", $localId,
-			["chk-state" => (string) self::STE_META_PENDING,
-				"chk-meta-new" => "", "chk-meta-until" => ""]));
-	}
-
-	// The views rTorrent currently has, keyed by name; null when the list
-	// itself could not be read. Views are runtime state: rTorrent recreates
-	// none of the rat_N ones on restart -- ruTorrent's ratio plugin does, on
-	// its next start (plugins/ratio/ratio.php, flush()).
-	private static function existingViews()
-	{
-		// Only php/methods-0.9.4.php aliases "view_list" to view.list, but
-		// php/settings.php layers the method tables cumulatively, so that
-		// mapping is loaded for every daemon >= 0.9.4; on anything older the
-		// name passes through unchanged and is the native command.
-		$req = new rXMLRPCRequest( new rXMLRPCCommand(getCmd("view_list")) );
-		$req->important = false;
-		if(!$req->success()) {
-			return(null); }
-		$views = [];
-		foreach($req->val as $view) {
-			if(is_string($view)) {
-				$views[$view] = true; } }
-		return($views);
-	}
-
-	// $existingViews is existingViews()' answer, read by createTorrent()
-	// while the old torrent was still running; null means unreadable.
-	private static function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $existingViews, $state, $marker, $inherit, $topic = '', $forum = '')
-	{
-		$now = time();
-		$addition = [
-			rTorrent::additionCommand("d.set_custom",self::REPLACEMENT_MARKER_KEY,$marker),
-			// Shares the marker's privileged position for the same reason:
-			// the first input_error aborts every command after it, and a
-			// record that never lands leaves the row in the legacy branch --
-			// which starts nothing -- rather than in a wrong guess.
-			rTorrent::additionCommand("d.set_custom",self::INHERIT_KEY,$inherit),
-			// d.set_connection_seed= resolves to d.connection_seed.set, which
-			// rTorrent registers PRIVATE: it works here only because a load
-			// command list is executed internally, not through the XMLRPC
-			// entry point. Moving it into a post-load system.multicall would
-			// silently fault.
-			rTorrent::additionCommand("d.set_connection_seed",$connectionSeed),
-			rTorrent::additionCommand("d.set_custom","chk-state",$state),
-			rTorrent::additionCommand("d.set_custom","chk-time",$now),
-			rTorrent::additionCommand("d.set_custom","chk-stime",$now),
-		];
-		// Only when the predecessor had them: an empty value would be written
-		// as an empty custom, which resolveForum() and rememberTopic() would
-		// then read as "set to nothing" rather than "never set".
-		if($topic !== '') {
-			$addition[] = rTorrent::additionCommand("d.set_custom","chk-topic",$topic); }
-		if($forum !== '') {
-			$addition[] = rTorrent::additionCommand("d.set_custom","chk-forum",$forum); }
-		if(!empty($throttle)) {
-			$addition[] = rTorrent::additionCommand("d.set_throttle_name",$throttle); }
-
-		// DownloadFactory runs this whole list inside one try block: the first
-		// torrent::input_error aborts every command after it, plus the
-		// d.state.set and the event.download.inserted_new that rTorrent itself
-		// appends. view.set_visible throws exactly that error for a view that
-		// does not exist. The abort is not fatal to the load -- the marker is
-		// the first command, so waitForLoad() still confirms ownership, and
-		// for a previously-started source activateReplacement()'s d.start
-		// makes the download visible in the started view, whose view event
-		// sets d.state=1. What it silently costs is every load command after
-		// the failing one, the inserted_new side effects (history logging,
-		// the ratio plugin's default-group hook), and -- since that d.start
-		// rescue only reaches sources activateReplacement() starts -- a
-		// previously-stopped source staying closed at state 0.
-		//
-		// So memberships are forwarded in two tiers. A view confirmed against
-		// the live view list gets view.set_visible, which also records the
-		// membership in the d.views attribute (rat_N views are persistent,
-		// and a persistent view's event_added runs d.views.push_back_unique).
-		// An unconfirmed one gets d.views.push_back_unique directly: it never
-		// throws and records the attribute only. Dropping it instead would be
-		// worse than a lost group -- a replacement with an empty d.views is
-		// re-homed by the ratio plugin's default-group insert hook (a branch
-		// over d.views.has, ratio.php flush()) into the DEFAULT ratio group,
-		// whose action can be erase-data. The attribute keeps that hook a
-		// no-op, and the ratio plugin's correct() pass turns it back into
-		// visible membership once the views exist again.
-		$attributeOnly = [];
-		foreach($ratioViews as $ratioView)
-		{
-			if($existingViews !== null && isset($existingViews[$ratioView])) {
-				$addition[] = rTorrent::additionCommand("view.set_visible",$ratioView); }
-			else
-			{
-				$addition[] = rTorrent::additionCommand("d.views.push_back_unique",$ratioView);
-				$attributeOnly[] = $ratioView;
-			}
-		}
-		if(count($attributeOnly)) {
-			self::logDebug("buildReplacementAddition: forwarded ".implode(',', $attributeOnly)
-				." as the d.views attribute only (".($existingViews === null
-					? "the view list could not be read"
-					: "no such view in rTorrent")
-				."): view.set_visible would throw input_error and abort the rest of"
-				." the load command list; the ratio plugin restores the visible"
-				." membership once the views exist again"); }
-		return($addition);
-	}
-
-	/**
-	 * Wait for the staged torrent to be inserted by rTorrent's deferred load.
-	 * The addition commands run in the same event-loop step as the insert, so
-	 * once the hash resolves, the marker is authoritative.
-	 *
-	 * @return string 'ours' | 'foreign' | 'missing'
-	 */
-	private static function waitForLoad($hash, $marker)
-	{
-		for($attempt = 0; $attempt < self::LOAD_WAIT_ATTEMPTS; $attempt++)
-		{
-			if($attempt) {
-				usleep(RUTRACKER_CHECK_LOAD_WAIT_DELAY_US); }
-			$req = new rXMLRPCRequest( new rXMLRPCCommand(
-				getCmd("d.get_custom"), [$hash, self::REPLACEMENT_MARKER_KEY] ) );
-			$req->important = false;
-			if(!$req->run() || $req->fault) {
-				continue; }
-			return((isset($req->val[0]) && (string) $req->val[0] === (string) $marker) ? 'ours' : 'foreign');
-		}
-		return('missing');
-	}
-
-	// Compare-and-swap on a check, keyed by hash. chk-state cannot do this:
-	// d.set_custom is an unconditional write, so two processes can both read
-	// the old state and both write STE_INPROGRESS. That is not merely wasted
-	// work -- a check erases stubs, hands parsed metainfo to createTorrent(), and stops
-	// and reloads the user's torrent.
-	//
-	// The window is wider than the two statements around the write, because
-	// the scheduler dispatches on a chk-state captured by update.php's
-	// cycle-start multicall: a click that starts first stays invisible to that
-	// pass for the rest of the cycle, which the paced announce sleeps and dump
-	// fetches make minutes long. And batch_check.php takes no cycle lock, so a
-	// click during the pass is the ordinary case, not a rare one.
-	//
-	// A contender observes a PUBLISHED owner under the state-document lock.
-	// Its lease begins then, not at the wall-clock stamp: a forward clock step
-	// must not give the hash to two workers, and a backward step must not leave
-	// an orphan waiting for wall time to catch up. Starting at grant would be
-	// earlier than the durable write if that write stalled.
-	private static function claimSince($entry)
-	{
-		return(RuTrackerRpcValue::canonicalNonnegativeInteger(is_array($entry) ? ($entry['since'] ?? null) : $entry));
-	}
-
-	private static function claimClock()
-	{
-		$boot = @file_get_contents('/proc/sys/kernel/random/boot_id');
-		$offsets = @file_get_contents('/proc/self/timens_offsets');
-		if(!is_string($boot) || !preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', trim($boot))
-			|| !is_string($offsets)
-			|| !preg_match('/^monotonic[ \t]+(-?(?:0|[1-9][0-9]*))[ \t]+(0|[1-9][0-9]*)[ \t]*$/m', $offsets, $match)) {
-			return(null); }
-		$mono = hrtime(true);
-		if(!is_int($mono) || $mono < 0) { return(null); }
-		return(['clock' => trim($boot) . ':' . $match[1] . ':' . $match[2], 'mono' => $mono]);
-	}
-
-	private static function claimObservationMatches($observed, $since, $token, $clock)
-	{
-		return(is_array($observed)
-			&& ($observed['since'] ?? null) === $since
-			&& ($observed['token'] ?? null) === $token
-			&& ($observed['clock'] ?? null) === $clock['clock']
-			&& isset($observed['mono']) && is_int($observed['mono'])
-			&& $observed['mono'] >= 0 && $observed['mono'] <= $clock['mono']);
-	}
-
-	private static function claimObservation($since, $token, $clock)
-	{
-		return(['since' => $since, 'token' => $token,
-			'clock' => $clock['clock'], 'mono' => $clock['mono']]);
-	}
-
-	// Returns the owner token on success, false when the hash is already
-	// claimed, and null when the claim store could not be updated. All owner
-	// changes happen in one RuTrackerState::update() transaction.
-	private static function claimCheck($hash, $now, &$expiredPrevious = null)
-	{
-		$expiredPrevious = false;
-		$token = bin2hex(random_bytes(8));
-		$granted = false;
-		$futureNotice = false;
-		$leaseNotice = null;
-		$leaseExpired = false;
-		// $now may be a cycle-start snapshot, so diagnose future stamps with
-		// a fresh wall reading. Wall time is never used to expire ownership.
-		$wallNow = time();
-		$stored = RuTrackerState::update('meta-claims', function($claims) use ($hash, $now, $wallNow, $token,
-			&$granted, &$futureNotice, &$leaseNotice, &$leaseExpired) {
-			if(array_key_exists($hash, $claims))
-			{
-				$entry = $claims[$hash];
-				$since = self::claimSince($entry);
-				if($since === null)
-				{
-					self::logUnrepairable('claimCheck: the claim on ' . $hash
-						. ' carries an unreadable timestamp; it is kept and keeps blocking,'
-						. ' and nothing will retire it');
-					return($claims);
-				}
-
-				$reason = null;
-				$owner = is_array($entry) ? ($entry['token'] ?? null) : null;
-				if(!is_string($owner) || !preg_match('/^[0-9a-f]{16}$/D', $owner)) {
-					$reason = 'legacy-or-invalid-token'; }
-				else
-				{
-					$clock = self::claimClock();
-					if($clock === null) { $reason = 'monotonic-clock-unavailable'; }
-					else
-					{
-						$observed = $entry['lease_observed'] ?? null;
-						$matches = self::claimObservationMatches($observed, $since, $owner, $clock);
-						if($matches && ($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000)
-						{
-							unset($claims[$hash]);
-							$leaseExpired = true;
-						}
-						elseif(!$matches)
-						{
-							// This sample follows the locked read of the existing entry.
-							// A changed generation or clock begins a whole new lease.
-							$entry['lease_observed'] = self::claimObservation($since, $owner, $clock);
-							$reason = is_array($observed) ? 'monotonic-observation-reset' : null;
-						}
-					}
-				}
-
-				if(array_key_exists($hash, $claims))
-				{
-					if($reason !== null && (!is_array($entry) || ($entry['lease_notice'] ?? null) !== $reason))
-					{
-						if(!is_array($entry)) { $entry = ['since' => $since]; }
-						$entry['lease_notice'] = $reason;
-						$leaseNotice = $reason;
-					}
-					if(($since - $wallNow) > self::MAX_LOCK_TIME)
-					{
-						if(!is_array($entry)) { $entry = ['since' => $since]; }
-						if(($entry['future_notice'] ?? null) !== $since
-							|| ($entry['future_notice_token'] ?? null) !== $owner)
-						{
-							$entry['future_notice'] = $since;
-							$entry['future_notice_token'] = $owner;
-							$futureNotice = true;
-						}
-					}
-					$claims[$hash] = $entry;
-				}
-			}
-			if(array_key_exists($hash, $claims)) { return($claims); }
-			$granted = true;
-			$claims[$hash] = ['since' => (int) $now, 'token' => $token];
-			return($claims);
-		});
-		if(!$stored)
-		{
-			if(!self::$claimStoreFailureLogged)
-			{
-				self::logUnrepairable('claimCheck: claim storage is unavailable for meta-claims;'
-					. ' torrent checks are deferred until the document and its lock are writable');
-				self::$claimStoreFailureLogged = true;
-			}
-			return(null);
-		}
-		self::$claimStoreFailureLogged = false;
-		if($futureNotice) {
-			self::logUnrepairable('claimCheck: the claim on ' . $hash
-				. ' has a future timestamp; retained for its possible owner and observed for a monotonic lease'); }
-		if($leaseNotice !== null) {
-			self::logUnrepairable('claimCheck: the claim on ' . $hash
-				. ' is retained: ' . $leaseNotice . '; automatic expiry deferred'); }
-		if($leaseExpired) {
-			self::logUnrepairable('claimCheck: the claim on ' . $hash
-				. ' completed its observed monotonic lease; a new owner was granted'); }
-		$expiredPrevious = $leaseExpired && $granted;
-		return($granted ? $token : false);
-	}
-
-	// Every caller owns a token. Legacy or damaged entries prove no matching
-	// owner, so a finishing worker must retain them just like a foreign claim.
-	private static function releaseCheck($hash, $token)
-	{
-		RuTrackerState::update('meta-claims', function($claims) use ($hash, $token) {
-			if(!isset($claims[$hash])) { return($claims); }
-			$entry = $claims[$hash];
-			if(!is_array($entry) || !isset($entry['token']) || $entry['token'] !== $token) {
-				return($claims); }
-			unset($claims[$hash]);
-			return($claims);
-		});
-	}
-
-	// Erase a hash that was verified to carry our replacement marker.
-	private static function eraseStaged($hash, $marker = null, $record = null)
-	{
-		return(self::discardReplacement($hash, $marker, $record) === RuTrackerAtomicOwnership::ACTED);
-	}
-
-	// Puts a torrent this transaction stopped and closed back the way it was,
-	// and MEASURES the outcome. Both halves matter to the callers:
-	//
-	// d.open before d.start, the order ruTorrent's own UI sends
-	// (plugins/httprpc/action.php, case "start"), because the transaction's
-	// own d.close closed the download and a bare d.start on a closed one can
-	// leave it closed.
-	//
-	// And the answer is the reading taken afterwards, never the ack: rTorrent
-	// accepts d.start on a download whose files it cannot open -- removed
-	// media, an unmounted path, a permission change -- and reports that only
-	// in its own log, so the XML-RPC reply carries no fault. The rollback
-	// erases the staged copy on this answer, and that copy holds the only
-	// chk-replacement marker the sweep can find the transaction by, so an ack
-	// mistaken for a restore leaves a stopped, closed torrent nothing in the
-	// plugin will ever look at again. The state check and generation clear
-	// therefore stay inside the same daemon-side conditional command.
-	private static function restoreExistingTorrent($hash, $wasOpen, $wasStarted, $expectedReplacing = null)
-	{
-		if($expectedReplacing === null || (string) $expectedReplacing === '') {
-			return(false); }
-		$expectedCustoms = [self::REPLACING_KEY => (string) $expectedReplacing];
-		$expectedValues = ['state' => 0, 'is_open' => 0];
-		// A torrent the user had stopped stays stopped; only this exact recovery
-		// generation is retired. Open/started policies restore and verify state,
-		// then retire the same generation inside that one daemon command.
-		$status = (!$wasOpen && !$wasStarted)
-			? RuTrackerAtomicOwnership::clearCustoms(
-				$hash, $expectedCustoms, [self::REPLACING_KEY], $expectedValues)
-			: RuTrackerAtomicOwnership::runState(
-				$hash, $expectedCustoms, $wasStarted, $expectedValues,
-				[self::REPLACING_KEY => '']);
-		return($status === RuTrackerAtomicOwnership::ACTED);
-	}
-
-	// Runs after the commit point: failures are logged and the replacement is
-	// left stopped rather than reported as a failed check.
-	private static function activateReplacement($hash, $wasOpen, $wasStarted, $marker = null, $record = null,
-		$closeTransaction = true, $reused = false)
-	{
-		if($reused) {
-			return(!$closeTransaction || self::clearReplacementRecord($hash, $marker, $record)); }
-		if(!$wasOpen && !$wasStarted)
-		{
-			// Deliberate: a torrent the user had stopped must not be
-			// resurrected by its replacement. This branch used to be silent,
-			// which is exactly why a live run that left five replacements
-			// stopped could not be told apart from one that never got here.
-			self::logDebug("activateReplacement: " . $hash
-				. " left stopped and closed: the old torrent was neither open nor started");
-			if($marker === null || $record === null) {
-				return(true); }
-			if(!$closeTransaction) {
-				return(true); }
-			return(self::clearReplacementRecord($hash, $marker, $record,
-				['state' => 0, 'is_open' => 0]));
-		}
-		if($marker === null || $record === null
-			|| (string) $marker === '' || (string) $record === '') {
-			return(false); }
-		$expectedCustoms = [
-			self::REPLACEMENT_MARKER_KEY => (string) $marker,
-			self::INHERIT_KEY => (string) $record,
-			self::REUSE_KEY => '',
-		];
-		$expectedValues = ['state' => 0, 'is_open' => 0];
-		$status = $closeTransaction
-			? RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues,
-				[self::INHERIT_KEY => '', self::REPLACEMENT_MARKER_KEY => ''])
-			: RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues);
-		if($status === RuTrackerAtomicOwnership::ACTED) {
-			return(true); }
-		// One line per outcome. A SKIPPED used to log both "Skipped" and
-		// "Could not confirm" for the same status, which reads as a
-		// contradiction and names two different things to go and look at: a
-		// SKIPPED is the guard refusing on purpose because the row no longer
-		// matches, anything else is an attempt whose result was not readable.
-		self::logDebug("activateReplacement: activation of " . $hash
-			. ($status === RuTrackerAtomicOwnership::SKIPPED
-				? " was skipped: the row no longer carries the expected ownership or run state"
-				: " could not be confirmed"));
-		return(false);
-	}
-
-	/**
-	 * THE ungated channel, and the only one in this plugin.
-	 *
-	 * logDebug() below is gated on $rutrackerCheckDebug, which conf.php ships
-	 * as false, so everything reported there says nothing at all at the
-	 * shipped default. That is RIGHT for a refusal that repairs itself: a line
-	 * per cycle for every corrupt value would be noise in ruTorrent's shared
-	 * application log, and the next cycle fixes it anyway. It is wrong for a
-	 * refusal that never heals, which then wedges something for good and
-	 * announces it to nobody -- the fault two earlier rounds of this work were
-	 * rejected for. A refusal must be self-healing or visible; anything that
-	 * cannot be the first has to be the second, and this is how.
-	 *
-	 * The public logUnrepairable() wrapper serves refusals in forumindex.php,
-	 * announce.php, metafetch.php and here; announce.php guards its call because
-	 * that file also loads standalone. Successful publication of a durable
-	 * missing-successor marker uses this same writer to expose the retry cause.
-	 */
-	private static function logRoutine($message)
-	{
-		FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
-	}
-
-	// A cleanup that could not be confirmed leaves a durable inconsistency
-	// between the two generations behind it, so it reports on the same ungated
-	// channel for the same reason. Kept as its own name because that is what
-	// its call sites are about, not because it is a second channel.
-	private static function logCleanupFailure($message)
-	{
-		self::logUnrepairable($message);
-	}
-
-	/**
-	 * Reconcile a transaction already present at NEW before mutating either
-	 * generation. OLD presence is the commit proof; successor run state is not.
-	 *
-	 * @return string|null 'rollback' | 'committed' | null for retained retry
-	 */
-	private static function reconcileExistingCleanup($oldHash, $newHash, $marker, $record)
-	{
-		$oldExists = self::torrentExists($oldHash);
-		if($oldExists === null) {
-			return(null); }
-		if($oldExists)
-		{
-			$status = erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $record);
-			return($status === ERASEDATA_CLEANUP_NONE || $status === ERASEDATA_CLEANUP_READY
-				? 'rollback' : null);
-		}
-
-		$status = erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $record);
-		if($status !== ERASEDATA_CLEANUP_NONE && $status !== ERASEDATA_CLEANUP_READY) {
-			return(null); }
-		if($status === ERASEDATA_CLEANUP_READY && !erasedataKickCollector($oldHash)) {
-			self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . strtoupper($oldHash)
-				. '; the durable job remains scheduled for retry'); }
-		return('committed');
-	}
-
-	private static function quoteRtorrentArgument($value)
-	{
-		return RuTrackerAtomicOwnership::quoteRtorrentArgument($value);
-	}
-
-	private static function replacementStopBody($marker)
-	{
-		return(getCmd('cat=')
-			. '"$' . getCmd('d.set_custom=') . self::REPLACING_KEY . ',' . $marker . '"'
-			. ',$' . getCmd('d.stop=')
-			. ',$' . getCmd('d.close=')
-			. ',' . $marker);
-	}
-
-	// One daemon-side command selects the live state and, in that same command
-	// execution, writes the matching recovery marker before stop/close. Its
-	// exact returned marker is the only run-state source accepted for staging.
-	private static function replacementStopCommand($oldHash, $newHash, $stagedAt,
-		$stoppedFallback = null, $localId = null)
-	{
-		$started = self::encodeInheritance($newHash, true, true, $stagedAt);
-		$open = self::encodeInheritance($newHash, false, true, $stagedAt);
-		$stopped = $stoppedFallback !== null
-			? (string) $stoppedFallback
-			: self::encodeInheritance($newHash, false, false, $stagedAt);
-		$notStarted = getCmd('branch=') . getCmd('d.is_open=')
-			. ',' . self::quoteRtorrentArgument(self::replacementStopBody($open))
-			. ',' . self::quoteRtorrentArgument(self::replacementStopBody($stopped));
-		$startedBody = self::replacementStopBody($started);
-		$stateBranch = getCmd('branch=') . getCmd('d.get_state=')
-			. ',' . self::quoteRtorrentArgument($startedBody)
-			. ',' . self::quoteRtorrentArgument($notStarted);
-		$condition = 'equal=' . getCmd('d.get_custom=') . self::REUSE_KEY . ',cat=';
-		if($localId !== null)
-		{
-			$condition = 'and=' . self::quoteRtorrentArgument($condition) . ','
-				. self::quoteRtorrentArgument('equal=' . getCmd('d.get_local_id=') . ',cat=' . $localId);
-		}
-		return(new rXMLRPCCommand('branch', [
-			$oldHash, $condition, $stateBranch, 'cat=stale-generation',
-		]));
-	}
-
-	/**
-	 * Hand rTorrent::sendTorrent() a replacement that claims no file on disk.
-	 *
-	 * sendTorrent() reads Torrent::getFileName() as "a file this plugin owns":
-	 * it unlinks it when $saveUploadedTorrents is off, reuses its path for a
-	 * torrent too large for one XMLRPC packet, and advertises it as x-filename.
-	 * A replacement handed to us by a tracker handler carries no filename, but
-	 * one harvested through rTorrent::getSource() carries rTorrent's own
-	 * session copy -- or, when getSource() falls back to d.get_tied_to_file, a
-	 * .torrent that belongs to the user. None of those are ours to delete or
-	 * reuse, and before metainfo was parsed once none of them ever reached
-	 * sendTorrent(), because the replacement was rebuilt from bytes here.
-	 *
-	 * Clearing the field is deliberate: rebuilding the object would decode the
-	 * same metainfo a second time, which is exactly what parsing it once exists
-	 * to prevent. Torrent exposes no setter, so this reaches the protected
-	 * field directly rather than re-parsing.
-	 *
-	 * It mutates the object it is given and hands the SAME instance back -- it
-	 * is not a copy, whatever an earlier name suggested. Anything still holding
-	 * that reference sees the cleared field, which is what the caller wants and
-	 * what every present caller relies on. Returns null if the field could not
-	 * actually be cleared.
-	 */
-	private static function disownFile($torrent)
-	{
-		if(!($torrent instanceof Torrent) || $torrent->getFileName() === null) {
-			return($torrent); }
-		$disown = Closure::bind(function () {
-			$this->filename = null;
-		}, $torrent, 'Torrent');
-		$disown();
-		// Verify, do not assume. The closure names a protected field by string,
-		// so if Torrent ever renames it this quietly creates a DYNAMIC property
-		// instead and getFileName() keeps returning the path -- the guard would
-		// fail open, and no test can see it because the suite substitutes its
-		// own Torrent. Reading the field back turns that into a refusal.
-		if($torrent->getFileName() !== null)
-		{
-			self::logCleanupFailure('createTorrent: the replacement still claims '
-				. 'a file on disk after being disowned, so it was not handed to '
-				. 'rTorrent; Torrent::$filename has probably been renamed');
-			return(null);
-		}
-		return($torrent);
-	}
-
-	// A collision is a retryable transaction refusal, not topic evidence.
-	// It must remain visible even when a truthful terminal state is retained.
-	private static function logReplacementCollision($oldHash, $newHash, $kind)
-	{
-		self::logUnrepairable('createTorrent: same-hash-collision old=' . $oldHash
-			. ' new=' . $newHash . ' kind=' . $kind . '; retaining both torrents');
-	}
-
-	// The handler already selected the current metainfo. Reuse requires the
-	// installed source to attest that same hash and topic, without rewriting it.
-	private static function existingReplacement($torrent, $newHash)
-	{
-		$source = rTorrent::getSource($newHash);
-		$comment = trim((string) $torrent->comment());
-		if(!($source instanceof Torrent) || $source->errors()
-			|| strcasecmp((string) $source->hash_info(), $newHash) !== 0
-			|| $comment === '' || trim((string) $source->comment()) !== $comment
-			|| self::collectTorrentPaths($source) === null) {
-			return(null); }
-		$read = new rXMLRPCRequest([
-			new rXMLRPCCommand(getCmd('d.get_local_id'), $newHash),
-			new rXMLRPCCommand(getCmd('d.is_meta'), $newHash),
-			new rXMLRPCCommand(getCmd('d.get_directory_base'), $newHash),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, self::REPLACING_KEY]),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-old']),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-new']),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-until']),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-topic']),
-			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, self::REUSE_KEY]),
-		]);
-		$read->important = false;
-		if(!$read->success() || $read->fault || !is_array($read->val) || count($read->val) !== 9
-			|| !is_string($read->val[0]) || preg_match('/^[0-9A-F]{40}$/D', $read->val[0]) !== 1
-			|| !in_array($read->val[1], [0, '0'], true)
-			|| !is_string($read->val[2]) || $read->val[2] === '' || $read->val[2][0] !== '/'
-			|| strpos($read->val[2], "\0") !== false
-			|| array_slice($read->val, 3) !== ['', '', '', '', '', '']) {
-			return(null); }
-		return(['local_id' => $read->val[0], 'base' => $read->val[2]]);
-	}
-
-	// A replacement refused for a LOCAL file-operation reason is not helped by
-	// asking the tracker again, so the scheduler stops repeating the request
-	// and the metadata fetch in front of it (RuTrackerReplacementBackoff).
-	// Refusals now come at most once per backoff window, so one ungated line
-	// each is one line per change of the schedule, not one per cycle.
-	private static function postponeLocalRefusal($hash, $newHash, $reason,
-		$operation = 'obsolete-file cleanup could not be prepared')
-	{
-		$failure = null;
-		$scheduledAt = self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
-			? (self::$activeRunIdentity['scheduledAt'] ?? null) : null;
-		$until = RuTrackerReplacementBackoff::postpone($hash, time(), $failure, $scheduledAt);
-		if($until === null)
-		{
-			self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
-				. ' refused: ' . $operation . ' (' . $reason
-				. '); the scheduler backoff was not saved (' . (string) $failure
-				. '), so the next cycle retries');
-			return;
-		}
-		self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
-			. ' postponed: ' . $operation . ' (' . $reason
-			. '); next scheduled attempt at about ' . gmdate('Y-m-d\TH:i:s\Z', $until)
-			. '; the manual Check for Update button retries now');
-	}
-
-	private static function clearLocalRefusal($hash, $newHash)
-	{
-		if(RuTrackerReplacementBackoff::clear($hash, time())) {
-			self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
-				. ' committed; replacement backoff cleared'); }
-	}
-
-	private static function appendAnnounceUrls($value, &$urls)
-	{
-		if(is_array($value))
-		{
-			foreach($value as $item) {
-				self::appendAnnounceUrls($item, $urls); }
-		}
-		elseif(is_string($value) && $value !== '' && !in_array($value, $urls, true)) {
-			$urls[] = $value; }
-	}
+    public const STE_INPROGRESS = 1;
+    public const STE_UPDATED = 2;
+    public const STE_UPTODATE = 3;
+    public const STE_DELETED = 4;
+    public const STE_CANT_REACH_TRACKER = 5;
+    public const STE_ERROR = 6;
+    public const STE_NOT_NEED = 7;
+    public const STE_IGNORED = 8;
+    public const STE_META_PENDING = 9;
+    public const STE_ABSORBED = 10;
+
+    // awaitMetadata()'s polling interval, and the default seconds it waits
+    // when $rutrackerMetaWait is not set.
+    public const METADATA_POLL_US = 500000;
+    public const METADATA_WAIT_DEFAULT = 10;
+
+    // And its upper bound. conf.php promises out-of-range values are clamped,
+    // but this one had a floor only. The wait happens INSIDE the per-hash claim,
+    // whose lease is MAX_LOCK_TIME, so a mistyped value can outlive its own
+    // claim and hand the hash to a second worker while the first is still in
+    // it. A minute is already sixty times the median metadata wait measured on
+    // the live fleet, so anything past it is a typo, not a preference.
+    public const METADATA_WAIT_MAX = 60;
+
+    // Not a status: a handler answers this when it has no data to judge by and
+    // the verdict already stored must be left alone. Negative on purpose -- the
+    // stored values are the STE_* above, and 0 means "never checked", both of
+    // which a handler may legitimately want restored.
+    public const STE_UNCHANGED = -1;
+    // Not a stored status either: a handler returns this only when the URL it
+    // received is outside its jurisdiction. The dispatcher may then ask another
+    // handler; a real STE_NOT_NEED verdict is terminal and must not be overwritten
+    // by a tracker from a cross-seed announce row.
+    public const STE_DECLINED = -2;
+
+    // chk-msg carries a machine token, never prose: "<token>|<parameter>".
+    // The sentence itself is localised in the browser (init.js renders
+    // theUILang.chkMessages[token] with the parameter substituted for its
+    // %s), so a message written here reads in the user's own language
+    // instead of the language of whoever wrote the handler. Anything that
+    // is only of interest while debugging goes to logDebug() instead, and
+    // clears chk-msg.
+    public const CHKMSG_SUPERSEDED = 'superseded';		// param: 40-hex successor hash
+    public const CHKMSG_SUCCESSOR_MISSING = 'successor-missing'; // param: 40-hex missing hash
+    public const CHKMSG_DELETING = 'deleting';		// param: "N/M" confirmation cycles
+    public const CHKMSG_TOPIC_STATUS = 'topic-status';	// param: dump tor_status
+    public const CHKMSG_FUSE = 'fuse';		// param: announce host
+    public const CHKMSG_ABSORBED = 'absorbed';		// param: topic id
+
+    public const MAX_LOCK_TIME = 900;	// 15 min
+    public const ORPHAN_SWEEP_BATCH = 16;	// max direct presence probes per cycle
+    public const ORPHAN_SWEEP_BUDGET_NS = 2000000000;	// stop after a slow probe
+
+    // load_raw inserts the torrent from a deferred rTorrent event-loop task,
+    // so waiting for the staged copy to appear is the only wait in the
+    // replacement transaction; every other command is synchronous.
+    public const LOAD_WAIT_ATTEMPTS = 40;
+    public const REPLACEMENT_MARKER_KEY = 'chk-replacement';
+    public const REUSE_KEY = 'chk-reuse';
+
+    // Marker and record bind a staged or reused successor to this transaction
+    // and the predecessor's run policy. Reused successors additionally carry
+    // REUSE_KEY: their run state and download record never belong to rollback.
+    public const INHERIT_KEY = 'chk-replaces';
+
+    // Written on the PREDECESSOR, in the same multicall that stops and closes
+    // it, and cleared once it is safely back. Everything else this transaction
+    // records lives on the staged copy -- which does not exist yet at that
+    // point -- so without this the window between "stopped and closed" and
+    // "staged copy loaded" left the user's torrent invisible: outside the
+    // "seeding" view the cycle scans, carrying no marker either sweep looks
+    // for, and with nothing anywhere recording why it stopped.
+    //
+    // Same encoding as INHERIT_KEY, read with decodeInheritance(), but the
+    // hash field names the SUCCESSOR rather than the predecessor.
+    public const REPLACING_KEY = 'chk-replacing';
+
+    public const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        . "AppleWebKit/537.36 (KHTML, like Gecko) "
+        . "Chrome/120.0.0.0 Safari/537.36";
+
+    private static $TRACKERS = [];
+    // One operator-visible line per uninterrupted storage outage. A successful
+    // update resets the latch, so a later independent outage is reported too.
+    private static $claimStoreFailureLogged = false;
+    // Stage the handler's message while a terminal verdict remains visible.
+    // It is published with a definitive new verdict or discarded on retry.
+    private static $activeRunIdentity = null;
+    private static $terminalMessageHash = null;
+    private static $pendingTerminalMessage = null;
+    private static $missingSuccessorMarker = null;
+    private static $obsoleteCleanupSummary = [
+        'old' => 0,
+        'new' => 0,
+        'obsolete' => 0,
+        'missing' => 0,
+    ];
+
+    /**
+     * Register a tracker handler. The first registration of a comment filter
+     * wins; later registrations of that same filter are ignored.
+     *
+     * Registration order is ownership order: run() asks the handlers whose
+     * comment filter matches in this order, and the first that does not
+     * decline owns the torrent. check.php registers RuTracker first.
+     *
+     * @param string      $commentFilter     Regex pattern for torrent comment
+     * @param string      $announceFilter    Regex pattern for announce URL list
+     * @param callable    $handler           Handler function: handler($url, $hash, $torrent)
+     * @param array|null  $announceAuthority Optional. Declares that on this
+     *        tracker a successful announce proves the topic is still current,
+     *        so the scheduler may answer UPTODATE from the counters it already
+     *        holds. It is the LIST OF HOSTS on which that holds -- each, or a
+     *        subdomain of it, matched whole through UrlHost -- rather than a
+     *        flag: see RuTrackerDetector::announceVerdict() for why the loose
+     *        $announceFilter must not be the one to certify a topic alive.
+     * @param string|null $topicPattern      The EXACT test the handler applies
+     *        to a comment before it does anything -- the pattern it would
+     *        decline on. ownerOf() reads it whether or not an authority is
+     *        declared, so a handler may state it alone to make the owner walk
+     *        exact; an authority, on the other hand, is never reached without
+     *        it. $commentFilter is a loose substring test that decides who is
+     *        asked first, not who owns the torrent: run() moves on when the
+     *        handler it asked declines, and a Kinozal filter matches an NNMClub
+     *        topic URL that merely mentions kinozal.tv. The scheduler cannot
+     *        ask a handler without spending a request, so a handler that wants
+     *        the free pass states its acceptance test here and ownerOf() reads
+     *        it. An authority declared without this test is never reached:
+     *        ownerOf() answers null at a handler that declared no test, and
+     *        the free pass is granted to owners only.
+     * @param callable|null $cycleQuota      Optional. Answers how many of this
+     *        handler's topics one scheduler pass may dispatch for an ordinary
+     *        check (a positive int), or null for no limit; asked once per pass.
+     *        Recovery of an interrupted check and forum corrections are not
+     *        counted. Like the free pass it is granted to owners only, through
+     *        ownerOf(), so $topicPattern is required.
+     */
+    public static function registerTracker(
+        $commentFilter,
+        $announceFilter,
+        $handler,
+        $announceAuthority = null,
+        $topicPattern = null,
+        $cycleQuota = null
+    ) {
+        if (!array_key_exists($commentFilter, self::$TRACKERS)) {
+            self::$TRACKERS[$commentFilter] = [
+                'announceFilter' => $announceFilter,
+                'handler' => $handler,
+                'announceAuthority' => $announceAuthority,
+                'topicPattern' => $topicPattern,
+                'cycleQuota' => $cycleQuota,
+            ];
+        }
+    }
+
+    /**
+     * The registry record of the handler that owns a torrent, read from its
+     * comment the way run() reads it -- declared rather than performed.
+     *
+     * The walk is run()'s walk made without asking anyone: a handler that
+     * declared its topic pattern is taken to accept exactly what the pattern
+     * accepts and to decline the rest; one that declared none cannot be
+     * second-guessed, so the answer is null rather than a guess. The contract
+     * -- why the comment filter decides who is asked and not who owns -- is
+     * stated once, at registerTracker()'s $topicPattern.
+     *
+     * @return array|null the owner's registry record, or null when the owner
+     *                    cannot be told from the comment alone
+     */
+    public static function ownerOf($comment)
+    {
+        $comment = (string) $comment;
+        if ($comment === '') {
+            return null;
+        }
+        foreach (self::$TRACKERS as $commentFilter => $tracker) {
+            if (!preg_match($commentFilter, $comment)) {
+                continue;
+            }
+            if (empty($tracker['topicPattern'])) {
+                return null;
+            }
+            if (preg_match($tracker['topicPattern'], $comment)) {
+                return $tracker;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The jurisdiction filter and authority hosts declared by the handler
+     * that owns this comment. announceVerdict() is the single place that
+     * checks enabled rows in that jurisdiction and trusted announce hosts.
+     *
+     * @param string $comment topic comment used to resolve ownership
+     * @return array|null owner's jurisdiction and authority, or null when no
+     *                    owner can be established or it has not opted in
+     */
+    public static function announceAuthorityFor($comment)
+    {
+        $owner = self::ownerOf($comment);
+        if ($owner === null || empty($owner['announceAuthority'])) {
+            return null;
+        }
+        return [
+            'jurisdiction' => $owner['announceFilter'],
+            'authority' => $owner['announceAuthority'],
+        ];
+    }
+
+    // A scheduling/telemetry bucket records the first handler asked by run_ex().
+    // The filter is not proof that this handler owns the topic.
+    public static function schedulingBucket($comment)
+    {
+        foreach (self::$TRACKERS as $commentFilter => $tracker) {
+            if (preg_match($commentFilter, (string) $comment)) {
+                return $commentFilter;
+            }
+        }
+        return 'fallback';
+    }
+
+    public static function supportedTrackers()
+    {
+        return array_values(array_column(self::$TRACKERS, 'announceFilter'));
+    }
+
+    // Shared by the scheduler rest gate and run()'s retryable-verdict guard.
+    // A foreign DELETED/ABSORBED state is not a final RuTracker topic answer;
+    // its only settled state here is a known successor pointer.
+    public static function isSettledStatus($state, $time, $message, $foreign = false)
+    {
+        if ($time <= 0) {
+            return false;
+        }
+        if (!$foreign && ($state === self::STE_DELETED || $state === self::STE_ABSORBED)) {
+            return true;
+        }
+        if ($state !== self::STE_NOT_NEED) {
+            return false;
+        }
+        $token = explode('|', (string) $message, 2)[0];
+        if ($token === self::CHKMSG_SUPERSEDED) {
+            return true;
+        }
+        return !$foreign && $token === self::CHKMSG_TOPIC_STATUS;
+    }
+
+    // A missing comment cannot establish ownership. If any enabled row may
+    // belong to another registered handler, the scheduler must dispatch rather
+    // than certify RuTracker from a successful cross-seed announce.
+    public static function hasForeignAnnounceRow($trackers)
+    {
+        foreach (self::$TRACKERS as $tracker) {
+            if ($tracker['handler'] === 'RuTrackerCheckImpl::download_torrent') {
+                continue;
+            }
+            foreach ((array) $trackers as $row) {
+                if (!empty($row['enabled']) && isset($row['url'])
+                    && preg_match($tracker['announceFilter'], (string) $row['url'])) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public static function isForeignComment($comment)
+    {
+        if ((string) $comment === '') {
+            return false;
+        }
+        if (count(self::$TRACKERS) > 0) {
+            foreach (self::$TRACKERS as $commentFilter => $tracker) {
+                if ($tracker['handler'] !== 'RuTrackerCheckImpl::download_torrent'
+                    && preg_match($commentFilter, (string) $comment)) {
+                    return true;
+                }
+            }
+        }
+        if (preg_match('/kinozal\.|nnmclub\.|nnm-club\.|toloka\.|tfile\.|anidub\.|tapochek\./i', (string) $comment)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The comment of a torrent's session copy, or '' when it cannot be read.
+     *
+     * The scheduler's cycle multicall carries tracker rows and no comment.
+     * This file read gives the conservative dispatch gate and the announce
+     * authority gate the same comment once per row per cycle; handlers in
+     * run() make the final ownership decision.
+     */
+    public static function sessionComment($hash)
+    {
+        if (!class_exists('rTorrentSettings') || !method_exists('rTorrentSettings', 'get')) {
+            return '';
+        }
+        $settings = rTorrentSettings::get();
+        if (!$settings || empty($settings->session)) {
+            return '';
+        }
+        $fname = $settings->session . $hash . ".torrent";
+        if (!is_file($fname)) {
+            return '';
+        }
+        $torrent = @new Torrent($fname);
+        if ($torrent->errors()) {
+            return '';
+        }
+        return (string) $torrent->comment();
+    }
+
+    /**
+     * Check whether rTorrent still knows a hash.
+     *
+     * @return bool|null true when present, false when the target is missing,
+     *                   null when presence cannot be proved either way
+     */
+    public static function torrentExists($hash)
+    {
+        $presence = erasedataTorrentPresence($hash);
+        if ($presence === ERASEDATA_TORRENT_PRESENT) {
+            return(true);
+        }
+        if ($presence === ERASEDATA_TORRENT_ABSENT) {
+            return(false);
+        }
+        return(null);
+    }
+
+    public static function setState($hash, $state, $localId = null, $expectedCustoms = [])
+    {
+        return(self::writeCustomProjection(
+            $hash,
+            self::stateCommands($hash, $state, time()),
+            "setState",
+            $localId,
+            $expectedCustoms,
+        ));
+    }
+
+    /**
+     * Persist one fast-path verdict as one small daemon request.
+     *
+     * A scheduler-supplied local id guards the whole projection in one daemon
+     * branch. Other callers retain the existing multicall path. Either reply
+     * can be lost or truncated after effects landed, so read back the selected
+     * fields, and the local id when guarded, before accepting an unknown result.
+     * A confirmed missing hash is the sole null outcome.
+     *
+     * @return bool|null true when the whole desired projection is observed,
+     *                   null when the target is confirmed absent, false otherwise
+     */
+    public static function setFastVerdict(
+        $hash,
+        $state,
+        $message = null,
+        $clearDeletion = false,
+        $localId = null,
+        $expectedCustoms = []
+    ) {
+        $now = time();
+        $commands = self::stateCommands($hash, $state, $now);
+        if ($message !== null) {
+            $commands[] = new rXMLRPCCommand(
+                getCmd("d.set_custom"),
+                [$hash, "chk-msg", (string) $message],
+            );
+        }
+        if ($clearDeletion) {
+            $commands[] = new rXMLRPCCommand(
+                getCmd("d.set_custom"),
+                [$hash, "chk-del", ""],
+            );
+        }
+
+        return(self::writeCustomProjection(
+            $hash,
+            $commands,
+            "setFastVerdict",
+            $localId,
+            $expectedCustoms,
+        ));
+    }
+
+    // Replace a disproved successor token with a durable retry marker before
+    // asking later layers. A retained terminal's ordinary setMessage() buffer
+    // cannot do this: an inconclusive answer would discard the clear.
+    public static function recordMissingSuccessor($hash, $successor)
+    {
+        $localId = self::activeRunLocalId($hash);
+        if ($localId === null || !is_string($successor)
+            || preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1) {
+            self::logUnrepairable('recordMissingSuccessor: ' . $hash
+                . ' invalid run identity or successor; chk-msg superseded verdict retained');
+            return(false);
+        }
+        $marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
+        $write = self::writeCustomProjection($hash, [
+            new rXMLRPCCommand(
+                getCmd('d.set_custom'),
+                [$hash, 'chk-msg', $marker],
+            )], 'recordMissingSuccessor', $localId);
+        if ($write !== true) {
+            self::logUnrepairable('recordMissingSuccessor: ' . $hash
+                . ' chk-msg marker write unconfirmed; successor verdict needs retry');
+            return(false);
+        }
+        self::logRoutine('recordMissingSuccessor: ' . $hash . ' successor-missing=' . $successor
+            . '; durable marker published; retry pending');
+        return(self::retainMissingSuccessor($hash, $successor));
+    }
+
+    // A worker may resume after the marker landed but before ERROR did.
+    // Confirm the same daemon generation before allowing later layers to
+    // replace it, and buffer their messages until a final verdict exists.
+    public static function retainMissingSuccessor($hash, $successor)
+    {
+        $localId = self::activeRunLocalId($hash);
+        if ($localId === null || !is_string($successor)
+            || preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1) {
+            self::logUnrepairable('retainMissingSuccessor: ' . $hash
+                . ' invalid run identity or successor; chk-msg marker cannot be confirmed');
+            return(false);
+        }
+        $marker = self::CHKMSG_SUCCESSOR_MISSING . '|' . $successor;
+        $read = new rXMLRPCRequest([
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, 'chk-msg']),
+            new rXMLRPCCommand(getCmd('d.get_local_id'), [$hash])]);
+        $read->important = false;
+        if (!$read->success() || $read->fault || !is_array($read->val)
+            || count($read->val) !== 2 || $read->val[0] !== $marker
+            || $read->val[1] !== $localId) {
+            self::logUnrepairable('retainMissingSuccessor: ' . $hash
+                . ' chk-msg marker readback unconfirmed; successor verdict needs retry');
+            return(false);
+        }
+        self::$missingSuccessorMarker = $marker;
+        self::$terminalMessageHash = $hash;
+        self::$pendingTerminalMessage = '';
+        return(true);
+    }
+
+    // Writes chk-msg outside a retained-terminal dispatch. Inside it, stage
+    // the last token (or empty clear) until the new state and clock are known.
+    public static function setMessage($hash, $message)
+    {
+        if (self::$terminalMessageHash === $hash) {
+            self::$pendingTerminalMessage = (string) $message;
+            return(true);
+        }
+        return(self::writeHandlerCustom($hash, "chk-msg", $message));
+    }
+
+    // The hash alone cannot identify a torrent after erase + same-hash readd.
+    public static function activeRunLocalId($hash)
+    {
+        return(self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
+            ? self::$activeRunIdentity['localId'] : null);
+    }
+
+    // Handler writes share the run() identity captured with live state. Outside
+    // a run, retain the ordinary single-field setter.
+    public static function writeHandlerCustom($hash, $field, $value)
+    {
+        if (!in_array($field, ["chk-msg", "chk-del", "chk-topic"], true)) {
+            return(false);
+        }
+        $command = new rXMLRPCCommand(
+            getCmd("d.set_custom"),
+            [$hash, $field, (string) $value],
+        );
+        $localId = self::activeRunLocalId($hash);
+        if ($localId !== null) {
+            return(self::writeCustomProjection(
+                $hash,
+                [$command],
+                "writeHandlerCustom",
+                $localId,
+            ) === true);
+        }
+        $req = new rXMLRPCRequest($command);
+        $req->important = false;
+        return($req->success());
+    }
+
+    // Observe tokenized foreign generations even if nobody checks their hash
+    // again. A missing hash is proved outside the state lock; the final write
+    // still requires the exact generation and observation seen before the probe.
+    public static function sweepOrphanClaims()
+    {
+        $candidates = [];
+        $clockUnavailable = false;
+        $stored = RuTrackerState::update('meta-claims', function ($claims) use (&$candidates, &$clockUnavailable) {
+            $clock = self::claimClock();
+            if ($clock === null) {
+                $clockUnavailable = true;
+                return($claims);
+            }
+            foreach ($claims as $hash => $entry) {
+                if (!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash) || !is_array($entry)) {
+                    continue;
+                }
+                $since = self::claimSince($entry);
+                $token = $entry['token'] ?? null;
+                if ($since === null || !is_string($token) || !preg_match('/^[0-9a-f]{16}$/D', $token)) {
+                    continue;
+                }
+                $observed = $entry['orphan_observed'] ?? null;
+                if (!self::claimObservationMatches($observed, $since, $token, $clock)) {
+                    $entry['orphan_observed'] = self::claimObservation($since, $token, $clock);
+                    $claims[$hash] = $entry;
+                } elseif (($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000) {
+                    $candidates[] = ['hash' => $hash, 'since' => $since, 'token' => $token,
+                        'observed' => $observed];
+                }
+            }
+            return($claims);
+        });
+        if (!$stored || $clockUnavailable) {
+            self::logUnrepairable('sweepOrphanClaims: meta-claims could not be observed; '
+                . ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
+            return(false);
+        }
+        if (!$candidates) {
+            return(true);
+        }
+        usort($candidates, function ($a, $b) {
+            return($a['observed']['mono'] <=> $b['observed']['mono']);
+        });
+        $batchStarted = hrtime(true);
+        foreach (array_slice($candidates, 0, self::ORPHAN_SWEEP_BATCH) as $candidate) {
+            if (hrtime(true) - $batchStarted >= self::ORPHAN_SWEEP_BUDGET_NS) {
+                break;
+            }
+            $presence = self::torrentExists($candidate['hash']);
+            $removed = false;
+            $requeued = false;
+            $clockUnavailable = false;
+            $settled = RuTrackerState::update('meta-claims', function ($claims) use ($candidate, $presence, &$removed, &$requeued, &$clockUnavailable) {
+                $hash = $candidate['hash'];
+                $entry = $claims[$hash] ?? null;
+                if (!is_array($entry) || self::claimSince($entry) !== $candidate['since']
+                    || ($entry['token'] ?? null) !== $candidate['token']
+                    || ($entry['orphan_observed'] ?? null) !== $candidate['observed']) {
+                    return($claims);
+                }
+                $clock = self::claimClock();
+                if ($clock === null) {
+                    $clockUnavailable = true;
+                    return($claims);
+                }
+                if (!self::claimObservationMatches(
+                    $candidate['observed'],
+                    $candidate['since'],
+                    $candidate['token'],
+                    $clock,
+                )
+                    || ($clock['mono'] - $candidate['observed']['mono']) <= self::MAX_LOCK_TIME * 1000000000) {
+                    return($claims);
+                }
+                if ($presence === false) {
+                    unset($claims[$hash]);
+                    $removed = true;
+                } else {
+                    // Requeue a present or uncertain hash behind other aged candidates.
+                    $entry['orphan_observed'] = self::claimObservation(
+                        $candidate['since'],
+                        $candidate['token'],
+                        $clock,
+                    );
+                    $claims[$hash] = $entry;
+                    $requeued = true;
+                }
+                return($claims);
+            });
+            if (!$settled || $clockUnavailable) {
+                self::logUnrepairable('sweepOrphanClaims: meta-claims could not be settled; '
+                    . ($clockUnavailable ? 'monotonic-clock-unavailable' : 'claim-store-unavailable'));
+                return(false);
+            }
+            if ($removed) {
+                self::logDebug('sweepOrphanClaims: reaped absent hash ' . $candidate['hash']);
+            } elseif ($requeued && $presence === null) {
+                self::logUnrepairable('sweepOrphanClaims: retained ' . $candidate['hash'] . ': presence-unknown');
+            }
+        }
+        return(true);
+    }
+
+    public static function claimCheckForWorker($hash, $now)
+    {
+        return(self::claimCheck($hash, $now));
+    }
+
+    public static function releaseCheckForWorker($hash, $token)
+    {
+        if (!is_string($token) || $token === '') {
+            return(false);
+        }
+        self::releaseCheck($hash, $token);
+        return(true);
+    }
+
+    // The same release serves immediate rollback and the background sweep.
+    // A pre-existing successor may lose our keys, never its download record.
+    public static function discardReplacement($hash, $marker = null, $record = null)
+    {
+        if ($marker === null || $record === null
+            || (string) $marker === '' || (string) $record === '') {
+            return(RuTrackerAtomicOwnership::UNKNOWN);
+        }
+        return(RuTrackerAtomicOwnership::closeReplacement(
+            $hash,
+            (string) $marker,
+            (string) $record,
+            [],
+            true,
+        ));
+    }
+
+    // Null means the exact tuple could not be established, never ordinary ownership.
+    public static function reusedReplacement($hash, $marker, $record)
+    {
+        if (!self::isPluginReplacementMarker($marker) || self::decodeInheritance($record) === null) {
+            return(null);
+        }
+        $read = new rXMLRPCRequest([
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::REPLACEMENT_MARKER_KEY]),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::INHERIT_KEY]),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, self::REUSE_KEY]),
+        ]);
+        $read->important = false;
+        if (!$read->success() || $read->fault || !is_array($read->val) || count($read->val) !== 3
+            || $read->val[0] !== $marker || $read->val[1] !== $record || !is_string($read->val[2])) {
+            return(null);
+        }
+        return($read->val[2] === '' ? false : ($read->val[2] === $marker ? true : null));
+    }
+
+    // Call only after OLD is known absent and the exact replacement generation
+    // has closed. Cleanup completion is reported separately by its queue owner.
+    public static function logReplacementComplete($oldHash, $newHash, $reused = false)
+    {
+        try {
+            self::logRoutine('replacement complete old=' . $oldHash . ' new=' . $newHash
+                . ' successor=' . ($reused ? 'reused' : 'loaded'));
+        } catch (Throwable $error) {
+            // An optional success log cannot undo an already closed transaction.
+        }
+    }
+
+    public static function logUnrepairable($message)
+    {
+        self::logRoutine($message);
+    }
+
+    /**
+     * Close the replacement transaction: the marker and the record go away
+     * together, so the invariant a later cycle relies on holds -- a non-empty
+     * record can only accompany a non-empty marker.
+     *
+     * Called only where the transaction is known to be over: after a confirmed
+     * activation, and where a live torrent turns out to carry a stale marker.
+     * Never on a row whose fate is unknown -- clearing is the irreversible
+     * step: after it, reuse requires a fresh current candidate and installed
+     * source proof rather than this transaction's recovery authority.
+     */
+    public static function clearReplacementRecord(
+        $hash,
+        $marker = null,
+        $record = null,
+        $expectedValues = []
+    ) {
+        if ($marker === null || $record === null
+            || (string) $marker === '' || (string) $record === '') {
+            return(false);
+        }
+        return(RuTrackerAtomicOwnership::closeReplacement(
+            $hash,
+            (string) $marker,
+            (string) $record,
+            $expectedValues,
+        ) === RuTrackerAtomicOwnership::ACTED);
+    }
+
+    /**
+     * The predecessor's identity and run state, as one comma-free string.
+     *
+     * Three fields, each earning its place: the hash separates "the commit
+     * never happened" (the predecessor is still there) from "the commit
+     * happened and the activation did not" (it is gone); the token is the
+     * (started, open) pair read at the commit point, which until now died with
+     * the PHP process; the epoch lets a sweep tell a crashed transaction from
+     * one that is simply still running.
+     *
+     * Hyphen-separated: a 40-hex hash, a lowercase token and an integer
+     * contain none, so the split is unambiguous, and the whole value stays
+     * comma-free -- d.custom.set splits its own arguments on commas.
+     */
+    public static function encodeInheritance($oldHash, $wasStarted, $wasOpen, $now)
+    {
+        return(RuTrackerReplacementRecord::encode($oldHash, $wasStarted, $wasOpen, $now));
+    }
+
+    public static function isPluginReplacementMarker($value)
+    {
+        return(RuTrackerReplacementRecord::isPluginMarker($value));
+    }
+
+    /**
+     * The record, or null when the value is not one this class wrote.
+     *
+     * null is the legacy signal -- the row predates the record, or its load
+     * command list aborted before the record landed -- and every caller must
+     * route it according to whether the raw value was absent (legacy) or
+     * non-empty but malformed (fail closed). Unknown run tokens are malformed:
+     * silently converting one to stopped can authorize an erase or key clear.
+     */
+    public static function decodeInheritance($value, &$shaped = null)
+    {
+        return(RuTrackerReplacementRecord::decode($value, $shaped));
+    }
+
+    // The resolved, bounded wait: the caller's override when given, otherwise
+    // $rutrackerMetaWait, otherwise the default -- clamped at both ends.
+    // Separate from awaitMetadata() so the bound can be asserted without
+    // spending the wait it describes.
+    public static function metadataWaitSeconds($override = null)
+    {
+        global $rutrackerMetaWait;
+        $seconds = $override;
+        if (is_null($seconds)) {
+            $seconds = isset($rutrackerMetaWait) ? $rutrackerMetaWait : self::METADATA_WAIT_DEFAULT;
+        }
+        return(min(self::METADATA_WAIT_MAX, max(0, (int) $seconds)));
+    }
+
+    /**
+     * Wait for a magnet download to acquire its metainfo.
+     *
+     * Lives here, beside createTorrent(), because it is the same kind of
+     * service every handler may need rather than anything RuTracker-specific:
+     * it takes a hash and answers whether rTorrent still calls that download a
+     * metadata stub. A handler that loads a magnet can therefore finish the
+     * replacement in the cycle it started, instead of leaving it to the next
+     * scheduled run. Today only the RuTracker handler loads magnets -- NNMClub
+     * and Kinozal fetch the .torrent from the site and already replace within
+     * one cycle -- but nothing here knows which tracker is asking.
+     *
+     * Waiting pays because metadata almost always arrives at once: across 21
+     * replacements measured on a live fleet the median wait was 1 second and
+     * 20 of the 21 were under 5, the lone outlier taking 83. The default ten
+     * seconds thus turns nearly every fetch into a same-cycle replacement,
+     * while a slow one still falls through to whatever the caller does next.
+     * It costs an idle cycle nothing: it runs only once a fetch has begun.
+     *
+     * @param  string $hash The magnet download to watch
+     * @return bool   true once the download carries real metainfo
+     *
+     * No $seconds override: nothing ever passed one. The bound itself stays
+     * testable through metadataWaitSeconds(), which is where it belongs -- a
+     * wait is not something a test should have to sit through to assert.
+     */
+    public static function awaitMetadata($hash)
+    {
+        $seconds = self::metadataWaitSeconds();
+        $until = microtime(true) + $seconds;
+        $expectedHash = strtoupper((string) $hash);
+        $reason = 'metadata-pending';
+        $actualHash = '(not read)';
+        for (;;) {
+            $meta = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.is_meta"), $hash));
+            $meta->important = false;
+            $success = $meta->success();
+            // d.is_meta can turn zero before rTorrent atomically replaces the
+            // session file. Readiness therefore requires both the live state and
+            // parseable session bytes carrying the exact expected info-hash.
+            if ($success && isset($meta->val[0])
+                && ($meta->val[0] === 0 || $meta->val[0] === '0')) {
+                $torrent = rTorrent::getSource($hash);
+                if (!is_object($torrent)) {
+                    $reason = 'session-unreadable';
+                    $actualHash = '(unreadable)';
+                } elseif ($torrent->errors()) {
+                    $reason = 'session-invalid';
+                    $actualHash = '(invalid)';
+                } else {
+                    $actualHash = strtoupper((string) $torrent->hash_info());
+                    if ($actualHash === $expectedHash) {
+                        return(true);
+                    }
+                    $reason = 'session-hash-stale';
+                }
+            } elseif (!$success || $meta->fault || !isset($meta->val[0])) {
+                $reason = 'state-unreadable';
+                $actualHash = '(not read)';
+            } else {
+                $reason = 'metadata-pending';
+                $actualHash = '(not read)';
+            }
+            if (microtime(true) >= $until) {
+                self::logDebug('metadata readiness: ' . $expectedHash
+                    . ' outcome=wait-timeout reason=' . $reason
+                    . ' expected=' . $expectedHash . ' actual=' . $actualHash);
+                return(false);
+            }
+            usleep(self::METADATA_POLL_US);
+        }
+    }
+
+    /**
+     * The one place downloaded bytes become torrent metainfo.
+     *
+     * Answers with the parsed Torrent, or null when the bytes are not metainfo
+     * at all. Null says nothing about the topic: a login wall, a ratio gate, a
+     * protection page and a truncated download all arrive here as HTTP 200 and
+     * all come back null, so every caller has to treat that as "could not
+     * check" and retry. Whoever needs the torrent afterwards takes the object
+     * returned here; decoding the same bytes twice is both wasted work and a
+     * chance for two callers to disagree about what they hold.
+     */
+    public static function parseMetainfo($payload)
+    {
+        if (!is_string($payload) || $payload === '') {
+            return(null);
+        }
+        // PHP 7.4 warns when Torrent probes binary metainfo as a filename.
+        $torrent = @new Torrent($payload);
+        if ($torrent->errors()) {
+            return(null);
+        }
+        $hash = $torrent->hash_info();
+        if (!is_string($hash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $hash)) {
+            return(null);
+        }
+        // An empty info.name is refused here, before the bytes can reach
+        // load.raw_start. rTorrent 0.16.20 does not decline such a torrent --
+        // it ABORTS: proven on a bench container, where the payload 0.16.21
+        // declines gracefully terminates 0.16.20 outright and takes every
+        // torrent on the daemon with it. These bytes come from a tracker, so
+        // one malformed response would be a fleet-wide outage.
+        //
+        // Deliberately NOT gated on the daemon version. On 0.16.21 the torrent
+        // is still not inserted, only quietly, so refusing it early is right
+        // there too -- and a version gate would fail OPEN exactly when the
+        // version probe is stale or unanswered, which is when it is needed.
+        // hash_info() above proves the info dictionary parsed, so a missing
+        // name is a genuinely nameless torrent, not a decode failure.
+        $name = $torrent->name();
+        if (!is_string($name) || $name === '') {
+            return(null);
+        }
+        return($torrent);
+    }
+
+    /**
+     * Common validated replacement tail for HTTP download clients.
+     *
+     * Reusable across sibling handlers: validates HTTP 200 and parses the body
+     * once, then hands the parsed Torrent to createTorrent(). Returns
+     * STE_CANT_REACH_TRACKER on non-200 or non-metainfo responses, both of
+     * which are retryable and neither of which proves a topic was removed.
+     */
+    public static function createTorrentFromDownload($client, $hash, $oldTorrent = null)
+    {
+        if (!is_object($client) || intval($client->status) !== 200) {
+            return(self::STE_CANT_REACH_TRACKER);
+        }
+        $torrent = self::parseMetainfo((string) $client->results);
+        if ($torrent === null) {
+            return(self::STE_CANT_REACH_TRACKER);
+        }
+        return(self::createTorrent($torrent, $hash, $oldTorrent));
+    }
+
+    /**
+     * Replace $hash with an already parsed replacement.
+     *
+     * $torrent is the Torrent parseMetainfo() returned, or the one a handler
+     * downloaded and patched itself -- never bytes. Metainfo is decoded at one
+     * boundary and the object travels from there, so this never decodes again.
+     *
+     * Anything else is a caller that could not produce metainfo, and the answer
+     * is STE_ERROR: an error to retry next cycle, with nothing changed. It is
+     * not a deletion. A tracker that really has removed a topic says so in its
+     * own words, and each handler recognises that signal for itself, well
+     * before it gets here.
+     */
+    public static function createTorrent($torrent, $hash, $oldTorrent = null)
+    {
+        global $saveUploadedTorrents;
+
+        if (!($torrent instanceof Torrent) || $torrent->errors()) {
+            self::logDebug("createTorrent: " . $hash . " was handed metainfo that is not a parsed"
+                . " torrent; nothing is changed and the check stays retryable");
+            return self::STE_ERROR;
+        }
+
+        $newHash = $torrent->hash_info();
+        if (!is_string($newHash) || !preg_match('/^[0-9a-fA-F]{40}$/D', $newHash)) {
+            self::logDebug("createTorrent: invalid or missing info_hash in replacement metainfo");
+            return self::STE_ERROR;
+        }
+        $newHash = strtoupper($newHash);
+        if (strcasecmp($newHash, (string) $hash) === 0) {
+            return self::STE_UPTODATE;
+        }
+
+        $exists = self::torrentExists($newHash);
+        if ($exists === null) {
+            return self::STE_ERROR;
+        }
+        $stagedRecord = null;
+        $reuse = null;
+        if ($exists === true) {
+            // Recover marked transactions first. An unmarked installed copy may
+            // be reused only after its source proves the selected current version.
+            $markerReq = new rXMLRPCRequest([
+                new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, self::REPLACEMENT_MARKER_KEY]),
+                new rXMLRPCCommand("d.get_state", $newHash),
+                new rXMLRPCCommand("d.is_open", $newHash),
+                new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, self::INHERIT_KEY]),
+            ]);
+            $markerReq->important = false;
+            // Hash membership does not establish the installed source or a prior
+            // transaction. An unreadable marker probe cannot authorize either path.
+            if (!$markerReq->success() || $markerReq->fault || !isset($markerReq->val[3])) {
+                self::logDebug("createTorrent: " . $hash . " could not read the marker of the existing "
+                    . $newHash . "; the replacement is abandoned with nothing changed");
+                return self::STE_ERROR;
+            }
+            if ((string) $markerReq->val[0] === '') {
+                $reuse = $markerReq->val[3] === '' ? self::existingReplacement($torrent, $newHash) : null;
+                if ($reuse === null) {
+                    self::logReplacementCollision($hash, $newHash, 'unproved-existing');
+                    return self::STE_ERROR;
+                }
+            } else {
+                if (!self::isPluginReplacementMarker((string) $markerReq->val[0])) {
+                    self::logReplacementCollision($hash, $newHash, 'foreign-marker');
+                    return self::STE_ERROR;
+                }
+                // A nonce proves only that this plugin wrote something at this hash.
+                // Ownership of THIS replacement additionally requires the strict
+                // record to name the predecessor being replaced. Without both halves,
+                // neither a stopped copy may be erased nor live keys repaired.
+                $rawStagedRecord = (string) $markerReq->val[3];
+                $stagedRecord = self::decodeInheritance($rawStagedRecord);
+                if ($stagedRecord === null
+                    || strcasecmp($stagedRecord['old'], (string) $hash) !== 0) {
+                    self::logReplacementCollision(
+                        $hash,
+                        $newHash,
+                        $stagedRecord === null ? 'invalid-record' : 'different-predecessor',
+                    );
+                    return self::STE_ERROR;
+                }
+                // d.get_state and d.is_open are 0/1 and nothing else, proved BEFORE
+                // any branch below erases the occupant, retires its keys or
+                // activates the replacement: intval() turned every unreadable
+                // answer into the "stopped and closed" that authorises the erase.
+                $stagedState = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[1]);
+                $stagedOpen = RuTrackerRpcValue::canonicalNonnegativeInteger($markerReq->val[2]);
+                if (!in_array($stagedState, [0, 1], true) || !in_array($stagedOpen, [0, 1], true)) {
+                    self::logDebug("createTorrent: " . $hash . " found " . $newHash
+                        . " reporting an unreadable run state; the occupant and its keys are retained");
+                    return self::STE_ERROR;
+                }
+                $wasReused = self::reusedReplacement($newHash, (string) $markerReq->val[0], $rawStagedRecord);
+                if ($wasReused === null) {
+                    return self::STE_ERROR;
+                }
+                $reconciled = self::reconcileExistingCleanup(
+                    $hash,
+                    $newHash,
+                    (string) $markerReq->val[0],
+                    $rawStagedRecord,
+                );
+                if ($reconciled === null) {
+                    return self::STE_ERROR;
+                }
+                if ($wasReused) {
+                    if ($reconciled === 'committed') {
+                        if (self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord)) {
+                            self::logReplacementComplete($hash, $newHash, true);
+                        }
+                        self::clearLocalRefusal($hash, $newHash);
+                        return null;
+                    }
+                    $replacing = self::encodeInheritance(
+                        $newHash,
+                        $stagedRecord['run']['started'],
+                        $stagedRecord['run']['open'],
+                        $stagedRecord['staged'],
+                    );
+                    if (self::restoreExistingTorrent(
+                        $hash,
+                        $stagedRecord['run']['open'],
+                        $stagedRecord['run']['started'],
+                        $replacing,
+                    )) {
+                        self::clearReplacementRecord($newHash, (string) $markerReq->val[0], $rawStagedRecord);
+                    }
+                    return self::STE_ERROR;
+                }
+                if ($reconciled === 'committed') {
+                    if ($stagedState !== 0 || $stagedOpen !== 0) {
+                        if (self::clearReplacementRecord(
+                            $newHash,
+                            (string) $markerReq->val[0],
+                            $rawStagedRecord,
+                            ['state' => $stagedState, 'is_open' => $stagedOpen],
+                        )) {
+                            self::logReplacementComplete($hash, $newHash);
+                        }
+                        return self::STE_ERROR;
+                    } elseif (self::activateReplacement(
+                        $newHash,
+                        $stagedRecord['run']['open'],
+                        $stagedRecord['run']['started'],
+                        (string) $markerReq->val[0],
+                        $rawStagedRecord,
+                    )) {
+                        self::logReplacementComplete($hash, $newHash);
+                    }
+                    self::clearLocalRefusal($hash, $newHash);
+                    return null;
+                }
+                if ($stagedState !== 0 || $stagedOpen !== 0) {
+                    // OLD presence has already selected cancellation or recovery.
+                    // Only after that durable state is reconciled may a live successor
+                    // retire the owned keys; it is never treated as disposable.
+                    self::clearReplacementRecord(
+                        $newHash,
+                        (string) $markerReq->val[0],
+                        $rawStagedRecord,
+                        ['state' => $stagedState, 'is_open' => $stagedOpen],
+                    );
+                    return self::STE_ERROR;
+                }
+                // The record the dead run wrote at ITS commit point, read before
+                // the copy carrying it is erased. The dead run's own stop/close
+                // is what left the predecessor stopped, so for this transaction
+                // the live re-read below reports the crash, not the user -- the
+                // record is the one truthful account of the state the torrent
+                // was last in when the crashed generation selected its policy.
+                if (!self::eraseStaged($newHash, (string) $markerReq->val[0], $rawStagedRecord)) {
+                    return self::STE_ERROR;
+                }
+            }
+        }
+
+        // Direct handlers already hold the parsed predecessor from run_ex(). Use
+        // it only when its info dictionary identifies this exact hash; asynchronous
+        // callers and mismatched objects retain the live source lookup fallback.
+        if (!($oldTorrent instanceof Torrent) || $oldTorrent->errors()
+            || strcasecmp((string) $oldTorrent->hash_info(), (string) $hash) !== 0) {
+            $oldTorrent = rTorrent::getSource($hash);
+        }
+        if (!($oldTorrent instanceof Torrent) || $oldTorrent->errors()
+            || strcasecmp((string) $oldTorrent->hash_info(), (string) $hash) !== 0) {
+            return self::STE_ERROR;
+        }
+
+        try {
+            $marker = bin2hex(random_bytes(16));
+        } catch (Exception $error) {
+            return self::STE_ERROR;
+        }
+
+        if ($reuse !== null) {
+            // Reuse keeps NEW's settings. Only OLD's payload directory is needed
+            // by the shared cleanup; inheritance metadata cannot gate this path.
+            $req = new rXMLRPCRequest(new rXMLRPCCommand("d.get_directory_base", $hash));
+            $req->important = false;
+            if (!$req->success() || $req->fault || !is_array($req->val) || count($req->val) !== 1
+                || !is_string($req->val[0]) || $req->val[0] === '' || $req->val[0][0] !== '/'
+                || strpos($req->val[0], "\0") !== false) {
+                return self::STE_ERROR;
+            }
+            $baseDir = $req->val[0];
+        } else {
+            // Ratio-group membership lives in rat_N views (see plugins/ratio).
+            $viewsReq = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.views"), $hash));
+            $viewsReq->important = false;
+            if (!$viewsReq->success()) {
+                return self::STE_ERROR;
+            }
+            $ratioViews = [];
+            foreach ($viewsReq->val as $view) {
+                if (is_string($view) && preg_match('/^rat_\d+$/', $view)) {
+                    $ratioViews[$view] = true;
+                }
+            }
+            $ratioViews = array_keys($ratioViews);
+
+            // Confirm the memberships against the live view list now, while the
+            // old torrent is still running: the round trip must not lengthen the
+            // window between the stop/close below and the replacement load. It is
+            // still a check-to-load TOCTOU either way -- the hoist leaves that gap
+            // at the same order of magnitude, buildReplacementAddition() just
+            // degrades an unconfirmed membership instead of trusting it. Skipped
+            // entirely when the torrent belongs to no ratio group.
+            $existingViews = empty($ratioViews) ? null : self::existingViews();
+
+            // Snapshot only non-run metadata. Run state is deliberately absent: a UI
+            // start/stop/pause after this request must win, and the daemon-side branch
+            // below measures it at the same command boundary that writes the recovery
+            // marker and stops/closes the predecessor.
+            $req = new rXMLRPCRequest([
+                new rXMLRPCCommand("d.get_directory_base", $hash),
+                new rXMLRPCCommand("d.get_custom1", $hash),
+                new rXMLRPCCommand("d.get_throttle_name", $hash),
+                new rXMLRPCCommand("d.get_connection_seed", $hash),
+                // Carried across the replacement, in the same request that is
+                // already being made: a replacement is the same TOPIC with new
+                // metadata, so the topic id and the forum it lives in are still
+                // true of the successor. Omitting them made every successful
+                // replacement forget where its topic lives, and the next check had
+                // to resolve the forum again -- which, when the feed does not
+                // happen to know it, is a walk of the whole tracker.
+                new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-topic"]),
+                new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-forum"]),
+            ]);
+            $req->important = false;
+            if (!$req->success() || !isset($req->val[5])) {
+                self::logDebug("createTorrent: " . $hash
+                    . " could not have its replacement metadata snapshotted; the replacement was not committed");
+                return self::STE_ERROR;
+            }
+
+            $baseDir = $req->val[0];
+            $label = rawurldecode($req->val[1]);
+            $throttle = $req->val[2];
+            $connectionSeed = $req->val[3];
+            // These four are read in the daemon's own bytes: php/xmlrpc.php hands
+            // strings out unescaped. The directory, the throttle name and the label
+            // are free text -- a torrent author's name, rtorrent.rc, another client --
+            // and each is quoted exactly once on its way into the successor's load
+            // command list, which is rtorrent's command language, not XML: the
+            // directory by rTorrent::sendTorrent() (quoteCommandArg(), beside a
+            // typed `mkdir -p`), the throttle name and the connection seed by
+            // rTorrent::additionCommand() in buildReplacementAddition(), and the
+            // label is decoded here because sendTorrent() rawurlencode()s it.
+            // Escaping any of them a second time loads the successor into a new,
+            // empty directory beside the payload, under a throttle name nobody
+            // defined, or with a label nobody chose (round-4 AUD-ESC-02, -14, -15).
+            //
+            // The topic and forum ids are canonicalised instead. Quoting already
+            // keeps a stray comma inside its argument; the spelling is the issue:
+            // "007" names no topic to topicsAwaitingForum() or resolveForum(), so
+            // forwarding it writes a value the successor's own readers refuse.
+            // trim() only, and only on the COPY: transport whitespace is not the
+            // question, the spelling of the id is. Nothing here writes back to the
+            // predecessor's own customs, and that restraint is load-bearing for
+            // exactly ONE of these two keys. chk-forum is compared as BYTES by its
+            // only other writer: RuTrackerForumIndex::writeForumMapping() holds its
+            // lock and, on a call that is NOT authoritative, tests the stored value
+            // verbatim against $expectedForum -- a crawl's pre-sweep snapshot --
+            // answering FORUM_WRITE_SUPERSEDED on any difference. An authoritative
+            // caller skips that guard, so today only the crawl reaches it. The
+            // second byte test has no such qualifier: every call compares the
+            // stored value verbatim against the id it means to write and answers
+            // FORUM_WRITE_CURRENT on a match. Rewriting those bytes
+            // anywhere else therefore changes what that compare-and-swap sees, which
+            // is why " 22" is left as " 22" on the row it is stored on. chk-topic is
+            // the other shape: its guard canonicalises BOTH sides, so " 22" names no
+            // topic there and answers FORUM_WRITE_OBSOLETE no matter what this
+            // function does. Do not read the byte-comparison hazard onto chk-topic.
+            $topicId = RuTrackerRpcValue::canonicalPositiveInt32(trim((string) $req->val[4]));
+            $forumId = RuTrackerRpcValue::canonicalForumId((string) $req->val[5]);
+            $topic = $topicId === null ? '' : (string) $topicId;
+            $forum = $forumId === null ? '' : (string) $forumId;
+
+            // Nothing is handed over until the replacement provably claims no file
+            // on disk: rTorrent::sendTorrent() unlinks whatever filename the object
+            // carries, and getSource() may have filled that in with the user's own
+            // tied .torrent. A refusal here costs one retryable cycle; getting it
+            // wrong costs a file that was never ours.
+            $disowned = self::disownFile($torrent);
+            if ($disowned === null) {
+                return self::STE_ERROR;
+            }
+
+        }
+
+        $stagedAt = time();
+        $stoppedFallback = null;
+        if ($stagedRecord !== null
+            && ($stagedRecord['run']['started'] || $stagedRecord['run']['open'])) {
+            // Narrow crash-adoption exception: the predecessor's (0,0) may be
+            // the dead transaction's own stop artifact. Only that selected branch
+            // inherits the staged record; a fresh daemon-side started/open reading
+            // still wins normally.
+            $stoppedFallback = self::encodeInheritance(
+                $newHash,
+                $stagedRecord['run']['started'],
+                $stagedRecord['run']['open'],
+                $stagedAt,
+            );
+            self::logDebug("createTorrent: " . $hash
+                . " will use the staged copy's recorded state only if the daemon selects"
+                . " stopped/closed, inheriting the recorded state over the dead run's own stop");
+        }
+        $startedMarker = self::encodeInheritance($newHash, true, true, $stagedAt);
+        $openMarker = self::encodeInheritance($newHash, false, true, $stagedAt);
+        $stoppedMarker = $stoppedFallback !== null ? $stoppedFallback
+            : self::encodeInheritance($newHash, false, false, $stagedAt);
+        $stop = new rXMLRPCRequest(self::replacementStopCommand(
+            $hash,
+            $newHash,
+            $stagedAt,
+            $stoppedFallback,
+            self::activeRunLocalId($hash),
+        ));
+        $stop->important = false;
+        if (!$stop->success() || $stop->fault || !is_array($stop->val)
+            || count($stop->val) !== 1 || !is_string($stop->val[0])
+            || !in_array(
+                $stop->val[0],
+                [$startedMarker, $openMarker, $stoppedMarker],
+                true,
+            )) {
+            // The reply can be lost or malformed after stop/close already ran.
+            // Read the persisted marker, then compare it again inside rollback;
+            // never infer run policy by stripping bytes from an untrusted reply.
+            $restored = false;
+            $recoveryRead = new rXMLRPCRequest(new rXMLRPCCommand(
+                getCmd('d.get_custom'),
+                [$hash, self::REPLACING_KEY],
+            ));
+            $recoveryRead->important = false;
+            if ($recoveryRead->success() && !$recoveryRead->fault && is_array($recoveryRead->val)
+                && count($recoveryRead->val) === 1 && is_string($recoveryRead->val[0])
+                && in_array($recoveryRead->val[0], [$startedMarker, $openMarker, $stoppedMarker], true)) {
+                $recoveryMarker = $recoveryRead->val[0];
+                $restoreStarted = $recoveryMarker === $startedMarker;
+                $restored = self::restoreExistingTorrent(
+                    $hash,
+                    $restoreStarted || $recoveryMarker === $openMarker,
+                    $restoreStarted,
+                    $recoveryMarker,
+                );
+            }
+            self::logUnrepairable('createTorrent: ' . $hash . ' stop-marker-refused restore='
+                . ($restored ? 'confirmed' : 'unconfirmed'));
+            return self::STE_ERROR;
+        }
+        $selectedMarker = (string) $stop->val[0];
+        $wasStarted = ($selectedMarker === $startedMarker);
+        $wasOpen = $wasStarted || ($selectedMarker === $openMarker);
+        self::logDebug("createTorrent: " . $hash . " daemon-selected run state at stop: started="
+            . ($wasStarted ? 1 : 0) . " open=" . ($wasOpen ? 1 : 0));
+        $stagedRecordStr = self::encodeInheritance($hash, $wasStarted, $wasOpen, $stagedAt);
+        if ($reuse !== null) {
+            $empty = array_fill_keys([self::REPLACEMENT_MARKER_KEY, self::INHERIT_KEY,
+                self::REUSE_KEY, self::REPLACING_KEY, 'chk-meta-old', 'chk-meta-new',
+                'chk-meta-until', 'chk-meta-topic'], '');
+            $claimed = RuTrackerAtomicOwnership::setCustoms($newHash, $empty, [
+                self::REUSE_KEY => $marker,
+                self::INHERIT_KEY => $stagedRecordStr,
+                self::REPLACEMENT_MARKER_KEY => $marker,
+            ], ['local_id' => $reuse['local_id'], 'is_meta' => 0], true);
+            if ($claimed !== RuTrackerAtomicOwnership::ACTED) {
+                // The claim may have landed despite a lost reply. Exact release
+                // follows a confirmed OLD restore and cannot dispose the occupant.
+                if (self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
+                    self::clearReplacementRecord($newHash, $marker, $stagedRecordStr);
+                }
+                self::logUnrepairable('createTorrent: existing successor claim ' . $claimed
+                    . ' old=' . $hash . ' new=' . $newHash . '; replacement retained for retry');
+                return self::STE_ERROR;
+            }
+        } else {
+            $addition = self::buildReplacementAddition(
+                $connectionSeed,
+                $throttle,
+                $ratioViews,
+                $existingViews,
+                self::STE_UPDATED,
+                $marker,
+                $stagedRecordStr,
+                $topic,
+                $forum,
+            );
+
+
+            // Stage stopped: a failed pre-commit replacement cannot write shared data.
+            $pendingReceipt = null;
+            $loadedHash = rTorrent::sendTorrent(
+                $disowned,
+                false,
+                false,
+                $baseDir,
+                $label,
+                $saveUploadedTorrents,
+                false,
+                true,
+                $addition,
+                $pendingReceipt,
+                null,
+                true,
+            );
+            $owner = self::waitForLoad($newHash, $marker);
+            // The checker has its own staged marker. It can confirm a core-pending
+            // load without mistaking an older download with this hash for our load.
+            if ($loadedHash === false || (is_string($loadedHash)
+                && strcasecmp($loadedHash, (string) $newHash) !== 0) || $owner !== 'ours') {
+                // Restore the old torrent even when the staged status is unknown:
+                // d.start on it is safe to repeat and is the only recovery there
+                // is. Its RESULT decides what happens to the staged copy: erasing
+                // that copy also destroys the marker and record the sweep scans
+                // for, so doing it before the predecessor is known to be back
+                // would leave a stopped, closed torrent that nothing in the
+                // plugin can find again. A failed restore therefore keeps the
+                // staged copy, which is exactly what turns this into a stranded
+                // transaction the sweep knows how to finish.
+                $restored = self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker);
+                $loadResult = $loadedHash === false ? 'dispatch-failed'
+                    : ($loadedHash === null ? 'pending'
+                        : (is_string($loadedHash) && strcasecmp($loadedHash, $newHash) === 0
+                            ? 'expected-hash' : 'different-hash'));
+                self::logUnrepairable('createTorrent: ' . $hash . ' -> ' . $newHash
+                    . ' staging refused: load=' . $loadResult
+                    . ' owner=' . (in_array($owner, ['ours', 'foreign', 'missing'], true)
+                        ? $owner : 'unknown')
+                    . ' restore=' . ($restored ? 'confirmed' : 'unconfirmed'));
+                // A successful restore clears its exact recovery marker inside the
+                // same conditional command. A failed restore keeps it for the sweep.
+                if ($owner === 'ours') {
+                    if ($restored) {
+                        self::eraseStaged($newHash, $marker, $stagedRecordStr);
+                    } else {
+                        self::logDebug("createTorrent: " . $hash . " could not be restored after a failed"
+                            . " staging; keeping the staged copy " . $newHash
+                            . " so the sweep can finish the transaction");
+                    }
+                }
+                return self::STE_ERROR;
+            }
+        }
+
+        $cleanupFiles = self::buildObsoleteCleanupFiles(
+            $oldTorrent,
+            $torrent,
+            $baseDir,
+            $hash,
+            $newHash,
+            $marker,
+            $stagedRecordStr,
+            $reuse === null ? null : $reuse['base'],
+        );
+        self::logDebug('createTorrent: cleanup prepare ' . $hash . ' -> ' . $newHash
+            . ' old=' . self::$obsoleteCleanupSummary['old']
+            . ' new=' . self::$obsoleteCleanupSummary['new']
+            . ' obsolete=' . self::$obsoleteCleanupSummary['obsolete']
+            . ' missing=' . self::$obsoleteCleanupSummary['missing']);
+        $cleanupJob = null;
+        if ($cleanupFiles !== false && $cleanupFiles !== null) {
+            $cleanupJob = erasedataPrepareObsoleteCleanup(
+                $hash,
+                $newHash,
+                $marker,
+                $stagedRecordStr,
+                realpath($baseDir),
+                $cleanupFiles,
+            );
+        }
+        if ($cleanupFiles === false || ($cleanupFiles !== null && !is_array($cleanupJob))) {
+            self::logCleanupFailure('durable cleanup preparation failed for ' . $hash . ' -> ' . $newHash
+                . '; replacement was aborted before predecessor erase');
+            self::postponeLocalRefusal(
+                $hash,
+                $newHash,
+                $cleanupFiles === false ? 'cleanup plan refused' : 'local file operation refused',
+            );
+            if (self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
+                self::eraseStaged($newHash, $marker, $stagedRecordStr);
+            } else {
+                self::logDebug('createTorrent: ' . $hash . ' could not be restored after cleanup preparation failed;'
+                    . ' keeping staged copy ' . $newHash . ' for replacement sweep recovery');
+            }
+            return self::STE_ERROR;
+        }
+
+        $armReason = null;
+        if ($cleanupJob !== null && !erasedataArmObsoleteCleanup($cleanupJob, $armReason)) {
+            // Preparation succeeded; the arm step is what refused.
+            self::logCleanupFailure('obsolete-file cleanup was not armed ('
+                . ($armReason === null ? 'cleanup-arm-unconfirmed' : $armReason)
+                . ') before predecessor erase; replacement remains retryable');
+            // Only a proven lasting rename capability refusal escalates the
+            // scheduler backoff. No other arm refusal (job, lock, state,
+            // write, RPC, acknowledgement, unconfirmed rename) is proven
+            // lasting, so it retries on the next cycle without starting or
+            // extending a streak.
+            if ($armReason === 'cleanup-rename-capability') {
+                self::postponeLocalRefusal(
+                    $hash,
+                    $newHash,
+                    $armReason,
+                    'obsolete-file cleanup was not armed',
+                );
+            }
+            if (!erasedataCancelObsoleteCleanup($cleanupJob)) {
+                self::logCleanupFailure('prepared obsolete cleanup cancellation failed after drain refusal; both generations and recovery markers were retained');
+                return self::STE_ERROR;
+            }
+            if (self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
+                self::eraseStaged($newHash, $marker, $stagedRecordStr);
+            } else {
+                self::logDebug('createTorrent: predecessor restore failed after cleanup drain refusal; keeping staged successor for sweep');
+            }
+            return self::STE_ERROR;
+        }
+
+        // Commit point: erase the old torrent.
+        $eraseStatus = RuTrackerAtomicOwnership::erase(
+            $hash,
+            [self::REPLACING_KEY => $selectedMarker],
+            ['state' => 0, 'is_open' => 0],
+        );
+        $eraseSuccess = ($eraseStatus === RuTrackerAtomicOwnership::ACTED);
+        if (!$eraseSuccess) {
+            $oldExists = self::torrentExists($hash);
+            if ($oldExists === true) {
+                if ($cleanupJob !== null && !erasedataCancelObsoleteCleanup($cleanupJob)) {
+                    self::logCleanupFailure('prepared obsolete cleanup cancellation failed for ' . $hash . ' -> ' . $newHash
+                        . '; both generations and recovery markers were retained');
+                    return self::STE_ERROR;
+                }
+                // Restore first, erase second, and only on a verified
+                // restore -- the same order and the same reason as the
+                // staging rollback above. Erasing the staged copy first
+                // destroyed the marker before anything knew whether the
+                // predecessor was coming back, and the restore's answer was
+                // then thrown away.
+                if (self::restoreExistingTorrent($hash, $wasOpen, $wasStarted, $selectedMarker)) {
+                    self::eraseStaged($newHash, $marker, $stagedRecordStr);
+                } else {
+                    self::logDebug("createTorrent: " . $hash . " could not be restored after a failed"
+                        . " commit erase; keeping the staged copy " . $newHash
+                        . " so the sweep can finish the transaction");
+                }
+                return self::STE_ERROR;
+            }
+            if ($oldExists === null) {
+                // Both fates are unknowable: keep the marked staged copy so a
+                // later run can adopt it, and touch nothing else.
+                return self::STE_ERROR;
+            }
+            // The old torrent is gone despite the failed erase: proceed.
+        }
+
+        $published = false;
+        $closeTransaction = true;
+        if ($cleanupJob !== null) {
+            $published = erasedataPublishObsoleteCleanup($cleanupJob);
+            if (!$published) {
+                $closeTransaction = false;
+                self::logCleanupFailure('durable obsolete cleanup publish failed for ' . $hash . ' -> ' . $newHash
+                    . '; successor recovery markers were retained');
+            }
+        }
+
+        $activated = self::activateReplacement(
+            $newHash,
+            $wasOpen,
+            $wasStarted,
+            $marker,
+            $stagedRecordStr,
+            $closeTransaction,
+            $reuse !== null,
+        );
+        // The transaction is closed only once the daemon has been seen in the
+        // intended state. An unconfirmed activation keeps both keys, so the
+        // next cycle's sweep finds the row instead of a torrent that merely
+        // looks finished -- which is how a replacement sat stopped for a day.
+        if (!$activated) {
+            self::logDebug("createTorrent: " . $newHash . " keeps its replacement record: activation was not confirmed");
+        }
+        if ($published && !erasedataKickCollector($hash)) {
+            self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . $hash
+                . '; the published job remains scheduled for retry');
+        }
+        if ($activated && $closeTransaction) {
+            self::logReplacementComplete($hash, $newHash, $reuse !== null);
+        }
+        self::clearLocalRefusal($hash, $newHash);
+        return null;
+    }
+
+    public static function run_ex($hash, $source, &$performed = null)
+    {
+        $performed = false;
+        $torrent = ($source instanceof Torrent) ? $source : new Torrent($source);
+        // Two facts, and they used to leave through the same STE_NOT_NEED at
+        // the bottom. "The session copy does not parse" is a torrent nobody
+        // could look at -- transient in principle, since rTorrent rewrites
+        // that file -- while "no registered handler claims it" is a torrent
+        // that is genuinely none of this plugin's business. Settling the first
+        // as the second stops the plugin ever looking at the torrent again,
+        // and says so in the UI under a word that means the opposite.
+        if ($torrent->errors()) {
+            self::logDebug("run_ex: " . $hash . " has a session copy that does not parse ("
+                . (is_string($source) ? $source : 'daemon source')
+                . "); nothing could be read from it, so nothing is concluded");
+            return self::STE_CANT_REACH_TRACKER;
+        }
+        $comment = (string) $torrent->comment();
+        // A handler says STE_DECLINED only when the URL is outside its
+        // jurisdiction. Every stored verdict, including STE_NOT_NEED, is a real
+        // answer and is final: another tracker in a cross-seed announce-list knows
+        // nothing about the topic URL that produced it.
+        $declinedFromAnnounce = false;
+        $askedAlready = [];
+
+        // A comment filter is a substring test over free text: a Kinozal
+        // torrent whose description mentions "ранее на rutracker.org" matches
+        // RuTracker's. The loop used to RETURN whatever the first match
+        // answered, so that torrent was handed to the wrong handler for good
+        // and nothing else ever got a look. A handler that declines now simply
+        // passes the torrent on.
+        foreach (self::$TRACKERS as $commentFilter => $tracker) {
+            if (!preg_match($commentFilter, $comment)) {
+                continue;
+            }
+            $askedAlready[$commentFilter] = true;
+            $verdict = call_user_func($tracker['handler'], $comment, $hash, $torrent);
+            if ($verdict !== self::STE_DECLINED) {
+                $performed = true;
+                return $verdict;
+            }
+        }
+
+        $announces = [];
+        self::appendAnnounceUrls($torrent->announce(), $announces);
+        self::appendAnnounceUrls($torrent->announce_list(), $announces);
+
+        // Announce matching is a fallback only after every comment handler had
+        // a chance to claim the topic URL.
+        foreach (self::$TRACKERS as $commentFilter => $tracker) {
+            // It already answered, from better input. Only two of the seven
+            // handlers -- anidub and tapochek -- register one pattern as both
+            // filters, but identity is not what makes this guard necessary: a
+            // torrent from its own tracker normally carries both a comment the
+            // comment filter matched and an announce the announce filter matches.
+            // That is what rutracker (/rutracker\./ against
+            // /rutracker\.|t-ru\.org/) and toloka (/toloka\./ against
+            // /toloka\.to/) look like -- differing patterns that still both hit
+            // the same host. So without this the same handler ran twice for one
+            // torrent -- once on the comment it is written to read, then again on
+            // an announce URL it cannot.
+            if (isset($askedAlready[$commentFilter])) {
+                continue;
+            }
+            foreach ($announces as $announce) {
+                if (!preg_match($tracker['announceFilter'], $announce)) {
+                    continue;
+                }
+                // The handler is handed the ANNOUNCE url here, and every
+                // handler's gate parses a TOPIC url -- so the gate declines. Before
+                // STE_DECLINED existed that answer was STE_NOT_NEED, and a magnet-added
+                // torrent, or one whose comment was stripped, ended up stamped
+                // "No need to check" for ever, with no request and no log line.
+                // And it is the torrent that needs looking at most: the pass
+                // only sends a row for the full check once layer 1 calls it a
+                // candidate, which is exactly when its announces are failing.
+                $verdict = call_user_func($tracker['handler'], $announce, $hash, $torrent);
+                if ($verdict !== self::STE_DECLINED) {
+                    $performed = true;
+                    return $verdict;
+                }
+                $declinedFromAnnounce = true;
+                break;   // this handler has answered; the next announce is not a second chance
+            }
+        }
+
+        // Somebody was handed nothing but an announce URL, which no gate can
+        // turn into a topic. That is "ask again later", never "nothing to do
+        // here" -- and it outranks any comment-based decline, because it is the
+        // one answer that established nothing.
+        if ($declinedFromAnnounce) {
+            self::logDebug("run_ex: " . $hash . " is claimed by a registered tracker but no handler could"
+                . " identify its topic from the comment or the announce; nothing is concluded");
+            return self::STE_CANT_REACH_TRACKER;
+        }
+        // A BEP-9 .meta source is only the info dictionary: announce and
+        // comment belong to the missing outer metainfo envelope. An empty pair
+        // therefore proves no tracker ownership either way. Wait for the full
+        // source instead of permanently settling it as "not our business".
+        if ($comment === '' && !count($announces)) {
+            self::logDebug("run_ex: " . $hash
+                . " has no tracker identity in its current source; nothing is concluded");
+            return self::STE_CANT_REACH_TRACKER;
+        }
+        // No registered filter claimed either input. A handler that reached a
+        // real terminal verdict returned it above; only jurisdiction declines
+        // can reach this dispatcher-level STE_NOT_NEED.
+        return self::STE_NOT_NEED;
+    }
+
+    // The version of the rTorrent that is answering right now, as one log
+    // fragment. rTorrentSettings::get() would answer from the cached
+    // rtorrent.dat instead -- only a browser-driven get(true) ever refreshes
+    // it -- so after an upgrade and a restart it can report the old version
+    // for days, which is the single answer this diagnostic must never give.
+    // The query is skipped entirely when the debug log is off: nothing pays
+    // for a line that is not written.
+    public static function liveVersionLabel()
+    {
+        global $rutrackerCheckDebug;
+        $unknown = "client=? api=?";
+        if (empty($rutrackerCheckDebug)) {
+            return($unknown);
+        }
+        $req = new rXMLRPCRequest([
+            new rXMLRPCCommand(getCmd("system.client_version")),
+            new rXMLRPCCommand(getCmd("system.api_version")),
+        ]);
+        $req->important = false;
+        if (!$req->success() || !isset($req->val[0], $req->val[1])) {
+            return($unknown);
+        }
+        return("client=" . trim((string) $req->val[0]) . " api=" . trim((string) $req->val[1]));
+    }
+
+    // The origin a handler whose tracker has no fixed domain works on, taken
+    // from the loginmgr account of the same name so that the pages this
+    // plugin reads are on the host loginmgr logs in at. '' when loginmgr is
+    // not installed, or while its setting for that account is not set or not
+    // usable -- a handler with no origin has nowhere to ask, and the account
+    // is what decides that an origin is an https one and nothing more.
+    //
+    // loginmgr is reached only when a handler asks, so this plugin still
+    // loads without it.
+    public static function accountOrigin($name)
+    {
+        $file = dirname(__FILE__) . "/../loginmgr/accounts/" . $name . ".php";
+        $class = $name . "Account";
+        if (is_file($file)) {
+            require_once(dirname(__FILE__) . "/../loginmgr/accounts.php");
+            require_once($file);
+        }
+        // Without autoloading: what declares an account is the file above.
+        if (!class_exists($class, false)) {
+            return('');
+        }
+        $account = new $class();
+        return(is_string($account->url) ? $account->url : '');
+    }
+
+    public static function logDebug($message)
+    {
+        global $rutrackerCheckDebug;
+        if (!empty($rutrackerCheckDebug)) {
+            self::logRoutine($message);
+        }
+    }
+
+    public static function transportFailureDetail($status)
+    {
+        $status = (int) $status;
+        if ($status === Snoopy::RESPONSE_BODY_FAILED) {
+            // The same code covers a local request refusal and a rejected body.
+            // Only the separately classified error can distinguish them.
+            return('transport=client status=' . $status);
+        }
+        if ($status < 0) {
+            $reasons = [-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create'];
+            $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
+            return('transport=socket status=' . $status . ' reason=' . $reason);
+        }
+        // Zero is NOT a curl exit code here, and the old text said so twice
+        // over -- zero is curl's code for SUCCESS -- which made sixteen lines
+        // of a live log diagnose nothing at all.
+        //
+        // It is also not one single condition. Snoopy seeds $status with 0 and
+        // overwrites it with curl's exit code, with the code parsed out of an
+        // "HTTP/..." header line, or with fsockopen's $errno, so a surviving 0
+        // is any of four things:
+        //   (a) connected, but no parseable status line came back -- the header
+        //       loops set $status only on a line matching |^HTTP/|;
+        //   (b) the socket path failed with errno 0, which is what PHP reports
+        //       for a getaddrinfo/DNS failure (verified: fsockopen on an
+        //       unresolvable host gives errno 0);
+        //   (c) Snoopy refused before sending -- an invalid protocol, an
+        //       unresolvable host, or one resolving to a non-public address
+        //       (Snoopy.class.inc checkTarget());
+        //   (d) fetch() bailed on a URI parse_url() could not read, before
+        //       touching either field.
+        // Naming any one of them would misdiagnose the rest: an earlier draft
+        // called a DNS outage "the server sent no status line" and would have
+        // sent an operator to look at Cloudflare. So this says only what is
+        // certainly true, and makeClient() logs classifyFetchError()'s token
+        // for $client->error beside it.
+        //
+        // That token is NOT always there, and the difference matters more than
+        // it looks: Snoopy writes the message on (b) and (c) but on neither
+        // (a) nor (d), because the header loops and the early bail touch only
+        // $status. (a) is exactly what produced the sixteen log lines cited
+        // above -- they are all curl-path fetches that exited 0 with no status
+        // line parsed -- so for the motivating case the field is absent and
+        // this text is the whole diagnosis. An absent error= is therefore
+        // evidence in its own right: it narrows a status 0 to (a) or (d).
+        if ($status === 0) {
+            return('transport=no-status reason=unset');
+        }
+        $reasons = [
+            5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
+            35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
+            56 => 'receive', 60 => 'tls-certificate',
+        ];
+        $reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
+        return('transport=curl-exit code=' . $status . ' reason=' . $reason);
+    }
+
+    /**
+     * Snoopy's failure sentence, reduced to one greppable token.
+     *
+     * transportFailureDetail() alone cannot separate the several conditions
+     * that all arrive as status 0, and Snoopy has already written the one
+     * sentence that distinguishes them.
+     *
+     * The rule itself lives in fetcherror.php, which the NNMClub guest path
+     * requires too: both used to carry their own copy of the same eight
+     * token/pattern pairs, and the copies had drifted over how they normalised
+     * whitespace. The method stays as a delegate so that de-duplicating the
+     * rule changed no call site's name or shape; makeClient() below is its
+     * only caller and it may be inlined.
+     *
+     * @return string A token, or '' when Snoopy wrote no message
+     */
+    public static function classifyFetchError($error)
+    {
+        return(RuTrackerFetchError::classify($error));
+    }
+
+    public static function fetchStatusDetail($status)
+    {
+        if ($status === null || $status === '') {
+            return('');
+        }
+        $status = (int) $status;
+        return($status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status);
+    }
+
+    // $agent defaults to the browser agent, which reduces 403/anti-bot errors
+    // on the forum and the API. It is WRONG for an announce endpoint, where
+    // Cloudflare refuses browser agents outright -- see
+    // RuTrackerAnnounce::PROBE_USER_AGENT for the measurements and for what
+    // that silently cost. One default cannot be right for all three callers,
+    // so the one that differs says so at the call site.
+    public static function makeClient($url, $method = "GET", $content_type = "", $body = "", $agent = self::USER_AGENT)
+    {
+        $client = new Snoopy();
+        $client->read_timeout = 5;
+        $client->_fp_timeout = 5;
+
+        $client->agent = (string) $agent;
+
+        @$client->fetchComplex($url, $method, $content_type, $body);
+
+        // Socket errors are negative; the https path stores curl's exit code,
+        // which is below any real HTTP status.
+        if ($client->status < 100) {
+            $host = @parse_url($url, PHP_URL_HOST);
+            // Snoopy's own message, classified, not just the numeric map. The
+            // number alone cannot separate the several conditions that all
+            // arrive as status 0 (see transportFailureDetail()), and Snoopy has
+            // already written the one sentence that distinguishes them --
+            // "connection failed (0)" for an unresolvable host, "Refusing to
+            // fetch: ..." when it declined to send at all. This plugin used to
+            // read $client->error nowhere at all, so that sentence was thrown
+            // away exactly when it was the only thing worth having.
+            //
+            // A token rather than the sentence, for two reasons. It is the
+            // spelling this plugin's other reader of the same Snoopy field
+            // uses (NNMClubCheckImpl::guestFetch()), so one grep now reads the
+            // field wherever the plugin writes it; two shapes needed two.
+            // And it needs no redaction audit: this plugin's hardest log rule
+            // is that a probe URL, which spells the user's passkey in its query
+            // string, must never reach the log (RuTrackerAnnounce::buildUrl
+            // strips it for the same reason), and Snoopy is a vendored file
+            // that some later merge may well teach to quote the URL it failed
+            // on. classifyFetchError() answers 'unclassified' to anything it
+            // does not recognise, so that merge cannot leak through here.
+            $error = self::classifyFetchError($client->error);
+            self::logDebug("Snoopy fetch failed: host=" . (is_string($host) ? $host : 'unknown') . " "
+                . self::transportFailureDetail($client->status)
+                . ($error === '' ? '' : ' error=' . $error));
+        }
+
+        return $client;
+    }
+
+    // Shared by run() below and RuTrackerUpdatePass::run()'s direct-write
+    // paths (updatepass.php), so an ignored torrent can never flap between
+    // STE_IGNORED and a scheduler-derived state depending only on which of
+    // the two ever ends up touching it in a given cycle.
+    // The label is compared decoded. d.custom1 holds it percent-encoded on
+    // every path that goes through rTorrent::sendTorrent() (php/rtorrent.php
+    // rawurlencode()s it), and createTorrent() below already rawurldecode()s
+    // it for its own use -- but getState() and update.php's fleet scan hand
+    // the raw value straight to this function, so an $ignoreLabels entry
+    // containing anything that needs escaping (a space, Cyrillic) silently
+    // never matched. The shipped defaults ('tv-sonarr', 'radarr') need no
+    // escaping, which is why this went unnoticed. A label another client
+    // wrote without encoding matches as it is: both readers hand over the
+    // daemon's own bytes (round-4 AUD-ESC-14).
+    public static function isIgnoredLabel($label)
+    {
+        global $ignoreLabels;
+        if (is_null($label) || !isset($ignoreLabels) || !is_array($ignoreLabels)) {
+            return(false);
+        }
+        return(in_array($label, $ignoreLabels, true) || in_array(rawurldecode((string) $label), $ignoreLabels, true));
+    }
+
+    public static function run($hash, $state = null, $time = null, $label = null, &$performed = null, $prepareOrdinaryCheck = null, $scheduledAt = null, &$observation = null)
+    {
+        // $performed is deliberately narrower than "this invocation changed
+        // something": it acknowledges only a real tracker-handler run. The
+        // scheduler uses it to retire durable forum-correction work, which an
+        // ignored-label decision or a metadata-pump step has not consumed.
+        $performed = false;
+        // Diagnostic output only. A successful invocation may acquire no claim,
+        // run no handler, or retain an old verdict without learning anything.
+        $observation = 'not-observed';
+        // The scheduler passes a cycle-start snapshot, while a manual check can
+        // finish and change chk-state before this row is reached. Take the real
+        // per-hash claim first, then refresh state, time and label under that same
+        // claim so the branch below is chosen from one live reading. A second
+        // claim inside either branch would deadlock against our own token.
+        $expiredPrevious = false;
+        $claimToken = self::claimCheck($hash, time(), $expiredPrevious);
+        if ($claimToken === null) {
+            return(false);
+        }
+        if ($claimToken === false) {
+            self::logDebug("run: " . $hash . " is already being checked by another process; leaving it to that one");
+            return(true);
+        }
+
+        $previousIdentity = self::$activeRunIdentity;
+        try {
+            if (!self::getState($hash, $state, $time, $label, $localId, $storedMessage)) {
+                // The torrent is gone: a stale worker, and a successful no-op.
+                if ($state == self::STE_NOT_NEED) {
+                    return(true);
+                }
+                // Anything else left getState()'s own STE_INPROGRESS default in
+                // place -- and the dispatch below reads that as "another process
+                // holds the lock", so the check is silently skipped and reported
+                // as successful. A read that failed is not a lock. Say so, and
+                // let the caller come back.
+                self::logDebug("run: " . $hash . " state could not be read; deferring the check");
+                return(false);
+            }
+
+            self::$activeRunIdentity = ['hash' => $hash, 'localId' => $localId,
+                'scheduledAt' => $scheduledAt];
+            self::$missingSuccessorMarker = null;
+
+            $recoverableP = $state == self::STE_INPROGRESS
+                && ($expiredPrevious || (time() - $time) > self::MAX_LOCK_TIME);
+            $emptyPGuard = [];
+            $promotedMeta = false;
+            if ($state == self::STE_INPROGRESS) {
+                // Older workers published the owned marks before the M state.
+                // Observe the same daemon generation before an ignored label or
+                // an alive shortcut can hide that unfinished fetch.
+                $marks = new rXMLRPCRequest([
+                    new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-meta-new"]),
+                    new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-meta-until"]),
+                    new rXMLRPCCommand(getCmd("d.get_local_id"), $hash),
+                ]);
+                $marks->important = false;
+                if (!$marks->success() || $marks->fault || !is_array($marks->val)
+                    || count($marks->val) !== 3 || (string) $marks->val[2] !== $localId) {
+                    self::logUnrepairable('run: ' . $hash
+                        . ' chk-meta-new/chk-meta-until generation read unconfirmed; deferring P verdict');
+                    return(false);
+                }
+                if ((string) $marks->val[0] !== '' || (string) $marks->val[1] !== '') {
+                    if (!$recoverableP) {
+                        return(true);
+                    } // the fresh P worker still owns this fetch
+                    if (self::setState($hash, self::STE_META_PENDING, $localId) !== true) {
+                        self::logUnrepairable('run: ' . $hash
+                            . ' chk-state META_PENDING promotion unconfirmed;'
+                            . ' retaining chk-meta-new/chk-meta-until for retry');
+                        return(false);
+                    }
+                    $state = self::STE_META_PENDING;
+                    $promotedMeta = true;
+                } else {
+                    $emptyPGuard = ["chk-state" => (string) self::STE_INPROGRESS,
+                        "chk-meta-new" => "", "chk-meta-until" => ""];
+                }
+            }
+
+            if ($state == self::STE_META_PENDING) {
+                // Keep the durable state until pump() has retired its exact
+                // generation. The per-hash claim already excludes other workers;
+                // INPROGRESS here could strand the marks after a worker crash.
+                $state = RuTrackerMetaFetch::pump($hash, time());
+                // null is pump()'s success contract: createTorrent() committed,
+                // so this hash no longer exists and there is nothing to write.
+                if (is_null($state)) {
+                    return(true);
+                }
+                if ($state == self::STE_META_PENDING) {
+                    return($promotedMeta || self::setState($hash, $state, $localId) !== false);
+                }
+                $ignored = self::isIgnoredLabel($label);
+                $written = self::setRetiredMetaVerdict(
+                    $hash,
+                    $ignored ? self::STE_IGNORED : $state,
+                    $ignored,
+                    $localId,
+                );
+                if ($written === false) {
+                    self::logUnrepairable('run: ' . $hash . ' metafetch-final-verdict-unconfirmed;'
+                        . ' chk-state after retired chk-meta-new/chk-meta-until needs retry');
+                    return(false);
+                }
+                return($ignored || $state != self::STE_CANT_REACH_TRACKER);
+            }
+
+            // Keep the ignored state and its cleared message on the same
+            // daemon generation. The scheduler applies the same projection.
+            if (self::isIgnoredLabel($label)) {
+                return(self::setFastVerdict(
+                    $hash,
+                    self::STE_IGNORED,
+                    '',
+                    false,
+                    $localId,
+                    $emptyPGuard,
+                ) !== false);
+            }
+
+            // The claim may have expired on monotonic time while chk-time is still
+            // future-dated after a wall-clock rollback. Only that proved takeover
+            // may bypass the old wall-clock in-progress check.
+            if ($recoverableP) {
+                $state = 0;
+            }
+            $recoveredEmptyP = $recoverableP && $emptyPGuard !== [];
+
+            if ($state !== self::STE_INPROGRESS) {
+                if ($prepareOrdinaryCheck !== null && !call_user_func($prepareOrdinaryCheck, $hash)) {
+                    return(false);
+                }
+                // The marker may predate this process. Arm its retry guard before
+                // INPROGRESS can replace the old clock or a handler can clear chk-msg.
+                if (strpos($storedMessage, self::CHKMSG_SUCCESSOR_MISSING) === 0) {
+                    $prefix = self::CHKMSG_SUCCESSOR_MISSING . '|';
+                    $successor = substr($storedMessage, strlen($prefix));
+                    if (strpos($storedMessage, $prefix) !== 0
+                        || preg_match('/^[0-9A-F]{40}$/D', $successor) !== 1) {
+                        self::logUnrepairable('run: ' . $hash
+                            . ' malformed chk-msg successor-missing marker; check deferred');
+                        return(false);
+                    }
+                    if (!self::retainMissingSuccessor($hash, $successor)) {
+                        return(false);
+                    }
+                }
+                $previous = $state;
+                $terminal = in_array($previous, [self::STE_DELETED, self::STE_ABSORBED], true);
+                if ($previous === self::STE_NOT_NEED && $time > 0) {
+                    $message = self::storedMessage($hash);
+                    if ($message === null) {
+                        return(false);
+                    }
+                    $terminal = self::isSettledStatus($previous, $time, $message);
+                }
+                $state = self::STE_INPROGRESS;
+                // claimCheck() serializes workers. Keep a terminal verdict visible
+                // while checking. The same-value preflight leaves chk-time intact
+                // and detects a missing hash. A matching readback of this value
+                // cannot, by itself, prove that the write succeeded.
+                if ($terminal) {
+                    $stateWrite = self::writeCustomProjection($hash, [
+                        new rXMLRPCCommand(
+                            getCmd("d.set_custom"),
+                            [$hash, "chk-state", (string) $previous],
+                        )], "confirmTerminalState", $localId);
+                } else {
+                    $stateWrite = self::setState(
+                        $hash,
+                        $state,
+                        $localId,
+                        $recoveredEmptyP ? $emptyPGuard : [],
+                    );
+                }
+                if ($stateWrite === null) {
+                    return(true);
+                }
+                if (!$stateWrite) {
+                    return(false);
+                }
+                $handlerPerformed = false;
+                $handlerVerdict = null;
+                $source = rTorrent::getSource($hash);
+                $pendingMessage = null;
+                if ($terminal) {
+                    self::$terminalMessageHash = $hash;
+                    self::$pendingTerminalMessage = null;
+                }
+                try {
+                    if ($source !== false) {
+                        $handlerVerdict = self::run_ex($hash, $source, $handlerPerformed);
+                        $state = $handlerVerdict;
+                    } else {
+                        self::logDebug("run: " . $hash
+                            . " has no readable session copy or tied daemon source;"
+                            . " no handler verdict is available");
+                    }
+                } finally {
+                    if ($terminal || self::$missingSuccessorMarker !== null) {
+                        $pendingMessage = self::$pendingTerminalMessage;
+                        self::$terminalMessageHash = null;
+                        self::$pendingTerminalMessage = null;
+                    }
+                }
+                if ($state === self::STE_UNCHANGED) {
+                    $state = $previous;
+                }
+                if ($state == self::STE_INPROGRESS) {
+                    $state = self::STE_ERROR;
+                }
+                // A retryable failure cannot refute a terminal topic verdict.
+                // Do not refresh its rest clock without a new answer: the next
+                // scheduled recheck must still arrive at its original deadline.
+                $resultState = $state;
+                $finalPGuard = $recoveredEmptyP && $state !== self::STE_META_PENDING
+                    ? $emptyPGuard : [];
+                $missingRetry = self::$missingSuccessorMarker !== null
+                    && ($handlerVerdict === null || in_array(
+                        $handlerVerdict,
+                        [self::STE_UNCHANGED, self::STE_CANT_REACH_TRACKER, self::STE_ERROR],
+                        true,
+                    ));
+                $retainedTerminal = $terminal && !$missingRetry
+                    && in_array($state, [self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true);
+                if ($retainedTerminal) {
+                    $state = $previous;
+                }
+                $finalWrite = null;
+                if ($missingRetry) {
+                    // The marker makes even an intermediate NOT_NEED schedulable.
+                    // Publish ERROR without moving the original retry deadline.
+                    $state = self::STE_ERROR;
+                    $resultState = self::STE_CANT_REACH_TRACKER;
+                    $finalWrite = self::writeCustomProjection(
+                        $hash,
+                        [
+                            new rXMLRPCCommand(
+                                getCmd('d.set_custom'),
+                                [$hash, 'chk-state', (string) $state],
+                            ),
+                            new rXMLRPCCommand(
+                                getCmd('d.set_custom'),
+                                [$hash, 'chk-time', $time > 0 ? (string) $time : ''],
+                            ),
+                            new rXMLRPCCommand(
+                                getCmd('d.set_custom'),
+                                [$hash, 'chk-msg', self::$missingSuccessorMarker],
+                            )],
+                        'recordMissingSuccessorError',
+                        $localId,
+                        $finalPGuard,
+                    );
+                    if ($finalWrite !== true) {
+                        self::logUnrepairable('run: ' . $hash
+                            . ' chk-state/chk-time/chk-msg successor-missing verdict unconfirmed; retry pending');
+                    }
+                } elseif (!is_null($state) && !($terminal
+                    && ($retainedTerminal || $handlerVerdict === self::STE_UNCHANGED))) {
+                    if ($handlerVerdict === self::STE_UNCHANGED) {
+                        // INPROGRESS briefly stamped the claim clock. An answer that
+                        // learned nothing must restore it without touching chk-stime.
+                        $finalWrite = self::writeCustomProjection(
+                            $hash,
+                            [
+                                new rXMLRPCCommand(
+                                    getCmd("d.set_custom"),
+                                    [$hash, "chk-state", (string) $previous],
+                                ),
+                                new rXMLRPCCommand(
+                                    getCmd("d.set_custom"),
+                                    [$hash, "chk-time", $time > 0 ? (string) $time : ""],
+                                )],
+                            "restoreUnchanged",
+                            $localId,
+                            $finalPGuard,
+                        );
+                    } else {
+                        // A conclusive answer retires a persisted missing-successor
+                        // marker even if the handler had no sentence to publish.
+                        $finalMessage = self::$missingSuccessorMarker !== null
+                            ? ($pendingMessage === null ? '' : $pendingMessage)
+                            : ($terminal ? $pendingMessage : null);
+                        $finalWrite = $finalMessage !== null
+                            ? self::setFastVerdict(
+                                $hash,
+                                $state,
+                                $finalMessage,
+                                false,
+                                $localId,
+                                $finalPGuard,
+                            )
+                            : self::setState($hash, $state, $localId, $finalPGuard);
+                    }
+                }
+                // Handler invocation is not durable consumption. In particular,
+                // STE_UNCHANGED means it learned nothing, and a false/null final
+                // write leaves no verdict for a correction to acknowledge.
+                $performed = $handlerPerformed
+                    && !in_array($handlerVerdict, [self::STE_UNCHANGED,
+                        self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true)
+                    && $finalWrite === true;
+                if ($handlerPerformed) {
+                    $observation = 'unconfirmed';
+                    if ($handlerVerdict === self::STE_UNCHANGED && !$missingRetry
+                        && ($terminal || $finalWrite === true)) {
+                        $observation = 'unchanged';
+                    } elseif (in_array($handlerVerdict, [self::STE_CANT_REACH_TRACKER, self::STE_ERROR], true)) {
+                        $observation = 'failed';
+                    } elseif ($finalWrite === true) {
+                        if ($handlerVerdict === self::STE_META_PENDING) {
+                            $observation = 'pending';
+                        } elseif (in_array($handlerVerdict, [self::STE_UPDATED, self::STE_UPTODATE,
+                            self::STE_DELETED, self::STE_NOT_NEED, self::STE_IGNORED, self::STE_ABSORBED], true)) {
+                            $observation = 'confirmed';
+                        }
+                    }
+                }
+                return($resultState != self::STE_CANT_REACH_TRACKER);
+            }
+            return(true); // only a still-held INPROGRESS state reaches here
+        } finally {
+            // An early state/message read or preflight failure may skip the
+            // handler's finally block after arming this process-local buffer.
+            if (self::$terminalMessageHash === $hash) {
+                self::$terminalMessageHash = null;
+                self::$pendingTerminalMessage = null;
+            }
+            self::$missingSuccessorMarker = null;
+            self::$activeRunIdentity = $previousIdentity;
+            self::releaseCheck($hash, $claimToken);
+        }
+    }
+
+    protected static function getState($hash, &$state, &$time, &$label, &$localId = null, &$message = null)
+    {
+        $state = self::STE_INPROGRESS;
+        $time = time();
+        $label = "";
+        $localId = null;
+        $message = null;
+
+        // Read first, probe only if that fails. The existence probe used to run
+        // unconditionally ahead of the read, so every manual check paid two
+        // round trips where one answers: a custom read against a hash rTorrent
+        // does not know FAULTS (measured against the live daemon: -500), so a
+        // successful read is itself proof the torrent is there. The probe still
+        // exists for the one case that needs it -- telling "the torrent is
+        // gone" apart from "the daemon did not answer" -- it just no longer
+        // runs when nothing went wrong.
+        //
+        // Scheduler and manual checks both reach this live read under run()'s
+        // claim. A scheduler snapshot is only dispatch input and may be stale.
+        $req = new rXMLRPCRequest([
+            new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-state"]),
+            new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-time"]),
+            new rXMLRPCCommand(getCmd("d.get_custom1"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_local_id"), $hash),
+            new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-msg"]),
+        ]);
+        $req->important = false;
+        $readOk = $req->success();
+        $complete = $readOk && isset($req->val[0], $req->val[1], $req->val[2], $req->val[3], $req->val[4])
+            && is_string($req->val[4]);
+        if ($readOk && !$complete) {
+            self::logUnrepairable("getState: " . $hash
+                . " chk-state/chk-time/chk-msg read incomplete; deferring without state mutation");
+        }
+        if ($complete) {
+            // An UNSET custom reads back as '' -- that alone is the absent 0.
+            // A reading that will not parse is NOT state 0 ("never checked"),
+            // on which run() dispatches a full destructive check.
+            $readState = $req->val[0] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
+            $readTime = $req->val[1] === '' ? 0 : RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[1]);
+            if ($readState === null || $readTime === null) {
+                // Ungated: this one never heals. A read that merely FAILED is
+                // answered again next cycle, but bytes that will not parse are
+                // still there next cycle, and nothing rewrites them -- run()
+                // returns below before setState(), parseMulticall() drops the
+                // row out of the scheduler snapshot, and flushVerdicts() leaves
+                // it out of the fresh scan. The torrent is simply never checked
+                // again. See logUnrepairable().
+                self::logUnrepairable("getState: " . $hash . " answered with a malformed chk-state/chk-time;"
+                    . " nothing rewrites it, so this torrent will not be checked again until it is cleared");
+                return(false);
+            }
+            if (!is_string($req->val[3]) || preg_match('/^[0-9A-F]{40}$/D', $req->val[3]) !== 1) {
+                self::logUnrepairable("getState: " . $hash . " answered with an invalid d.local_id; deferring check");
+                return(false);
+            }
+            $state = $readState;
+            $time = $readTime;
+            $label = $req->val[2];
+            $localId = $req->val[3];
+            $message = $req->val[4];
+            return(true);
+        }
+
+        $exists = self::torrentExists($hash);
+        if ($exists === false) {
+            $state = self::STE_NOT_NEED;
+            self::logDebug("getState: Torrent " . $hash . " not found, skipping state read");
+            return(false);
+        }
+        return(false);
+    }
+
+    // Read a settled NOT_NEED token under the per-hash run claim. An unreadable
+    // value is not permission to overwrite a possibly settled verdict.
+    private static function storedMessage($hash)
+    {
+        $req = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd("d.get_custom"),
+            [$hash, "chk-msg"],
+        ));
+        $req->important = false;
+        return $req->success() && isset($req->val[0]) ? (string) $req->val[0] : null;
+    }
+
+    // One metainfo path, joined under the download's base. Each component is
+    // one name, so '..' and '/' (out of the base or into another name), NUL
+    // (the name ends there for the daemon) and '' or '.' (no name at all)
+    // are refused. A backslash is an ordinary byte of a Linux file name and
+    // is written by the daemon exactly as spelled, so it stays part of the
+    // name (round-4 AUD-ESC S4); refusing it failed the cleanup build and
+    // rolled back every replacement of such a torrent.
+    private static function makeSafeRelativePath($components)
+    {
+        if (!is_array($components) || !count($components)) {
+            return(null);
+        }
+        $normalized = [];
+        foreach ($components as $component) {
+            if (!is_string($component) && !is_numeric($component)) {
+                return(null);
+            }
+            $component = (string) $component;
+            if ($component === '' || $component === '.' || $component === '..'
+                || strpos($component, "\0") !== false || strpos($component, '/') !== false) {
+                return(null);
+            }
+            $normalized[] = $component;
+        }
+        return(implode('/', $normalized));
+    }
+
+    private static function collectTorrentPaths($torrent)
+    {
+        if (!is_object($torrent) || !isset($torrent->info) || !is_array($torrent->info)) {
+            return(null);
+        }
+        $info = $torrent->info;
+        $single = array_key_exists('length', $info);
+        $multi = array_key_exists('files', $info);
+        if ($single === $multi) {
+            return(null);
+        }
+        $paths = [];
+        $seen = [];
+        if ($multi) {
+            if (!is_array($info['files'])) {
+                return(null);
+            }
+            foreach ($info['files'] as $file) {
+                if (!is_array($file) || !isset($file['path']) || !is_array($file['path'])) {
+                    return(null);
+                }
+                $path = self::makeSafeRelativePath($file['path']);
+                if ($path === null) {
+                    return(null);
+                }
+                if (array_key_exists('attr', $file)) {
+                    if (!is_string($file['attr'])) {
+                        return(null);
+                    }
+                    if (strpos($file['attr'], 'p') !== false) {
+                        continue;
+                    }
+                }
+                $key = "p\0" . $path;
+                if (!isset($seen[$key])) {
+                    $seen[$key] = true;
+                    $paths[] = $path;
+                }
+            }
+        } elseif (array_key_exists('name', $info)) {
+            $path = self::makeSafeRelativePath([$info['name']]);
+            if ($path === null) {
+                return(null);
+            }
+            $paths[] = $path;
+        } else {
+            return(null);
+        }
+        return($paths);
+    }
+
+    // The daemon owns selected aliases and file renames. Metadata remains the
+    // hash-verified layout/padding authority inside the shared physical reader.
+    private static function collectCleanupPaths($hash, $torrent, $baseDir)
+    {
+        if (!is_string($baseDir) || $baseDir === '' || $baseDir[0] !== '/'
+            || strpos($baseDir, "\0") !== false) {
+            return(false);
+        }
+        $failure = null;
+        $owned = erasedataCollectPhysicalPaths($hash, $failure, $torrent);
+        if (!is_array($owned) || !isset($owned['files']) || !is_array($owned['files'])) {
+            return(false);
+        }
+        $prefix = rtrim($baseDir, '/') . '/';
+        $paths = [];
+        foreach ($owned['files'] as $file) {
+            if (!is_string($file) || strpos($file, $prefix) !== 0) {
+                return(false);
+            }
+            $relative = substr($file, strlen($prefix));
+            if (self::makeSafeRelativePath(explode('/', $relative)) !== $relative) {
+                return(false);
+            }
+            $paths[] = $relative;
+        }
+        return($paths);
+    }
+
+    private static function fileIdentityIndexKey($identity)
+    {
+        if (!is_array($identity) || empty($identity['exists'])
+            || !isset($identity['stat']['dev'], $identity['stat']['ino'])) {
+            return(false);
+        }
+        return('i:' . $identity['stat']['dev'] . ':' . $identity['stat']['ino']);
+    }
+
+    private static function resolveSuccessorFileIdentity($candidate, $basePrefix)
+    {
+        $identity = XMLRPCPathResolver::filesystemIdentity($candidate);
+        if ($identity === false || !isset($identity['path'], $identity['exists'])
+            || !is_string($identity['path']) || strpos($identity['path'], $basePrefix) !== 0) {
+            return(false);
+        }
+        if (empty($identity['exists'])) {
+            return($identity);
+        }
+
+        clearstatcache(true, $candidate);
+        $lstat = @lstat($candidate);
+        $stat = @stat($candidate);
+        if (!is_file($candidate) || !is_array($lstat) || !is_array($stat)
+            || !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'])
+            || !isset($identity['lstat']['dev'], $identity['lstat']['ino'],
+                $identity['stat']['dev'], $identity['stat']['ino'])
+            || (($lstat['mode'] & 0170000) !== 0100000 && ($lstat['mode'] & 0170000) !== 0120000)
+            || (($stat['mode'] & 0170000) !== 0100000)
+            || $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
+            || $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino']) {
+            return(false);
+        }
+        return($identity);
+    }
+
+    private static function buildObsoleteCleanupFiles(
+        $oldTorrent,
+        $newTorrent,
+        $baseDir,
+        $oldHash,
+        $newHash,
+        $marker,
+        $record,
+        $newBaseDir = null
+    ) {
+        self::$obsoleteCleanupSummary = ['old' => 0, 'new' => 0, 'obsolete' => 0, 'missing' => 0];
+        $oldPaths = self::collectCleanupPaths($oldHash, $oldTorrent, $baseDir);
+        $newPaths = self::collectCleanupPaths($newHash, $newTorrent, $newBaseDir === null ? $baseDir : $newBaseDir);
+        if (!is_array($oldPaths) || !is_array($newPaths)) {
+            return(false);
+        }
+        $newBase = null;
+        if ($newBaseDir !== null) {
+            $newBase = is_string($newBaseDir) ? @realpath($newBaseDir) : false;
+            $oldBase = is_string($baseDir) ? @realpath($baseDir) : false;
+            if ($newBase === false || $oldBase === false || !is_dir($newBase)
+                || $newBase === DIRECTORY_SEPARATOR) {
+                return(false);
+            }
+        }
+        $newPathSet = [];
+        foreach ($newPaths as $path) {
+            $newPathSet["p\0" . ($newBase === null ? '' : $newBase . DIRECTORY_SEPARATOR) . $path] = true;
+        }
+        $obsolete = [];
+        foreach ($oldPaths as $path) {
+            if (!isset($newPathSet["p\0" . ($newBase === null ? '' : $oldBase . DIRECTORY_SEPARATOR) . $path])) {
+                $obsolete[] = $path;
+            }
+        }
+        self::$obsoleteCleanupSummary = [
+            'old' => count($oldPaths),
+            'new' => count($newPaths),
+            'obsolete' => count($obsolete),
+            'missing' => 0,
+        ];
+        if (!count($obsolete)) {
+            return(null);
+        }
+
+        if (!is_string($baseDir) || $baseDir === '') {
+            return(false);
+        }
+        $base = @realpath($baseDir);
+        if ($base === false || !is_dir($base) || $base === DIRECTORY_SEPARATOR) {
+            return(false);
+        }
+        $base = rtrim($base, DIRECTORY_SEPARATOR);
+        $basePrefix = $base . DIRECTORY_SEPARATOR;
+        $newBasePrefix = $newBase === null ? $basePrefix : $newBase . DIRECTORY_SEPARATOR;
+        $ownerRefusal = null;
+        $otherOwners = erasedataCleanupOtherOwnerSnapshot(
+            $oldHash,
+            $newHash,
+            $marker,
+            $record,
+            $ownerRefusal,
+        );
+        if ($otherOwners === false) {
+            self::logCleanupFailure('obsolete cleanup refused old=' . $oldHash . ' new=' . $newHash
+                . ' reason=' . $ownerRefusal);
+            return(false);
+        }
+        $newIdentityIndex = [];
+        foreach ($newPaths as $path) {
+            $identity = self::resolveSuccessorFileIdentity($newBasePrefix . $path, $newBasePrefix);
+            if ($identity === false) {
+                return(false);
+            }
+            if (!empty($identity['exists'])) {
+                $key = self::fileIdentityIndexKey($identity);
+                if ($key === false) {
+                    return(false);
+                }
+                $newIdentityIndex[$key] = $identity;
+            }
+        }
+
+        $entries = [];
+        foreach ($obsolete as $path) {
+            $candidate = $basePrefix . $path;
+            $identity = XMLRPCPathResolver::filesystemIdentity($candidate);
+            if ($identity === false) {
+                return(false);
+            }
+            if (empty($identity['exists'])) {
+                self::$obsoleteCleanupSummary['missing']++;
+                continue;
+            }
+            clearstatcache(true, $candidate);
+            $lstat = @lstat($candidate);
+            $stat = @stat($candidate);
+            if ($identity['path'] !== $candidate || strpos($candidate, $basePrefix) !== 0
+                || is_link($candidate) || !is_file($candidate)
+                || !is_array($lstat) || !is_array($stat)
+                || !isset($lstat['mode'], $stat['mode'], $lstat['dev'], $lstat['ino'], $stat['dev'], $stat['ino'], $stat['size'], $stat['mtime'])
+                || (($lstat['mode'] & 0170000) !== 0100000) || (($stat['mode'] & 0170000) !== 0100000)
+                || $identity['lstat']['dev'] !== $lstat['dev'] || $identity['lstat']['ino'] !== $lstat['ino']
+                || $identity['stat']['dev'] !== $stat['dev'] || $identity['stat']['ino'] !== $stat['ino']) {
+                return(false);
+            }
+
+            $owner = erasedataCleanupOtherOwnerState(
+                $otherOwners,
+                $candidate,
+                $identity['stat'],
+            );
+            if ($owner === 'unknown') {
+                return(false);
+            }
+            if ($owner === 'claimed') {
+                continue;
+            }
+            $key = self::fileIdentityIndexKey($identity);
+            if ($key === false) {
+                return(false);
+            }
+            if (isset($newIdentityIndex[$key])) {
+                $alias = erasedataExactFileAlias($identity, $newIdentityIndex[$key]);
+                if ($alias === ERASEDATA_FILE_ALIAS_UNKNOWN) {
+                    return(false);
+                }
+                if ($alias === ERASEDATA_FILE_ALIAS_SAME) {
+                    continue;
+                }
+            }
+
+            $current = XMLRPCPathResolver::filesystemIdentity($candidate);
+            if ($current === false || empty($current['exists']) || $current['path'] !== $candidate
+                || $current['lstat'] !== $identity['lstat'] || $current['stat'] !== $identity['stat']) {
+                return(false);
+            }
+            $entries[] = [
+                'path' => $candidate,
+                'identity' => [
+                    'canonical' => $identity['path'],
+                    'lstat' => $identity['lstat'],
+                    'stat' => $identity['stat'],
+                    'size' => $stat['size'],
+                    'mtime' => $stat['mtime'],
+                ],
+            ];
+        }
+        return(count($entries) ? $entries : null);
+    }
+
+    // Build every timestamped state projection from one captured clock value.
+    // Besides avoiding a boundary-second disagreement between chk-time and
+    // chk-stime, this lets the scheduler include the same projection in its
+    // one-request fast-verdict bundle without copying setState()'s rules.
+    private static function stateCommands($hash, $state, $now)
+    {
+        $commands = [
+            new rXMLRPCCommand(getCmd("d.set_custom"), [$hash, "chk-state", (string) $state]),
+            new rXMLRPCCommand(getCmd("d.set_custom"), [$hash, "chk-time", (string) $now]),
+        ];
+        if ($state == self::STE_UPTODATE) {
+            $commands[] = new rXMLRPCCommand(
+                getCmd("d.set_custom"),
+                [$hash, "chk-stime", (string) $now],
+            );
+        }
+        return($commands);
+    }
+
+    /**
+     * Write custom fields and accept success only when every command result was
+     * returned or the exact desired projection is measured afterwards.
+     *
+     * The legacy XML parser can return success with a truncated value list. A
+     * short positive response is therefore just as ambiguous as a failed one:
+     * some setters may have landed, or the reply may have been cut short.
+     */
+    private static function writeCustomProjection(
+        $hash,
+        $commands,
+        $context,
+        $localId = null,
+        $expectedCustoms = []
+    ) {
+        return(RuTrackerCustomProjection::write(
+            $hash,
+            $commands,
+            $context,
+            $localId,
+            $expectedCustoms,
+        ));
+    }
+
+    // Retire an empty metadata generation only while the callback has not
+    // published another claim. All predicates and writes run in one daemon
+    // branch, so a late mark callback either blocks this verdict or restores M.
+    private static function setRetiredMetaVerdict($hash, $state, $ignored, $localId)
+    {
+        $commands = self::stateCommands($hash, $state, time());
+        if ($ignored) {
+            $commands[] = new rXMLRPCCommand(
+                getCmd("d.set_custom"),
+                [$hash, "chk-msg", ""],
+            );
+        }
+        return(self::writeCustomProjection(
+            $hash,
+            $commands,
+            "setRetiredMetaVerdict",
+            $localId,
+            ["chk-state" => (string) self::STE_META_PENDING,
+                "chk-meta-new" => "", "chk-meta-until" => ""],
+        ));
+    }
+
+    // The views rTorrent currently has, keyed by name; null when the list
+    // itself could not be read. Views are runtime state: rTorrent recreates
+    // none of the rat_N ones on restart -- ruTorrent's ratio plugin does, on
+    // its next start (plugins/ratio/ratio.php, flush()).
+    private static function existingViews()
+    {
+        // Only php/methods-0.9.4.php aliases "view_list" to view.list, but
+        // php/settings.php layers the method tables cumulatively, so that
+        // mapping is loaded for every daemon >= 0.9.4; on anything older the
+        // name passes through unchanged and is the native command.
+        $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("view_list")));
+        $req->important = false;
+        if (!$req->success()) {
+            return(null);
+        }
+        $views = [];
+        foreach ($req->val as $view) {
+            if (is_string($view)) {
+                $views[$view] = true;
+            }
+        }
+        return($views);
+    }
+
+    // $existingViews is existingViews()' answer, read by createTorrent()
+    // while the old torrent was still running; null means unreadable.
+    private static function buildReplacementAddition($connectionSeed, $throttle, $ratioViews, $existingViews, $state, $marker, $inherit, $topic = '', $forum = '')
+    {
+        $now = time();
+        $addition = [
+            rTorrent::additionCommand("d.set_custom", self::REPLACEMENT_MARKER_KEY, $marker),
+            // Shares the marker's privileged position for the same reason:
+            // the first input_error aborts every command after it, and a
+            // record that never lands leaves the row in the legacy branch --
+            // which starts nothing -- rather than in a wrong guess.
+            rTorrent::additionCommand("d.set_custom", self::INHERIT_KEY, $inherit),
+            // d.set_connection_seed= resolves to d.connection_seed.set, which
+            // rTorrent registers PRIVATE: it works here only because a load
+            // command list is executed internally, not through the XMLRPC
+            // entry point. Moving it into a post-load system.multicall would
+            // silently fault.
+            rTorrent::additionCommand("d.set_connection_seed", $connectionSeed),
+            rTorrent::additionCommand("d.set_custom", "chk-state", $state),
+            rTorrent::additionCommand("d.set_custom", "chk-time", $now),
+            rTorrent::additionCommand("d.set_custom", "chk-stime", $now),
+        ];
+        // Only when the predecessor had them: an empty value would be written
+        // as an empty custom, which resolveForum() and rememberTopic() would
+        // then read as "set to nothing" rather than "never set".
+        if ($topic !== '') {
+            $addition[] = rTorrent::additionCommand("d.set_custom", "chk-topic", $topic);
+        }
+        if ($forum !== '') {
+            $addition[] = rTorrent::additionCommand("d.set_custom", "chk-forum", $forum);
+        }
+        if (!empty($throttle)) {
+            $addition[] = rTorrent::additionCommand("d.set_throttle_name", $throttle);
+        }
+
+        // DownloadFactory runs this whole list inside one try block: the first
+        // torrent::input_error aborts every command after it, plus the
+        // d.state.set and the event.download.inserted_new that rTorrent itself
+        // appends. view.set_visible throws exactly that error for a view that
+        // does not exist. The abort is not fatal to the load -- the marker is
+        // the first command, so waitForLoad() still confirms ownership, and
+        // for a previously-started source activateReplacement()'s d.start
+        // makes the download visible in the started view, whose view event
+        // sets d.state=1. What it silently costs is every load command after
+        // the failing one, the inserted_new side effects (history logging,
+        // the ratio plugin's default-group hook), and -- since that d.start
+        // rescue only reaches sources activateReplacement() starts -- a
+        // previously-stopped source staying closed at state 0.
+        //
+        // So memberships are forwarded in two tiers. A view confirmed against
+        // the live view list gets view.set_visible, which also records the
+        // membership in the d.views attribute (rat_N views are persistent,
+        // and a persistent view's event_added runs d.views.push_back_unique).
+        // An unconfirmed one gets d.views.push_back_unique directly: it never
+        // throws and records the attribute only. Dropping it instead would be
+        // worse than a lost group -- a replacement with an empty d.views is
+        // re-homed by the ratio plugin's default-group insert hook (a branch
+        // over d.views.has, ratio.php flush()) into the DEFAULT ratio group,
+        // whose action can be erase-data. The attribute keeps that hook a
+        // no-op, and the ratio plugin's correct() pass turns it back into
+        // visible membership once the views exist again.
+        $attributeOnly = [];
+        foreach ($ratioViews as $ratioView) {
+            if ($existingViews !== null && isset($existingViews[$ratioView])) {
+                $addition[] = rTorrent::additionCommand("view.set_visible", $ratioView);
+            } else {
+                $addition[] = rTorrent::additionCommand("d.views.push_back_unique", $ratioView);
+                $attributeOnly[] = $ratioView;
+            }
+        }
+        if (count($attributeOnly)) {
+            self::logDebug("buildReplacementAddition: forwarded " . implode(',', $attributeOnly)
+                . " as the d.views attribute only (" . ($existingViews === null
+                    ? "the view list could not be read"
+                    : "no such view in rTorrent")
+                . "): view.set_visible would throw input_error and abort the rest of"
+                . " the load command list; the ratio plugin restores the visible"
+                . " membership once the views exist again");
+        }
+        return($addition);
+    }
+
+    /**
+     * Wait for the staged torrent to be inserted by rTorrent's deferred load.
+     * The addition commands run in the same event-loop step as the insert, so
+     * once the hash resolves, the marker is authoritative.
+     *
+     * @return string 'ours' | 'foreign' | 'missing'
+     */
+    private static function waitForLoad($hash, $marker)
+    {
+        for ($attempt = 0; $attempt < self::LOAD_WAIT_ATTEMPTS; $attempt++) {
+            if ($attempt) {
+                usleep(RUTRACKER_CHECK_LOAD_WAIT_DELAY_US);
+            }
+            $req = new rXMLRPCRequest(new rXMLRPCCommand(
+                getCmd("d.get_custom"),
+                [$hash, self::REPLACEMENT_MARKER_KEY],
+            ));
+            $req->important = false;
+            if (!$req->run() || $req->fault) {
+                continue;
+            }
+            return((isset($req->val[0]) && (string) $req->val[0] === (string) $marker) ? 'ours' : 'foreign');
+        }
+        return('missing');
+    }
+
+    // Compare-and-swap on a check, keyed by hash. chk-state cannot do this:
+    // d.set_custom is an unconditional write, so two processes can both read
+    // the old state and both write STE_INPROGRESS. That is not merely wasted
+    // work -- a check erases stubs, hands parsed metainfo to createTorrent(), and stops
+    // and reloads the user's torrent.
+    //
+    // The window is wider than the two statements around the write, because
+    // the scheduler dispatches on a chk-state captured by update.php's
+    // cycle-start multicall: a click that starts first stays invisible to that
+    // pass for the rest of the cycle, which the paced announce sleeps and dump
+    // fetches make minutes long. And batch_check.php takes no cycle lock, so a
+    // click during the pass is the ordinary case, not a rare one.
+    //
+    // A contender observes a PUBLISHED owner under the state-document lock.
+    // Its lease begins then, not at the wall-clock stamp: a forward clock step
+    // must not give the hash to two workers, and a backward step must not leave
+    // an orphan waiting for wall time to catch up. Starting at grant would be
+    // earlier than the durable write if that write stalled.
+    private static function claimSince($entry)
+    {
+        return(RuTrackerRpcValue::canonicalNonnegativeInteger(is_array($entry) ? ($entry['since'] ?? null) : $entry));
+    }
+
+    private static function claimClock()
+    {
+        $boot = @file_get_contents('/proc/sys/kernel/random/boot_id');
+        $offsets = @file_get_contents('/proc/self/timens_offsets');
+        if (!is_string($boot) || !preg_match('/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', trim($boot))
+            || !is_string($offsets)
+            || !preg_match('/^monotonic[ \t]+(-?(?:0|[1-9][0-9]*))[ \t]+(0|[1-9][0-9]*)[ \t]*$/m', $offsets, $match)) {
+            return(null);
+        }
+        $mono = hrtime(true);
+        if (!is_int($mono) || $mono < 0) {
+            return(null);
+        }
+        return(['clock' => trim($boot) . ':' . $match[1] . ':' . $match[2], 'mono' => $mono]);
+    }
+
+    private static function claimObservationMatches($observed, $since, $token, $clock)
+    {
+        return(is_array($observed)
+            && ($observed['since'] ?? null) === $since
+            && ($observed['token'] ?? null) === $token
+            && ($observed['clock'] ?? null) === $clock['clock']
+            && isset($observed['mono']) && is_int($observed['mono'])
+            && $observed['mono'] >= 0 && $observed['mono'] <= $clock['mono']);
+    }
+
+    private static function claimObservation($since, $token, $clock)
+    {
+        return(['since' => $since, 'token' => $token,
+            'clock' => $clock['clock'], 'mono' => $clock['mono']]);
+    }
+
+    // Returns the owner token on success, false when the hash is already
+    // claimed, and null when the claim store could not be updated. All owner
+    // changes happen in one RuTrackerState::update() transaction.
+    private static function claimCheck($hash, $now, &$expiredPrevious = null)
+    {
+        $expiredPrevious = false;
+        $token = bin2hex(random_bytes(8));
+        $granted = false;
+        $futureNotice = false;
+        $leaseNotice = null;
+        $leaseExpired = false;
+        // $now may be a cycle-start snapshot, so diagnose future stamps with
+        // a fresh wall reading. Wall time is never used to expire ownership.
+        $wallNow = time();
+        $stored = RuTrackerState::update('meta-claims', function ($claims) use (
+            $hash,
+            $now,
+            $wallNow,
+            $token,
+            &$granted,
+            &$futureNotice,
+            &$leaseNotice,
+            &$leaseExpired
+        ) {
+            if (array_key_exists($hash, $claims)) {
+                $entry = $claims[$hash];
+                $since = self::claimSince($entry);
+                if ($since === null) {
+                    self::logUnrepairable('claimCheck: the claim on ' . $hash
+                        . ' carries an unreadable timestamp; it is kept and keeps blocking,'
+                        . ' and nothing will retire it');
+                    return($claims);
+                }
+
+                $reason = null;
+                $owner = is_array($entry) ? ($entry['token'] ?? null) : null;
+                if (!is_string($owner) || !preg_match('/^[0-9a-f]{16}$/D', $owner)) {
+                    $reason = 'legacy-or-invalid-token';
+                } else {
+                    $clock = self::claimClock();
+                    if ($clock === null) {
+                        $reason = 'monotonic-clock-unavailable';
+                    } else {
+                        $observed = $entry['lease_observed'] ?? null;
+                        $matches = self::claimObservationMatches($observed, $since, $owner, $clock);
+                        if ($matches && ($clock['mono'] - $observed['mono']) > self::MAX_LOCK_TIME * 1000000000) {
+                            unset($claims[$hash]);
+                            $leaseExpired = true;
+                        } elseif (!$matches) {
+                            // This sample follows the locked read of the existing entry.
+                            // A changed generation or clock begins a whole new lease.
+                            $entry['lease_observed'] = self::claimObservation($since, $owner, $clock);
+                            $reason = is_array($observed) ? 'monotonic-observation-reset' : null;
+                        }
+                    }
+                }
+
+                if (array_key_exists($hash, $claims)) {
+                    if ($reason !== null && (!is_array($entry) || ($entry['lease_notice'] ?? null) !== $reason)) {
+                        if (!is_array($entry)) {
+                            $entry = ['since' => $since];
+                        }
+                        $entry['lease_notice'] = $reason;
+                        $leaseNotice = $reason;
+                    }
+                    if (($since - $wallNow) > self::MAX_LOCK_TIME) {
+                        if (!is_array($entry)) {
+                            $entry = ['since' => $since];
+                        }
+                        if (($entry['future_notice'] ?? null) !== $since
+                            || ($entry['future_notice_token'] ?? null) !== $owner) {
+                            $entry['future_notice'] = $since;
+                            $entry['future_notice_token'] = $owner;
+                            $futureNotice = true;
+                        }
+                    }
+                    $claims[$hash] = $entry;
+                }
+            }
+            if (array_key_exists($hash, $claims)) {
+                return($claims);
+            }
+            $granted = true;
+            $claims[$hash] = ['since' => (int) $now, 'token' => $token];
+            return($claims);
+        });
+        if (!$stored) {
+            if (!self::$claimStoreFailureLogged) {
+                self::logUnrepairable('claimCheck: claim storage is unavailable for meta-claims;'
+                    . ' torrent checks are deferred until the document and its lock are writable');
+                self::$claimStoreFailureLogged = true;
+            }
+            return(null);
+        }
+        self::$claimStoreFailureLogged = false;
+        if ($futureNotice) {
+            self::logUnrepairable('claimCheck: the claim on ' . $hash
+                . ' has a future timestamp; retained for its possible owner and observed for a monotonic lease');
+        }
+        if ($leaseNotice !== null) {
+            self::logUnrepairable('claimCheck: the claim on ' . $hash
+                . ' is retained: ' . $leaseNotice . '; automatic expiry deferred');
+        }
+        if ($leaseExpired) {
+            self::logUnrepairable('claimCheck: the claim on ' . $hash
+                . ' completed its observed monotonic lease; a new owner was granted');
+        }
+        $expiredPrevious = $leaseExpired && $granted;
+        return($granted ? $token : false);
+    }
+
+    // Every caller owns a token. Legacy or damaged entries prove no matching
+    // owner, so a finishing worker must retain them just like a foreign claim.
+    private static function releaseCheck($hash, $token)
+    {
+        RuTrackerState::update('meta-claims', function ($claims) use ($hash, $token) {
+            if (!isset($claims[$hash])) {
+                return($claims);
+            }
+            $entry = $claims[$hash];
+            if (!is_array($entry) || !isset($entry['token']) || $entry['token'] !== $token) {
+                return($claims);
+            }
+            unset($claims[$hash]);
+            return($claims);
+        });
+    }
+
+    // Erase a hash that was verified to carry our replacement marker.
+    private static function eraseStaged($hash, $marker = null, $record = null)
+    {
+        return(self::discardReplacement($hash, $marker, $record) === RuTrackerAtomicOwnership::ACTED);
+    }
+
+    // Puts a torrent this transaction stopped and closed back the way it was,
+    // and MEASURES the outcome. Both halves matter to the callers:
+    //
+    // d.open before d.start, the order ruTorrent's own UI sends
+    // (plugins/httprpc/action.php, case "start"), because the transaction's
+    // own d.close closed the download and a bare d.start on a closed one can
+    // leave it closed.
+    //
+    // And the answer is the reading taken afterwards, never the ack: rTorrent
+    // accepts d.start on a download whose files it cannot open -- removed
+    // media, an unmounted path, a permission change -- and reports that only
+    // in its own log, so the XML-RPC reply carries no fault. The rollback
+    // erases the staged copy on this answer, and that copy holds the only
+    // chk-replacement marker the sweep can find the transaction by, so an ack
+    // mistaken for a restore leaves a stopped, closed torrent nothing in the
+    // plugin will ever look at again. The state check and generation clear
+    // therefore stay inside the same daemon-side conditional command.
+    private static function restoreExistingTorrent($hash, $wasOpen, $wasStarted, $expectedReplacing = null)
+    {
+        if ($expectedReplacing === null || (string) $expectedReplacing === '') {
+            return(false);
+        }
+        $expectedCustoms = [self::REPLACING_KEY => (string) $expectedReplacing];
+        $expectedValues = ['state' => 0, 'is_open' => 0];
+        // A torrent the user had stopped stays stopped; only this exact recovery
+        // generation is retired. Open/started policies restore and verify state,
+        // then retire the same generation inside that one daemon command.
+        $status = (!$wasOpen && !$wasStarted)
+            ? RuTrackerAtomicOwnership::clearCustoms(
+                $hash,
+                $expectedCustoms,
+                [self::REPLACING_KEY],
+                $expectedValues,
+            )
+            : RuTrackerAtomicOwnership::runState(
+                $hash,
+                $expectedCustoms,
+                $wasStarted,
+                $expectedValues,
+                [self::REPLACING_KEY => ''],
+            );
+        return($status === RuTrackerAtomicOwnership::ACTED);
+    }
+
+    // Runs after the commit point: failures are logged and the replacement is
+    // left stopped rather than reported as a failed check.
+    private static function activateReplacement(
+        $hash,
+        $wasOpen,
+        $wasStarted,
+        $marker = null,
+        $record = null,
+        $closeTransaction = true,
+        $reused = false
+    ) {
+        if ($reused) {
+            return(!$closeTransaction || self::clearReplacementRecord($hash, $marker, $record));
+        }
+        if (!$wasOpen && !$wasStarted) {
+            // Deliberate: a torrent the user had stopped must not be
+            // resurrected by its replacement. This branch used to be silent,
+            // which is exactly why a live run that left five replacements
+            // stopped could not be told apart from one that never got here.
+            self::logDebug("activateReplacement: " . $hash
+                . " left stopped and closed: the old torrent was neither open nor started");
+            if ($marker === null || $record === null) {
+                return(true);
+            }
+            if (!$closeTransaction) {
+                return(true);
+            }
+            return(self::clearReplacementRecord(
+                $hash,
+                $marker,
+                $record,
+                ['state' => 0, 'is_open' => 0],
+            ));
+        }
+        if ($marker === null || $record === null
+            || (string) $marker === '' || (string) $record === '') {
+            return(false);
+        }
+        $expectedCustoms = [
+            self::REPLACEMENT_MARKER_KEY => (string) $marker,
+            self::INHERIT_KEY => (string) $record,
+            self::REUSE_KEY => '',
+        ];
+        $expectedValues = ['state' => 0, 'is_open' => 0];
+        $status = $closeTransaction
+            ? RuTrackerAtomicOwnership::runState(
+                $hash,
+                $expectedCustoms,
+                $wasStarted,
+                $expectedValues,
+                [self::INHERIT_KEY => '', self::REPLACEMENT_MARKER_KEY => ''],
+            )
+            : RuTrackerAtomicOwnership::runState($hash, $expectedCustoms, $wasStarted, $expectedValues);
+        if ($status === RuTrackerAtomicOwnership::ACTED) {
+            return(true);
+        }
+        // One line per outcome. A SKIPPED used to log both "Skipped" and
+        // "Could not confirm" for the same status, which reads as a
+        // contradiction and names two different things to go and look at: a
+        // SKIPPED is the guard refusing on purpose because the row no longer
+        // matches, anything else is an attempt whose result was not readable.
+        self::logDebug("activateReplacement: activation of " . $hash
+            . ($status === RuTrackerAtomicOwnership::SKIPPED
+                ? " was skipped: the row no longer carries the expected ownership or run state"
+                : " could not be confirmed"));
+        return(false);
+    }
+
+    /**
+     * THE ungated channel, and the only one in this plugin.
+     *
+     * logDebug() below is gated on $rutrackerCheckDebug, which conf.php ships
+     * as false, so everything reported there says nothing at all at the
+     * shipped default. That is RIGHT for a refusal that repairs itself: a line
+     * per cycle for every corrupt value would be noise in ruTorrent's shared
+     * application log, and the next cycle fixes it anyway. It is wrong for a
+     * refusal that never heals, which then wedges something for good and
+     * announces it to nobody -- the fault two earlier rounds of this work were
+     * rejected for. A refusal must be self-healing or visible; anything that
+     * cannot be the first has to be the second, and this is how.
+     *
+     * The public logUnrepairable() wrapper serves refusals in forumindex.php,
+     * announce.php, metafetch.php and here; announce.php guards its call because
+     * that file also loads standalone. Successful publication of a durable
+     * missing-successor marker uses this same writer to expose the retry cause.
+     */
+    private static function logRoutine($message)
+    {
+        FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
+    }
+
+    // A cleanup that could not be confirmed leaves a durable inconsistency
+    // between the two generations behind it, so it reports on the same ungated
+    // channel for the same reason. Kept as its own name because that is what
+    // its call sites are about, not because it is a second channel.
+    private static function logCleanupFailure($message)
+    {
+        self::logUnrepairable($message);
+    }
+
+    /**
+     * Reconcile a transaction already present at NEW before mutating either
+     * generation. OLD presence is the commit proof; successor run state is not.
+     *
+     * @return string|null 'rollback' | 'committed' | null for retained retry
+     */
+    private static function reconcileExistingCleanup($oldHash, $newHash, $marker, $record)
+    {
+        $oldExists = self::torrentExists($oldHash);
+        if ($oldExists === null) {
+            return(null);
+        }
+        if ($oldExists) {
+            $status = erasedataCancelObsoleteCleanupGeneration($oldHash, $newHash, $marker, $record);
+            return($status === ERASEDATA_CLEANUP_NONE || $status === ERASEDATA_CLEANUP_READY
+                ? 'rollback' : null);
+        }
+
+        $status = erasedataRecoverObsoleteCleanup($oldHash, $newHash, $marker, $record);
+        if ($status !== ERASEDATA_CLEANUP_NONE && $status !== ERASEDATA_CLEANUP_READY) {
+            return(null);
+        }
+        if ($status === ERASEDATA_CLEANUP_READY && !erasedataKickCollector($oldHash)) {
+            self::logCleanupFailure('targeted obsolete cleanup kick failed for ' . strtoupper($oldHash)
+                . '; the durable job remains scheduled for retry');
+        }
+        return('committed');
+    }
+
+    private static function quoteRtorrentArgument($value)
+    {
+        return RuTrackerAtomicOwnership::quoteRtorrentArgument($value);
+    }
+
+    private static function replacementStopBody($marker)
+    {
+        return(getCmd('cat=')
+            . '"$' . getCmd('d.set_custom=') . self::REPLACING_KEY . ',' . $marker . '"'
+            . ',$' . getCmd('d.stop=')
+            . ',$' . getCmd('d.close=')
+            . ',' . $marker);
+    }
+
+    // One daemon-side command selects the live state and, in that same command
+    // execution, writes the matching recovery marker before stop/close. Its
+    // exact returned marker is the only run-state source accepted for staging.
+    private static function replacementStopCommand(
+        $oldHash,
+        $newHash,
+        $stagedAt,
+        $stoppedFallback = null,
+        $localId = null
+    ) {
+        $started = self::encodeInheritance($newHash, true, true, $stagedAt);
+        $open = self::encodeInheritance($newHash, false, true, $stagedAt);
+        $stopped = $stoppedFallback !== null
+            ? (string) $stoppedFallback
+            : self::encodeInheritance($newHash, false, false, $stagedAt);
+        $notStarted = getCmd('branch=') . getCmd('d.is_open=')
+            . ',' . self::quoteRtorrentArgument(self::replacementStopBody($open))
+            . ',' . self::quoteRtorrentArgument(self::replacementStopBody($stopped));
+        $startedBody = self::replacementStopBody($started);
+        $stateBranch = getCmd('branch=') . getCmd('d.get_state=')
+            . ',' . self::quoteRtorrentArgument($startedBody)
+            . ',' . self::quoteRtorrentArgument($notStarted);
+        $condition = 'equal=' . getCmd('d.get_custom=') . self::REUSE_KEY . ',cat=';
+        if ($localId !== null) {
+            $condition = 'and=' . self::quoteRtorrentArgument($condition) . ','
+                . self::quoteRtorrentArgument('equal=' . getCmd('d.get_local_id=') . ',cat=' . $localId);
+        }
+        return(new rXMLRPCCommand('branch', [
+            $oldHash, $condition, $stateBranch, 'cat=stale-generation',
+        ]));
+    }
+
+    /**
+     * Hand rTorrent::sendTorrent() a replacement that claims no file on disk.
+     *
+     * sendTorrent() reads Torrent::getFileName() as "a file this plugin owns":
+     * it unlinks it when $saveUploadedTorrents is off, reuses its path for a
+     * torrent too large for one XMLRPC packet, and advertises it as x-filename.
+     * A replacement handed to us by a tracker handler carries no filename, but
+     * one harvested through rTorrent::getSource() carries rTorrent's own
+     * session copy -- or, when getSource() falls back to d.get_tied_to_file, a
+     * .torrent that belongs to the user. None of those are ours to delete or
+     * reuse, and before metainfo was parsed once none of them ever reached
+     * sendTorrent(), because the replacement was rebuilt from bytes here.
+     *
+     * Clearing the field is deliberate: rebuilding the object would decode the
+     * same metainfo a second time, which is exactly what parsing it once exists
+     * to prevent. Torrent exposes no setter, so this reaches the protected
+     * field directly rather than re-parsing.
+     *
+     * It mutates the object it is given and hands the SAME instance back -- it
+     * is not a copy, whatever an earlier name suggested. Anything still holding
+     * that reference sees the cleared field, which is what the caller wants and
+     * what every present caller relies on. Returns null if the field could not
+     * actually be cleared.
+     */
+    private static function disownFile($torrent)
+    {
+        if (!($torrent instanceof Torrent) || $torrent->getFileName() === null) {
+            return($torrent);
+        }
+        $disown = Closure::bind(function () {
+            $this->filename = null;
+        }, $torrent, 'Torrent');
+        $disown();
+        // Verify, do not assume. The closure names a protected field by string,
+        // so if Torrent ever renames it this quietly creates a DYNAMIC property
+        // instead and getFileName() keeps returning the path -- the guard would
+        // fail open, and no test can see it because the suite substitutes its
+        // own Torrent. Reading the field back turns that into a refusal.
+        if ($torrent->getFileName() !== null) {
+            self::logCleanupFailure('createTorrent: the replacement still claims '
+                . 'a file on disk after being disowned, so it was not handed to '
+                . 'rTorrent; Torrent::$filename has probably been renamed');
+            return(null);
+        }
+        return($torrent);
+    }
+
+    // A collision is a retryable transaction refusal, not topic evidence.
+    // It must remain visible even when a truthful terminal state is retained.
+    private static function logReplacementCollision($oldHash, $newHash, $kind)
+    {
+        self::logUnrepairable('createTorrent: same-hash-collision old=' . $oldHash
+            . ' new=' . $newHash . ' kind=' . $kind . '; retaining both torrents');
+    }
+
+    // The handler already selected the current metainfo. Reuse requires the
+    // installed source to attest that same hash and topic, without rewriting it.
+    private static function existingReplacement($torrent, $newHash)
+    {
+        $source = rTorrent::getSource($newHash);
+        $comment = trim((string) $torrent->comment());
+        if (!($source instanceof Torrent) || $source->errors()
+            || strcasecmp((string) $source->hash_info(), $newHash) !== 0
+            || $comment === '' || trim((string) $source->comment()) !== $comment
+            || self::collectTorrentPaths($source) === null) {
+            return(null);
+        }
+        $read = new rXMLRPCRequest([
+            new rXMLRPCCommand(getCmd('d.get_local_id'), $newHash),
+            new rXMLRPCCommand(getCmd('d.is_meta'), $newHash),
+            new rXMLRPCCommand(getCmd('d.get_directory_base'), $newHash),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, self::REPLACING_KEY]),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-old']),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-new']),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-until']),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-meta-topic']),
+            new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, self::REUSE_KEY]),
+        ]);
+        $read->important = false;
+        if (!$read->success() || $read->fault || !is_array($read->val) || count($read->val) !== 9
+            || !is_string($read->val[0]) || preg_match('/^[0-9A-F]{40}$/D', $read->val[0]) !== 1
+            || !in_array($read->val[1], [0, '0'], true)
+            || !is_string($read->val[2]) || $read->val[2] === '' || $read->val[2][0] !== '/'
+            || strpos($read->val[2], "\0") !== false
+            || array_slice($read->val, 3) !== ['', '', '', '', '', '']) {
+            return(null);
+        }
+        return(['local_id' => $read->val[0], 'base' => $read->val[2]]);
+    }
+
+    // A replacement refused for a LOCAL file-operation reason is not helped by
+    // asking the tracker again, so the scheduler stops repeating the request
+    // and the metadata fetch in front of it (RuTrackerReplacementBackoff).
+    // Refusals now come at most once per backoff window, so one ungated line
+    // each is one line per change of the schedule, not one per cycle.
+    private static function postponeLocalRefusal(
+        $hash,
+        $newHash,
+        $reason,
+        $operation = 'obsolete-file cleanup could not be prepared'
+    ) {
+        $failure = null;
+        $scheduledAt = self::$activeRunIdentity !== null && self::$activeRunIdentity['hash'] === $hash
+            ? (self::$activeRunIdentity['scheduledAt'] ?? null) : null;
+        $until = RuTrackerReplacementBackoff::postpone($hash, time(), $failure, $scheduledAt);
+        if ($until === null) {
+            self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+                . ' refused: ' . $operation . ' (' . $reason
+                . '); the scheduler backoff was not saved (' . (string) $failure
+                . '), so the next cycle retries');
+            return;
+        }
+        self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+            . ' postponed: ' . $operation . ' (' . $reason
+            . '); next scheduled attempt at about ' . gmdate('Y-m-d\TH:i:s\Z', $until)
+            . '; the manual Check for Update button retries now');
+    }
+
+    private static function clearLocalRefusal($hash, $newHash)
+    {
+        if (RuTrackerReplacementBackoff::clear($hash, time())) {
+            self::logRoutine('replacement of ' . $hash . ' by ' . $newHash
+                . ' committed; replacement backoff cleared');
+        }
+    }
+
+    private static function appendAnnounceUrls($value, &$urls)
+    {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                self::appendAnnounceUrls($item, $urls);
+            }
+        } elseif (is_string($value) && $value !== '' && !in_array($value, $urls, true)) {
+            $urls[] = $value;
+        }
+    }
 
 }

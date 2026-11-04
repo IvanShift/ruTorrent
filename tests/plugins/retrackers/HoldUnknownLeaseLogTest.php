@@ -42,7 +42,9 @@ try {
             $saw = true;
             break;
         }
-        if (!proc_get_status($process)['running']) { break; }
+        if (!proc_get_status($process)['running']) {
+            break;
+        }
         usleep(100000);
     }
     if (!$saw) {
@@ -51,8 +53,8 @@ try {
     }
     usleep(600000);
     $content = (string) file_get_contents($log);
-    if (substr_count($content, $expected) !== 1 ||
-        count(array_filter(explode("\n", trim($content)))) !== 1) {
+    if (substr_count($content, $expected) !== 1
+        || count(array_filter(explode("\n", trim($content)))) !== 1) {
         throw new RuntimeException('The indefinite park repeated or polluted its classified log line');
     }
     if (!proc_get_status($process)['running']) {
@@ -65,10 +67,14 @@ try {
     if (is_resource($process)) {
         proc_terminate($process);
         usleep(50000);
-        if (proc_get_status($process)['running']) { proc_terminate($process, 9); }
+        if (proc_get_status($process)['running']) {
+            proc_terminate($process, 9);
+        }
         proc_close($process);
     }
-    foreach ([$script, $log, $stdout, $stderr] as $path) { @unlink($path); }
+    foreach ([$script, $log, $stdout, $stderr] as $path) {
+        @unlink($path);
+    }
     @rmdir($root);
 }
 if ($failure !== null) {

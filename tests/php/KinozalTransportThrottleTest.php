@@ -20,7 +20,9 @@ function transportClearProcessState()
 {
     foreach (['throttleGroups', 'throttleStates', 'throttleLogged'] as $name) {
         $property = new ReflectionProperty('Snoopy', $name);
-        if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
         $property->setValue(null, []);
     }
 }
@@ -33,7 +35,9 @@ function transportStatePath()
 function transportStoreState($until, $next = 0.0)
 {
     $path = transportStatePath();
-    if (!is_dir(dirname($path))) { mkdir(dirname($path), 0700, true); }
+    if (!is_dir(dirname($path))) {
+        mkdir(dirname($path), 0700, true);
+    }
     $bytes = json_encode(['next' => $next, 'ended' => 0.0, 'until' => $until, 'strikes' => 1]);
     testAssertSame(strlen($bytes), file_put_contents($path, $bytes), 'The shared clock is seeded');
     return $bytes;
@@ -107,7 +111,8 @@ $tests = [
             return ScriptedCurlFixture::reply('GET', $url, 200, '<rss/>');
         }, $urls));
         foreach ($urls as $url) {
-            testAssertSame(true, transportClient()->fetchComplex($url), 'The unrelated host is fetched: ' . $url); }
+            testAssertSame(true, transportClient()->fetchComplex($url), 'The unrelated host is fetched: ' . $url);
+        }
         testAssertSame($urls, array_column($transportFixture->requests(), 'url'), 'Every unrelated host is fetched once');
         testAssertSame($state, file_get_contents(transportStatePath()), 'Other hosts leave the Kinozal clock untouched');
     },
@@ -144,7 +149,9 @@ try {
     $transportFixture->install();
     $status = testRunCases($tests, 'transportReset');
 } finally {
-    if (isset($transportFixture)) { $transportFixture->restore(); }
+    if (isset($transportFixture)) {
+        $transportFixture->restore();
+    }
     FileUtil::deleteDirectory($transportRoot);
 }
 exit($status);

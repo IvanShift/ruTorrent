@@ -1,4 +1,5 @@
 <?php
+
 define('MOVE_WORKER_TEST_LIBRARY', true);
 require_once __DIR__ . '/MoveWorkerTest.php';
 require_once __DIR__ . '/../../php/ScgiToolPeer.php';
@@ -30,15 +31,18 @@ function selectedMoveFixture($multi, $utf8)
         $info['length'] = 7;
     }
     $state['filePaths'] = [$selected];
-    file_put_contents($state['root'] . '/session/' . $state['hash'] . '.torrent',
-        strictInvoke('Torrent', 'encode', [['info' => $info]]));
+    file_put_contents(
+        $state['root'] . '/session/' . $state['hash'] . '.torrent',
+        strictInvoke('Torrent', 'encode', [['info' => $info]]),
+    );
     return $state;
 }
 
 $suite = new StrictTestSuite();
 foreach ([false, true] as $multi) {
     foreach ([false, true] as $utf8) {
-        $suite->test('Move plans the actual daemon path, multi=' . (int)$multi . ', utf8=' . (int)$utf8,
+        $suite->test(
+            'Move plans the actual daemon path, multi=' . (int) $multi . ', utf8=' . (int) $utf8,
             function () use ($multi, $utf8) {
                 $state = selectedMoveFixture($multi, $utf8);
                 try {
@@ -56,29 +60,44 @@ foreach ([false, true] as $multi) {
                     strictAssertSame(false, file_exists($state['source']), 'only the source root is retired after the move');
                     strictAssertSame(false, $after['queued'], 'the successful selected-path move retires its own queue entry');
                     strictAssertSame(1, $after['active'], 'the worker preserves the captured active state');
-                } finally { strictRemoveTree($state['root']); }
-            }); } }
+                } finally {
+                    strictRemoveTree($state['root']);
+                }
+            },
+        );
+    }
+}
 foreach (['lost', 'fault', 'flat', 'empty', 'partial', 'extra', 'integer', 'nested', 'unsafe'] as $shape) {
     $suite->test('Move rejects an unconfirmed daemon file list: ' . $shape, function () use ($shape) {
         $state = selectedMoveFixture(true, true);
         $path = '<value><base64>' . base64_encode($state['filePaths'][0]) . '</base64></value>';
         $row = '<value><array><data>' . $path . '</data></array></value>';
         $value = '<array><data>' . $row . '</data></array>';
-        if ($shape === 'lost') { $state['filePathsReply'] = null; }
-        elseif ($shape === 'fault') { $state['filePathsReply'] = FakeRtorrentDaemon::fault('file list unavailable', -500); }
-        else {
+        if ($shape === 'lost') {
+            $state['filePathsReply'] = null;
+        } elseif ($shape === 'fault') {
+            $state['filePathsReply'] = FakeRtorrentDaemon::fault('file list unavailable', -500);
+        } else {
             if ($shape === 'partial') {
                 $torrent = Torrent::fromRawBytes(file_get_contents($state['root'] . '/session/' . $state['hash'] . '.torrent'));
                 $torrent->info['files'][] = ['length' => 1, 'path' => ['missing-second.bin']];
-                file_put_contents($state['root'] . '/session/' . $state['hash'] . '.torrent',
-                    strictInvoke('Torrent', 'encode', [['info' => $torrent->info]]));
+                file_put_contents(
+                    $state['root'] . '/session/' . $state['hash'] . '.torrent',
+                    strictInvoke('Torrent', 'encode', [['info' => $torrent->info]]),
+                );
+            } elseif ($shape === 'flat') {
+                $value = '<array><data>' . $path . '</data></array>';
+            } elseif ($shape === 'empty') {
+                $value = '<array><data></data></array>';
+            } elseif ($shape === 'extra') {
+                $value = '<array><data>' . $row . $row . '</data></array>';
+            } elseif ($shape === 'integer') {
+                $value = str_replace($path, '<value><i8>123</i8></value>', $value);
+            } elseif ($shape === 'nested') {
+                $value = str_replace($path, '<value><array><data>' . $path . '</data></array></value>', $value);
+            } elseif ($shape === 'unsafe') {
+                $value = str_replace($path, '<value><string>../foreign</string></value>', $value);
             }
-            elseif ($shape === 'flat') { $value = '<array><data>' . $path . '</data></array>'; }
-            elseif ($shape === 'empty') { $value = '<array><data></data></array>'; }
-            elseif ($shape === 'extra') { $value = '<array><data>' . $row . $row . '</data></array>'; }
-            elseif ($shape === 'integer') { $value = str_replace($path, '<value><i8>123</i8></value>', $value); }
-            elseif ($shape === 'nested') { $value = str_replace($path, '<value><array><data>' . $path . '</data></array></value>', $value); }
-            elseif ($shape === 'unsafe') { $value = str_replace($path, '<value><string>../foreign</string></value>', $value); }
             $state['filePathsReply'] = ScgiToolPeer::response($value);
         }
         $helper = file_get_contents($state['root'] . '/rename');
@@ -94,6 +113,9 @@ foreach (['lost', 'fault', 'flat', 'empty', 'partial', 'extra', 'integer', 'nest
             strictAssertSame(false, file_exists($state['root'] . '/helper-calls'), 'refusal precedes filesystem probe or move');
             strictAssertSame('payload', file_get_contents($state['source'] . '/' . $state['filePaths'][0]), 'source retained');
             strictAssertSame(false, in_array('d.autotools.move_begin', $calls, true), 'no daemon claim');
-        } finally { strictRemoveTree($state['root']); }
-    }); }
+        } finally {
+            strictRemoveTree($state['root']);
+        }
+    });
+}
 exit($suite->run());

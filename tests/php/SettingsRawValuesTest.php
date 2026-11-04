@@ -22,241 +22,268 @@ require_once(__DIR__ . '/FakeRtorrentDaemon.php');
  */
 class SettingsRawValuesTest extends TestCase
 {
-	public const HOME = '/home/u "h" \\x';
-	public const DIRECTORY = '~/dl "q" \\b \'a\' &c';
-	public const SESSION = '/srv/se\\"ss\\\\ion/';
-	public const SERVER = 'name "n" \\s';
-	public const LIBRARY = '0.16.25 "x" \\y \'</script>';
+    public const HOME = '/home/u "h" \\x';
+    public const DIRECTORY = '~/dl "q" \\b \'a\' &c';
+    public const SESSION = '/srv/se\\"ss\\\\ion/';
+    public const SERVER = 'name "n" \\s';
+    public const LIBRARY = '0.16.25 "x" \\y \'</script>';
 
-	private $daemon;
-	private $previousSettings;
+    private $daemon;
+    private $previousSettings;
 
-	public function setUp()
-	{
-		$this->removeTree($_ENV['RU_PROFILE_PATH']);
-		FileUtil::makeDirectory(FileUtil::getSettingsPath());
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['rpcTimeOut'] = 10;
-		$GLOBALS['rpcLogCalls'] = false;
-		$GLOBALS['rpcLogFaults'] = false;
-		$GLOBALS['log_file'] = $_ENV['RU_PROFILE_PATH'] . '/app.log';
-		$GLOBALS['topDirectory'] = '/';
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		$this->previousSettings = $property->getValue();
-		$this->resetSingleton();
-	}
+    public function setUp()
+    {
+        $this->removeTree($_ENV['RU_PROFILE_PATH']);
+        FileUtil::makeDirectory(FileUtil::getSettingsPath());
+        $GLOBALS['scgi_host'] = '127.0.0.1';
+        $GLOBALS['rpcTimeOut'] = 10;
+        $GLOBALS['rpcLogCalls'] = false;
+        $GLOBALS['rpcLogFaults'] = false;
+        $GLOBALS['log_file'] = $_ENV['RU_PROFILE_PATH'] . '/app.log';
+        $GLOBALS['topDirectory'] = '/';
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        self::makeAccessible($property);
+        $this->previousSettings = $property->getValue();
+        $this->resetSingleton();
+    }
 
-	public function tearDown()
-	{
-		$this->stopDaemon();
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		$property->setValue(null, $this->previousSettings);
-		$this->removeTree($_ENV['RU_PROFILE_PATH']);
-	}
+    public function tearDown()
+    {
+        $this->stopDaemon();
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        self::makeAccessible($property);
+        $property->setValue(null, $this->previousSettings);
+        $this->removeTree($_ENV['RU_PROFILE_PATH']);
+    }
 
-	public function testObtainHoldsTheDaemonsOwnBytes()
-	{
-		$this->startDaemon();
-		$settings = rTorrentSettings::get(true);
-		$this->assertTrue($settings->linkExist, 'the fake daemon answered the probe');
-		$this->same(self::HOME, $settings->home, 'the home directory is the daemon user\'s own bytes');
-		$this->same($this->expandedDirectory(), $settings->directory,
-			'the default directory is the daemon\'s bytes, ~ expanded');
-		$this->same(self::SESSION, $settings->session, 'the session path is the daemon\'s bytes');
-		$this->same(self::SERVER, $settings->server, 'the session name is the daemon\'s bytes');
-		$cached = $this->cached();
-		$this->same($this->expandedDirectory(), $cached->directory, 'the cache keeps the same bytes');
-		$this->same(self::SESSION, $cached->session, 'the cached session path is the same');
-	}
+    public function testObtainHoldsTheDaemonsOwnBytes()
+    {
+        $this->startDaemon();
+        $settings = rTorrentSettings::get(true);
+        $this->assertTrue($settings->linkExist, 'the fake daemon answered the probe');
+        $this->same(self::HOME, $settings->home, 'the home directory is the daemon user\'s own bytes');
+        $this->same(
+            $this->expandedDirectory(),
+            $settings->directory,
+            'the default directory is the daemon\'s bytes, ~ expanded',
+        );
+        $this->same(self::SESSION, $settings->session, 'the session path is the daemon\'s bytes');
+        $this->same(self::SERVER, $settings->server, 'the session name is the daemon\'s bytes');
+        $cached = $this->cached();
+        $this->same($this->expandedDirectory(), $cached->directory, 'the cache keeps the same bytes');
+        $this->same(self::SESSION, $cached->session, 'the cached session path is the same');
+    }
 
-	public function testARelativeDirectoryResolvesUnderTheRawDefault()
-	{
-		$this->startDaemon();
-		$settings = rTorrentSettings::get(true);
-		$directory = 'sub "s"';
-		$this->assertTrue($settings->correctDirectory($directory), 'a relative directory is allowed');
-		$this->same($this->expandedDirectory() . '/sub "s"', $directory,
-			'it resolves under the directory the daemon reported');
-	}
+    public function testARelativeDirectoryResolvesUnderTheRawDefault()
+    {
+        $this->startDaemon();
+        $settings = rTorrentSettings::get(true);
+        $directory = 'sub "s"';
+        $this->assertTrue($settings->correctDirectory($directory), 'a relative directory is allowed');
+        $this->same(
+            $this->expandedDirectory() . '/sub "s"',
+            $directory,
+            'it resolves under the directory the daemon reported',
+        );
+    }
 
-	public function testACacheFromBeforeTheChangeIsReadOnceMore()
-	{
-		$stale = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$stale->linkExist = true;
-		$stale->version = '0.16.25';
-		$stale->iVersion = 0x1019;
-		$stale->directory = '/old/dl \\"q\\" \\\\b';
-		$stale->session = '/srv/se\\"ss\\\\ion/';
-		$stale->plugins = ['throttle' => ['perm' => 1]];
-		$stale->hooks = ['LabelChanged' => [['name' => 'extratio', 'level' => 10]]];
-		$this->storeWithoutValueFormat($stale);
+    public function testACacheFromBeforeTheChangeIsReadOnceMore()
+    {
+        $stale = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+        $stale->linkExist = true;
+        $stale->version = '0.16.25';
+        $stale->iVersion = 0x1019;
+        $stale->directory = '/old/dl \\"q\\" \\\\b';
+        $stale->session = '/srv/se\\"ss\\\\ion/';
+        $stale->plugins = ['throttle' => ['perm' => 1]];
+        $stale->hooks = ['LabelChanged' => [['name' => 'extratio', 'level' => 10]]];
+        $this->storeWithoutValueFormat($stale);
 
-		$this->startDaemon();
-		$settings = rTorrentSettings::get();
-		$this->same($this->expandedDirectory(), $settings->directory,
-			'an escaped cache is not used: the directory is read from the daemon again');
-		$this->same(self::SESSION, $settings->session, 'and so is the session path');
-		$this->assertTrue($this->daemon->received('system.client_version'),
-			'the daemon was asked once more');
-		$this->assertTrue($settings->isPluginRegistered('throttle'),
-			'what a plugin registered in the old cache is kept');
-		$this->same(['LabelChanged' => [['name' => 'extratio', 'level' => 10]]],
-			$settings->hooks, 'and so are the event hooks');
-		$cached = $this->cached();
-		$this->same($this->expandedDirectory(), $cached->directory, 'the cache is rewritten in the daemon\'s bytes');
-		$this->assertTrue($cached->isPluginRegistered('throttle'), 'with the registrations');
+        $this->startDaemon();
+        $settings = rTorrentSettings::get();
+        $this->same(
+            $this->expandedDirectory(),
+            $settings->directory,
+            'an escaped cache is not used: the directory is read from the daemon again',
+        );
+        $this->same(self::SESSION, $settings->session, 'and so is the session path');
+        $this->assertTrue(
+            $this->daemon->received('system.client_version'),
+            'the daemon was asked once more',
+        );
+        $this->assertTrue(
+            $settings->isPluginRegistered('throttle'),
+            'what a plugin registered in the old cache is kept',
+        );
+        $this->same(
+            ['LabelChanged' => [['name' => 'extratio', 'level' => 10]]],
+            $settings->hooks,
+            'and so are the event hooks',
+        );
+        $cached = $this->cached();
+        $this->same($this->expandedDirectory(), $cached->directory, 'the cache is rewritten in the daemon\'s bytes');
+        $this->assertTrue($cached->isPluginRegistered('throttle'), 'with the registrations');
 
-		// The rewritten cache is used as it is: no second read.
-		$this->stopDaemon();
-		$this->startDaemon();
-		$this->resetSingleton();
-		$again = rTorrentSettings::get();
-		$this->same($this->expandedDirectory(), $again->directory, 'the next request reads the rewritten cache');
-		$this->same([], $this->daemon->calls(), 'without asking the daemon');
-	}
+        // The rewritten cache is used as it is: no second read.
+        $this->stopDaemon();
+        $this->startDaemon();
+        $this->resetSingleton();
+        $again = rTorrentSettings::get();
+        $this->same($this->expandedDirectory(), $again->directory, 'the next request reads the rewritten cache');
+        $this->same([], $this->daemon->calls(), 'without asking the daemon');
+    }
 
-	public function testACurrentCacheIsUsedWithoutAskingTheDaemon()
-	{
-		$this->startDaemon();
-		rTorrentSettings::get(true);
-		$this->startDaemon();
-		$this->resetSingleton();
-		$settings = rTorrentSettings::get();
-		$this->same(self::SESSION, $settings->session, 'the cached session path is used');
-		$this->same([], $this->daemon->calls(), 'a cache in the current format costs no daemon read');
-	}
+    public function testACurrentCacheIsUsedWithoutAskingTheDaemon()
+    {
+        $this->startDaemon();
+        rTorrentSettings::get(true);
+        $this->startDaemon();
+        $this->resetSingleton();
+        $settings = rTorrentSettings::get();
+        $this->same(self::SESSION, $settings->session, 'the cached session path is used');
+        $this->same([], $this->daemon->calls(), 'a cache in the current format costs no daemon read');
+    }
 
-	// getplugins.php hands the WebUI the two daemon versions inside a script.
-	// Quoted by hand in single quotes, a raw quote or backslash would end the
-	// literal and with it the whole bootstrap script.
-	public function testTheVersionsReachTheWebUIAsOneLiteralEach()
-	{
-		$this->startDaemon();
-		$settings = rTorrentSettings::get(true);
-		$this->assertTrue(method_exists($settings, 'systemInfoScript'),
-			'the systemInfo statement is built in one place');
-		$script = method_exists($settings, 'systemInfoScript') ? $settings->systemInfoScript() : '';
-		$this->same(self::LIBRARY, $this->scriptLiteral($script, 'libVersion'),
-			'the library version decodes back to the daemon\'s bytes');
-		$this->same('0.16.25', $this->scriptLiteral($script, 'version'), 'and so does the client version');
-		$this->assertTrue(stripos($script, '</script') === false && strpos($script, "'") === false,
-			'no byte of it can close the script or a single-quoted literal: ' . $script);
-	}
-	public function testRepeatedObtainRebuildsAliases()
-	{
-		$this->startDaemon();
-		$settings = rTorrentSettings::get(true);
-		$expected = $settings->getCommand('get_directory');
-		$settings->obtain();
-		$this->same($expected, $settings->getCommand('get_directory'), 'a second obtain retains canonical aliases');
-		$this->same('directory.default', $expected, 'the daemon uses the canonical directory reader');
-	}
+    // getplugins.php hands the WebUI the two daemon versions inside a script.
+    // Quoted by hand in single quotes, a raw quote or backslash would end the
+    // literal and with it the whole bootstrap script.
+    public function testTheVersionsReachTheWebUIAsOneLiteralEach()
+    {
+        $this->startDaemon();
+        $settings = rTorrentSettings::get(true);
+        $this->assertTrue(
+            method_exists($settings, 'systemInfoScript'),
+            'the systemInfo statement is built in one place',
+        );
+        $script = method_exists($settings, 'systemInfoScript') ? $settings->systemInfoScript() : '';
+        $this->same(
+            self::LIBRARY,
+            $this->scriptLiteral($script, 'libVersion'),
+            'the library version decodes back to the daemon\'s bytes',
+        );
+        $this->same('0.16.25', $this->scriptLiteral($script, 'version'), 'and so does the client version');
+        $this->assertTrue(
+            stripos($script, '</script') === false && strpos($script, "'") === false,
+            'no byte of it can close the script or a single-quoted literal: ' . $script,
+        );
+    }
+    public function testRepeatedObtainRebuildsAliases()
+    {
+        $this->startDaemon();
+        $settings = rTorrentSettings::get(true);
+        $expected = $settings->getCommand('get_directory');
+        $settings->obtain();
+        $this->same($expected, $settings->getCommand('get_directory'), 'a second obtain retains canonical aliases');
+        $this->same('directory.default', $expected, 'the daemon uses the canonical directory reader');
+    }
 
-	public function testApiVersionIsRenderedAsAnInteger()
-	{
-		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$settings->apiVersion = '11;throw 1';
-		$this->assertTrue(strpos($settings->systemInfoScript(), 'apiVersion : 11,') !== false,
-			'the daemon API version is numeric JavaScript');
-	}
+    public function testApiVersionIsRenderedAsAnInteger()
+    {
+        $settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+        $settings->apiVersion = '11;throw 1';
+        $this->assertTrue(
+            strpos($settings->systemInfoScript(), 'apiVersion : 11,') !== false,
+            'the daemon API version is numeric JavaScript',
+        );
+    }
 
-	private function removeTree($path)
-	{
-		if (!is_dir($path) || is_link($path)) {
-			@unlink($path);
-			return;
-		}
-		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
-			$this->removeTree($path . '/' . $entry);
-		}
-		@rmdir($path);
-	}
+    private function removeTree($path)
+    {
+        if (!is_dir($path) || is_link($path)) {
+            @unlink($path);
+            return;
+        }
+        foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+            $this->removeTree($path . '/' . $entry);
+        }
+        @rmdir($path);
+    }
 
-	private function resetSingleton()
-	{
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		$property->setValue(null, null);
-	}
+    private function resetSingleton()
+    {
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        self::makeAccessible($property);
+        $property->setValue(null, null);
+    }
 
-	private function stopDaemon()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-	}
+    private function stopDaemon()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+            $this->daemon = null;
+        }
+    }
 
-	/**
-	 * A 0.16.25 daemon whose strings carry quotes and backslashes. Aliases are reloaded by each obtain(), including repeated calls within
-	 * one process. Historical spellings stay in the fixture for older readers.
-	 */
-	private function startDaemon()
-	{
-		$this->stopDaemon();
-		$capture = ["1000\n1000 1001\n" . self::HOME . "\n"];
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies([
-			'system.client_version' => ['0.16.25'],
-			'system.api_version' => [11],
-			'system.sockets.available_alloc' => [4096],
-			'directory.default' => [self::DIRECTORY], 'get_directory' => [self::DIRECTORY],
-			'session.path' => [self::SESSION], 'get_session' => [self::SESSION],
-			'system.library_version' => [self::LIBRARY],
-			'session.name' => [self::SERVER], 'get_name' => [self::SERVER],
-			'network.port_range' => ['6881-6881'], 'get_port_range' => ['6881-6881'],
-			'network.listen.port.range' => ['6881-6881'],
-			'network.bind_address' => ['0.0.0.0'], 'get_bind' => ['0.0.0.0'],
-			'network.local_address' => ['0.0.0.0'], 'get_ip' => ['0.0.0.0'],
-			'network.listen.port' => [6881],
-			'execute.capture' => $capture, 'execute_capture' => $capture,
-		]), $_ENV['RU_PROFILE_PATH'] . '/calls.log');
-		$GLOBALS['scgi_port'] = $this->daemon->port();
-	}
+    /**
+     * A 0.16.25 daemon whose strings carry quotes and backslashes. Aliases are reloaded by each obtain(), including repeated calls within
+     * one process. Historical spellings stay in the fixture for older readers.
+     */
+    private function startDaemon()
+    {
+        $this->stopDaemon();
+        $capture = ["1000\n1000 1001\n" . self::HOME . "\n"];
+        $this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies([
+            'system.client_version' => ['0.16.25'],
+            'system.api_version' => [11],
+            'system.sockets.available_alloc' => [4096],
+            'directory.default' => [self::DIRECTORY], 'get_directory' => [self::DIRECTORY],
+            'session.path' => [self::SESSION], 'get_session' => [self::SESSION],
+            'system.library_version' => [self::LIBRARY],
+            'session.name' => [self::SERVER], 'get_name' => [self::SERVER],
+            'network.port_range' => ['6881-6881'], 'get_port_range' => ['6881-6881'],
+            'network.listen.port.range' => ['6881-6881'],
+            'network.bind_address' => ['0.0.0.0'], 'get_bind' => ['0.0.0.0'],
+            'network.local_address' => ['0.0.0.0'], 'get_ip' => ['0.0.0.0'],
+            'network.listen.port' => [6881],
+            'execute.capture' => $capture, 'execute_capture' => $capture,
+        ]), $_ENV['RU_PROFILE_PATH'] . '/calls.log');
+        $GLOBALS['scgi_port'] = $this->daemon->port();
+    }
 
-	private function expandedDirectory()
-	{
-		return self::HOME . substr(self::DIRECTORY, 1);
-	}
+    private function expandedDirectory()
+    {
+        return self::HOME . substr(self::DIRECTORY, 1);
+    }
 
-	private function same($expected, $actual, $what)
-	{
-		$this->assertSame($expected, $actual, $what
-			. ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
-	}
+    private function same($expected, $actual, $what)
+    {
+        $this->assertSame($expected, $actual, $what
+            . ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
+    }
 
-	private function cached()
-	{
-		$cached = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$this->assertTrue((new rCache())->get($cached), 'the settings cache is readable');
-		return $cached;
-	}
+    private function cached()
+    {
+        $cached = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+        $this->assertTrue((new rCache())->get($cached), 'the settings cache is readable');
+        return $cached;
+    }
 
-	/** Serialize $settings as a cache written before the value format existed. */
-	private function storeWithoutValueFormat($settings)
-	{
-		$serialized = serialize($settings);
-		$member = '/s:11:"valueFormat";i:-?[0-9]+;/';
-		if (preg_match($member, $serialized) === 1) {
-			$serialized = preg_replace($member, '', $serialized, 1);
-			$serialized = preg_replace_callback('/^O:16:"rTorrentSettings":([0-9]+):/', function ($m) {
-				return 'O:16:"rTorrentSettings":' . ((int)$m[1] - 1) . ':';
-			}, $serialized, 1);
-		}
-		$this->assertTrue(strpos($serialized, 'valueFormat') === false,
-			'the stale fixture carries no value format, like a cache from before the change');
-		file_put_contents(FileUtil::getSettingsPath() . '/rtorrent.dat', $serialized);
-	}
+    /** Serialize $settings as a cache written before the value format existed. */
+    private function storeWithoutValueFormat($settings)
+    {
+        $serialized = serialize($settings);
+        $member = '/s:11:"valueFormat";i:-?[0-9]+;/';
+        if (preg_match($member, $serialized) === 1) {
+            $serialized = preg_replace($member, '', $serialized, 1);
+            $serialized = preg_replace_callback('/^O:16:"rTorrentSettings":([0-9]+):/', function ($m) {
+                return 'O:16:"rTorrentSettings":' . ((int) $m[1] - 1) . ':';
+            }, $serialized, 1);
+        }
+        $this->assertTrue(
+            strpos($serialized, 'valueFormat') === false,
+            'the stale fixture carries no value format, like a cache from before the change',
+        );
+        file_put_contents(FileUtil::getSettingsPath() . '/rtorrent.dat', $serialized);
+    }
 
-	/** The literal assigned to $key in the systemInfo statement, decoded, or a marker. */
-	private function scriptLiteral($script, $key)
-	{
-		if (preg_match('/[{,] ' . $key . ' : ("(?:[^"\\\\]|\\\\.)*")[,}\s]/', $script, $match) !== 1) {
-			return 'NOT-ONE-LITERAL';
-		}
-		$value = json_decode($match[1], true);
-		return is_string($value) ? $value : 'NOT-ONE-LITERAL';
-	}
+    /** The literal assigned to $key in the systemInfo statement, decoded, or a marker. */
+    private function scriptLiteral($script, $key)
+    {
+        if (preg_match('/[{,] ' . $key . ' : ("(?:[^"\\\\]|\\\\.)*")[,}\s]/', $script, $match) !== 1) {
+            return 'NOT-ONE-LITERAL';
+        }
+        $value = json_decode($match[1], true);
+        return is_string($value) ? $value : 'NOT-ONE-LITERAL';
+    }
 
 }

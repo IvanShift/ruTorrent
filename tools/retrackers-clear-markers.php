@@ -1,11 +1,12 @@
 <?php
-$cliGuard = dirname(__DIR__).'/php/cli-only.php';
-if(is_file($cliGuard)) {
+
+$cliGuard = dirname(__DIR__) . '/php/cli-only.php';
+if (is_file($cliGuard)) {
     require_once $cliGuard;
     rutorrent_require_cli(__FILE__);
-} elseif(PHP_SAPI !== 'cli') {
+} elseif (PHP_SAPI !== 'cli') {
     // The documented /tmp copy must be self-contained without exposing a web door.
-    if(!isset($_SERVER['REQUEST_METHOD']) && PHP_SAPI !== 'cli-server') {
+    if (!isset($_SERVER['REQUEST_METHOD']) && PHP_SAPI !== 'cli-server') {
         error_log('cli-only: refused standalone non-CLI worker; use a CLI binary');
         exit(1);
     }
@@ -54,11 +55,12 @@ $pairs = [];
 $usable = $apply ? count($argv) >= 4 && count($argv) % 2 === 0 : count($argv) === 1;
 for ($index = 2; $usable && $index < count($argv); $index += 2) {
     $hash = strtoupper($argv[$index]);
-    if (preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1 ||
-        preg_match('/^[0-9a-f]{64}$/D', $argv[$index + 1]) !== 1 || isset($pairs[$hash])) {
-        $usable = false; }
-    else {
-        $pairs[$hash] = $argv[$index + 1]; }
+    if (preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1
+        || preg_match('/^[0-9a-f]{64}$/D', $argv[$index + 1]) !== 1 || isset($pairs[$hash])) {
+        $usable = false;
+    } else {
+        $pairs[$hash] = $argv[$index + 1];
+    }
 }
 if (!$usable) {
     fwrite(STDERR, "usage: retrackers-clear-markers.php [apply HASH FINGERPRINT [HASH FINGERPRINT ...]]\n"
@@ -72,57 +74,63 @@ $scgi_port = 5000;
 
 // $scgi_host may already carry a scheme ("unix:///run/rtorrent/rtorrent.sock"),
 // may be a bare socket path, or may be a hostname with $scgi_port set.
-if (strpos($scgi_host, '://') !== false) { $target = $scgi_host; }
-elseif (substr($scgi_host, 0, 1) === '/') { $target = 'unix://' . $scgi_host; }
-elseif (isset($scgi_port) && $scgi_port > 0) { $target = 'tcp://' . $scgi_host . ':' . $scgi_port; }
-else { $target = 'unix://' . $scgi_host; }
+if (strpos($scgi_host, '://') !== false) {
+    $target = $scgi_host;
+} elseif (substr($scgi_host, 0, 1) === '/') {
+    $target = 'unix://' . $scgi_host;
+} elseif (isset($scgi_port) && $scgi_port > 0) {
+    $target = 'tcp://' . $scgi_host . ':' . $scgi_port;
+} else {
+    $target = 'unix://' . $scgi_host;
+}
 
 // One call, or false with $error saying why; it never exits.
 function rpcTry($target, $method, $arguments, &$error)
 {
-	$body = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>';
-	foreach ($arguments as $argument) {
-		$body .= '<param><value><string>' . htmlspecialchars($argument, ENT_XML1) . '</string></value></param>'; }
-	$body .= '</params></methodCall>';
-	$header = "CONTENT_LENGTH\0" . strlen($body) . "\0SCGI\0" . "1\0";
-	$socket = @stream_socket_client($target, $errno, $errstr, 15);
-	if (!$socket) {
-		$error = 'cannot reach rtorrent at ' . $target . ': ' . $errstr;
-		return(false);
-	}
-	fwrite($socket, strlen($header) . ':' . $header . ',' . $body);
-	$answer = stream_get_contents($socket);
-	fclose($socket);
-	if (preg_match('~<fault(?:\s[^>]*)?>~', $answer) === 1) {
-		$faultAt = strpos($answer, 'faultString');
-		$error = 'rtorrent refused ' . $method . ': '
-			. ($faultAt === false ? 'XML-RPC fault' : substr($answer, $faultAt, 160));
-		return(false);
-	}
-	// A peer that accepts the request and closes without answering is not a
-	// successful call, and this tool must never read one as "nothing to do" or
-	// as "cleared". An empty or truncated body decodes to zero cells, which
-	// every count below would otherwise accept: 0 torrents, 0 marked, 0
-	// remaining, exit 0. So the envelope is required to be whole before any
-	// number is taken out of it.
-	if (strpos($answer, '<methodResponse>') === false
-		|| strpos($answer, '</methodResponse>') === false) {
-		$error = 'rtorrent gave no complete answer to ' . $method
-			. ' (' . strlen($answer) . ' bytes); refusing to report a result';
-		return(false);
-	}
-	return($answer);
+    $body = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>';
+    foreach ($arguments as $argument) {
+        $body .= '<param><value><string>' . htmlspecialchars($argument, ENT_XML1) . '</string></value></param>';
+    }
+    $body .= '</params></methodCall>';
+    $header = "CONTENT_LENGTH\0" . strlen($body) . "\0SCGI\0" . "1\0";
+    $socket = @stream_socket_client($target, $errno, $errstr, 15);
+    if (!$socket) {
+        $error = 'cannot reach rtorrent at ' . $target . ': ' . $errstr;
+        return(false);
+    }
+    fwrite($socket, strlen($header) . ':' . $header . ',' . $body);
+    $answer = stream_get_contents($socket);
+    fclose($socket);
+    if (preg_match('~<fault(?:\s[^>]*)?>~', $answer) === 1) {
+        $faultAt = strpos($answer, 'faultString');
+        $error = 'rtorrent refused ' . $method . ': '
+            . ($faultAt === false ? 'XML-RPC fault' : substr($answer, $faultAt, 160));
+        return(false);
+    }
+    // A peer that accepts the request and closes without answering is not a
+    // successful call, and this tool must never read one as "nothing to do" or
+    // as "cleared". An empty or truncated body decodes to zero cells, which
+    // every count below would otherwise accept: 0 torrents, 0 marked, 0
+    // remaining, exit 0. So the envelope is required to be whole before any
+    // number is taken out of it.
+    if (strpos($answer, '<methodResponse>') === false
+        || strpos($answer, '</methodResponse>') === false) {
+        $error = 'rtorrent gave no complete answer to ' . $method
+            . ' (' . strlen($answer) . ' bytes); refusing to report a result';
+        return(false);
+    }
+    return($answer);
 }
 
 function rpc($target, $method, $arguments)
 {
-	$error = null;
-	$answer = rpcTry($target, $method, $arguments, $error);
-	if ($answer === false) {
-		fwrite(STDERR, $error . "\n");
-		stopRun($target, 2);
-	}
-	return($answer);
+    $error = null;
+    $answer = rpcTry($target, $method, $arguments, $error);
+    if ($answer === false) {
+        fwrite(STDERR, $error . "\n");
+        stopRun($target, 2);
+    }
+    return($answer);
 }
 
 // Pairs cleared in daemon memory, and whether session.save was asked for them.
@@ -135,17 +143,20 @@ $saveRequested = null;
 function saveCleared($target, $beforeExit)
 {
     global $cleared, $saveRequested;
-    if (!$cleared || $saveRequested !== null) { return($saveRequested !== false); }
+    if (!$cleared || $saveRequested !== null) {
+        return($saveRequested !== false);
+    }
     $error = null;
     $saveRequested = rpcTry($target, 'session.save', [], $error) !== false;
     if (!$saveRequested) {
         fwrite(STDERR, 'cleared in daemon memory only; session.save unconfirmed: ' . implode(' ', $cleared)
-            . ' (' . $error . "); save the session before restarting rTorrent\n"); }
-    elseif ($beforeExit) {
+            . ' (' . $error . "); save the session before restarting rTorrent\n");
+    } elseif ($beforeExit) {
         fwrite(STDERR, 'session.save requested for the pairs cleared before this exit: ' . implode(' ', $cleared)
-            . "; verify persistence before daemon restart\n"); }
-    else {
-        echo "session.save requested; verify persistence before daemon restart\n"; }
+            . "; verify persistence before daemon restart\n");
+    } else {
+        echo "session.save requested; verify persistence before daemon restart\n";
+    }
     return($saveRequested);
 }
 
@@ -170,7 +181,8 @@ function quoteCommandArg($value)
 function scalarString($response)
 {
     if (preg_match_all('|<value><string>(.*?)</string></value>|s', $response, $matches) !== 1) {
-        return false; }
+        return false;
+    }
     return html_entity_decode($matches[1][0], ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
@@ -178,10 +190,13 @@ echo 'rtorrent: ' . $target . "\n";
 
 // A fifth column binds the public hash to its current daemon local_id.
 // Values are XML-escaped and the flat list chunks exactly.
-preg_match_all('|<value><string>(.*?)</string></value>|s',
+preg_match_all(
+    '|<value><string>(.*?)</string></value>|s',
     rpc($target, 'd.multicall2', ['', 'main', 'd.hash=', 'd.name=',
         'd.custom=retrackers-recovery', 'd.custom=retrackers-recovery-ack',
-        'd.local_id=']), $cells);
+        'd.local_id=']),
+    $cells,
+);
 $flat = $cells[1];
 if (count($flat) % 5 !== 0) {
     fwrite(STDERR, 'unexpected reply shape: ' . count($flat) . " cells is not a multiple of 5\n");
@@ -191,15 +206,22 @@ $marked = [];
 for ($index = 0; $index < count($flat); $index += 5) {
     if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '') {
         $marked[] = [$flat[$index], $flat[$index + 1],
-            $flat[$index + 2], $flat[$index + 3], $flat[$index + 4]]; } }
+            $flat[$index + 2], $flat[$index + 3], $flat[$index + 4]];
+    }
+}
 
 printf("%d torrents, %d carry a recovery marker\n", count($flat) / 5, count($marked));
 foreach ($marked as $row) {
     $kind = preg_match('/^v1:candidate-claim:[0-9a-f]{32}$/D', $row[2]) === 1
         ? 'candidate-claim' : 'other';
-    printf("  %s  %s  [%s; ack %s; fingerprint %s]\n", $row[0],
-        substr(html_entity_decode($row[1]), 0, 60), $kind,
-        $row[3] === '' ? 'empty' : 'present', markerFingerprint($row));
+    printf(
+        "  %s  %s  [%s; ack %s; fingerprint %s]\n",
+        $row[0],
+        substr(html_entity_decode($row[1]), 0, 60),
+        $kind,
+        $row[3] === '' ? 'empty' : 'present',
+        markerFingerprint($row),
+    );
 }
 if (!$marked) {
     if ($apply) {
@@ -218,7 +240,9 @@ $selected = [];
 foreach ($pairs as $wanted => $fingerprint) {
     $match = null;
     foreach ($marked as $row) {
-        if (strtoupper($row[0]) !== $wanted) { continue; }
+        if (strtoupper($row[0]) !== $wanted) {
+            continue;
+        }
         if ($match !== null) {
             fwrite(STDERR, "duplicate hash in daemon inventory; refusing\n");
             exit(2);
@@ -230,11 +254,11 @@ foreach ($pairs as $wanted => $fingerprint) {
         exit(2);
     }
     list($hash, $name, $marker, $ack, $localId) = $match;
-    if (preg_match('/^[0-9a-fA-F]{40}$/D', $hash) !== 1 ||
-        preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1 ||
-        strlen($marker) > 512 || strlen($ack) > 512 ||
-        preg_match('/^[A-Za-z0-9:._-]*$/D', $marker) !== 1 ||
-        preg_match('/^[A-Za-z0-9:._-]*$/D', $ack) !== 1) {
+    if (preg_match('/^[0-9a-fA-F]{40}$/D', $hash) !== 1
+        || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
+        || strlen($marker) > 512 || strlen($ack) > 512
+        || preg_match('/^[A-Za-z0-9:._-]*$/D', $marker) !== 1
+        || preg_match('/^[A-Za-z0-9:._-]*$/D', $ack) !== 1) {
         fwrite(STDERR, "selected marker/local_id is not safe for a conditional clear; retain it\n");
         exit(2);
     }
@@ -262,7 +286,8 @@ foreach ($selected as $row) {
     ];
     $condition = array_shift($conditions);
     foreach ($conditions as $next) {
-        $condition = 'and=' . quoteCommandArg($condition) . ',' . quoteCommandArg($next); }
+        $condition = 'and=' . quoteCommandArg($condition) . ',' . quoteCommandArg($next);
+    }
     $clear = 'cat=' . quoteCommandArg('$d.custom.set=retrackers-recovery,') . ','
         . quoteCommandArg('$d.custom.set=retrackers-recovery-ack,') . ',CLEARED';
     $status = scalarString(rpc($target, 'branch', [$hash, $condition, $clear, $refusal]));
@@ -288,14 +313,18 @@ foreach ($selected as $row) {
             . 'with the copy of this tool that shipped with that container' . "\n");
         break;
     }
-    fwrite(STDERR, ($status === 'CHANGED' ?
-        'conditional clear refused for ' . $hash . ': its marker, ack or local_id changed after the report; nothing was changed; report again' :
-        'conditional clear refused or unconfirmed; marker/ledger may have changed') . "\n");
+    fwrite(STDERR, ($status === 'CHANGED'
+        ? 'conditional clear refused for ' . $hash . ': its marker, ack or local_id changed after the report; nothing was changed; report again'
+        : 'conditional clear refused or unconfirmed; marker/ledger may have changed') . "\n");
 }
-if (!$cleared) { exit(3); }
+if (!$cleared) {
+    exit(3);
+}
 
 // Persist only after each selected generation was confirmed clear.
-if (!saveCleared($target, false)) { exit(2); }
+if (!saveCleared($target, false)) {
+    exit(2);
+}
 foreach ($cleared as $hash) {
     foreach (['retrackers-recovery', 'retrackers-recovery-ack'] as $key) {
         $current = scalarString(rpc($target, 'd.custom', [$hash, $key]));

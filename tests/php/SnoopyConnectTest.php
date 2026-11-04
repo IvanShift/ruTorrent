@@ -31,7 +31,9 @@ namespace {
     ] as $path => $declaration) {
         $source = file_get_contents(__DIR__ . '/../../' . $path);
         $start = strpos($source, $declaration);
-        if ($start === false) { throw new \RuntimeException('Production class not found: ' . $path); }
+        if ($start === false) {
+            throw new \RuntimeException('Production class not found: ' . $path);
+        }
         eval('namespace SnoopyConnectFixture; ' . substr($source, $start));
     }
 
@@ -55,14 +57,21 @@ namespace {
                     testAssertSame([], $client->headers, 'Direct failed connect clears the previous headers');
                     testAssertSame('', $client->response_code, 'Direct failed connect clears the previous status line');
                     testAssertSame(false, $client->_redirectaddr, 'Direct failed connect clears the previous redirect');
-                    testAssertSame('connection failed (' . $errno . ')', $client->error,
-                        'The original OS errno remains available for detailed diagnostics');
-                    testAssertSame('transport=socket status=-102 reason=socket',
+                    testAssertSame(
+                        'connection failed (' . $errno . ')',
+                        $client->error,
+                        'The original OS errno remains available for detailed diagnostics',
+                    );
+                    testAssertSame(
+                        'transport=socket status=-102 reason=socket',
                         \SnoopyConnectFixture\ruTrackerChecker::fetchStatusDetail($client->status),
-                        $call . ' errno ' . $errno . ' is a socket failure, never HTTP, read timeout or body refusal');
-                    testAssertSame('connect-failed errno=' . $errno,
+                        $call . ' errno ' . $errno . ' is a socket failure, never HTTP, read timeout or body refusal',
+                    );
+                    testAssertSame(
+                        'connect-failed errno=' . $errno,
                         \SnoopyConnectFixture\TorrentFetch::rejectionReason($client, false),
-                        'Torrent download diagnostics retain the exact OS errno');
+                        'Torrent download diagnostics retain the exact OS errno',
+                    );
                 }
             }
         },
@@ -83,17 +92,26 @@ namespace {
                     testAssertSame(false, $client->connect(), 'The socket connection failed');
                     testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
                     testAssertSame($errno, $client->status, 'Existing nonpositive statuses are preserved');
-                    testAssertSame($detail,
+                    testAssertSame(
+                        $detail,
                         \SnoopyConnectFixture\ruTrackerChecker::fetchStatusDetail($client->status),
-                        'Existing transport classification is preserved');
-                    testAssertSame($message, $client->error,
-                        'A specific socket error must not fall through to the generic message');
-                    testAssertSame($classification,
+                        'Existing transport classification is preserved',
+                    );
+                    testAssertSame(
+                        $message,
+                        $client->error,
+                        'A specific socket error must not fall through to the generic message',
+                    );
+                    testAssertSame(
+                        $classification,
                         \SnoopyConnectFixture\ruTrackerChecker::classifyFetchError($client->error),
-                        'The checker receives the socket failure category');
-                    testAssertSame($downloadReason . ' errno=' . $errno,
+                        'The checker receives the socket failure category',
+                    );
+                    testAssertSame(
+                        $downloadReason . ' errno=' . $errno,
                         \SnoopyConnectFixture\TorrentFetch::rejectionReason($client, false),
-                        'Torrent download diagnostics keep the category and exact errno');
+                        'Torrent download diagnostics keep the category and exact errno',
+                    );
                 }
             }
         },
@@ -120,12 +138,16 @@ namespace {
                         testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
                         testAssertSame(0, $client->status, 'Resolver classification does not invent an OS errno');
                         testAssertSame($expected[0], $client->error, 'Only the known PHP resolver marker identifies DNS');
-                        testAssertSame($expected[1],
+                        testAssertSame(
+                            $expected[1],
                             \SnoopyConnectFixture\ruTrackerChecker::classifyFetchError($client->error),
-                            'The checker logs a fixed category without resolver text');
-                        testAssertSame($expected[2],
+                            'The checker logs a fixed category without resolver text',
+                        );
+                        testAssertSame(
+                            $expected[2],
                             \SnoopyConnectFixture\TorrentFetch::rejectionReason($client, false),
-                            'Torrent downloads retain the same classified reason');
+                            'Torrent downloads retain the same classified reason',
+                        );
                     }
                 }
             } finally {

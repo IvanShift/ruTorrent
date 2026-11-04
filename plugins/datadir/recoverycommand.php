@@ -1,6 +1,6 @@
 <?php
 
-require_once(__DIR__.'/../../php/utility/utility.php');
+require_once(__DIR__ . '/../../php/utility/utility.php');
 
 // Shell argv and the daemon's execute command are separate parsers. Quote
 // each at its own boundary, including administrator-configured PHP paths.

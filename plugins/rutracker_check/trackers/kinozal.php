@@ -1,8 +1,8 @@
 <?php
 
-require_once( __DIR__ . '/../fetcherror.php' );
-require_once( __DIR__ . '/../../../php/urlhost.php' );
-require_once( __DIR__ . '/../../../php/kinozal.php' );
+require_once(__DIR__ . '/../fetcherror.php');
+require_once(__DIR__ . '/../../../php/urlhost.php');
+require_once(__DIR__ . '/../../../php/kinozal.php');
 
 class KinozalCheckImpl
 {
@@ -38,7 +38,7 @@ class KinozalCheckImpl
     // iconv() at all, so a needle that relied on conversion would never match.
     // Carrying both spellings costs one comparison and depends on no extension.
     public const DOWNLOAD_MISSING_CP1251 = "\xcd\xe5\xf2 \xf0\xe0\xe7\xe4\xe0\xf7\xe8 \xf1 \xf2\xe0\xea\xe8\xec ID.";
-    public const DOWNLOAD_MISSING_UTF8   = 'Нет раздачи с таким ID.';
+    public const DOWNLOAD_MISSING_UTF8 = 'Нет раздачи с таким ID.';
 
     // Anchored to the block the site puts that line in, rather than looked up
     // anywhere in the page. The two failure directions are not equal: an
@@ -157,7 +157,9 @@ class KinozalCheckImpl
     // two cannot disagree about what Kinozal owns.
     public static function topicPattern()
     {
-        $hosts = array_map(function ($host) { return preg_quote($host, '`'); }, self::SITE_HOSTS);
+        $hosts = array_map(function ($host) {
+            return preg_quote($host, '`');
+        }, self::SITE_HOSTS);
         return '`^https?://(?:' . implode('|', $hosts) . ')/details\.php\?id=(?P<id>\d+)$`';
     }
 
@@ -165,7 +167,9 @@ class KinozalCheckImpl
     public static function cycleQuota()
     {
         $value = $GLOBALS['rutrackerKinozalCycleTopics'] ?? null;
-        if ($value === null) { return self::DEFAULT_CYCLE_TOPICS; }
+        if ($value === null) {
+            return self::DEFAULT_CYCLE_TOPICS;
+        }
         $quota = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
         if ($quota === null) {
             if (!self::$invalidCycleTopicsReported) {
@@ -194,11 +198,15 @@ class KinozalCheckImpl
     // One debug-gated line, using only counters already collected in this run.
     public static function logCycleSummary()
     {
-        if (self::$cycleSummaryLogged || self::$cycleDiagnostics['topic_calls'] === 0) { return; }
+        if (self::$cycleSummaryLogged || self::$cycleDiagnostics['topic_calls'] === 0) {
+            return;
+        }
         self::$cycleSummaryLogged = true;
         try {
             $summary = json_encode(self::$cycleDiagnostics);
-            if (is_string($summary)) { ruTrackerChecker::logDebug('kinozal: cycle summary ' . $summary); }
+            if (is_string($summary)) {
+                ruTrackerChecker::logDebug('kinozal: cycle summary ' . $summary);
+            }
         } catch (Throwable $e) {
             // Optional diagnostics must not change the cycle's verdicts.
         }
@@ -217,7 +225,8 @@ class KinozalCheckImpl
     public static function download_torrent($url, $hash, $old_torrent)
     {
         if (!preg_match(self::topicPattern(), $url, $matches)) {
-            return ruTrackerChecker::STE_DECLINED; }
+            return ruTrackerChecker::STE_DECLINED;
+        }
 
         // Checked after the URL match, so a topic this handler does not own
         // still falls through to STE_DECLINED exactly as before. No request
@@ -232,12 +241,18 @@ class KinozalCheckImpl
         $id = $matches["id"];
         $doors = self::doorOrder('details', self::$door);
         foreach ($doors as $index => $door) {
-            if (self::isClosed($door, 'details')) { continue; }
+            if (self::isClosed($door, 'details')) {
+                continue;
+            }
             $verdict = self::askDoor($door, $id, $hash, $old_torrent, $index === count($doors) - 1);
-            if ($verdict !== self::NEXT_DOOR) { return $verdict; }
-            if (self::$cycleAbandoned) { break; }
+            if ($verdict !== self::NEXT_DOOR) {
+                return $verdict;
+            }
+            if (self::$cycleAbandoned) {
+                break;
+            }
         }
-        return self::cantReach("no Kinozal door answered: id=".$id);
+        return self::cantReach("no Kinozal door answered: id=" . $id);
     }
 
     // The hosts this cycle asks, in the configured order.
@@ -269,7 +284,9 @@ class KinozalCheckImpl
     private static function answeredBy($door, $endpoint)
     {
         self::$failures[$door . '|' . $endpoint] = 0;
-        if ($door === self::$door) { return; }
+        if ($door === self::$door) {
+            return;
+        }
         $previous = self::$door . '|' . $endpoint;
         if (!self::$failoverLogged && isset(self::$lastFailure[$previous])) {
             self::$failoverLogged = true;
@@ -289,8 +306,13 @@ class KinozalCheckImpl
         self::$lastFailure[$key] = $reason;
         self::$failures[$key] = (isset(self::$failures[$key]) ? self::$failures[$key] : 0) + 1;
         if (self::$failures[$key] >= self::TRANSPORT_TOLERANCE) {
-            self::closeDoor($door, $endpoint, $endpoint . '-unreachable',
-                self::TRANSPORT_TOLERANCE . ' failures in a row, last ' . $reason); }
+            self::closeDoor(
+                $door,
+                $endpoint,
+                $endpoint . '-unreachable',
+                self::TRANSPORT_TOLERANCE . ' failures in a row, last ' . $reason,
+            );
+        }
         return self::NEXT_DOOR;
     }
 
@@ -298,15 +320,18 @@ class KinozalCheckImpl
     // $detail is what this door's own line says.
     private static function closeDoor($door, $endpoint, $reason, $detail)
     {
-        if (isset(self::$closed[$door . '|' . $endpoint])) { return; }
+        if (isset(self::$closed[$door . '|' . $endpoint])) {
+            return;
+        }
         self::$closed[$door . '|' . $endpoint] = true;
         ruTrackerChecker::logUnrepairable('kinozal: ' . self::doors()[$door]
             . ($endpoint === 'download' ? ' download.php' : '') . ' is skipped for the rest of this cycle ('
             . $detail . ')');
         if (!self::doorOrder('details', self::$door)) {
-            self::abandonCycle($reason); }
-        elseif ($endpoint === 'download' && !self::doorOrder('download', self::$door)) {
-            self::logCycleSkip('download', $reason); }
+            self::abandonCycle($reason);
+        } elseif ($endpoint === 'download' && !self::doorOrder('download', self::$door)) {
+            self::logCycleSkip('download', $reason);
+        }
     }
 
     private static function abandonCycle($reason, $context = '')
@@ -317,7 +342,9 @@ class KinozalCheckImpl
 
     private static function logCycleSkip($scope, $reason, $context = '')
     {
-        if (isset(self::$skipLogged[$scope])) { return; }
+        if (isset(self::$skipLogged[$scope])) {
+            return;
+        }
         self::$skipLogged[$scope] = true;
         ruTrackerChecker::logUnrepairable('kinozal: Kinozal checks skipped for the rest of this cycle: scope='
             . $scope . ' reason=' . $reason . $context . '; eligibility checked next cycle');
@@ -325,12 +352,18 @@ class KinozalCheckImpl
 
     private static function isMissingAnswer($body)
     {
-        if (!is_string($body) || $body === '') { return false; }
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
         $plain = trim(preg_replace('/[ \t\r\n\f\v]+/', ' ', strip_tags($body)));
         $needle = self::MISSING_MARKER;
-        if ($plain === $needle || $plain === $needle . '.') { return true; }
+        if ($plain === $needle || $plain === $needle . '.') {
+            return true;
+        }
         $legacy = self::MISSING_MARKER_CP1251;
-        if ($plain === $legacy || $plain === $legacy . '.') { return true; }
+        if ($plain === $legacy || $plain === $legacy . '.') {
+            return true;
+        }
         return false;
     }
 
@@ -341,12 +374,17 @@ class KinozalCheckImpl
     // has to say exactly the marker and nothing else.
     private static function isDownloadMissingAnswer($body)
     {
-        if (!is_string($body) || $body === '') { return false; }
-        if (!preg_match_all(self::DOWNLOAD_MISSING_BLOCK, $body, $matches)) { return false; }
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
+        if (!preg_match_all(self::DOWNLOAD_MISSING_BLOCK, $body, $matches)) {
+            return false;
+        }
         foreach ($matches[1] as $block) {
             $line = trim(strip_tags($block));
             if (($line === self::DOWNLOAD_MISSING_CP1251) || ($line === self::DOWNLOAD_MISSING_UTF8)) {
-                return true; }
+                return true;
+            }
         }
         return false;
     }
@@ -395,7 +433,8 @@ class KinozalCheckImpl
             ? ++self::$downloadUnverified
             : ++self::$detailsUnverified;
         if ($answers < self::TRANSPORT_TOLERANCE) {
-            return self::cantReach($log); }
+            return self::cantReach($log);
+        }
         return self::abandonEndpoint($log, $endpoint, $endpoint . '-unverified');
     }
 
@@ -406,7 +445,8 @@ class KinozalCheckImpl
             ? ++self::$downloadGuestAnswers
             : ++self::$detailsGuestAnswers;
         if ($answers < self::GUEST_TOLERANCE) {
-            return self::cantReach($log); }
+            return self::cantReach($log);
+        }
         self::logSessionHint();
         return self::abandonEndpoint($log, $endpoint, $endpoint . '-guest-session');
     }
@@ -418,11 +458,12 @@ class KinozalCheckImpl
     private static function logSessionHint()
     {
         if (self::$sessionHintLogged) {
-            return; }
+            return;
+        }
         self::$sessionHintLogged = true;
         ruTrackerChecker::logUnrepairable('Kinozal answers as a guest: no authenticated KinozalTV session was available for these checks;'
-            .' re-enter the KinozalTV login and password in Settings -> Accounts and Save;'
-            .' Kinozal update checks resume after a successful login');
+            . ' re-enter the KinozalTV login and password in Settings -> Accounts and Save;'
+            . ' Kinozal update checks resume after a successful login');
     }
 
     // What a finished request says before its body is read, for the answers
@@ -446,7 +487,8 @@ class KinozalCheckImpl
             return self::notAsked($endpoint . ' attempt: login paused id=' . $id);
         }
         if (self::errorClass($client) === 'credential-post-failed') {
-            return self::guestAnswer($endpoint . ' attempt: the credential POST failed: id=' . $id, $endpoint); }
+            return self::guestAnswer($endpoint . ' attempt: the credential POST failed: id=' . $id, $endpoint);
+        }
         return null;
     }
 
@@ -456,17 +498,25 @@ class KinozalCheckImpl
     {
         $unknown = ' pause_until=unknown pause_remaining_s=unknown';
         try {
-            if (!method_exists($client, 'observedThrottleUntil')) { return $unknown; }
+            if (!method_exists($client, 'observedThrottleUntil')) {
+                return $unknown;
+            }
             $until = $client->observedThrottleUntil();
             if ((!is_int($until) && !is_float($until)) || !is_finite($until)
-                || $until < 0 || $until >= PHP_INT_MAX) { return $unknown; }
+                || $until < 0 || $until >= PHP_INT_MAX) {
+                return $unknown;
+            }
             $now = microtime(true);
             $stampSeconds = ceil($until);
-            if (!is_float($stampSeconds)) { return $unknown; }
+            if (!is_float($stampSeconds)) {
+                return $unknown;
+            }
             $stamp = gmdate('Y-m-d\TH:i:s\Z', (int) $stampSeconds);
             $remaining = $until > $now ? ceil($until - $now) : 0;
             if (!is_float($now) || !is_string($stamp)
-                || (!is_int($remaining) && !is_float($remaining))) { return $unknown; }
+                || (!is_int($remaining) && !is_float($remaining))) {
+                return $unknown;
+            }
             return ' pause_until=' . $stamp . ' pause_remaining_s=' . (int) $remaining;
         } catch (Throwable $e) {
             return $unknown;
@@ -483,7 +533,9 @@ class KinozalCheckImpl
     private static function refusal($client)
     {
         $error = self::errorClass($client);
-        if ($error === 'curl-transfer') { return $error . '-' . (int) $client->status; }
+        if ($error === 'curl-transfer') {
+            return $error . '-' . (int) $client->status;
+        }
         return $error !== '' ? $error : 'http-' . (int) $client->status;
     }
 
@@ -509,25 +561,33 @@ class KinozalCheckImpl
     private static function replacementRefusal($torrent, $id, $oldTorrent)
     {
         if (!preg_match(self::topicPattern(), (string) $torrent->comment(), $topic) || $topic['id'] !== (string) $id) {
-            return 'topic-mismatch'; }
+            return 'topic-mismatch';
+        }
         $passkeys = self::passkeys($oldTorrent);
         if (!$passkeys) {
-            return 'passkey-unknown'; }
+            return 'passkey-unknown';
+        }
         if (!array_intersect($passkeys, self::passkeys($torrent))) {
-            return 'passkey-mismatch'; }
+            return 'passkey-mismatch';
+        }
         return null;
     }
 
     private static function passkeys($torrent)
     {
         $passkeys = [];
-        if (!($torrent instanceof Torrent)) { return $passkeys; }
+        if (!($torrent instanceof Torrent)) {
+            return $passkeys;
+        }
         $urls = [$torrent->announce(), $torrent->announce_list()];
         array_walk_recursive($urls, function ($url) use (&$passkeys) {
-            if (!is_string($url) || !UrlHost::urlIsOneOf($url, self::ANNOUNCE_HOSTS)) { return; }
+            if (!is_string($url) || !UrlHost::urlIsOneOf($url, self::ANNOUNCE_HOSTS)) {
+                return;
+            }
             parse_str((string) @parse_url($url, PHP_URL_QUERY), $query);
             if (isset($query['uk']) && is_string($query['uk']) && $query['uk'] !== '') {
-                $passkeys[] = $query['uk']; }
+                $passkeys[] = $query['uk'];
+            }
         });
         return array_values(array_unique($passkeys));
     }
@@ -560,16 +620,25 @@ class KinozalCheckImpl
     // check" without a door failure of its own: the details refusal it
     // follows is counted instead. Its guest and unverified answers count
     // like any other, and a challenge it meets closes the door.
-    private static function decideFromDownload($client, $door, $id, $hash, $old_torrent, $detailsSilent,
-        &$answered = null)
-    {
+    private static function decideFromDownload(
+        $client,
+        $door,
+        $id,
+        $hash,
+        $old_torrent,
+        $detailsSilent,
+        &$answered = null
+    ) {
         $answered = false;
         $url = self::downloadUrl($id, $door);
         if (KinozalResponse::observeChallenge($client, $url)) {
             return self::doorUnanswered($door, 'download', 'challenge', 'download attempt: Cloudflare challenge id='
-                . $id, $detailsSilent); }
+                . $id, $detailsSilent);
+        }
         $account = self::accountAnswer($client, 'download', $id);
-        if ($account !== null) { return $account; }
+        if ($account !== null) {
+            return $account;
+        }
         // A guest download attempt may encounter a redirect to login.php. Whether Snoopy follows
         // it to the 200 login page (the guest marker below catches that) or
         // stops on a 3xx, the answer is retryable. A non-200 status alone
@@ -582,10 +651,15 @@ class KinozalCheckImpl
                 && @parse_url($redirect, PHP_URL_PATH) === '/login.php') {
                 self::answeredBy($door, 'download');
                 self::$downloadUnverified = 0;
-                return self::guestAnswer("download attempt encountered a login.php redirect: id=".$id, 'download');
+                return self::guestAnswer("download attempt encountered a login.php redirect: id=" . $id, 'download');
             }
-            return self::doorUnanswered($door, 'download', self::refusal($client),
-                self::failedAttempt('download', $client, $id), $detailsSilent);
+            return self::doorUnanswered(
+                $door,
+                'download',
+                self::refusal($client),
+                self::failedAttempt('download', $client, $id),
+                $detailsSilent,
+            );
         }
 
         // Metainfo first: bytes that parse ARE the torrent, whatever text they
@@ -615,13 +689,15 @@ class KinozalCheckImpl
         $guest = KinozalResponse::isGuestPage($payload);
         if ($guest === null) {
             self::answeredBy($door, 'download');
-            return self::unverifiedAnswer("download attempt: guest-page-parse-failed id=".$id, 'download');
+            return self::unverifiedAnswer("download attempt: guest-page-parse-failed id=" . $id, 'download');
         }
         self::$downloadUnverified = 0;
         if ($guest) {
             self::answeredBy($door, 'download');
-            return self::guestAnswer("download attempt ended at a guest page, check the loginmgr account: id=".$id,
-                'download');
+            return self::guestAnswer(
+                "download attempt ended at a guest page, check the loginmgr account: id=" . $id,
+                'download',
+            );
         }
         self::$downloadGuestAnswers = 0;
         // Checked after the guest test above, the way the details endpoint's
@@ -634,8 +710,13 @@ class KinozalCheckImpl
         }
         // A page that is neither metainfo nor Kinozal's own answer is what a
         // door under maintenance or a parked name serves.
-        return self::doorUnanswered($door, 'download', 'not-metainfo',
-            "download attempt ended without metainfo: id=".$id." bytes=".strlen($payload), $detailsSilent);
+        return self::doorUnanswered(
+            $door,
+            'download',
+            'not-metainfo',
+            "download attempt ended without metainfo: id=" . $id . " bytes=" . strlen($payload),
+            $detailsSilent,
+        );
     }
 
     // A door that did not answer: counted toward closing it, unless this was
@@ -647,7 +728,9 @@ class KinozalCheckImpl
             self::closeDoor($door, 'details', 'cloudflare-challenge', 'Cloudflare challenge');
             return $probe ? ruTrackerChecker::STE_CANT_REACH_TRACKER : self::NEXT_DOOR;
         }
-        if ($probe) { return self::cantReach($log); }
+        if ($probe) {
+            return self::cantReach($log);
+        }
         return self::doorFailed($door, $endpoint, $reason, $log);
     }
 
@@ -670,7 +753,9 @@ class KinozalCheckImpl
             return self::NEXT_DOOR;
         }
         $account = self::accountAnswer($client, 'details', $id);
-        if ($account !== null) { return $account; }
+        if ($account !== null) {
+            return $account;
+        }
         if ($client->status != 200) {
             // HTTP 403 alone does not identify a challenge or the reason. Once
             // no other door can answer details, download.php at this door can
@@ -679,9 +764,18 @@ class KinozalCheckImpl
             // no answer leaves the details refusal below as the only count.
             // Snoopy stores the parsed HTTP code as a numeric string.
             if ($client->status == 403 && $lastDoor && !self::isClosed($door, 'download')) {
-                $probe = self::decideFromDownload(ruTrackerChecker::makeClient(self::downloadUrl($id, $door)), $door,
-                    $id, $hash, $old_torrent, true, $answered);
-                if (self::$cycleAbandoned) { return $probe; }
+                $probe = self::decideFromDownload(
+                    ruTrackerChecker::makeClient(self::downloadUrl($id, $door)),
+                    $door,
+                    $id,
+                    $hash,
+                    $old_torrent,
+                    true,
+                    $answered,
+                );
+                if (self::$cycleAbandoned) {
+                    return $probe;
+                }
                 if ($answered) {
                     // A 403 can be specific to one topic. The probe settles
                     // this topic only; the next one must still ask details
@@ -692,8 +786,12 @@ class KinozalCheckImpl
                     return $probe;
                 }
             }
-            return self::doorFailed($door, 'details', self::refusal($client),
-                self::failedAttempt('details', $client, $id));
+            return self::doorFailed(
+                $door,
+                'details',
+                self::refusal($client),
+                self::failedAttempt('details', $client, $id),
+            );
         }
 
         $details = (string) $client->results;
@@ -703,14 +801,16 @@ class KinozalCheckImpl
         if ($guest === null) {
             self::$cycleDiagnostics['details_attempt_bodies']['parse_failed']++;
             self::answeredBy($door, 'details');
-            return self::unverifiedAnswer("details attempt: guest-page-parse-failed id=".$id, 'details');
+            return self::unverifiedAnswer("details attempt: guest-page-parse-failed id=" . $id, 'details');
         }
         self::$detailsUnverified = 0;
         if ($guest) {
             self::$cycleDiagnostics['details_attempt_bodies']['guest']++;
             self::answeredBy($door, 'details');
-            return self::guestAnswer("details attempt ended at a guest page, check the loginmgr account: id=".$id,
-                'details');
+            return self::guestAnswer(
+                "details attempt ended at a guest page, check the loginmgr account: id=" . $id,
+                'details',
+            );
         }
         // An authenticated answer clears the count: only guest answers that
         // run together mean a lost session, and isolated ones must not add up
@@ -731,19 +831,28 @@ class KinozalCheckImpl
             // Neither a hash nor Kinozal's own answer: a maintenance page, a
             // parked name or a gate in front of this door.
             self::$cycleDiagnostics['details_attempt_bodies'][$hasHash === false ? 'parse_failed' : 'unrecognised']++;
-            return self::doorFailed($door, 'details', 'unrecognised-answer',
-                "details attempt ended with unrecognised content: id=".$id." bytes=".strlen($details));
+            return self::doorFailed(
+                $door,
+                'details',
+                'unrecognised-answer',
+                "details attempt ended with unrecognised content: id=" . $id . " bytes=" . strlen($details),
+            );
         }
         self::$cycleDiagnostics['details_attempt_bodies']['hash_found']++;
         self::answeredBy($door, 'details');
         if (strtoupper($matches1["hash"]) === strtoupper((string) $hash)) {
-            return ruTrackerChecker::STE_UPTODATE; }
+            return ruTrackerChecker::STE_UPTODATE;
+        }
 
         // The details answer has said the infohash moved on. The download
         // comes from the same door first: its session answered details.
         foreach (self::doorOrder('download', $door) as $downloadDoor) {
-            if (self::$cycleAbandoned) { break; }
-            if (self::isClosed($downloadDoor, 'download')) { continue; }
+            if (self::$cycleAbandoned) {
+                break;
+            }
+            if (self::isClosed($downloadDoor, 'download')) {
+                continue;
+            }
             if ($downloadDoor === $door) {
                 $client->setcookies();
                 // Keep the cookies learned from details while making a failed
@@ -764,9 +873,11 @@ class KinozalCheckImpl
             // transport error, its fresh status and body still identify a guest
             // page or challenge and must use the same reader as a true return.
             $verdict = self::decideFromDownload($client, $downloadDoor, $id, $hash, $old_torrent, false);
-            if ($verdict !== self::NEXT_DOOR) { return $verdict; }
+            if ($verdict !== self::NEXT_DOOR) {
+                return $verdict;
+            }
         }
-        return self::cantReach("no Kinozal door served the torrent: id=".$id);
+        return self::cantReach("no Kinozal door served the torrent: id=" . $id);
     }
 }
 
@@ -813,9 +924,13 @@ $kinozalAnnounceHosts = array_merge(KinozalCheckImpl::ANNOUNCE_HOSTS, KinozalChe
 //
 // The authority is the host list matched whole where the registry filter
 // beside it is a substring test; RuTrackerDetector::announceVerdict() says why.
-ruTrackerChecker::registerTracker("/kinozal\./",
-	'/' . implode('|', array_map(function ($host) { return preg_quote($host, '/'); }, $kinozalAnnounceHosts)) . '/',
-	"KinozalCheckImpl::download_torrent",
-	$kinozalAnnounceHosts,
-	KinozalCheckImpl::topicPattern(),
-	'KinozalCheckImpl::cycleQuota');
+ruTrackerChecker::registerTracker(
+    "/kinozal\./",
+    '/' . implode('|', array_map(function ($host) {
+        return preg_quote($host, '/');
+    }, $kinozalAnnounceHosts)) . '/',
+    "KinozalCheckImpl::download_torrent",
+    $kinozalAnnounceHosts,
+    KinozalCheckImpl::topicPattern(),
+    'KinozalCheckImpl::cycleQuota',
+);

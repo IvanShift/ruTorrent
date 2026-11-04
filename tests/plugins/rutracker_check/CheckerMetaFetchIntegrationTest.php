@@ -21,7 +21,8 @@ require_once(__DIR__ . '/../erasedata/PhysicalRpcFixture.php');
 // Evaluating the checker class omits its file-level erasedata dependency.
 foreach (['erasedataCanonicalHash', 'erasedataPhysicalRelativePath', 'erasedataPhysicalMetainfoPlan',
     'erasedataPhysicalMultiValue', 'erasedataPhysicalPathReply', 'erasedataCollectPhysicalPaths'] as $function) {
-    eval(loadFunctionDefinition($checkerMetaFetchRoot . '/plugins/erasedata/removewithdata.php', $function)); }
+    eval(loadFunctionDefinition($checkerMetaFetchRoot . '/plugins/erasedata/removewithdata.php', $function));
+}
 
 class CheckerMetaFetchErasedata
 {
@@ -109,11 +110,17 @@ class rTorrent
     public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
     {
         self::$magnets[] = compact(
-            'magnet', 'isStart', 'isAddPath', 'directory', 'label', 'addition',
+            'magnet',
+            'isStart',
+            'isAddPath',
+            'directory',
+            'label',
+            'addition',
         );
         $matches = [];
         if (preg_match('/btih:([0-9A-Fa-f]{40})/', (string) $magnet, $matches) !== 1) {
-            return false; }
+            return false;
+        }
         return strtoupper($matches[1]);
     }
 
@@ -127,55 +134,79 @@ class rTorrent
         // run that file is gone, so a reordered harvest must fail loudly.
         foreach (rXMLRPCRequest::$requests as $request) {
             if (($request['values'] ?? null) !== [RuTrackerAtomicOwnership::SENTINEL_ERASED]) {
-                continue; }
+                continue;
+            }
             foreach ($request['commands'] as $command) {
                 if (self::commandErasesHash($command, $hash)) {
-                    return false; } }
+                    return false;
+                }
+            }
         }
         if (isset(self::$sourceSequences[$hash]) && count(self::$sourceSequences[$hash])) {
-            return array_shift(self::$sourceSequences[$hash]); }
+            return array_shift(self::$sourceSequences[$hash]);
+        }
         return array_key_exists($hash, self::$sources) ? self::$sources[$hash] : false;
     }
 
     public static function additionCommand($command, ...$values)
     {
         $quoted = [];
-        foreach($values as $value) {
-            $quoted[] = '"'.str_replace(['\\', '"'], ['\\\\', '\"'], (string)$value).'"'; }
-        return getCmd($command.'=').implode(',', $quoted);
+        foreach ($values as $value) {
+            $quoted[] = '"' . str_replace(['\\', '"'], ['\\\\', '\"'], (string) $value) . '"';
+        }
+        return getCmd($command . '=') . implode(',', $quoted);
     }
 
-    public static function sendTorrent($torrent, $isStart, $isAddPath, $directory, $label,
-        $saveTorrent, $isFast, $isNew = true, $addition = null)
-    {
+    public static function sendTorrent(
+        $torrent,
+        $isStart,
+        $isAddPath,
+        $directory,
+        $label,
+        $saveTorrent,
+        $isFast,
+        $isNew = true,
+        $addition = null
+    ) {
         self::$sends[] = compact(
-            'torrent', 'isStart', 'isAddPath', 'directory', 'label',
-            'saveTorrent', 'isFast', 'isNew', 'addition',
+            'torrent',
+            'isStart',
+            'isAddPath',
+            'directory',
+            'label',
+            'saveTorrent',
+            'isFast',
+            'isNew',
+            'addition',
         );
         $prefix = getCmd('d.set_custom') . '="chk-replacement","';
         foreach ((array) $addition as $command) {
             if (strpos((string) $command, $prefix) === 0) {
                 self::$replacementMarker = substr((string) $command, strlen($prefix), -1);
                 break;
-            } }
+            }
+        }
         $prefix = getCmd('d.set_custom') . '="chk-replaces","';
         foreach ((array) $addition as $command) {
             if (strpos((string) $command, $prefix) === 0) {
                 self::$replacementRecord = substr((string) $command, strlen($prefix), -1);
                 break;
-            } }
+            }
+        }
         return strtoupper((string) $torrent->hash_info());
     }
 
     private static function commandErasesHash($command, $hash)
     {
         if ($command->command === getCmd('d.erase')) {
-            return (string) $command->params === (string) $hash; }
+            return (string) $command->params === (string) $hash;
+        }
         if ($command->command !== getCmd('branch')
             || !is_array($command->params)
             || !isset($command->params[0], $command->params[2])
             || (string) $command->params[0] !== (string) $hash) {
-            return false; }
+            return false;
+        }
         return strpos((string) $command->params[2], '$' . getCmd('d.erase=')) !== false;
     }
 }
@@ -198,7 +229,9 @@ function cmfTorrentRaw($name, $announce, $comment = '')
             'pieces' => str_repeat("\0", 20),
         ],
     ];
-    if ($comment !== '') { $torrent['comment'] = $comment; }
+    if ($comment !== '') {
+        $torrent['comment'] = $comment;
+    }
     return CheckerMetaFetchTorrentEncoder::raw($torrent);
 }
 
@@ -232,7 +265,10 @@ function cmfAssertNoQueuedResponses()
 {
     $pending = [];
     foreach (rXMLRPCRequest::$responses as $key => $responses) {
-        if (count($responses)) { $pending[$key] = count($responses); } }
+        if (count($responses)) {
+            $pending[$key] = count($responses);
+        }
+    }
     strictAssertSame([], $pending, 'every configured transport response was consumed');
 }
 
@@ -241,11 +277,16 @@ function cmfQueueBegin($oldHash, $topicId = 42, $deadline = 87400)
     rXMLRPCRequest::queue('d.hash', true, true, []);
     rXMLRPCRequest::queue(
         ['d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'],
-        true, false, [$oldHash, (string) (int) $topicId, (string) $deadline, 1],
+        true,
+        false,
+        [$oldHash, (string) (int) $topicId, (string) $deadline, 1],
     );
     rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
     rXMLRPCRequest::queue(
-        ['d.set_custom', 'd.set_custom'], true, false, [],
+        ['d.set_custom', 'd.set_custom'],
+        true,
+        false,
+        [],
     );
 }
 
@@ -255,25 +296,37 @@ $suite->test('the source guard recognizes an erase nested inside an atomic branc
     cmfReset();
     $hash = str_repeat('A', 40);
     rTorrent::$sources[$hash] = new stdClass();
-    rXMLRPCRequest::queue('branch', true, false,
-        [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
+    rXMLRPCRequest::queue(
+        'branch',
+        true,
+        false,
+        [RuTrackerAtomicOwnership::SENTINEL_ERASED],
+    );
 
-    strictAssertSame(RuTrackerAtomicOwnership::ACTED,
+    strictAssertSame(
+        RuTrackerAtomicOwnership::ACTED,
         RuTrackerAtomicOwnership::erase(
             $hash,
             ['chk-meta-old' => str_repeat('B', 40)],
         ),
-        'the fixture records a successful conditional erase');
-    strictAssertSame(false, rTorrent::getSource($hash),
-        'a source read after nested d.erase is rejected like the real missing session file');
+        'the fixture records a successful conditional erase',
+    );
+    strictAssertSame(
+        false,
+        rTorrent::getSource($hash),
+        'a source read after nested d.erase is rejected like the real missing session file',
+    );
     foreach ([RuTrackerAtomicOwnership::SENTINEL_SKIPPED, 'unreadable'] as $reply) {
         cmfReset();
         $source = new stdClass();
         rTorrent::$sources[$hash] = $source;
         rXMLRPCRequest::queue('branch', true, false, [$reply]);
         RuTrackerAtomicOwnership::erase($hash, ['chk-meta-old' => str_repeat('B', 40)]);
-        strictAssertSame($source, rTorrent::getSource($hash),
-            'a skipped or unknown erase response cannot simulate a missing session');
+        strictAssertSame(
+            $source,
+            rTorrent::getSource($hash),
+            'a skipped or unknown erase response cannot simulate a missing session',
+        );
     }
 });
 
@@ -281,7 +334,10 @@ $suite->test('real UPTODATE projection writes state time and same stime', functi
     cmfReset();
     $hash = str_repeat('A', 40);
     rXMLRPCRequest::queue(
-        ['d.set_custom', 'd.set_custom', 'd.set_custom'], true, false, [],
+        ['d.set_custom', 'd.set_custom', 'd.set_custom'],
+        true,
+        false,
+        [],
     );
 
     $before = time();
@@ -292,21 +348,34 @@ $suite->test('real UPTODATE projection writes state time and same stime', functi
     $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.set_custom|d.set_custom');
     strictAssertSame(1, count($writes), 'UPTODATE is one three-field transport request');
     $commands = $writes[0]['commands'];
-    strictAssertSame([$hash, 'chk-state', (string) ruTrackerChecker::STE_UPTODATE],
-        $commands[0]->params, 'state field and value');
+    strictAssertSame(
+        [$hash, 'chk-state', (string) ruTrackerChecker::STE_UPTODATE],
+        $commands[0]->params,
+        'state field and value',
+    );
     strictAssertSame($hash, $commands[1]->params[0], 'time write targets the same torrent');
     strictAssertSame('chk-time', $commands[1]->params[1], 'time field');
     strictAssertSame($hash, $commands[2]->params[0], 'stime write targets the same torrent');
     strictAssertSame('chk-stime', $commands[2]->params[1], 'stime field');
     $timestamp = $commands[1]->params[2];
-    strictAssertTrue(is_string($timestamp) && ctype_digit($timestamp),
-        'the projected timestamp is a decimal epoch');
-    strictAssertSame($timestamp, $commands[2]->params[2],
-        'chk-time and chk-stime use one captured clock value');
-    strictAssertTrue((int) $timestamp >= $before && (int) $timestamp <= $after,
-        'the projected clock lies inside the call interval');
-    strictAssertSame(['d.set_custom|d.set_custom|d.set_custom'], cmfRequestKeys(),
-        'no readback or extra mutation is hidden behind a successful full response');
+    strictAssertTrue(
+        is_string($timestamp) && ctype_digit($timestamp),
+        'the projected timestamp is a decimal epoch',
+    );
+    strictAssertSame(
+        $timestamp,
+        $commands[2]->params[2],
+        'chk-time and chk-stime use one captured clock value',
+    );
+    strictAssertTrue(
+        (int) $timestamp >= $before && (int) $timestamp <= $after,
+        'the projected clock lies inside the call interval',
+    );
+    strictAssertSame(
+        ['d.set_custom|d.set_custom|d.set_custom'],
+        cmfRequestKeys(),
+        'no readback or extra mutation is hidden behind a successful full response',
+    );
     cmfAssertNoQueuedResponses();
 });
 
@@ -319,19 +388,29 @@ $suite->test('real begin bounds a zero-wait metadata fetch as pending', function
 
     $started = microtime(true);
     $result = RuTrackerMetaFetch::begin(
-        $oldHash, $newHash, 42, 'http://bt.t-ru.org/ann?pk=integration-secret', 1000,
+        $oldHash,
+        $newHash,
+        42,
+        'http://bt.t-ru.org/ann?pk=integration-secret',
+        1000,
     );
     $elapsed = microtime(true) - $started;
 
-    strictAssertSame(ruTrackerChecker::STE_META_PENDING, $result,
-        'a still-metadata stub returns the real checker pending status');
+    strictAssertSame(
+        ruTrackerChecker::STE_META_PENDING,
+        $result,
+        'a still-metadata stub returns the real checker pending status',
+    );
     strictAssertTrue($elapsed < 2, 'a configured zero wait polls once and does not sleep');
     strictAssertSame(1, count(rTorrent::$magnets), 'the real begin loads one magnet');
     strictAssertSame(0, count(rTorrent::$sends), 'pending metadata cannot stage a torrent');
     $polls = rXMLRPCRequest::requestsFor('d.is_meta');
     strictAssertSame(1, count($polls), 'zero wait performs exactly one metadata poll');
-    strictAssertSame($newHash, $polls[0]['commands'][0]->params,
-        'the bounded poll targets the successor hash');
+    strictAssertSame(
+        $newHash,
+        $polls[0]['commands'][0]->params,
+        'the bounded poll targets the successor hash',
+    );
     strictAssertSame([
         'd.hash',
         'd.get_custom|d.get_custom|d.get_custom|d.is_meta',
@@ -353,14 +432,26 @@ $suite->test('real readiness waits through stale session bytes until the expecte
     rXMLRPCRequest::queue('d.is_meta', true, false, [0]);
     rXMLRPCRequest::queue('d.is_meta', true, false, [0]);
 
-    strictAssertSame(true, ruTrackerChecker::awaitMetadata($expectedHash),
-        'readiness observes the asynchronous stale-to-valid session transition');
-    strictAssertSame(2, count(rXMLRPCRequest::requestsFor('d.is_meta')),
-        'the bounded loop polls live state again after stale bytes');
-    strictAssertSame(2, count(rTorrent::$sourceReads),
-        'each arrived state is paired with a fresh session read');
-    strictAssertSame($expectedHash, rTorrent::$sourceReads[0]['hash'],
-        'the session reads target only the expected successor');
+    strictAssertSame(
+        true,
+        ruTrackerChecker::awaitMetadata($expectedHash),
+        'readiness observes the asynchronous stale-to-valid session transition',
+    );
+    strictAssertSame(
+        2,
+        count(rXMLRPCRequest::requestsFor('d.is_meta')),
+        'the bounded loop polls live state again after stale bytes',
+    );
+    strictAssertSame(
+        2,
+        count(rTorrent::$sourceReads),
+        'each arrived state is paired with a fresh session read',
+    );
+    strictAssertSame(
+        $expectedHash,
+        rTorrent::$sourceReads[0]['hash'],
+        'the session reads target only the expected successor',
+    );
     cmfAssertNoQueuedResponses();
 });
 
@@ -369,8 +460,11 @@ function cmfHarvestComposition($published)
     cmfReset();
     CheckerMetaFetchErasedata::$publishResult = $published;
     $announce = 'http://bt.t-ru.org/ann?pk=integration-secret';
-    $oldTorrent = cmfTorrent('integration-old.bin', $announce,
-        'https://rutracker.org/forum/viewtopic.php?t=42');
+    $oldTorrent = cmfTorrent(
+        'integration-old.bin',
+        $announce,
+        'https://rutracker.org/forum/viewtopic.php?t=42',
+    );
     $newTorrent = cmfTorrent('integration-new.bin', $announce);
     $oldHash = strtoupper((string) $oldTorrent->hash_info());
     $newHash = strtoupper((string) $newTorrent->hash_info());
@@ -382,166 +476,220 @@ function cmfHarvestComposition($published)
     file_put_contents($base . '/integration-old.bin', 'old');
 
     foreach (['integration-old.bin', 'integration-new.bin'] as $name) {
-        rXMLRPCRequest::queueRaw(['d.get_base_path', 'd.is_multi_file', 'f.multicall'],
-            ErasedataCollectorRpcWire::physicalBatch([$base . '/' . $name, 0, $base . '/' . $name]));
-        rXMLRPCRequest::queueRaw(['d.get_directory', 'd.is_multi_file', 'f.multicall'],
-            ErasedataCollectorRpcWire::physicalBatch([$base, 0, $name]));
+        rXMLRPCRequest::queueRaw(
+            ['d.get_base_path', 'd.is_multi_file', 'f.multicall'],
+            ErasedataCollectorRpcWire::physicalBatch([$base . '/' . $name, 0, $base . '/' . $name]),
+        );
+        rXMLRPCRequest::queueRaw(
+            ['d.get_directory', 'd.is_multi_file', 'f.multicall'],
+            ErasedataCollectorRpcWire::physicalBatch([$base, 0, $name]),
+        );
     }
 
     try {
 
-    cmfQueueBegin($oldHash, 42, 87400);
-    rXMLRPCRequest::queue('d.is_meta', true, false, [0]);
-    rXMLRPCRequest::queue(
-        ['d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'],
-        true, false, [$oldHash, '', '', '42', '87400', 0],
-    );
-    // The harvest reads the predecessor's chk-forum to date the replacement
-    // from the dump's reg_time. Unresolved here, which is the path that leaves
-    // 'creation date' unset rather than inventing one.
-    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
-    rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
-
-    rXMLRPCRequest::queue('d.hash', true, true, []);
-    rXMLRPCRequest::queue('d.views', true, false, []);
-    rXMLRPCRequest::queue([
-        'd.get_directory_base', 'd.get_custom1', 'd.get_throttle_name',
-        'd.get_connection_seed', 'd.get_custom', 'd.get_custom',
-    ], true, false, [$base, 'integration-label', '', 'seed', '42', '1106']);
-    rXMLRPCRequest::queue('branch', true, false, function ($commands) use ($oldHash, $newHash) {
-        strictAssertSame(1, count($commands), 'run state is selected in one daemon command');
-        strictAssertSame($oldHash, $commands[0]->params[0],
-            'the commit-time state branch targets the predecessor');
-        $matches = [];
-        $pattern = '/' . preg_quote($newHash, '/') . '-started-\d+/';
-        if (preg_match($pattern, (string) $commands[0]->params[2], $matches) !== 1) {
-            throw new RuntimeException('the started branch did not carry its exact successor marker'); }
-        return [$matches[0]];
-    });
-    rXMLRPCRequest::queue('d.get_custom', true, false, function () {
-        strictAssertTrue(rTorrent::$replacementMarker !== '',
-            'sendTorrent recorded a replacement marker before the load poll');
-        return [rTorrent::$replacementMarker];
-    });
-    rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
-    $retainedMarkers = null;
-    $activation = function ($commands) use (&$retainedMarkers) {
-        if ($retainedMarkers === null) {
-            $retainedMarkers = [rTorrent::$replacementMarker, rTorrent::$replacementRecord]; }
-        $body = (string) $commands[0]->params[2];
-        if (strpos($body, 'chk-replaces,') !== false
-            && strpos($body, 'chk-replacement,') !== false) {
-            $retainedMarkers = ['', '']; }
-        return [RuTrackerAtomicOwnership::SENTINEL_ACTED];
-    };
-    rXMLRPCRequest::queue('branch', true, false, $activation);
-    if (!$published) {
-        // A second activation would see the committed, running successor and
-        // retire the handles createTorrent deliberately kept for publication.
+        cmfQueueBegin($oldHash, 42, 87400);
+        rXMLRPCRequest::queue('d.is_meta', true, false, [0]);
         rXMLRPCRequest::queue(
-            ['d.get_custom', 'd.get_custom', 'd.get_state', 'd.is_open'],
-            true, false, function () use (&$retainedMarkers) {
-                return [$retainedMarkers[0], $retainedMarkers[1], 1, 1];
-            });
+            ['d.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'],
+            true,
+            false,
+            [$oldHash, '', '', '42', '87400', 0],
+        );
+        // The harvest reads the predecessor's chk-forum to date the replacement
+        // from the dump's reg_time. Unresolved here, which is the path that leaves
+        // 'creation date' unset rather than inventing one.
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+        rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
+
+        rXMLRPCRequest::queue('d.hash', true, true, []);
+        rXMLRPCRequest::queue('d.views', true, false, []);
+        rXMLRPCRequest::queue([
+            'd.get_directory_base', 'd.get_custom1', 'd.get_throttle_name',
+            'd.get_connection_seed', 'd.get_custom', 'd.get_custom',
+        ], true, false, [$base, 'integration-label', '', 'seed', '42', '1106']);
+        rXMLRPCRequest::queue('branch', true, false, function ($commands) use ($oldHash, $newHash) {
+            strictAssertSame(1, count($commands), 'run state is selected in one daemon command');
+            strictAssertSame(
+                $oldHash,
+                $commands[0]->params[0],
+                'the commit-time state branch targets the predecessor',
+            );
+            $matches = [];
+            $pattern = '/' . preg_quote($newHash, '/') . '-started-\d+/';
+            if (preg_match($pattern, (string) $commands[0]->params[2], $matches) !== 1) {
+                throw new RuntimeException('the started branch did not carry its exact successor marker');
+            }
+            return [$matches[0]];
+        });
+        rXMLRPCRequest::queue('d.get_custom', true, false, function () {
+            strictAssertTrue(
+                rTorrent::$replacementMarker !== '',
+                'sendTorrent recorded a replacement marker before the load poll',
+            );
+            return [rTorrent::$replacementMarker];
+        });
+        rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
+        $retainedMarkers = null;
+        $activation = function ($commands) use (&$retainedMarkers) {
+            if ($retainedMarkers === null) {
+                $retainedMarkers = [rTorrent::$replacementMarker, rTorrent::$replacementRecord];
+            }
+            $body = (string) $commands[0]->params[2];
+            if (strpos($body, 'chk-replaces,') !== false
+                && strpos($body, 'chk-replacement,') !== false) {
+                $retainedMarkers = ['', ''];
+            }
+            return [RuTrackerAtomicOwnership::SENTINEL_ACTED];
+        };
         rXMLRPCRequest::queue('branch', true, false, $activation);
-    }
+        if (!$published) {
+            // A second activation would see the committed, running successor and
+            // retire the handles createTorrent deliberately kept for publication.
+            rXMLRPCRequest::queue(
+                ['d.get_custom', 'd.get_custom', 'd.get_state', 'd.is_open'],
+                true,
+                false,
+                function () use (&$retainedMarkers) {
+                    return [$retainedMarkers[0], $retainedMarkers[1], 1, 1];
+                },
+            );
+            rXMLRPCRequest::queue('branch', true, false, $activation);
+        }
 
-    $result = RuTrackerMetaFetch::begin($oldHash, $newHash, 42, $announce, 1000);
+        $result = RuTrackerMetaFetch::begin($oldHash, $newHash, 42, $announce, 1000);
 
-    strictAssertSame(null, $result,
-        'real createTorrent success and real MetaFetch success agree on null');
-    strictAssertSame($published ? ['', '']
-        : [rTorrent::$replacementMarker, rTorrent::$replacementRecord], $retainedMarkers,
-        'failed cleanup publication retains the exact successor recovery handles');
-    strictAssertSame(1, count(rTorrent::$magnets), 'the fetch loads exactly one magnet');
-    strictAssertSame(1, count(rTorrent::$sends), 'the harvest stages exactly one real Torrent');
-    strictAssertSame($newHash,
-        strtoupper((string) rTorrent::$sends[0]['torrent']->hash_info()),
-        'the staged Torrent is the harvested successor');
-    strictAssertTrue(preg_match('/^[0-9a-f]{32}$/', rTorrent::$replacementMarker) === 1,
-        'the real transaction generated and sent one ownership nonce');
+        strictAssertSame(
+            null,
+            $result,
+            'real createTorrent success and real MetaFetch success agree on null',
+        );
+        strictAssertSame(
+            $published ? ['', '']
+            : [rTorrent::$replacementMarker, rTorrent::$replacementRecord],
+            $retainedMarkers,
+            'failed cleanup publication retains the exact successor recovery handles',
+        );
+        strictAssertSame(1, count(rTorrent::$magnets), 'the fetch loads exactly one magnet');
+        strictAssertSame(1, count(rTorrent::$sends), 'the harvest stages exactly one real Torrent');
+        strictAssertSame(
+            $newHash,
+            strtoupper((string) rTorrent::$sends[0]['torrent']->hash_info()),
+            'the staged Torrent is the harvested successor',
+        );
+        strictAssertTrue(
+            preg_match('/^[0-9a-f]{32}$/', rTorrent::$replacementMarker) === 1,
+            'the real transaction generated and sent one ownership nonce',
+        );
 
-    // The replacement is patched through Torrent's setters, and every one of
-    // them calls Torrent::touch(). Left alone that stamps 'creation date' with
-    // the moment this cycle ran and signs 'created by' with the PHP class's
-    // own name -- both then read out as fact in the "Created On" column and in
-    // the history plugin. Neither value is knowable from BEP 9 metadata, and
-    // no forum was resolved above, so the staged bytes must carry neither.
-    $staged = rTorrent::$sends[0]['torrent'];
-    strictAssertSame(null, $staged->meta('creation date'),
-        'the harvest stamps no invented creation date');
-    strictAssertSame(null, $staged->meta('created by'),
-        'the harvest claims no authorship of someone else\'s torrent');
-    $cleanupCalls = ['erasedataPrepareObsoleteCleanup', 'erasedataArmObsoleteCleanup',
-        'erasedataPublishObsoleteCleanup'];
-    if ($published) { $cleanupCalls[] = 'erasedataKickCollector'; }
-    strictAssertSame($cleanupCalls, array_column(CheckerMetaFetchErasedata::$calls, 'name'),
-        'the real checker composes the exact durable cleanup producer lifecycle');
-    strictAssertSame($base . '/integration-old.bin',
-        CheckerMetaFetchErasedata::$calls[0]['arguments'][5][0]['path'],
-        'the composed producer receives the exact old-minus-new path');
+        // The replacement is patched through Torrent's setters, and every one of
+        // them calls Torrent::touch(). Left alone that stamps 'creation date' with
+        // the moment this cycle ran and signs 'created by' with the PHP class's
+        // own name -- both then read out as fact in the "Created On" column and in
+        // the history plugin. Neither value is knowable from BEP 9 metadata, and
+        // no forum was resolved above, so the staged bytes must carry neither.
+        $staged = rTorrent::$sends[0]['torrent'];
+        strictAssertSame(
+            null,
+            $staged->meta('creation date'),
+            'the harvest stamps no invented creation date',
+        );
+        strictAssertSame(
+            null,
+            $staged->meta('created by'),
+            'the harvest claims no authorship of someone else\'s torrent',
+        );
+        $cleanupCalls = ['erasedataPrepareObsoleteCleanup', 'erasedataArmObsoleteCleanup',
+            'erasedataPublishObsoleteCleanup'];
+        if ($published) {
+            $cleanupCalls[] = 'erasedataKickCollector';
+        }
+        strictAssertSame(
+            $cleanupCalls,
+            array_column(CheckerMetaFetchErasedata::$calls, 'name'),
+            'the real checker composes the exact durable cleanup producer lifecycle',
+        );
+        strictAssertSame(
+            $base . '/integration-old.bin',
+            CheckerMetaFetchErasedata::$calls[0]['arguments'][5][0]['path'],
+            'the composed producer receives the exact old-minus-new path',
+        );
 
-    $sourceReadAt = null;
-    foreach (rTorrent::$sourceReads as $read) {
-        if ($read['hash'] === $newHash) {
-            $sourceReadAt = $read['requestCount'];
-            break;
-        } }
-    $stubEraseAt = null;
-    foreach (rXMLRPCRequest::$requests as $index => $request) {
-        foreach ($request['commands'] as $command) {
-            if ($command->command === getCmd('branch')
-                && isset($command->params[0], $command->params[2])
-                && $command->params[0] === $newHash
-                && strpos((string) $command->params[2], '$' . getCmd('d.erase=')) !== false) {
-                $stubEraseAt = $index;
-                break 2;
-            } } }
-    strictAssertTrue($sourceReadAt !== null, 'harvest reads the service source');
-    strictAssertTrue($stubEraseAt !== null, 'harvest later issues a conditional service erase');
-    strictAssertTrue($sourceReadAt <= $stubEraseAt,
-        'the service session source is harvested before its nested atomic erase is sent');
+        $sourceReadAt = null;
+        foreach (rTorrent::$sourceReads as $read) {
+            if ($read['hash'] === $newHash) {
+                $sourceReadAt = $read['requestCount'];
+                break;
+            }
+        }
+        $stubEraseAt = null;
+        foreach (rXMLRPCRequest::$requests as $index => $request) {
+            foreach ($request['commands'] as $command) {
+                if ($command->command === getCmd('branch')
+                    && isset($command->params[0], $command->params[2])
+                    && $command->params[0] === $newHash
+                    && strpos((string) $command->params[2], '$' . getCmd('d.erase=')) !== false) {
+                    $stubEraseAt = $index;
+                    break 2;
+                }
+            }
+        }
+        strictAssertTrue($sourceReadAt !== null, 'harvest reads the service source');
+        strictAssertTrue($stubEraseAt !== null, 'harvest later issues a conditional service erase');
+        strictAssertTrue(
+            $sourceReadAt <= $stubEraseAt,
+            'the service session source is harvested before its nested atomic erase is sent',
+        );
 
-    $polls = rXMLRPCRequest::requestsFor('d.is_meta');
-    strictAssertSame(1, count($polls),
-        'arrival is observed by begin in the wait loop');
-    foreach ($polls as $poll) {
-        strictAssertSame($newHash, $poll['commands'][0]->params,
-            'metadata poll targets the successor'); }
+        $polls = rXMLRPCRequest::requestsFor('d.is_meta');
+        strictAssertSame(
+            1,
+            count($polls),
+            'arrival is observed by begin in the wait loop',
+        );
+        foreach ($polls as $poll) {
+            strictAssertSame(
+                $newHash,
+                $poll['commands'][0]->params,
+                'metadata poll targets the successor',
+            );
+        }
 
-    strictAssertSame([
-        'd.hash',
-        'd.get_custom|d.get_custom|d.get_custom|d.is_meta',
-        'branch',
-        'd.set_custom|d.set_custom',
-        'd.is_meta',
-        'd.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.is_meta',
-        // The predecessor's chk-forum, read to date the replacement from the
-        // dump's reg_time instead of from this host's clock.
-        'd.get_custom',
-        'branch',
-        'd.hash',
-        'd.views',
-        'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom',
-        'branch',
-        'd.get_custom',
-        'd.get_base_path|d.is_multi_file|f.multicall',
-        'd.get_directory|d.is_multi_file|f.multicall',
-        'd.get_base_path|d.is_multi_file|f.multicall',
-        'd.get_directory|d.is_multi_file|f.multicall',
-        'branch',
-        'branch',
-    ], cmfRequestKeys(), 'the full composition completes without an unexpected fallback branch');
-    foreach (['d.get_base_path', 'd.get_directory'] as $getter) {
-        $requests = rXMLRPCRequest::requestsFor($getter . '|d.is_multi_file|f.multicall');
-        strictAssertSame([$oldHash, $newHash], array_map(function ($request) {
-            $hash = $request['commands'][0]->params;
-            strictAssertSame($hash, $request['commands'][1]->params, 'multi getter targets the same generation');
-            strictAssertSame($hash, $request['commands'][2]->params[0], 'file table targets the same generation');
-            return $hash;
-        }, $requests), 'cleanup confirms both live generations without substituting a metadata service stub');
-    }
-    if ($published) { cmfAssertNoQueuedResponses(); }
+        strictAssertSame([
+            'd.hash',
+            'd.get_custom|d.get_custom|d.get_custom|d.is_meta',
+            'branch',
+            'd.set_custom|d.set_custom',
+            'd.is_meta',
+            'd.get_custom|d.get_custom|d.get_custom|d.get_custom|d.get_custom|d.is_meta',
+            // The predecessor's chk-forum, read to date the replacement from the
+            // dump's reg_time instead of from this host's clock.
+            'd.get_custom',
+            'branch',
+            'd.hash',
+            'd.views',
+            'd.get_directory_base|d.get_custom1|d.get_throttle_name|d.get_connection_seed|d.get_custom|d.get_custom',
+            'branch',
+            'd.get_custom',
+            'd.get_base_path|d.is_multi_file|f.multicall',
+            'd.get_directory|d.is_multi_file|f.multicall',
+            'd.get_base_path|d.is_multi_file|f.multicall',
+            'd.get_directory|d.is_multi_file|f.multicall',
+            'branch',
+            'branch',
+        ], cmfRequestKeys(), 'the full composition completes without an unexpected fallback branch');
+        foreach (['d.get_base_path', 'd.get_directory'] as $getter) {
+            $requests = rXMLRPCRequest::requestsFor($getter . '|d.is_multi_file|f.multicall');
+            strictAssertSame([$oldHash, $newHash], array_map(function ($request) {
+                $hash = $request['commands'][0]->params;
+                strictAssertSame($hash, $request['commands'][1]->params, 'multi getter targets the same generation');
+                strictAssertSame($hash, $request['commands'][2]->params[0], 'file table targets the same generation');
+                return $hash;
+            }, $requests), 'cleanup confirms both live generations without substituting a metadata service stub');
+        }
+        if ($published) {
+            cmfAssertNoQueuedResponses();
+        }
     } finally {
         strictRemoveTree($base);
     }
@@ -571,15 +719,26 @@ $suite->test('real download guards reject non-200 and malformed bodies before mu
         $client->status = $fixture[0];
         $client->results = $fixture[1];
 
-        strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
+        strictAssertSame(
+            ruTrackerChecker::STE_CANT_REACH_TRACKER,
             ruTrackerChecker::createTorrentFromDownload($client, $oldHash, $oldTorrent),
-            $label . ' is rejected by the real checker guard');
-        strictAssertSame([], cmfRequestKeys(),
-            $label . ' causes no XMLRPC read or mutation');
-        strictAssertSame(0, count(rTorrent::$magnets),
-            $label . ' cannot load a magnet');
-        strictAssertSame(0, count(rTorrent::$sends),
-            $label . ' cannot stage a replacement');
+            $label . ' is rejected by the real checker guard',
+        );
+        strictAssertSame(
+            [],
+            cmfRequestKeys(),
+            $label . ' causes no XMLRPC read or mutation',
+        );
+        strictAssertSame(
+            0,
+            count(rTorrent::$magnets),
+            $label . ' cannot load a magnet',
+        );
+        strictAssertSame(
+            0,
+            count(rTorrent::$sends),
+            $label . ' cannot stage a replacement',
+        );
         cmfAssertNoQueuedResponses();
     }
 });
@@ -609,12 +768,15 @@ $suite->test('the real parse boundary answers with a Torrent or with null', func
         // handlers fetch .torrent bytes from trackers, so this arrives from
         // outside; refuse it here, where the bytes are first classified,
         // rather than hand it to a daemon that cannot survive it.
-        'metainfo whose name is empty' =>
-            'd8:announce26:http://tracker.invalid/ann4:infod6:lengthi100e4:name0:'
+        'metainfo whose name is empty'
+            => 'd8:announce26:http://tracker.invalid/ann4:infod6:lengthi100e4:name0:'
             . '12:piece lengthi16384e6:pieces20:' . str_repeat('P', 20) . 'ee',
     ] as $label => $payload) {
-        strictAssertSame(null, ruTrackerChecker::parseMetainfo($payload),
-            $label . ' is not metainfo and answers null');
+        strictAssertSame(
+            null,
+            ruTrackerChecker::parseMetainfo($payload),
+            $label . ' is not metainfo and answers null',
+        );
     }
     strictAssertSame([], cmfRequestKeys(), 'classifying bytes touches no daemon state');
 });
@@ -633,9 +795,11 @@ $suite->test('the real replacement boundary refuses anything that is not parsed 
         'nothing at all' => null,
     ] as $label => $payload) {
         cmfReset();
-        strictAssertSame(ruTrackerChecker::STE_ERROR,
+        strictAssertSame(
+            ruTrackerChecker::STE_ERROR,
             ruTrackerChecker::createTorrent($payload, $oldHash, $oldTorrent),
-            $label . ' is refused as a retryable error, never as a deletion');
+            $label . ' is refused as a retryable error, never as a deletion',
+        );
         strictAssertSame([], cmfRequestKeys(), $label . ' causes no XMLRPC read or mutation');
         strictAssertSame(0, count(rTorrent::$sends), $label . ' cannot stage a replacement');
         cmfAssertNoQueuedResponses();

@@ -8,4042 +8,4867 @@ require_once(__DIR__ . '/SCGITransportFixture.php');
 // Stub the dependencies that production callers (httprpc/action.php) load
 // before invoking XMLRPCProxy. We don't exercise the real SCGI path here —
 // we verify XMLRPCProxy's own logic.
-if(!class_exists('FileUtil'))
-{
-	class FileUtil
-	{
-		public static $log = [];
-		public static function toLog($msg) { self::$log[] = $msg; }
-	}
+if (!class_exists('FileUtil')) {
+    class FileUtil
+    {
+        public static $log = [];
+        public static function toLog($msg)
+        {
+            self::$log[] = $msg;
+        }
+    }
 }
-if(!class_exists('rXMLRPCRequest'))
-{
-	class rXMLRPCRequest
-	{
-		public static $lastPayload = null;
-		public static $lastTrusted = null;
-		public static $sent = 0;
-		public static function send($data, $trusted)
-		{
-			self::$lastPayload = $data;
-			self::$lastTrusted = $trusted;
-			self::$sent++;
-			return '';
-		}
-	}
+if (!class_exists('rXMLRPCRequest')) {
+    class rXMLRPCRequest
+    {
+        public static $lastPayload = null;
+        public static $lastTrusted = null;
+        public static $sent = 0;
+        public static function send($data, $trusted)
+        {
+            self::$lastPayload = $data;
+            self::$lastTrusted = $trusted;
+            self::$sent++;
+            return '';
+        }
+    }
 }
 
 require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 
 class XMLRPCProxyTest extends TestCase
 {
-
-	// 0.16.22 keeps directory_base.set as a redirect to directory.base.set.
-	public const DIRECTORY_SETTERS = ['d.directory.set', 'd.directory_base.set', 'd.directory.base.set'];
-	private $hadCallTracingFlag;
-	private $previousCallTracingFlag;
-	private $previousBuiltInPolicyReported;
-
-	public function setUp()
-	{
-		$this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
-		$this->previousCallTracingFlag = $this->hadCallTracingFlag ? $GLOBALS['rpcLogCalls'] : null;
-		$GLOBALS['rpcLogCalls'] = false;
-		$reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
-		$this->previousBuiltInPolicyReported = $reported->getValue();
-		$reported->setValue(null, false);
-	}
-
-	public function tearDown()
-	{
-		if($this->hadCallTracingFlag) { $GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag; }
-		else { unset($GLOBALS['rpcLogCalls']); }
-		$reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
-		$reported->setValue(null, $this->previousBuiltInPolicyReported);
-	}
-
-	public function testD4NativeGateRejectsAliasesAcrossDirectAndTrustedSlots()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$old = ['rtorrentVersion' => 0x0908];
-		$new = ['rtorrentVersion' => 0x1016];
-		$direct = XMLRPCProxy::decide($this->methodCallXml('my_shell_alias', []),
-			'sanitize', $policy, false, $old);
-		$this->assertTrue($direct['action'] === 'reject' && !$direct['trusted'],
-			'an arbitrary direct alias cannot rely on an ignored untrusted flag in 0.9.8');
-		$modernGetter = $this->methodCallXml('d.multicall2',
-			['', 'main', 'd.base_path.realpath.or_empty=/outside']);
-		$slot = XMLRPCProxy::decide($modernGetter, 'sanitize', $policy, false, $old);
-		$this->assertTrue($slot['action'] === 'reject' && !$slot['trusted'],
-			'a 0.16.21 getter name is not native in a 0.9.8 trusted slot');
-		$clientAlias = $this->methodCallXml('d.multicall2',
-			['', 'main', 'd.get_name=']);
-		$slot = XMLRPCProxy::decide($clientAlias, 'sanitize', $policy, false, $new);
-		$this->assertTrue($slot['action'] === 'reject' && !$slot['trusted'],
-			'a client-only getter spelling is not a native method even on 0.16.22');
-		$native = XMLRPCProxy::decide($this->methodCallXml('d.multicall2',
-			['', 'main', 'd.name=']), 'sanitize', $policy, false, $old);
-		$this->assertTrue($native['action'] === 'send' && $native['trusted'],
-			'a stock 0.9.8 native getter keeps the established trusted listing path');
-	}
-
-
-	public function testD4OmittedVersionUsesOnlyMethodsNativeOnEverySupportedDaemon()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$alias = XMLRPCProxy::decide($this->methodCallXml('my_shell_alias', []),
-			'sanitize', $policy);
-		$this->assertEquals('reject', $alias['action'],
-			'an omitted version cannot forward an rc alias to an old daemon');
-		$newerSlot = XMLRPCProxy::decide($this->methodCallXml('d.multicall2',
-			['', 'main', 'd.base_path.realpath.or_empty=']), 'sanitize', $policy);
-		$this->assertEquals('reject', $newerSlot['action'],
-			'an omitted version cannot elevate a getter absent from 0.9.8');
-		$native = XMLRPCProxy::decide($this->methodCallXml('d.multicall2',
-			['', 'main', 'd.name=']), 'sanitize', $policy);
-		$this->assertTrue($native['action'] === 'send' && $native['trusted'],
-			'a common native getter remains available when a caller omits version');
-	}
-
-
-	public function testD4VersionParserRefusesUnknownAndMalformedReplies()
-	{
-		$reply = function($value) {
-			return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
-				.$value.'</string></value></param></params></methodResponse>';
-		};
-		$this->assertEquals(0x0908, XMLRPCProxy::daemonVersionFromReply($reply('0.9.8')),
-			'the supported 0.9.8 baseline is recognized');
-		$this->assertEquals(0x1019, XMLRPCProxy::daemonVersionFromReply($reply('0.16.25')),
-            'reviewed 0.16.25 is supported');
-		$this->assertEquals(0x101A, XMLRPCProxy::daemonVersionFromReply($reply('0.16.26')),
-			'reviewed 0.16.26 is supported');
-		$this->assertEquals(0x101B, XMLRPCProxy::daemonVersionFromReply($reply('0.16.27')),
-			'reviewed 0.16.27 is supported');
-		$this->assertEquals(0x1016, XMLRPCProxy::daemonVersionFromReply($reply('0.16.22')),
-			'a reviewed 0.16 release is recognized');
-		foreach(['0.16.28', '0.9.7', '0.16.22evil', '0.16.999'] as $value) {
-			$this->assertTrue(XMLRPCProxy::daemonVersionFromReply($reply($value)) === null,
-				'unreviewed version '.$value.' fails closed'); }
-		$this->assertTrue(XMLRPCProxy::daemonVersionFromReply('<methodResponse><fault/></methodResponse>') === null,
-			'a fault is not a version');
-		$this->assertTrue(XMLRPCProxy::daemonVersionFromReply(self::faultBesideVersionReply('0.16.26')) === null,
-			'a reply that carries a fault beside a reviewed version selects no version');
-	}
-
-	public function testD4OldDaemonChecksLoadTailAndSystemBatchMembers()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$old = ['rtorrentVersion' => 0x0908];
-		$load = XMLRPCProxy::decide($this->methodCallXml('load.start',
-			['', 'http://example.test/a.torrent', 'd.directory.base.set=/outside']),
-			'sanitize', $policy, false, $old);
-		$this->assertTrue($load['action'] === 'reject',
-			'a newer setter spelling cannot be executed as an old-daemon alias in a load tail');
-		$batch = XMLRPCProxy::decide($this->systemMulticallXml([
-			['d.stop', [str_repeat('A', 40)]],
-			['my_shell_alias', []],
-		]), 'sanitize', $policy, false, $old);
-		$this->assertTrue($batch['action'] === 'reject' && !$batch['trusted'],
-			'an unknown member cannot borrow system.multicall trust on an old daemon');
-		$native = XMLRPCProxy::decide($this->systemMulticallXml([
-			['d.stop', [str_repeat('A', 40)]],
-		]), 'sanitize', $policy, false, $old);
-		$this->assertTrue($native['action'] === 'send' && $native['trusted'],
-			'a native elevated action remains available in a system batch on 0.9.8');
-	}
-
-	public function testMulticallDirectoryRefusalDoesNotSuggestAnIneffectivePolicyEdit()
-	{
-		$xml = $this->methodCallXml('d.multicall2',
-			['', 'main', 'd.directory.base.set=/downloads/x']);
-		foreach([
-			['d.directory_base.set'],
-			['d.directory_base.set', 'd.directory.base.set'],
-		] as $safeParams)
-		{
-			$decision = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
-			$this->assertTrue($decision['action'] === 'reject',
-				'a directory setter never belongs in a multicall result slot');
-			$this->assertTrue(strpos(implode(' ', $decision['log']), 'add it to conf/xmlrpc_proxy.php') === false,
-				'the refusal does not suggest a policy edit that cannot allow this slot');
-		}
-	}
-
-	public function testHomogeneousUntrustedFallbackMembersCanShareAnUntrustedCarrier()
-	{
-		$hash = str_repeat('A', 40);
-		foreach(['sonarr_imported', 'radarr_imported'] as $view)
-		{
-			$single = self::decideOnModernDaemon($this->methodCallXml('d.views.push_back_unique',
-				[$hash, $view]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($single['action'] === 'send' && !$single['trusted'],
-				$view.' individually takes the unchanged untrusted route');
-		}
-		$xml = $this->systemMulticallXml([
-			['d.views.push_back_unique', [$hash, 'sonarr_imported']],
-			['d.views.push_back_unique', [$hash, 'radarr_imported']],
-		]);
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-			'members that individually forward untrusted can share one untrusted carrier');
-		$this->assertTrue(strpos($decision['payload'], 'sonarr_imported') !== false
-			&& strpos($decision['payload'], 'radarr_imported') !== false,
-			'both member values survive canonical rebuilding');
-		$this->assertTrue(strpos($decision['log'][0], 'd.views.push_back_unique') !== false
-			&& strpos($decision['log'][0], 'sonarr_imported') === false,
-			'the untrusted carrier names its command without logging argument values');
-	}
-
-	public function testUntrustedMulticallLogNamesBoundedDistinctCommands()
-	{
-		$hash = str_repeat('A', 40);
-		$members = [];
-		foreach(['d.name', 'd.hash', 'd.size_bytes', 'd.is_active'] as $method) {
-			$members[] = [$method, [$hash]]; }
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml($members),
-			'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-			'the read-only batch remains untrusted');
-		$this->assertEquals(['untrusted: system.multicall (4 members) '
-			.'[methods: d.name, d.hash, d.size_bytes, ...]'], $decision['log'],
-			'the one summary bounds method names without logging their arguments');
-	}
-
-	public function testSuccessfulSystemMulticallLogsOnlySummaryAndNonroutineWarnings()
-	{
-		$hash = str_repeat('A', 40);
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [$hash]], ['d.close', [$hash]],
-			['d.open', [$hash]],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertEquals(1, count($decision['log']),
-			'routine member decisions do not multiply a successful batch log');
-		$this->assertTrue(strpos($decision['log'][0], 'system.multicall (3 members)') !== false,
-			'the summary still says what request was sent');
-		$warning = self::decideOnModernDaemon($this->systemMulticallXml([
-			['load.start', ['', '/tmp/sample.torrent']],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams(), true);
-		$this->assertTrue($warning['action'] === 'send' && count($warning['log']) === 2
-			&& strpos($warning['log'][1], 'WARNING: operator-enabled local path') !== false,
-			'a nonroutine local-path warning remains visible with its member slot');
-	}
-
-	public function testUntrustedFirstThenTrustedSystemBatchKeepsUntrustedTransport()
-	{
-		$hash = str_repeat('A', 40);
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.wibble.set', [$hash, '1']],
-			['d.stop', [$hash]],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
-			&& strpos($decision['payload'], 'd.wibble.set') !== false
-			&& strpos($decision['payload'], 'd.stop') !== false,
-			'an untrusted first member cannot be upgraded or lost beside a later trusted member');
-	}
-
-	public function testStopBatchElevatesCloseWhileGetSavePathKeepsUntrustedTransport()
-	{
-		$hash = str_repeat('A', 40);
-		$stop = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [$hash]], ['d.close', [$hash]],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($stop['action'] === 'send' && $stop['trusted'],
-			'the raw WebUI stop batch keeps its checked close member');
-		$badClose = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [$hash]], ['d.close', [$hash, 'extra']],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($badClose['action'] === 'reject',
-			'an unvalidated close member cannot borrow batch trust');
-		foreach(['d.base_path', 'd.get_base_path'] as $method)
-		{
-			$xml = $this->methodCallXml($method, [$hash]);
-			$direct = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($direct['action'] === 'send' && !$direct['trusted']
-				&& $direct['payload'] === $xml,
-				$method.' stays on the direct untrusted read path');
-			$batch = self::decideOnModernDaemon($this->systemMulticallXml([
-				['d.open', [$hash]], [$method, [$hash]],
-				['d.close', [$hash]],
-			]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($batch['action'] === 'send' && !$batch['trusted']
-				&& strpos($batch['payload'], '<string>'.$method.'</string>') !== false
-				&& strpos($batch['payload'], '<string>d.open</string>') !== false
-				&& strpos($batch['payload'], '<string>d.close</string>') !== false,
-				$method.' getsavepath batch retains every member on the untrusted route');
-		}
-	}
-
-	public function testSocketAllocationMutatorsStayUntrustedForDirectAndHomogeneousCalls()
-	{
-		$mutators = [
-			'system.sockets.files.min_alloc.set', 'system.sockets.files.max_alloc.set',
-			'system.sockets.http.min_alloc.set', 'system.sockets.http.max_alloc.set',
-			'system.sockets.adjust_alloc',
-		];
-		foreach($mutators as $method)
-		{
-			$params = $method === 'system.sockets.adjust_alloc' ? [] : ['', 1048576];
-			$xml = $this->methodCallXml($method, $params);
-			$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
-				&& $decision['payload'] === $xml,
-				$method.' is forwarded unchanged to the daemon untrusted gate');
-		}
-		$call = $this->systemMulticallXml([
-			['system.sockets.files.max_alloc.set', ['', 1048576]],
-			['system.sockets.adjust_alloc', []],
-		]);
-		$decision = self::decideOnModernDaemon($call, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-			'homogeneous socket allocation batch reaches the daemon untrusted gate');
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [str_repeat('A', 40)]],
-			['system.sockets.adjust_alloc', []],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-			'a socket mutator cannot borrow trust from another batch member');
-		$read = self::decideOnModernDaemon($this->methodCallXml('system.sockets.files.max_alloc'),
-			'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($read['action'] === 'send' && !$read['trusted'],
-			'a socket allocation getter remains a normal untrusted read');
-	}
-
-	public function testXmlrpcSizeLimitCannotBeLoweredBelowRecoveryRequestSize()
-	{
-		$xml = $this->methodCallXml('network.xmlrpc.size_limit.set', ['', '1']);
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'size-limit setter keeps its checked elevation');
-		$this->assertTrue(strpos($decision['payload'], '<i8>1024</i8>') !== false,
-			'the proxy retains enough XMLRPC budget for a follow-up recovery request');
-		$this->assertTrue(in_array('WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024',
-			$decision['log'], true), 'a silently raised size limit is named in the decision log');
-		$recovery = self::decideOnModernDaemon($this->methodCallXml('network.xmlrpc.size_limit.set',
-			['', '16777216']), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($recovery['action'] === 'send' && $recovery['trusted']
-			&& strlen($recovery['payload']) < 1024,
-			'the actual emitted recovery setter fits below the enforced floor');
-		$this->assertEquals(1, count($recovery['log']),
-			'an unchanged size limit does not produce a clamp warning');
-		$ceiling = self::decideOnModernDaemon($this->methodCallXml('network.xmlrpc.size_limit.set',
-			['', '999999999']), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue(in_array('WARNING: network.xmlrpc.size_limit.set requested 999999999, sent 16777216',
-			$ceiling['log'], true), 'the upper clamp is visible too');
-	}
-
-	public function testExplicitPolicyCannotSetXmlrpcLimitThroughNestedCommands()
-	{
-		$safeParams = ['network.xmlrpc.size_limit.set'];
-		$expression = 'network.xmlrpc.size_limit.set=1';
-		$cases = [
-			'load tail' => $this->methodCallXml('load.start',
-				['', 'https://example.test/a.torrent', $expression]),
-			'multicall result' => $this->methodCallXml('d.multicall2',
-				['', 'main', $expression]),
-			'multicall filter' => $this->methodCallXml('d.multicall.filtered',
-				['', 'main', $expression, 'd.name=']),
-			'view-first multicall' => $this->methodCallXml('d.multicall',
-				['main', $expression]),
-		];
-		foreach($cases as $label => $xml)
-		{
-			$decision = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
-			$this->assertTrue($decision['action'] === 'reject'
-				&& !$decision['trusted'] && $decision['payload'] === '',
-				$label.' cannot bypass the direct size-limit floor under an explicit policy');
-		}
-		$direct = self::decideOnModernDaemon($this->methodCallXml('network.xmlrpc.size_limit.set',
-			['', '1']), 'sanitize', $safeParams);
-		$this->assertTrue($direct['action'] === 'send' && $direct['trusted']
-			&& strpos($direct['payload'], '<i8>1024</i8>') !== false,
-			'the direct recovery setter still clamps an explicit-policy call');
-		$member = self::decideOnModernDaemon($this->systemMulticallXml([
-			['network.xmlrpc.size_limit.set', ['', '1']],
-		]), 'sanitize', $safeParams);
-		$this->assertTrue($member['action'] === 'send' && $member['trusted']
-			&& strpos($member['payload'], '<i8>1024</i8>') !== false,
-			'a system.multicall member uses the same direct size shape and floor');
-		$this->assertTrue(strpos(implode("\n", $member['log']),
-			'[slot 1] WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024') !== false,
-			'a batch member reports the same clamp without repeating a routine decision');
-	}
-
-	public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallDenialLine()
-	{
-		$policy = XMLRPCProxy::policySettings([]);
-		$hash = str_repeat('A', 40);
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [$hash]], ['execute.capture', ['id']],
-		]), 'sanitize', $policy['safeParams']);
-		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
-		$this->assertTrue($decision['action'] === 'reject' && count($lines) >= 2
-			&& strpos($lines[0], 'system.multicall') !== false
-			&& strpos($lines[1], '[slot 2]') !== false,
-			'denied multicall has an outer refusal and a member reason');
-		$this->assertEquals(2, substr_count(implode("\n", $lines), '[built-in policy]'),
-			'the outer refusal and one runtime warning identify the fallback');
-		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
-			'the outer refusal carries the policy source');
-	}
-
-	public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallWarningLine()
-	{
-		$policy = XMLRPCProxy::policySettings([]);
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml([
-			['load.start', ['', '/tmp/sample.torrent']],
-		]), 'sanitize', $policy['safeParams'], true);
-		$lines = XMLRPCProxy::decisionLogLines($decision, $policy);
-		$this->assertTrue($decision['action'] === 'send' && count($lines) === 3
-			&& strpos($lines[0], 'system.multicall') !== false
-			&& strpos($lines[1], '[slot 1] WARNING:') !== false,
-			'allowed local-path multicall logs a separate member warning');
-		$this->assertEquals(2, substr_count(implode("\n", $lines), '[built-in policy]'),
-			'the outer summary and one runtime warning identify the fallback');
-		$this->assertTrue(strpos($lines[0], '[built-in policy]') !== false,
-			'the outer summary carries the policy source');
-	}
-
-	/**
-	 * Production 2026-10-11 logged "trusted: d.multicall2 (8 params) [built-in
-	 * policy]" and "untrusted: system.client_version" for ordinary reads at
-	 * the shipped default. A routine forward is per-call tracing, which is
-	 * what $rpcLogCalls opts into; refusals and warnings are not.
-	 */
-	public function testRoutineForwardsAreTracedOnlyWithRpcLogCalls()
-	{
-		$read = $this->methodCallXml('d.multicall2', ['', 'main', 'd.hash=', 'd.name=']);
-		$version = $this->methodCallXml('system.client_version');
-		$fallbackReported = false;
-		foreach([[], ['XMLRPCProxySafeParams' => XMLRPCProxy::defaultSafeParams()]] as $vars)
-		{
-			$default = XMLRPCProxy::policySettings($vars);
-			$traced = XMLRPCProxy::policySettings($vars + ['rpcLogCalls' => true]);
-			$suffix = $default['logSuffix'];
-			foreach([[$read, 'trusted: d.multicall2 (4 params)'],
-				[$version, 'untrusted: system.client_version']] as $case)
-			{
-				$decision = self::decideOnModernDaemon($case[0], 'sanitize', $default['safeParams']);
-				$this->assertTrue($decision['action'] === 'send', $case[1].': the routine call is forwarded');
-				$expected = (!$fallbackReported && $suffix !== '')
-					? ['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'] : [];
-				$fallbackReported = $fallbackReported || $suffix !== '';
-				$this->assertEquals($expected, XMLRPCProxy::decisionLogLines($decision, $default),
-					$case[1].': no routine decision line at the shipped default'.$suffix);
-				$this->assertEquals([$case[1].$suffix], XMLRPCProxy::decisionLogLines($decision, $traced),
-					$case[1].': $rpcLogCalls traces the routine decision'.$suffix);
-			}
-			$this->assertTrue(XMLRPCProxy::policySettings($vars + ['rpcLogCalls' => false])['traceCalls'] === false,
-				'an explicit false keeps tracing off');
-		}
-	}
-
-	public function testRefusalsAndWarningsStayLoggedWithoutCallTracing()
-	{
-		$policy = XMLRPCProxy::policySettings([]);
-		$hash = str_repeat('A', 40);
-		$cases = [
-			'refusal' => [self::decideOnModernDaemon($this->methodCallXml('execute.capture', ['', 'id']),
-				'sanitize', $policy['safeParams']), 'rejected ('],
-			'local path' => [self::decideOnModernDaemon($this->methodCallXml('load.start',
-				['', '/tmp/sample.torrent']), 'sanitize', $policy['safeParams'], true),
-				'WARNING: operator-enabled local path forwarded'],
-			'size clamp' => [self::decideOnModernDaemon($this->methodCallXml('network.xmlrpc.size_limit.set',
-				['', '1']), 'sanitize', $policy['safeParams']),
-				'WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024'],
-			'member warning' => [self::decideOnModernDaemon($this->systemMulticallXml([
-				['d.stop', [$hash]], ['load.start', ['', '/tmp/sample.torrent']],
-			]), 'sanitize', $policy['safeParams'], true), '[slot 2] WARNING:'],
-			'unsafe mode' => [XMLRPCProxy::decide($this->methodCallXml('system.client_version'),
-				'passthrough_unsafe'), 'passthrough (UNSAFE mode)'],
-		];
-		foreach($cases as $name => $case)
-		{
-			$lines = XMLRPCProxy::decisionLogLines($case[0], $policy);
-			$this->assertTrue(strpos(implode("\n", $lines), $case[1]) !== false,
-				$name.' is reported at the shipped default: '.implode(' | ', $lines));
-		}
-		$routine = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.stop', [$hash]], ['d.close', [$hash]],
-		]), 'sanitize', $policy['safeParams']);
-		$this->assertTrue($routine['action'] === 'send', 'a checked WebUI batch is forwarded');
-		$this->assertEquals([], XMLRPCProxy::decisionLogLines($routine, $policy),
-			'a batch without member warnings is routine');
-	}
-
-	public function testBuiltInPolicyWarningAppearsOncePerRuntimeWithoutCallTracing()
-	{
-		$script = 'require '.var_export(realpath(__DIR__.'/../../php/xmlrpc_proxy.php'), true).';'
-			.'$xml = '.var_export($this->methodCallXml('system.client_version'), true).';'
-			.'$decision = XMLRPCProxy::decide($xml, "sanitize", array(), false, array("rtorrentVersion" => 0x1019));'
-			.'$explicit = XMLRPCProxy::policySettings(array("XMLRPCProxySafeParams" => array()));'
-			.'$fallback = XMLRPCProxy::policySettings(array("XMLRPCProxy" => "sanitize"));'
-			.'$lines = array(XMLRPCProxy::decisionLogLines($decision, $explicit));'
-			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
-			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
-			.'$fallback["traceCalls"] = true;'
-			.'$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
-			.'echo json_encode($lines);';
-		$result = SCGITransportFixture::runPhpChild(['-r', $script]);
-		$this->assertEquals(0, $result['exitCode'], 'the isolated runtime completed');
-		$this->assertEquals('', $result['stderr'], 'the isolated runtime emitted no PHP diagnostics');
-		$this->assertEquals([
-			[],
-			['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'],
-			[],
-			['untrusted: system.client_version [built-in policy]'],
-		], json_decode($result['stdout'], true),
-			'explicit policies stay quiet, fallback warns once, and later tracing retains its source');
-	}
-
-	public function testProcessUsesTheSharedCallTracingFilterWithoutLoggingArguments()
-	{
-		$cases = [
-			[$this->methodCallXml('system.client_version'), false,
-				'untrusted: system.client_version'],
-			[$this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']), true,
-				'trusted: d.multicall2 (3 params)'],
-		];
-		foreach($cases as $case) {
-			foreach([false, true] as $trace)
-			{
-				$this->resetMocks();
-				$GLOBALS['rpcLogCalls'] = $trace;
-				$result = self::processOnModernDaemon($case[0]);
-				$this->assertTrue($result === '' && rXMLRPCRequest::$sent === 1
-					&& rXMLRPCRequest::$lastTrusted === $case[1],
-					'the adapter preserves transport and trust with tracing '.($trace ? 'on' : 'off'));
-				$this->assertEquals($trace ? ['xmlrpc-proxy: '.$case[2]] : [], FileUtil::$log,
-					'the adapter shares the HTTP doors\' routine tracing policy');
-			} }
-		$GLOBALS['rpcLogCalls'] = false;
-		foreach([
-			['execute.capture', ['', 'private-argument'], false, 'rejected ('],
-			['load.start', ['', '/private-argument.torrent'], true, 'WARNING: operator-enabled local path'],
-			['network.xmlrpc.size_limit.set', ['', '1'], false, 'WARNING: network.xmlrpc.size_limit.set'],
-		] as $case)
-		{
-			$this->resetMocks();
-			self::processOnModernDaemon($this->methodCallXml($case[0], $case[1]),
-				'sanitize', true, XMLRPCProxy::defaultSafeParams(), $case[2]);
-			$this->assertTrue(strpos($this->logText(), $case[3]) !== false,
-				'the adapter keeps operational refusals and warnings without tracing');
-			$this->assertTrue(strpos($this->logText(), 'private-argument') === false,
-				'operational decisions do not include caller argument values');
-		}
-		$this->resetMocks();
-		$GLOBALS['rpcLogCalls'] = true;
-		self::processOnModernDaemon($this->methodCallXml('execute.capture'), 'sanitize', false);
-		$this->assertEquals([], FileUtil::$log,
-			'the explicit adapter logging switch silences refusals even with tracing on');
-	}
-
-	public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()
-	{
-		$settings = XMLRPCProxy::policySettings(['XMLRPCProxySafeParams' => null]);
-		$this->assertEquals([], $settings['safeParams'],
-			'an explicitly invalid policy fails closed');
-		$this->assertEquals('', $settings['logSuffix'],
-			'an explicit policy cannot claim the built-in fallback');
-		$this->assertEquals('XMLRPCProxySafeParams must be an array; proxy disabled',
-			$settings['policyError'], 'an invalid policy names its failing key and consequence');
-		$call = $this->methodCallXml('load.start',
-			['', 'https://example.test/a.torrent', 'd.custom1.set=secret']);
-		$decision = self::decideOnModernDaemon($call, 'sanitize', $settings['safeParams']);
-		$this->assertTrue($decision['action'] === 'reject',
-			'an explicit null policy cannot authorize a custom-field write');
-	}
-
-	/**
-	 * Without httprpc the WebUI sends a label as d.custom1.set for each
-	 * download followed by d.save_resume for each, so the label reaches the
-	 * session at once rather than at the next periodic session.save
-	 * (ACC-OWN-A-02). Trusting each save like its label keeps the homogeneous
-	 * batch eligible for the trusted route; mixed batches use the daemon gate.
-	 */
-	public function testALabelBatchCarriesTheSessionSaveOfEachDownload()
-	{
-		$a = str_repeat('A', 40);
-		$b = str_repeat('B', 40);
-		$batch = $this->systemMulticallXml([
-			['d.custom1.set', [$a, 'tv shows']],
-			['d.custom1.set', [$b, 'tv shows']],
-			['d.save_resume', [$a]],
-			['d.save_resume', [$b]],
-		]);
-		foreach([0x0908, 0x1016, 0x1019] as $version)
-		{
-			$decision = XMLRPCProxy::decide($batch, 'sanitize', XMLRPCProxy::defaultSafeParams(),
-				false, ['rtorrentVersion' => $version]);
-			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-				sprintf('a label batch with its saves is one trusted request on 0x%04x: %s',
-					$version, implode(' | ', $decision['log'])));
-			$this->assertEquals(2, substr_count($decision['payload'], 'd.save_resume'),
-				'both saves are forwarded');
-		}
-		$direct = $this->methodCallXml('d.save_resume', [$a]);
-		foreach([0x0908, 0x1019] as $version)
-		{
-			$decision = XMLRPCProxy::decide($direct, 'sanitize', XMLRPCProxy::defaultSafeParams(),
-				false, ['rtorrentVersion' => $version]);
-			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-				sprintf('one download\'s save is the same call alone on 0x%04x', $version));
-		}
-		// The save names a download and nothing else; another shape keeps the
-		// route it had before the WebUI needed it in a batch.
-		foreach([[], ['main'], [$a, 'extra']] as $params)
-		{
-			$xml = $this->methodCallXml('d.save_resume', $params);
-			$modern = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($modern['action'] === 'send' && !$modern['trusted']
-				&& $modern['payload'] === $xml,
-				'd.save_resume('.implode(',', $params).') keeps the untrusted direct route on 0.16');
-			$old = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(),
-				false, ['rtorrentVersion' => 0x0908]);
-			$this->assertEquals('reject', $old['action'],
-				'd.save_resume('.implode(',', $params).') is refused where 0.9.8 would ignore the untrusted flag');
-		}
-		$borrowing = XMLRPCProxy::decide($this->systemMulticallXml([
-			['d.custom1.set', [$a, 'tv']],
-			['d.save_resume', ['main']],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams(), false, ['rtorrentVersion' => 0x1019]);
-		$this->assertTrue($borrowing['action'] === 'send' && !$borrowing['trusted'],
-			'a save outside its shape does not borrow the label\'s trust');
-	}
-
-	/**
-	 * Without httprpc each WebUI action that changes a setting rTorrent keeps
-	 * in the session ends its batch with d.save_resume for the downloads it
-	 * changed (R4-NF-2). Every such batch must stay one trusted request, or the
-	 * proxy would refuse the change together with its save.
-	 */
-	public function testWebUiSettingBatchesCarryTheirSessionSaves()
-	{
-		$h = str_repeat('A', 40);
-		$save = ['d.save_resume', [$h]];
-		$batches = [
-			'dsetprio' => [['d.priority.set', [$h, 3]]],
-			'start' => [['d.open', [$h]], ['d.start', [$h]]],
-			'stop' => [['d.stop', [$h]], ['d.close', [$h]]],
-			'pause' => [['d.stop', [$h]]],
-			'unpause' => [['d.start', [$h]]],
-			'setprioritize' => [['f.prioritize_first.enable', [$h.':f0']],
-				['f.prioritize_last.disable', [$h.':f0']], ['d.update_priorities', [$h]]],
-			'setratio' => [['view.set_not_visible', [$h, 'rat_0']],
-				['d.views.remove', [$h, 'rat_0']],
-				['d.views.push_back_unique', [$h, 'rat_1']],
-				['view.set_visible', [$h, 'rat_1']]],
-			'schignore' => [['d.stop', [$h]], ['d.throttle_name.set', [$h, 'NULL']],
-				['d.start', [$h]], ['d.custom.set', [$h, 'sch_ignore', '1']]],
-		];
-		foreach([0x0908, 0x1016, 0x1019] as $version) {
-			foreach($batches as $action => $calls)
-			{
-				$calls[] = $save;
-				$decision = XMLRPCProxy::decide($this->systemMulticallXml($calls), 'sanitize',
-					XMLRPCProxy::defaultSafeParams(), false, ['rtorrentVersion' => $version]);
-				$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-					sprintf('%s with its save is one trusted request on 0x%04x: %s',
-						$action, $version, implode(' | ', $decision['log'])));
-			} }
-	}
-
-	public function testNewBatchElevationsKeepUnsupportedDirectCallsUntrusted()
-	{
-		$hash = str_repeat('a', 40);
-		foreach([
-			['d.views.push_back_unique', [$hash, 'sonarr_imported']],
-			['view.set_visible', [$hash, 'main']],
-			['view.set_visible', [$hash, 'sonarr_imported']],
-			['d.throttle_name.set', [$hash, 'thr_1']],
-			['d.views.remove', [$hash]],
-			['d.views.remove', [$hash, 'sonarr_imported']],
-		] as $call)
-		{
-			$xml = $this->methodCallXml($call[0], $call[1]);
-			$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-				$call[0].' outside the batch elevation shape retains the direct untrusted route');
-			$this->assertEquals($xml, $decision['payload'],
-				$call[0].' outside the elevation shape reaches rTorrent byte for byte');
-		}
-		$batched = $this->systemMulticallXml([
-			['d.stop', [strtoupper($hash)]],
-			['d.views.push_back_unique', [$hash, 'sonarr_imported']],
-		]);
-		$decision = self::decideOnModernDaemon($batched, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted'],
-			'an unsupported member must not borrow trust from another batch member');
-		$oldElevation = self::decideOnModernDaemon($this->methodCallXml('d.stop', [$hash, 'extra']),
-			'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($oldElevation['action'] === 'reject',
-			'an existing elevation keeps its terminal shape refusal');
-		$missingHash = self::decideOnModernDaemon($this->methodCallXml('d.start', []),
-			'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($missingHash['action'] === 'reject' && !$missingHash['trusted']
-			&& $missingHash['payload'] === '',
-			'd.start without a download hash is refused before reaching the daemon');
-	}
-
-	public function testWebUiGetTotalReadBatchRemainsUntrusted()
-	{
-		$xml = $this->systemMulticallXml([
-			['throttle.global_up.total', []],
-			['throttle.global_down.total', []],
-			['throttle.global_up.max_rate', []],
-			['throttle.global_down.max_rate', []],
-		]);
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && !$decision['trusted']
-			&& strpos($decision['log'][0], 'untrusted: system.multicall (4 members)') === 0,
-			'the four gettotal readers need no trusted XMLRPC connection');
-	}
-
-	public function testSavedPolicyRefusalNamesBothRecreateFilesSetters()
-	{
-		$oldPolicy = ['d.directory_base.set', 'd.custom1.set'];
-		$hash = str_repeat('A', 40);
-		$call = [$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0'];
-		foreach([$this->methodCallXml('f.multicall', $call),
-			$this->systemMulticallXml([['f.multicall', $call]])] as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize', $oldPolicy);
-			$this->assertTrue($d['action'] === 'reject', 'saved policy still refuses unlisted setters');
-			$this->assertTrue(strpos(implode(' ', $d['log']), 'f.set_create_queued') !== false
-				&& strpos(implode(' ', $d['log']), 'f.set_resize_queued') !== false
-				&& strpos(implode(' ', $d['log']), 'conf/xmlrpc_proxy.php') !== false,
-				'the operator sees both required policy additions at either nesting level');
-		}
-	}
-
-	public function testSystemMulticallRetainsMemberDecisionReasonsAndLocalPathWarning()
-	{
-		$local = $this->systemMulticallXml([
-			['load.start', ['', '/srv/watch/x.torrent']],
-		]);
-		$d = self::decideOnModernDaemon($local, 'sanitize', XMLRPCProxy::defaultSafeParams(), true);
-		$this->assertTrue($d['action'] === 'send' && $d['trusted'], 'operator-enabled local load is still sent');
-		$this->assertTrue(strpos(implode(' ', $d['log']), '[slot 1] WARNING: operator-enabled local path forwarded') !== false,
-			'the outer decision carries the local-path warning of its member');
-		$denied = $this->systemMulticallXml([
-			['load.start', ['', 'http://example.test/x.torrent', 'execute.capture=id']],
-		]);
-		$d = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($d['action'] === 'reject', 'unsafe nested load is refused');
-		$this->assertTrue(strpos(implode(' ', $d['log']), '[slot 1] rejected (not allowed on this connection): load.start [slot 3: execute.capture]') !== false,
-			'the log keeps the member reason and inner command slot');
-	}
-
-	public function testDirectoryBoundaryRefusalHasItsOwnDiagnostic()
-	{
-		$xml = $this->methodCallXml('load.start', ['', 'http://example.test/x.torrent',
-			'd.directory.set=/outside']);
-		$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false,
-			['directory' => ['root' => '/downloads']]);
-		$this->assertTrue($d['action'] === 'reject', 'the outside path is refused');
-		$this->assertTrue(strpos($d['log'][0], 'directory outside boundary') !== false
-			&& strpos($d['log'][0], '$topDirectory') === false,
-			'a configured boundary reports the path refusal without a missing-configuration hint');
-		$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false,
-			['directory' => ['root' => '']]);
-		$this->assertTrue(strpos($d['log'][0], '$topDirectory') !== false
-			&& strpos($d['log'][0], '$XMLRPCProxyAllowRootDirectory') !== false,
-			'an empty boundary points the operator to its configuration');
-	}
-
-	public function testLegacyViewFirstResultGetsResultExceptionAndAccurateRefusal()
-	{
-		$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall',
-			['main', 'cat=$d.views=']), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($d['action'] === 'send' && $d['trusted']
-			&& strpos($d['payload'], 'cat=$d.views=') !== false,
-			'the exact read-only cat expression works in the first result slot');
-		$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall',
-			['main', 'd.wibble=']), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue(strpos($d['log'][0], 'not allowed on this connection') !== false
-			&& strpos($d['log'][0], 'ambiguous multicall view') === false,
-			'an invalid legacy result is reported as a command refusal');
-	}
-
-	public function testTrustedSystemMulticallPayloadIsCanonicalAcrossMembers()
-	{
-		$hash = str_repeat('a', 40);
-		$xml = $this->systemMulticallXml([
-			['network.xmlrpc.size_limit.set', ['', '999999999']],
-			['d.priority.set', [$hash, '2']],
-		]);
-		$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-			.'<methodCall><methodName>system.multicall</methodName><params><param><value><array><data>'
-			.'<value><struct><member><name>methodName</name><value><string>network.xmlrpc.size_limit.set</string></value></member>'
-			.'<member><name>params</name><value><array><data><value><string></string></value><value><i8>16777216</i8></value>'
-			.'</data></array></value></member></struct></value>'
-			.'<value><struct><member><name>methodName</name><value><string>d.priority.set</string></value></member>'
-			.'<member><name>params</name><value><array><data><value><string>'.str_repeat('A', 40)
-			.'</string></value><value><i8>2</i8></value></data></array></value></member></struct></value>'
-			.'</data></array></value></param></params></methodCall>';
-		$this->assertTrue($d['action'] === 'send' && $d['trusted'],
-			'two validated members form one trusted carrier');
-		$this->assertEquals($expected, $d['payload'],
-			'the carrier clamps size, uppercases the hash, and emits integer values');
-	}
-
-	public function testAllUntrustedReadMembersCanShareOnlyAnUntrustedCarrier()
-	{
-		$hash = str_repeat('A', 40);
-		$xml = $this->systemMulticallXml([
-			['system.client_version', []],
-			['d.name', [$hash]],
-		]);
-		$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($d['action'] === 'send' && !$d['trusted'],
-			'a batch of individually untrusted reads is sent without trust');
-		$this->assertTrue(strpos($d['payload'], '<?xml version="1.0" encoding="UTF-8"?>') === 0
-			&& strpos($d['payload'], '<methodName>d.name</methodName>') === false
-			&& strpos($d['payload'], '<string>d.name</string>') !== false,
-			'the all-untrusted carrier is rebuilt from parsed members');
-		$denied = self::decideOnModernDaemon($this->systemMulticallXml([
-			['system.client_version', []],
-			['execute.capture', ['id']],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($denied['action'] === 'reject',
-			'a locally forbidden member still refuses the entire carrier');
-	}
-
-	public function testSystemMulticallTrustRequiresEveryMemberToBeIndividuallyTrusted()
-	{
-		$hash = str_repeat('A', 40);
-		$allowed = $this->systemMulticallXml([
-			['d.stop', [$hash]], ['d.start', [$hash]],
-		]);
-		$decision = self::decideOnModernDaemon($allowed, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'validated WebUI action members may share one trusted request');
-		foreach(['system.client_version', 'execute.capture', 'system.multicall'] as $untrusted)
-		{
-			$denied = $this->systemMulticallXml([
-				['d.stop', [$hash]], [$untrusted, []],
-			]);
-			$decision = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue(!$decision['trusted'],
-				$untrusted.' must not inherit trust from another member');
-			if($untrusted === 'system.client_version') {
-				$this->assertTrue($decision['action'] === 'send' && $decision['method'] === null,
-					'an admitted read retains the mixed untrusted carrier'); }
-			else {
-				$refused = $untrusted === 'execute.capture' ? $untrusted : 'system.multicall';
-				$this->assertTrue($decision['action'] === 'reject' && $decision['method'] === $refused,
-					'a denied member remains terminal and names its refused command');
-			}
-		}
-	}
-
-	public function testWebUiFileSchedulerAndRatioActionsHaveCheckedBatchShapes()
-	{
-		$hash = str_repeat('B', 40);
-		$bundledCalls = [
-			['f.prioritize_first.enable', [$hash.':f0']],
-			['f.prioritize_last.disable', [$hash.':f0']],
-			['d.update_priorities', [$hash]],
-			['d.throttle_name.set', [$hash, 'NULL']],
-			['d.custom.set', [$hash, 'sch_ignore', '1']],
-			['view.set_not_visible', [$hash, 'rat_0']],
-			['d.views.remove', [$hash, 'rat_0']],
-			['d.views.push_back_unique', [$hash, 'rat_1']],
-			['view.set_visible', [$hash, 'rat_1']],
-		];
-		$decision = self::decideOnModernDaemon($this->systemMulticallXml($bundledCalls),
-			'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'the bundled WebUI and plugin multicall methods are accepted with their real argument shapes');
-		foreach([
-			['f.prioritize_first.enable', [$hash.':f0;execute.capture=id']],
-			['d.set_custom', [$hash, 'sch_ignore', '$execute.capture=id']],
-			['view.set_visible', [$hash, 'other_view']],
-		] as $bad)
-		{
-			$decision = self::decideOnModernDaemon($this->systemMulticallXml([$bad]),
-				'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === ($bad[0] === 'd.set_custom' ? 'reject' : 'send')
-				&& !$decision['trusted'],
-				$bad[0].' cannot become a trusted unchecked batch member');
-		}
-	}
-
-	public function testSchedulerUnignoreAcceptsEmptyThrottleAndState()
-	{
-		$hash = str_repeat('A', 40);
-		foreach([
-			[['d.stop', [$hash]], ['d.throttle_name.set', [$hash, '']],
-				['d.start', [$hash]], ['d.custom.set', [$hash, 'sch_ignore', '']]],
-		] as $calls)
-		{
-			$d = self::decideOnModernDaemon($this->systemMulticallXml($calls),
-				'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'send' && $d['trusted'],
-				'scheduler unignore uses the empty throttle and state forms');
-		}
-		$legacy = self::decideOnModernDaemon($this->systemMulticallXml([
-			['d.set_throttle_name', [$hash, '']],
-			['d.set_custom', [$hash, 'sch_ignore', '']],
-		]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertEquals('reject', $legacy['action'],
-			'a client-side alias cannot borrow trust as an XMLRPC method');
-
-	}
-
-	public function testRecreateFilesUsesTheRegisteredRTorrentSetterSpellings()
-	{
-		$hash = str_repeat('C', 40);
-		$xml = $this->methodCallXml('f.multicall', [$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0']);
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'one torrent recreates files through the two registered f setters');
-		$this->assertTrue(strpos($decision['payload'], 'f.set_create_queued="0"') !== false,
-			'the requested value is rebuilt as a single literal argument');
-		$batched = $this->systemMulticallXml([['f.multicall',
-			[$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0']]]);
-		$decision = self::decideOnModernDaemon($batched, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'multiple torrent actions can use the same validated member');
-	}
-
-	public function testRatioListingKeepsTheStringProducedByTheExactCatExpression()
-	{
-		$good = $this->methodCallXml('d.multicall2', ['', 'main', 'cat=$d.views=', 'd.name=']);
-		$decision = self::decideOnModernDaemon($good, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'the exact shipped ratio expression can return a string');
-		$this->assertTrue(strpos($decision['payload'], 'cat=$d.views=') !== false,
-			'the return type preserving expression reaches rTorrent unchanged');
-		foreach(['cat=$execute.capture=id', 'cat=$d.views=,$execute.capture=id', 'cat=$d.views=;execute.capture=id'] as $bad)
-		{
-			$decision = self::decideOnModernDaemon($this->methodCallXml('d.multicall2', ['', 'main', $bad]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'reject', 'nearby executable cat expression is refused');
-		}
-		$filtered = $this->methodCallXml('d.multicall.filtered',
-			['', 'main', 'cat=$d.views=', 'd.name=']);
-		$decision = self::decideOnModernDaemon($filtered, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'reject',
-			'the ratio result exception does not become an executable filter exception');
-	}
-
-	public function testShowPeersReadExpressionsAreExactResultOnlyExceptions()
-	{
-		foreach(['t.scrape_complete=', 't.scrape_incomplete='] as $counter)
-		{
-			$expression = 'cat="$t.multicall=d.hash=,'.$counter.',cat={#}"';
-			$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall2',
-				['', 'main', 'd.hash=', $expression]),
-				'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'send' && $d['trusted']
-				&& strpos($d['payload'], $expression) !== false,
-				'the lab-verified '.$counter.' read expression remains an exact result');
-			$unsafe = str_replace($counter, 'execute.capture=id', $expression);
-			$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall2',
-				['', 'main', 'd.hash=', $unsafe]),
-				'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'reject',
-				'an executable expression beside the exception is refused');
-		}
-	}
-
-	public function testRejectedMulticallLogsTheSlotButKeepsTheOuterFaultIdentity()
-	{
-		$xml = $this->methodCallXml('d.multicall2', ['', 'main', 'd.name=', 'd.wibble=']);
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($decision['action'] === 'reject', 'one unknown result rejects the full call');
-		$this->assertTrue($decision['method'] === 'd.multicall2',
-			'the client-visible fault retains the outer method');
-		$this->assertTrue($decision['log'] === [
-			'rejected (not allowed on this connection): d.multicall2 [slot 4: d.wibble]'],
-			'the classified log identifies the rejected command and its slot');
-	}
-
-	public function testRejectedCommandSlotNormalizesAndBoundsItsName()
-	{
-		$forged = "d.x\nxmlrpc-proxy: trusted: forged=1";
-		$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall2',
-			['', 'main', $forged]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($d['action'] === 'reject'
-			&& strpos($d['log'][0], '[slot 3: d.x?xmlrpc-proxy:?trusted:?forged]') !== false,
-			'control characters and spaces in the slot name cannot impersonate another log entry');
-		$long = str_repeat('x', 120).'=1';
-		$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall2',
-			['', 'main', $long]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue(strpos($d['log'][0], '[slot 3: '.str_repeat('x', 96).']') !== false,
-			'the displayed command name is limited to 96 bytes');
-	}
-
-	public function testOnlyLegacyViewFirstMulticallCanRebuildAnEqualsViewSlot()
-	{
-		foreach(['d.multicall2', 'd.multicall.filtered'] as $method)
-		{
-			$params = ['', 'd.custom1.set=not-a-view'];
-			if($method === 'd.multicall.filtered') {
-				$params[] = 'd.custom1.set=filter'; }
-			$params[] = 'd.name=';
-			$decision = self::decideOnModernDaemon($this->methodCallXml($method, $params),
-				'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($decision['action'] === 'reject'
-				&& strpos($decision['log'][0], 'ambiguous multicall view') !== false,
-				$method.' reports an ambiguous modern view rather than rewriting it');
-		}
-		$legacy = self::decideOnModernDaemon($this->methodCallXml('d.multicall',
-			['main', 'd.name=']), 'sanitize', XMLRPCProxy::defaultSafeParams());
-		$this->assertTrue($legacy['action'] === 'send' && $legacy['trusted'],
-			'the old view-first form is still supported');
-	}
-
-	public function testFilesystemMutatorsCannotBypassDirectoryConfinementOnOldDaemons()
-	{
-		foreach(['d.create_link', 'd.delete_link', 'd.tied_to_file.set', 'd.set_directory', 'd.set_directory_base', 'create_link', 'delete_link', 'd.set_tied_to_file'] as $method)
-		{
-			$this->resetMocks();
-			$xml = $this->methodCallXml($method, [str_repeat('A', 40), '/outside/file']);
-			$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'reject', $method.' must be refused locally, including on a daemon that ignores untrusted');
-			self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue(rXMLRPCRequest::$sent === 0, $method.' must never reach transport');
-		}
-	}
-
-	public function testLegacyAliasesOfDeniedCommandsNeverReachTransport()
-	{
-		// Four redirects from rTorrent v0.9.8 src/main.cc; the remaining names
-		// are pre-0.9.4 spellings in php/methods-0.9.4.php.
-		foreach(['directory', 'session', 'scgi_port', 'scgi_local',
-			'set_directory', 'set_session', 'get_scgi_dont_route', 'set_scgi_dont_route',
-			'load', 'load_verbose', 'load_start', 'load_start_verbose',
-			'load_raw', 'load_raw_start', 'load_raw_verbose',
-			'set_xmlrpc_size_limit', 'xmlrpc_size_limit',
-			'system.method.erase', 'system.method.get', 'system.method.has_key',
-			'system.method.insert', 'system.method.list_keys', 'system.method.set',
-			'system.method.set_key', 'view_filter', 'view_sort_new', 'view_sort_current'] as $method)
-		{
-			$this->resetMocks();
-			$xml = $this->methodCallXml($method, ['', '/outside']);
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', $method.' is locally denied without relying on daemon trust support');
-			self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue(rXMLRPCRequest::$sent === 0, $method.' never reaches transport');
-		}
-	}
-
-	public function testLegacyViewFirstListingsRebuildTheirFirstResultSlot()
-	{
-		foreach([['main', 'd.hash='], ['main', 'd.hash=', 'd.name='],
-			['main', 'd.custom=key;execute.throw=id', 'd.name=']] as $params)
-		{
-			$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall', $params), 'sanitize');
-			$this->assertTrue($d['action'] === 'send' && $d['trusted'], 'safe view-first listing remains available');
-			$expected = count($params) === 3 && $params[1] !== 'd.hash='
-				? 'd.custom="key;execute.throw=id"' : 'd.hash=""';
-			$this->assertTrue(strpos($d['payload'], $expected) !== false, 'the first result slot is rebuilt with quoted data');
-		}
-		foreach(['d.get_hash=', 'd.get_name='] as $alias)
-		{
-			$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall',
-				['main', $alias]), 'sanitize');
-			$this->assertEquals('reject', $d['action'],
-				'a client-side getter alias cannot execute in a trusted result slot');
-		}
-		foreach(['execute.throw=id', 'd.wibble=', 'd.directory.set=/downloads/x',
-			'd.custom=$execute.capture=id'] as $command)
-		{
-			$d = self::decideOnModernDaemon($this->methodCallXml('d.multicall', ['main', $command]), 'sanitize', XMLRPCProxy::defaultSafeParams());
-			$this->assertTrue($d['action'] === 'reject', 'a single legacy result slot cannot bypass command validation: '.$command);
-		}
-	}
-
-	public function testNonDownloadMulticallsKeepEqualsInTheirDataSlot()
-	{
-		foreach(['f.multicall' => 'f.path=', 't.multicall' => 't.url=', 'p.multicall' => 'p.address='] as $method => $command)
-		{
-			$d = self::decideOnModernDaemon($this->methodCallXml($method, [str_repeat('A', 40), '*v=abc*', $command]), 'sanitize');
-			$this->assertTrue($d['action'] === 'send' && $d['trusted'], $method.' permits equals in the non-executable data slot');
-			$this->assertTrue(strpos($d['payload'], '<string>*v=abc*</string>') !== false, 'data slot reaches the daemon unchanged');
-		}
-	}
-
-	public function testSymlinkDotSegmentsCannotChangeTheCheckedDirectory()
-	{
-		require_once(__DIR__ . '/../../php/xmlrpc_path.php');
-		$root = sys_get_temp_dir().'/proxy-dot-'.uniqid();
-		if(!mkdir($root.'/inside', 0700, true) || !mkdir($root.'/outside/child', 0700, true)
-			|| !symlink($root.'/outside/child', $root.'/inside/link')) {
-			throw new Exception('could not create directory boundary fixture'); }
-		try
-		{
-			$policy = ['root' => $root.'/inside', 'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor']];
-			foreach(self::DIRECTORY_SETTERS as $setter) {
-				foreach(['/link/..', '/link/../new', '/./new', '/new/../target'] as $tail)
-				{
-					$this->assertTrue(!$this->loadInto($root.'/inside'.$tail, $policy, $setter), $setter.' refuses dot segments before path normalization: '.$tail);
-					$this->assertTrue(rXMLRPCRequest::$sent === 0, 'dot segments never reach transport');
-				} }
-			$this->assertTrue($this->loadInto($root.'/inside//new/', $policy), 'repeated and trailing separators remain valid');
-		}
-		finally
-		{
-			unlink($root.'/inside/link');
-			rmdir($root.'/inside');
-			rmdir($root.'/outside/child');
-			rmdir($root.'/outside');
-			rmdir($root);
-		}
-	}
-
-	public function testMulticallFilterMayNotChangeAnyDownloadDirectory()
-	{
-		foreach(self::DIRECTORY_SETTERS as $setter)
-		{
-			$xml = $this->methodCallXml('d.multicall.filtered', ['', 'main', $setter.'=/downloads/x', 'd.name=']);
-			$d = self::decideOnModernDaemon($xml, 'sanitize', [$setter], false, ['directory' => ['root' => '/downloads']]);
-			$this->assertTrue($d['action'] === 'reject', $setter.' in a filter is as unsafe as in a result slot');
-		}
-	}
-
-	public function testQuotedDirectoryWhitespaceCannotChangeThePathBeingChecked()
-	{
-		foreach(['" /downloads/x"', '"'."\t".'/downloads/x"', '"/downloads/x "'] as $path)
-		{
-			$this->assertTrue(!$this->loadInto($path, ['root' => '/downloads']), 'quoted boundary whitespace must not be trimmed only for validation');
-			$this->assertTrue(rXMLRPCRequest::$sent === 0, 'refused path never reaches transport');
-		}
-		$this->assertTrue($this->loadInto('"/downloads/a b"', ['root' => '/downloads']), 'internal spaces are valid path data');
-		$this->assertTrue(strpos(rXMLRPCRequest::$lastPayload, 'd.directory.set="/downloads/a b"') !== false, 'the exact checked path reaches transport');
-	}
-
-	public function testDefaultPolicyAllowsCanonicalBaseDirectoryWithinBoundary()
-	{
-		$xml = $this->methodCallXml('load.start', ['', 'https://example.test/x.torrent', 'd.directory.base.set=/downloads/x']);
-		$d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, ['directory' => ['root' => '/downloads']]);
-		$this->assertTrue($d['action'] === 'send' && $d['trusted'], 'the canonical setter is available under the same boundary as its alias');
-	}
-
-	public function testPersistedDirectoryPolicyRemainsAnExactOverride()
-	{
-		foreach(['d.directory_base.set' => 'send', 'd.directory.base.set' => 'reject'] as $setter => $action)
-		{
-			$xml = $this->methodCallXml('load.start', ['', 'https://example.test/x.torrent', $setter.'=/downloads/x']);
-			$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.directory_base.set'], false, ['directory' => ['root' => '/downloads']]);
-			$this->assertTrue($d['action'] === $action, 'an existing explicit policy permits only its configured spelling: '.$setter);
-			if($setter === 'd.directory.base.set')
-			{
-				$this->assertTrue($d['method'] === 'load.start',
-					'the client fault still names the outer load call');
-				$this->assertTrue(strpos($d['log'][0],
-					'policy lists d.directory_base.set but not d.directory.base.set; add it to conf/xmlrpc_proxy.php or the httprpc policy override]') !== false,
-					'the deployed policy mismatch has a precise actionable log message');
-			}
-		}
-	}
-
-	// ---- Mode dispatch ----
-
-	public function testOffModeReturnsNull()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>';
-		$this->assertTrue(self::processOnModernDaemon($xml, 'off') === null, 'off mode returns null');
-	}
-
-	public function testOffModeRejectsGarbage()
-	{
-		$this->resetMocks();
-		$this->assertTrue(self::processOnModernDaemon('not xml at all', 'off') === null, 'off mode rejects garbage too');
-	}
-
-	public function testPassthroughUnsafeForwardsTrusted()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>execute</methodName><params></params></methodCall>';
-		self::processOnModernDaemon($xml, 'passthrough_unsafe');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'passthrough_unsafe forwards as trusted');
-		$this->assertEquals($xml, rXMLRPCRequest::$lastPayload, 'passthrough_unsafe forwards payload verbatim');
-	}
-
-	/**
-	 * The legacy method name says "ForwardsUntrusted" for compatibility with
-	 * test inventories; the current contract is terminal rejection.
-	 */
-	public function testInvalidXmlForwardsUntrusted()
-	{
-		$this->resetMocks();
-		$this->assertTrue(self::processOnModernDaemon('not xml at all', 'sanitize') === null, 'invalid XML is rejected');
-	}
-
-	public function testNonLoadMethodForwardsUntrusted()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'non-load method forwarded as untrusted');
-	}
-
-	// ---- Sanitize-mode whitelist (the security-critical path) ----
-
-	public function testSanitizeEndToEndForwardsCleanedPayload()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/t.torrent</string></value></param><param><value><string>execute=evil</string></value></param></params></methodCall>';
-		$result = self::processOnModernDaemon($xml, 'sanitize', false, ['d.directory.set']);
-		$this->assertTrue($result === null, 'all-or-nothing load with denied parameter returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport sends for denied parameter');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded for denied parameter');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null, 'null trust for denied parameter');
-	}
-
-	// ---- Sanity ----
-
-	public function testSanitizeMethodsList()
-	{
-		$ref = new ReflectionProperty('XMLRPCProxy', 'sanitizeMethods');
-		if(PHP_VERSION_ID < 80100) { $ref->setAccessible(true); }
-		$methods = $ref->getValue();
-		$this->assertTrue(in_array('load.start', $methods), 'load.start in sanitize list');
-		$this->assertTrue(in_array('load.raw_start', $methods), 'load.raw_start in sanitize list');
-		$this->assertTrue(!in_array('execute', $methods), 'execute NOT in sanitize list');
-		$this->assertTrue(!in_array('system.multicall', $methods), 'system.multicall NOT in sanitize list');
-		$this->assertTrue(!in_array('execute2', $methods), 'execute2 NOT in sanitize list');
-	}
-
-	public function testChainedCommandIsNotForwarded()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=A;d.custom2.set=(execute.capture,/bin/sh,-c,id)');
-		// The ';' and everything after it end up inside the quoted argument.
-		$this->assertTrue(strpos($sent, 'd.custom1.set="A;d.custom2.set=(execute.capture,/bin/sh,-c,id)"') !== false,
-			'a chained command is forwarded as text inside an argument, not as a command');
-	}
-
-	public function testNestedCommandValueIsQuoted()
-	{
-		$sent = $this->sanitizeParam('d.custom2.set=(execute.capture,/bin/sh,-c,id)');
-		$this->assertTrue(strpos($sent, 'd.custom2.set="(execute.capture,/bin/sh,-c,id)"') !== false,
-			'a parenthesised value must be forwarded quoted, as an argument');
-	}
-
-	public function testCommandNameMustMatchExactly()
-	{
-		$sent = $this->sanitizeParam('d.custom1.setEVIL=x;d.custom2.set=(execute.capture,/bin/sh,-c,"id")');
-		$this->assertTrue(strpos($sent, 'custom1.setEVIL') === false, 'a command that merely starts with an allowed name is dropped');
-		$this->assertTrue(strpos($sent, 'execute.capture') === false, 'and its payload goes with it');
-	}
-
-	public function testParameterWithoutSeparatorIsDropped()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set');
-		$this->assertTrue(strpos($sent, 'd.custom1.set') === false, 'a parameter with no = is dropped');
-	}
-
-	// ---- and the values clients legitimately send still arrive ----
-
-	public function testValueKeepsCharactersThatUsedToBreakIt()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=Movies (2024)');
-		$this->assertTrue(strpos($sent, 'd.custom1.set="Movies (2024)"') !== false,
-			'parentheses and spaces survive as a quoted argument');
-	}
-
-	public function testSingleArgumentCommandsPreserveCommasInValues()
-	{
-		$sent1 = $this->sanitizeParam('d.custom1.set=Movies, Inc');
-		$this->assertTrue(strpos($sent1, 'd.custom1.set="Movies, Inc"') !== false,
-			'commas in single-argument commands are preserved inside the argument');
-
-		$sent2 = $this->sanitizeParam('d.directory.set=/data/Movies, Inc', ['d.directory.set']);
-		$this->assertTrue(strpos($sent2, 'd.directory.set="/data/Movies, Inc"') !== false,
-			'commas in directory path argument are preserved');
-	}
-
-	public function testMultiArgumentCommandsSplitProperly()
-	{
-		$sent = $this->sanitizeParam('d.custom.set=category,Movies, Inc', ['d.custom.set']);
-		$this->assertTrue(strpos($sent, 'd.custom.set="category","Movies, Inc"') !== false,
-			'd.custom.set splits key from value and preserves commas in the value');
-	}
-
-	// The one read command that takes two arguments. Measured 2026-09-14 on
-	// 0.16.22: d.custom.if_z=key,fallback answers the fallback when the key is
-	// unset, and d.custom.if_z="key,fallback" -- one argument -- faults
-	// "Missing default argument." A read is split like the two-argument setter
-	// is, and each half is screened for an evaluator on its own.
-	public function testTheTwoArgumentReadCommandIsSplitLikeTheSetter()
-	{
-		$this->multicall(['', 'main', 'd.custom.if_z=chk-state,none']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 1, 'the listing reaches rtorrent');
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom.if_z="chk-state","none"') !== false,
-			'key and fallback are two quoted arguments, not one');
-
-		$this->multicall(['', 'main', 'd.custom.if_z="chk-state","none"']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 1
-			&& strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom.if_z="chk-state","none"') !== false,
-			'the already-quoted spelling is accepted and rebuilt the same way');
-
-		$this->multicall(['', 'main', 'd.custom.if_z=chk-state,$execute.capture=/bin/hostname']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'an evaluator in the fallback slot is refused, not quoted into the key');
-	}
-
-	public function testQuotesAndBackslashesAreEscaped()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=say "hi" \\ bye');
-		$this->assertTrue(strpos($sent, '\\"hi\\"') !== false, 'a quote in the value is escaped, not closing the argument');
-	}
-
-	public function testMultipleArgumentsArePreserved()
-	{
-		$sent = $this->sanitizeParam('d.custom.set=chk-state,7');
-		$this->assertTrue(strpos($sent, 'd.custom.set="chk-state","7"') !== false,
-			'a command taking two arguments still gets two');
-	}
-
-	// ---- trust ----
-
-	public function testRebuiltRequestIsTrusted()
-	{
-		$this->sanitizeParam('d.custom1.set=label');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'a fully rebuilt request may be trusted');
-	}
-
-	public function testRequestIsUntrustedWhenAParamCannotBeRebuilt()
-	{
-		$this->resetMocks();
-		// An <int> target is a type this side does not rebuild, so the malformed load is rejected.
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><int>1</int></value></param>'
-			. '<param><value><string>http://example.test/x.torrent</string></value></param>'
-			. '</params></methodCall>';
-		$res = self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'anything not rebuilt here is terminally rejected, for rtorrent never to see');
-	}
-
-	public function testDollarPrefixedArgumentIsDropped()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=$execute.capture=/bin/hostname');
-		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'an argument that would be re-parsed as a command is dropped, not quoted');
-	}
-
-	public function testDollarPrefixedSecondArgumentIsDropped()
-	{
-		$sent = $this->sanitizeParam('d.custom.set=key,$execute.capture=/bin/hostname');
-		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'a denied second argument rejects the whole load');
-	}
-
-	public function testDollarInsideAValueIsKept()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=cost 20$ or so');
-		$this->assertTrue(strpos($sent, 'd.custom1.set="cost 20$ or so"') !== false,
-			'only a leading $ is special, so ordinary values keep theirs');
-	}
-
-	public function testUntrustedRequestIsNeverLoggedAsTrusted()
-	{
-		$this->resetMocks();
-		$GLOBALS['rpcLogCalls'] = true;
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'the call is sent untrusted');
-		foreach(FileUtil::$log as $line) {
-			$this->assertTrue(strpos($line, 'xmlrpc-proxy: trusted') !== 0,
-				'a request sent untrusted is never logged as trusted'); }
-		$this->assertTrue(strpos($this->logText(), 'untrusted') !== false, 'and it is logged as untrusted');
-	}
-
-	public function testStrippedValueCannotForgeALogLine()
-	{
-		$this->resetMocks();
-		$this->sanitizeParamLogged("execute=evil\nxmlrpc-proxy: trusted: load.raw_start (2 params)");
-		$this->assertTrue(strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
-			'a rejected command cannot inject a second log entry');
-	}
-
-	public function testLoggedValueIsLengthCapped()
-	{
-		$this->resetMocks();
-		$this->sanitizeParamLogged('execute=' . str_repeat('A', 500));
-		$this->assertTrue(strlen($this->logText()) < 400, 'a long rejected command is bounded in the log');
-	}
-
-	// ---- shapes rtorrent itself accepts ----
-
-	public function testWhitespaceAroundTheCommandNameIsAccepted()
-	{
-		$this->assertTrue(strpos($this->sanitizeParam(' d.custom1.set=x'), 'd.custom1.set="x"') !== false,
-			'a leading space does not hide the command name');
-		$this->assertTrue(strpos($this->sanitizeParam('d.custom1.set =x'), 'd.custom1.set="x"') !== false,
-			'nor does a space before the =');
-	}
-
-	public function testArgumentsAreTrimmedAsRtorrentTrimsThem()
-	{
-		$this->assertTrue(strpos($this->sanitizeParam('d.custom.set=chk-state, 7'), 'd.custom.set="chk-state","7"') !== false,
-			'an unquoted argument is trimmed, matching what rtorrent stores');
-	}
-
-	public function testDollarIsCheckedAfterTrimming()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set= $execute.capture=/bin/hostname');
-		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'trimming must not quote a leading space into a leading $');
-	}
-
-	// ---- parameter forms ----
-
-	public function testImplicitStringParamFormIsRead()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>http://example.test/x.torrent</string></value></param>'
-			. '<param><value>d.custom1.set=label</value></param>'
-			. '</params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom1.set="label"') !== false,
-			'a value without an explicit <string> is read the same way');
-	}
-
-	public function testBase64DataParamIsRebuiltAndStillTrusted()
-	{
-		$this->resetMocks();
-		$data = str_repeat("torrent-bytes\x00\xc8", 20);
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . chunk_split(base64_encode($data), 76, "\n") . '</base64></value></param>'
-			. '<param><value><string>d.custom1.set=label</string></value></param>'
-			. '</params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
-		$sent = (string) rXMLRPCRequest::$lastPayload;
-
-		$this->assertTrue(preg_match('#<base64>(.*?)</base64>#s', $sent, $m) === 1, 'the data param is still base64');
-		$this->assertTrue(base64_decode($m[1], true) === $data, 'and it carries the same bytes, wrapping removed');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'a rebuilt base64 param does not force the call untrusted');
-	}
-
-	public function testPreQuotedValueIsKeptAsOneArgument()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set="Movies, Inc"');
-		$this->assertTrue(strpos($sent, 'd.custom1.set="Movies, Inc"') !== false,
-			'a value the client quoted itself is unquoted and re-quoted as one argument');
-		$this->assertTrue(strpos($sent, 'd.custom1.set="Movies","Inc"') === false,
-			'and the comma inside the quotes does not split it');
-	}
-
-	public function testCrossSeedQuotedLoadParamsAreKept()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set="cross-seed"',
-			['d.custom1.set', 'd.directory_base.set', 'd.custom.set']);
-		$this->assertTrue(strpos($sent, 'd.custom1.set="cross-seed"') !== false,
-			'cross-seed quotes the label; that must still set custom1');
-
-		$sent = $this->sanitizeParam(
-			'd.directory_base.set="/data/Media/torrent/download/cross-seed/PassThePopcorn"',
-			['d.custom1.set', 'd.directory_base.set', 'd.custom.set']);
-		$this->assertTrue(strpos($sent,
-			'd.directory_base.set="/data/Media/torrent/download/cross-seed/PassThePopcorn"') !== false,
-			'and the quoted save path must still set directory_base');
-	}
-
-	public function testQuotedDollarPrefixedArgumentIsDropped()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set="$execute.capture=/bin/hostname"');
-		$this->assertTrue(strpos($sent, 'execute.capture') === false,
-			'quoting does not hide a leading $; the load is rejected');
-	}
-
-	public function testUnclosedQuoteIsDropped()
-	{
-		$this->resetMocks();
-		$this->sanitizeParamLogged('d.custom1.set="Movies, Inc');
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom1.set') === false,
-			'an unclosed quote rejects the whole load without forwarding it');
-		$this->assertTrue(strpos($this->logText(), 'rejected') !== false,
-			'and the rejection is visible in the log');
-	}
-
-	public function testUnknownMethodNameCannotForgeALogLine()
-	{
-		$this->resetMocks();
-		$GLOBALS['rpcLogCalls'] = true;
-		$name = "system.foo\nxmlrpc-proxy: trusted: forged";
-		$xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($name)
-			. '</methodName><params></params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', true, []);
-
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'an unknown method is sent untrusted');
-		$this->assertEquals(1, count(FileUtil::$log), 'call tracing records the normalized method name');
-		$this->assertTrue(strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
-			'a method name cannot start a log line of its own');
-	}
-
-	public function testMulticallCommandsAreRebuiltLikeLoadParams()
-	{
-		$this->multicall(['', 'main', 'd.custom1.set=Movies (2024)']);
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
-			'd.custom1.set="Movies (2024)"') !== false,
-			'an allowed command in a multicall is quoted the same way as in a load');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true,
-			'and a multicall of nothing but allowed commands may be trusted');
-	}
-
-	// An unknown command in a multicall causes terminal outer rejection.
-	public function testMulticallWithAnUnknownCommandIsRejected()
-	{
-		// d.name= used to stand here, and stopped being unknown when the read
-		// list arrived. A command on neither list is what this case is about.
-		$this->multicall(['', 'main', 'd.wibble=']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'the request is rejected, not forwarded');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
-			'and not trusted');
-	}
-
-
-	// The listing request every remote client makes. It names no setter, so
-	// before the read list it matched nothing in $safeParams and took the
-	// whole outer call down with it -- which is what the live instance did to
-	// a client on 2026-09-08, four times, before it gave up and asked about
-	// each download one command at a time.
-	public function testMulticallOfReadCommandsIsRebuiltAndTrusted()
-	{
-		$this->multicall(['', 'main', 'd.hash=', 'd.name=', 'd.custom=chk-state']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 1,
-			'a listing request reaches rtorrent');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true,
-			'rebuilt from its parsed parts, so it goes trusted');
-		$this->assertTrue(strpos(rXMLRPCRequest::$lastPayload, 'd.custom="chk-state"') !== false,
-			'a read command that carries an argument keeps it, quoted');
-	}
-
-	// A multicall applies its commands to everything in a view, so a directory
-	// setter in one names where every download in that view is written. It is
-	// refused outright here, ahead of the rebuild, rather than left to the
-	// $topDirectory boundary -- which is configuration, and is absent on a
-	// caller that passes no directory policy at all.
-	//
-	// Measured by mutation 2026-09-12: dropping the isDirectDenied() call from
-	// the result slot let d.directory.set= through with no suite noticing.
-	public function testMulticallMayNotCarryADirectorySetter()
-	{
-		foreach(self::DIRECTORY_SETTERS as $setter)
-		{
-			$this->multicall(['', 'main', $setter.'=/srv/anywhere'], [$setter]);
-			$this->assertTrue(rXMLRPCRequest::$sent === 0, $setter.' is refused in result slots even when allowed in load tails');
-			$this->assertTrue(rXMLRPCRequest::$lastTrusted === null, 'a refused setter never reaches transport');
-		}
-	}
-
-	// Quoting cannot make a $-prefixed argument safe: rtorrent parses and calls
-	// it. rebuildSafeLoadParam() refuses it for setters, and a read command
-	// goes through the same rebuild, so it is refused there too.
-	public function testReadCommandArgumentNamingAnEvaluatorIsRefused()
-	{
-		$this->multicall(['', 'main', 'd.custom=$execute.capture=/bin/hostname']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'an evaluator smuggled into a read command argument is refused');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
-			'and nothing is trusted');
-	}
-
-	public function testMulticallCarryingExecuteIsRefused()
-	{
-		$this->multicall(['', 'main', 'execute.capture=/bin/sh,-c,id']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'a multicall carrying execute.capture is refused, not forwarded');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
-			'and it certainly is not trusted');
-	}
-
-	public function testMulticallDollarArgumentIsNeverTrusted()
-	{
-		$this->multicall(['', 'main', 'd.custom1.set=$execute.capture=/bin/hostname']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'a multicall whose argument would be re-parsed is rejected, not forwarded');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
-			'and not trusted');
-	}
-
-	public function testMulticallViewNameIsDataNotACommand()
-	{
-		$this->multicall(['', 'a view with spaces', 'd.custom1.set=label']);
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
-			'<string>a view with spaces</string>') !== false,
-			'the view name is re-emitted as the value it is, not quoted as a command');
-	}
-
-	public function testCommandCarryingMethodsList()
-	{
-		$ref = new ReflectionProperty('XMLRPCProxy', 'multicallMethods');
-		if(PHP_VERSION_ID < 80100) { $ref->setAccessible(true); }
-		$methods = $ref->getValue();
-		$this->assertTrue(in_array('d.multicall2', $methods), 'd.multicall2 is command-carrying');
-		$this->assertTrue(in_array('t.multicall', $methods), 't.multicall is command-carrying');
-		$this->assertTrue(!in_array('system.multicall', $methods),
-			'system.multicall is NOT: its members are calls, not command strings');
-		$this->assertTrue(!in_array('load.start', $methods),
-			'load.start belongs to the list that strips, not this one');
-	}
-
-	public function testLoadFromALocalPathIsRejected()
-	{
-		$this->assertTrue($this->load('/srv/watch/x.torrent') === null,
-			'a load naming a path on rtorrent\'s own filesystem is refused');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null,
-			'and nothing is sent, not even untrusted');
-	}
-
-	/**
-	 * Untrusted is not a refusal on rtorrent below 0.16.9 — the header is read
-	 * and ignored — so this one cannot be left for rtorrent to sort out.
-	 */
-	public function testLocalPathIsRefusedRatherThanForwardedUntrusted()
-	{
-		$this->load('/srv/watch/x.torrent');
-		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'the request never reaches rtorrent');
-		$this->assertTrue(strpos($this->logText(), 'local path') !== false,
-			'and the refusal says why');
-	}
-
-	public function testNetworkAndMagnetUrisAreAccepted()
-	{
-		foreach(['http://example.test/x.torrent', 'https://example.test/x.torrent',
-			'ftp://example.test/x.torrent', 'magnet:?xt=urn:btih:abc'] as $uri)
-		{
-			$this->load($uri);
-			$this->assertTrue(rXMLRPCRequest::$sent === 1, $uri . ' is forwarded');
-		}
-	}
-
-	/**
-	 * rtorrent compares these with strncmp, so anything it would not recognise
-	 * as a URI is a path to it, and has to be a path here too. Matching more
-	 * loosely than rtorrent does is exactly the hole this closes.
-	 */
-	public function testSchemeMatchingIsAsStrictAsRtorrents()
-	{
-		foreach(['HTTP://example.test/x.torrent', 'Magnet:?xt=urn:btih:abc',
-			'magnet:xt=urn:btih:abc', ' http://example.test/x.torrent',
-			'file:///srv/watch/x.torrent', 'watch/x.torrent', '~/x.torrent'] as $uri)
-		{
-			$this->assertTrue($this->load($uri) === null, $uri . ' is treated as a local path');
-		}
-	}
-
-	public function testBase64EncodingDoesNotHideALocalPath()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . base64_encode('/srv/watch/x.torrent') . '</base64></value></param>'
-			. '</params></methodCall>';
-		$this->assertTrue(self::processOnModernDaemon($xml, 'sanitize', true, [], false) === null,
-			'a base64 parameter is read as the URI it decodes to');
-	}
-
-	public function testRawLoadIsUnaffected()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . base64_encode('d4:infoe') . '</base64></value></param>'
-			. '</params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', true, [], false);
-		$this->assertTrue(rXMLRPCRequest::$sent === 1,
-			'load.raw_start carries the torrent itself, not a URI, so it is untouched');
-	}
-
-	public function testOperatorCanAllowLocalPathsWithAnExplicitRiskWarning()
-	{
-		$this->load('/srv/watch/x.torrent', true);
-		$this->assertTrue(rXMLRPCRequest::$sent === 1,
-			'the setting exists for automation that posts server-local paths');
-		$this->assertTrue(strpos($this->logText(), 'operator-enabled local path forwarded') !== false,
-			'the exceptional path mode is visible in the operational log');
-	}
-
-	public function testCapturedSettingsReadBatchUsesTrustOnlyForItsExactReadShape()
-	{
-		// Captured from the actual WebUI on rt-lab rTorrent 0.16.24.
-		$xml = file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml');
-		$this->assertTrue($xml !== false, 'the captured settings request is present');
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$decision = self::decideOnModernDaemon($xml, 'sanitize', $policy,
-			false, ['rtorrentVersion' => 0x1018]);
-		$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-			'the complete Settings read runs trusted so both listener flag getters answer');
-		$this->assertTrue(strpos($decision['payload'], 'network.scgi.dont_route') !== false,
-			'the exact read-only SCGI flag survives the rebuilt request');
-		foreach([
-			['network.scgi.dont_route', 'network.scgi.open_port'],
-			['network.scgi.dont_route', 'system.sockets.files.min_alloc.set'],
-			['network.listen.port.range', 'execute.capture'],
-		] as $replacement)
-		{
-			$changed = str_replace('<string>'.$replacement[0].'</string>',
-				'<string>'.$replacement[1].'</string>', $xml);
-			$this->assertTrue($changed !== $xml, 'the mutation changed a captured member');
-			$blocked = self::decideOnModernDaemon($changed, 'sanitize', $policy,
-				false, ['rtorrentVersion' => 0x1018]);
-			if($replacement[1] === 'system.sockets.files.min_alloc.set') {
-				$this->assertTrue($blocked['action'] !== 'send' || !$blocked['trusted'],
-					'a socket setter cannot borrow trust from the settings read batch'); }
-			else {
-				$this->assertEquals('reject', $blocked['action'],
-					$replacement[1].' cannot borrow trust from the settings read batch'); }
-		}
-		$slot = '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data></data>';
-		$withArgument = str_replace($slot, '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data><value><string>x</string></value></data>', $xml);
-		$this->assertTrue($withArgument !== $xml, 'the extra-argument mutation changed slot 37');
-		$blocked = self::decideOnModernDaemon($withArgument, 'sanitize', $policy,
-			false, ['rtorrentVersion' => 0x1018]);
-		$this->assertEquals('reject', $blocked['action'],
-			'the settings batch cannot carry a parameter in the SCGI getter slot');
-		$mixed = self::decideOnModernDaemon($this->systemMulticallXml([
-			['throttle.max_uploads.global', []],
-			['d.open', [str_repeat('A', 40)]],
-		]), 'sanitize', $policy);
-		$this->assertTrue($mixed['action'] === 'send' && !$mixed['trusted'],
-			'an arbitrary read plus privileged write cannot use the settings exception');
-		$direct = self::decideOnModernDaemon($this->methodCallXml('network.scgi.dont_route'),
-			'sanitize', $policy);
-		$this->assertEquals('reject', $direct['action'],
-			'the exact read exception belongs to the captured batch only');
-		$short = self::decideOnModernDaemon($this->systemMulticallXml([
-			['throttle.max_uploads.global', []],
-			['network.scgi.dont_route', []],
-		]), 'sanitize', $policy);
-		$this->assertEquals('reject', $short['action'],
-			'an arbitrary read batch cannot gain the special settings trust');
-	}
-
-	public function testCapturedLegacyPanelReadBatchesRequireExactTrustedShapes()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		foreach([
-			'settings-read-rtorrent-0.9.8.xml' => 49,
-			'panel-total-rtorrent-0.9.8.xml' => 4,
-			'panel-open-rtorrent-0.9.8.xml' => 2,
-		] as $fixture => $count)
-		{
-			$xml = file_get_contents(__DIR__.'/fixtures/'.$fixture);
-			$this->assertTrue($xml !== false, $fixture.' is a captured browser request');
-			$this->assertEquals($count, substr_count($xml, '<name>methodName</name>'),
-				$fixture.' keeps its captured number of result slots');
-			$decision = self::decideOnModernDaemon($xml, 'sanitize', $policy,
-				false, ['rtorrentVersion' => 0x0908]);
-			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-				$fixture.' is the exact read-only batch allowed on 0.9.8');
-		}
-	}
-
-	public function testCapturedLegacyReadBatchesCannotElevateChangedCalls()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$old = ['rtorrentVersion' => 0x0908];
-		foreach(['settings-read-rtorrent-0.9.8.xml',
-			'panel-total-rtorrent-0.9.8.xml', 'panel-open-rtorrent-0.9.8.xml'] as $fixture)
-		{
-			$xml = file_get_contents(__DIR__.'/fixtures/'.$fixture);
-			$this->assertTrue($xml !== false, $fixture.' exists for the security mutations');
-			$withWrite = preg_replace('/<name>methodName<\/name><value><string>[^<]+<\/string>/',
-				'<name>methodName</name><value><string>execute.capture</string>', $xml, 1);
-			$this->assertTrue($withWrite !== $xml, $fixture.' changed its first method');
-			$blocked = self::decideOnModernDaemon($withWrite, 'sanitize', $policy, false, $old);
-			$this->assertEquals('reject', $blocked['action'],
-				$fixture.' cannot borrow trust for an execution command');
-			$withArgument = preg_replace('/<name>params<\/name><value><array><data><\/data>/',
-				'<name>params</name><value><array><data><value><string>x</string></value></data>', $xml, 1);
-			$this->assertTrue($withArgument !== $xml, $fixture.' changed its first argument list');
-			$blocked = self::decideOnModernDaemon($withArgument, 'sanitize', $policy, false, $old);
-			$this->assertEquals('reject', $blocked['action'],
-				$fixture.' cannot borrow trust with a parameter');
-			preg_match_all('/<name>methodName<\/name><value><string>([^<]+)<\/string>/',
-				$xml, $names);
-			$this->assertTrue(count($names[1]) >= 2, $fixture.' has ordered read slots');
-			$reordered = str_replace('<string>'.$names[1][0].'</string>',
-				'<string>SWAP_SLOT</string>', $xml);
-			$reordered = str_replace('<string>'.$names[1][1].'</string>',
-				'<string>'.$names[1][0].'</string>', $reordered);
-			$reordered = str_replace('<string>SWAP_SLOT</string>',
-				'<string>'.$names[1][1].'</string>', $reordered);
-			$blocked = self::decideOnModernDaemon($reordered, 'sanitize', $policy, false, $old);
-			$this->assertEquals('reject', $blocked['action'],
-				$fixture.' cannot reorder the captured read slots');
-			$wrongVersion = self::decideOnModernDaemon($xml, 'sanitize', $policy,
-				false, ['rtorrentVersion' => 0x1016]);
-			$this->assertTrue(!$wrongVersion['trusted'],
-				$fixture.' exact legacy trust does not apply to a newer daemon');
-		}
-		$mixed = self::decideOnModernDaemon($this->systemMulticallXml([
-			['throttle.global_up.total', []],
-			['d.open', [str_repeat('A', 40)]],
-		]), 'sanitize', $policy, false, $old);
-		$this->assertEquals('reject', $mixed['action'],
-			'a shorter read and write batch cannot borrow the captured read grant');
-		foreach(['dht.statistics', 'throttle.global_up.total',
-			'network.http.current_open', 'network.http.max_open', 'network.port_open'] as $name)
-		{
-			$direct = self::decideOnModernDaemon($this->methodCallXml($name),
-				'sanitize', $policy, false, $old);
-			$this->assertEquals('reject', $direct['action'],
-				$name.' alone cannot borrow trust from a captured batch');
-		}
-		$native = require(__DIR__.'/../../php/xmlrpc_proxy_native.php');
-		foreach(['network.http.max_open', 'network.port_open',
-			'network.port_random', 'network.port_range'] as $name) {
-			$this->assertEquals(0x1, $native[$name],
-				$name.' is registered only for the live 0.9.8 daemon'); }
-	}
-
-	public function testExecutionPrimitivesAreRefused()
-	{
-		foreach(['execute', 'execute.capture', 'execute.raw.bg', 'execute2',
-			'method.insert', 'method.set_key', 'import', 'try_import',
-			'schedule', 'schedule2', 'schedule.remove', 'log.execute',
-			'log.open_file', 'network.scgi.open_port', 'catch', 'system.env'] as $method)
-		{
-			$this->assertTrue($this->callMethod($method) === null, $method . ' is refused');
-			$this->assertTrue(rXMLRPCRequest::$sent === 0, $method . ' never reaches rtorrent');
-		}
-	}
-
-	/**
-	 * The families are spelled differently across versions — 0.9.8 has execute2
-	 * and schedule_remove2, 0.16.x has execute.raw.bg and schedule.remove — so
-	 * the list matches prefixes. An exact list would go stale silently, and for
-	 * a refusal list that is the wrong way to fail.
-	 */
-	public function testRefusalMatchesTheWholeFamily()
-	{
-		$ref = new ReflectionProperty('XMLRPCProxy', 'denyPrefixes');
-		if(PHP_VERSION_ID < 80100) { $ref->setAccessible(true); }
-		$this->assertTrue(in_array('execute', $ref->getValue()),
-			'one entry covers every execute spelling');
-		$this->assertTrue($this->callMethod('execute.capture_nothrow') === null,
-			'including the ones not written down anywhere');
-	}
-
-	public function testHarmlessMethodsAreNotCaughtByTheRefusalList()
-	{
-		foreach(['system.client_version', 'd.name', 'view.list', 'directory.default'] as $method)
-		{
-			$this->callMethod($method);
-			$this->assertTrue(rXMLRPCRequest::$sent === 1, $method . ' is still forwarded');
-			$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, $method . ' untrusted');
-		}
-	}
-
-	public function testPassthroughUnsafeIsNotSubjectToTheRefusalList()
-	{
-		$this->callMethod('execute.capture', ['', '/bin/sh'], 'passthrough_unsafe');
-		$this->assertTrue(rXMLRPCRequest::$sent === 1,
-			'passthrough_unsafe is documented as dangerous and stays literal');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'and trusted');
-	}
-
-	public function testSystemMulticallMembersAreJudgedToo()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
-			. '<params><param><value><array><data><value><struct>'
-			. '<member><name>methodName</name><value><string>execute.capture</string></value></member>'
-			. '<member><name>params</name><value><array><data>'
-			. '<value><string></string></value></data></array></value></member>'
-			. '</struct></value></data></array></value></param></params></methodCall>';
-		$this->assertTrue(self::processOnModernDaemon($xml, 'sanitize', true, []) === null,
-			'a refused method does not get through inside a struct');
-		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'and nothing is forwarded');
-	}
-
-	// ---- elevated: refused by rtorrent untrusted, needed by real clients ----
-
-	public function testOneDownloadByHashIsElevated()
-	{
-		foreach(['d.open', 'd.start', 'd.stop', 'd.delete_tied'] as $method)
-		{
-			$this->callMethod($method, ['0123456789abcdef0123456789ABCDEF01234567']);
-			$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, $method . ' is elevated');
-			$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
-				'0123456789ABCDEF0123456789ABCDEF01234567') !== false,
-				$method . ' is re-emitted with the hash this side validated');
-		}
-	}
-
-	public function testAnArgumentThatIsNotAHashIsNotElevated()
-	{
-		foreach(['not-a-hash', '', '0123456789abcdef0123456789ABCDEF0123456',
-			'0123456789abcdef0123456789ABCDEF012345678', '../../etc/passwd'] as $bad)
-		{
-			$this->assertTrue($this->callMethod('d.start', [$bad]) === null,
-				var_export($bad, true) . ' is not a hash, so the call returns a refusal');
-			$this->assertTrue(rXMLRPCRequest::$sent === 0,
-				var_export($bad, true) . ' never reaches rtorrent');
-		}
-	}
-
-	public function testTheArgumentCountHasToMatch()
-	{
-		$this->callMethod('d.start', ['0123456789ABCDEF0123456789ABCDEF01234567', 'extra']);
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'an extra argument means the call is not the shape that was approved');
-	}
-
-	public function testExactElevatedShapesRejectTrailingNewlinesBeforeTrust()
-	{
-		$hash = str_repeat('A', 40);
-		foreach([
-			['d.stop', [$hash."\n"]],
-			['f.prioritize_first.enable', [$hash.":f0\n"]],
-			['view.set_visible', [$hash, "rat_1\n"]],
-			['d.priority.set', [$hash, "2\n"]],
-			['network.xmlrpc.size_limit.set', ['', "1024\n"]],
-		] as $call)
-		{
-			$decision = self::decideOnModernDaemon($this->methodCallXml($call[0], $call[1]));
-			$this->assertTrue(!$decision['trusted'],
-				$call[0].' cannot elevate a value outside its exact canonical shape');
-			$legacy = XMLRPCProxy::decide($this->methodCallXml($call[0], $call[1]),
-				'sanitize', [], false, ['rtorrentVersion' => 0x0908]);
-			$this->assertEquals('reject', $legacy['action'],
-				$call[0].' refuses the malformed shape when the daemon ignores untrusted flags');
-		}
-	}
-
-	public function testAnElevatedValueIsCarriedAsDataNotAsACommand()
-	{
-		$this->callMethod('d.custom1.set',
-			['0123456789ABCDEF0123456789ABCDEF01234567', '$execute.capture=/bin/hostname']);
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
-			'<string>$execute.capture=/bin/hostname</string>') !== false,
-			'and the value travels as a string parameter, which rtorrent stores rather than parses');
-	}
-
-	public function testTheSizeLimitIsClamped()
-	{
-		$this->callMethod('network.xmlrpc.size_limit.set', ['', '999999999']);
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, '<i8>16777216</i8>') !== false,
-			'a client raising it to add a big torrent is fine; an unbounded value is not');
-		$this->callMethod('network.xmlrpc.size_limit.set', ['', '2097152']);
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, '<i8>2097152</i8>') !== false,
-			'a value under the ceiling is passed through as asked');
-	}
-
-	public function testElevationListHoldsNoCommandCarryingMethod()
-	{
-		$ref = new ReflectionProperty('XMLRPCProxy', 'elevate');
-		if(PHP_VERSION_ID < 80100) { $ref->setAccessible(true); }
-		$elevated = array_keys($ref->getValue());
-		foreach(['load.start', 'load.raw_start', 'd.multicall2', 't.multicall'] as $method) {
-			$this->assertTrue(!in_array($method, $elevated),
-				$method . ' takes command strings, so it is rebuilt rather than elevated'); }
-	}
-
-	public function testRootBoundaryOptInDoesNotImplicitlyEnableLocalPaths()
-	{
-		$this->assertTrue(!$this->loadInto('/var/lib/downloads', ['root' => '/'],
-			'd.directory.set', '/srv/watch/x.torrent', false),
-			'an explicit root boundary does not bypass the independent local-path switch');
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'the local-path request remains fail-closed before reaching rtorrent');
-	}
-
-	public function testBothPathOptInsPreserveLocalPathAutomation()
-	{
-		$this->assertTrue($this->loadInto('/var/lib/downloads', ['root' => '/'],
-			'd.directory.set', '/srv/watch/x.torrent', true),
-			'an operator may combine local paths with an explicit root boundary');
-		$this->assertTrue(rXMLRPCRequest::$sent === 1,
-			'the explicitly enabled automation still reaches rtorrent');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true,
-			'the fully rebuilt request keeps the same trusted transport contract');
-	}
-
-	public function testADirectoryOutsideTheBoundaryIsDropped()
-	{
-		$policy = ['root' => '/torrents1/downloads'];
-		$this->assertTrue(!$this->loadInto('/var/www/user1/rtorrent/share/settings/x/', $policy),
-			'the reported attack — a webroot path — does not reach rtorrent');
-		$this->assertTrue(rXMLRPCRequest::$sent === 0,
-			'and the request is rejected with zero transport calls');
-	}
-
-	public function testADirectoryInsideTheBoundaryIsKept()
-	{
-		$policy = ['root' => '/torrents1/downloads'];
-		$this->assertTrue($this->loadInto('/torrents1/downloads/Movies', $policy),
-			'a directory the customer is entitled to still works');
-		$this->assertTrue($this->loadInto('/torrents1/downloads', $policy),
-			'the boundary itself is inside it');
-	}
-
-	public function testAllDirectorySettersAreConfinedTheSameWay()
-	{
-		$policy = ['root' => '/torrents1/downloads'];
-		foreach (self::DIRECTORY_SETTERS as $setter) {
-			$this->assertTrue(!$this->loadInto('/var/www/user1', $policy, $setter),
-				$setter . ' cannot place torrent data outside the configured boundary');
-			$this->assertTrue($this->loadInto('/torrents1/downloads/x', $policy, $setter),
-				$setter . ' still works inside the boundary');
-		}
-	}
-
-	public function testQuotedDirectoryInsideTheBoundaryIsKept()
-	{
-		$policy = ['root' => '/torrents1/downloads'];
-		$this->assertTrue($this->loadInto('"/torrents1/downloads/cross-seed"', $policy, 'd.directory_base.set'),
-			'a client-quoted path is unquoted before the boundary check');
-	}
-
-	public function testPathTricksDoNotEscape()
-	{
-		$policy = ['root' => '/torrents1/downloads'];
-		foreach([
-			'/torrents1/downloads/../../var/www',   // climbing out
-			'/torrents1/downloads/./../../etc',     // with a . in the way
-			'/torrents1/downloadsEVIL',             // a prefix, not a child
-			'/torrents1/downloads/../downloads2',   // sibling
-			'downloads/x',                          // not absolute at all
-			'',                                     // nothing
-		] as $dir)
-		{
-			$this->assertTrue(!$this->loadInto($dir, $policy),
-				var_export($dir, true) . ' is not inside the boundary');
-		}
-	}
-
-	/**
-	 * The value normally does not exist yet, so realpath() on it answers
-	 * nothing and a lexical check is all that is left — which one symlink
-	 * inside the tree defeats, and the customer can create symlinks. The
-	 * resolver is asked about the deepest part that does exist.
-	 */
-	public function testASymlinkOutOfTheTreeIsCaught()
-	{
-		$policy = [
-			'root' => '/torrents1/downloads',
-			'resolve' => function($path) {
-				// stands in for a symlink at /torrents1/downloads/escape
-				if(strpos($path, '/torrents1/downloads/escape') === 0) {
-					return '/var/www/user1' . substr($path, strlen('/torrents1/downloads/escape')); }
-				return $path;
-			},
-		];
-		$this->assertTrue(!$this->loadInto('/torrents1/downloads/escape/x', $policy),
-			'a path that is inside on paper and outside in fact is dropped');
-		$this->assertTrue($this->loadInto('/torrents1/downloads/real/x', $policy),
-			'and one that resolves where it says still works');
-	}
-
-	public function testAResolverThatCannotAnswerIsANo()
-	{
-		$policy = [
-			'root' => '/torrents1/downloads',
-			'resolve' => function($path) { return ''; },
-		];
-		$this->assertTrue(!$this->loadInto('/torrents1/downloads/x', $policy),
-			'an open question about a write target is not a yes');
-	}
-
-	public function testNoBoundaryStatedMeansNoBoundaryChecked()
-	{
-		// The library keeps this compatibility mode for callers that omit a
-		// policy. Both shipped endpoints now state a boundary; rpc2.php refuses
-		// to start when its configured boundary is empty or implicit root.
-		$this->assertTrue($this->loadInto('/anywhere/at/all', null),
-			'a caller that states no boundary is not policed here');
-	}
-
-	public function testAPolicyWithNoRootRefuses()
-	{
-		$this->assertTrue(!$this->loadInto('/torrents1/downloads/x', []),
-			'a stated policy that names no root permits nothing, rather than everything');
-	}
-
-
-	public function testMalformedSystemMulticallIsRejected()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
-			. '<params><param><value><string>x</string></value></param></params></methodCall>';
-		$this->assertTrue(self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']) === null, 'system.multicall is rejected');
-	}
-
-	public function testEnvCheckRecommendsTheAvailableSimpleXMLFunction()
-	{
-		$envCheckPath = realpath(__DIR__ . '/../../env_check.php');
-		$child = SCGITransportFixture::runPhpChild(['-d',
-			'disable_functions=simplexml_load_string', $envCheckPath]);
-
-		$this->assertEquals(0, $child['exitCode'],
-			'env_check keeps optional proxy sanitisation a recommendation');
-		$this->assertEquals('', $child['stderr'], 'env_check emits no fatal or warning');
-		$this->assertTrue(strpos($child['stdout'], 'Recommended:') !== false,
-			'Recommended section present');
-		$recommendedSection = '';
-		if(preg_match('/Recommended:(.*?)(?:Configuration:|$)/s', $child['stdout'], $m)) {
-			$recommendedSection = $m[1];
-		}
-		$this->assertTrue(preg_match('/^  \[WARN\] PHP extension: simplexml\s+'
-			. 'XMLRPC proxy sanitisation \(Sonarr\/Radarr raw pass-through\)$/m',
-			$recommendedSection) === 1,
-			'simplexml must be a recommendation with the exact proxy-sanitisation reason');
-	}
-
-	// ---- an escaped comma is part of the value, not a separator ----
-
-	public function testAnEscapedCommaDoesNotSeparateArguments()
-	{
-		$sent = $this->sanitizeParam('d.custom.set=a\,b', ['d.custom.set']);
-		$this->assertTrue(strpos($sent, 'd.custom.set="a,b"') !== false,
-			'rtorrent reads a\,b as the one argument a,b; splitting on it invented a second');
-	}
-
-	public function testAnEscapedCommaAtTheEndOfAValueIsKept()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=a\,', ['d.custom1.set']);
-		$this->assertTrue(strpos($sent, 'd.custom1.set="a,"') !== false,
-			'the comma is value content, so it survives to the end');
-	}
-
-	public function testAnUnescapedCommaStillSeparates()
-	{
-		$sent = $this->sanitizeParam('d.custom.set=chk-state,7', ['d.custom.set']);
-		$this->assertTrue(strpos($sent, 'd.custom.set="chk-state","7"') !== false,
-			'a bare comma keeps separating arguments');
-	}
-
-	/**
-	 * Every other backslash is left where it is. rtorrent would read it as an
-	 * escape and turn C:\downloads into C:downloads, but this side re-quotes
-	 * the value, so the backslash reaches rtorrent whole -- and clients have
-	 * been sending paths and labels through here on that basis.
-	 */
-	public function testABackslashThatIsNotBeforeACommaIsKept()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=C:\downloads\tv', ['d.custom1.set']);
-		$this->assertTrue(strpos($sent, 'd.custom1.set="C:\\\\downloads\\\\tv"') !== false,
-			'a windows-style path survives, re-escaped on the way out');
-	}
-
-	public function testATrailingBackslashIsStillJustAValue()
-	{
-		$sent = $this->sanitizeParam('d.custom1.set=abc\\', ['d.custom1.set']);
-		$this->assertTrue(strpos($sent, 'd.custom1.set="abc\\\\"') !== false,
-			'a value ending in a backslash is quoted, not dropped');
-	}
-
-	public function testVerboseDotLoadsAreOwnedAndSanitized()
-	{
-		$methods = [
-			'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
-			'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
-		];
-		$torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
-		foreach($methods as $method)
-		{
-			$isRaw = (strpos($method, '.raw') !== false);
-			$dataVal = $isRaw
-				? '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
-				: '<param><value><string>http://example.test/test.torrent</string></value></param>';
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>'
-				. '<param><value><string></string></value></param>'
-				. $dataVal
-				. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-				. '</params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-			$this->assertTrue($d['action'] === 'send', $method . ' should be accepted');
-			$this->assertTrue($d['trusted'] === true, $method . ' should be trusted');
-			$this->assertTrue(strpos($d['payload'], 'd.custom1.set="safe_val"') !== false, $method . ' should have sanitized param');
-		}
-	}
-
-	public function testExactEvaluatorsAreRejected()
-	{
-		$evaluators = ['catch', 'branch', 'try', 'and', 'or', 'less', 'greater', 'equal', 'match'];
-		foreach($evaluators as $ev)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $ev . '</methodName><params></params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', $ev . ' must be rejected');
-			$this->assertTrue($d['trusted'] === false, $ev . ' must not be trusted');
-		}
-	}
-
-	public function testIfEvaluatorIsNotOverblockedAndNearMissesPass()
-	{
-		$nearMisses = ['if', 'not', 'compare', 'catch_extra', 'branching', 'trying'];
-		foreach($nearMisses as $nm)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $nm . '</methodName><params></params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'send', $nm . ' must not be blocked');
-			$this->assertTrue($d['trusted'] === false, $nm . ' must be ordinary untrusted');
-		}
-	}
-
-	public function testDirectCarriersAreRejected()
-	{
-		$carriers = [
-			'p.call_target',
-			'directory.watch.added',
-			'view.filter',
-			'view.filter.temp',
-			'view.sort_new',
-			'view.sort_current',
-			'view.event_added',
-			'view.event_removed',
-		];
-		foreach($carriers as $carrier)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $carrier . '</methodName><params></params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', $carrier . ' must be rejected');
-		}
-	}
-
-	public function testDirectDirectorySettersAreRejected()
-	{
-		$setters = self::DIRECTORY_SETTERS;
-		foreach($setters as $setter)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $setter . '</methodName><params>'
-				. '<param><value><string>1234567890123456789012345678901234567890</string></value></param>'
-				. '<param><value><string>/tmp</string></value></param>'
-				. '</params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize', [$setter]);
-			$this->assertTrue($d['action'] === 'reject', 'direct call to ' . $setter . ' must be rejected');
-		}
-	}
-
-	public function testUnknownUnderscoreLoadNameRemainsUntrusted()
-	{
-		$xml = $this->methodCallXml('load_normal', ['http://example.com/test.torrent']);
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send' && !$d['trusted'],
-			'an unregistered underscore spelling remains an ordinary unknown method');
-		$this->assertEquals($xml, $d['payload'], 'unknown method retains its original bytes');
-	}
-
-	public function testDirectMulticallsAdversarialGrammarRejectsWholeCall()
-	{
-		$multicalls = [
-			'd.multicall',
-			'd.multicall2',
-			't.multicall',
-			'f.multicall',
-			'p.multicall',
-		];
-		foreach($multicalls as $mc)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $mc . '</methodName><params>'
-				. '<param><value><string></string></value></param>'
-				. '<param><value><string>main</string></value></param>'
-				. '<param><value><string>execute.capture=/bin/id</string></value></param>'
-				. '</params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-			$this->assertTrue($d['action'] === 'reject', $mc . ' with unallowed command must be rejected');
-			$this->assertTrue($d['method'] === $mc, 'refusal must name outer method ' . $mc);
-		}
-	}
-
-	public function testDirectMulticallFilteredFilterSlotRejectsWhenUnsafe()
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>execute.capture=/bin/id</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'd.multicall.filtered with unsafe filter must reject outer call');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer d.multicall.filtered');
-	}
-
-
-	public function testSystemMulticallWithAnUntrustedReadMemberRemainsUntrusted()
-	{
-		$xml = $this->systemMulticallXml([['system.client_version', []]]);
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send' && !$d['trusted'],
-			'a read method can use the carrier without gaining trust');
-		$this->assertTrue($d['method'] === null, 'a forwarded batch names no refused method');
-	}
-
-	public function testMalformedXmlOrMissingMethodIsTerminallyRejected()
-	{
-		$cases = [
-			'not xml at all',
-			'',
-			'<?xml version="1.0"?><methodCall></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName></methodName></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>   </methodName></methodCall>',
-		];
-		foreach($cases as $raw)
-		{
-			$d = self::decideOnModernDaemon($raw, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'malformed XML must be rejected');
-			$this->assertTrue($d['payload'] === '', 'malformed XML rejection payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'malformed XML rejection must be untrusted');
-		}
-	}
-
-	public function testEmptyMethodNameHasNoRefusedMethodOrEmptyLogSuffix()
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName></methodName></methodCall>';
-		$decision = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertEquals('reject', $decision['action'], 'empty method name is rejected');
-		$this->assertEquals(null, $decision['method'], 'empty method name identifies no method');
-		$this->assertEquals(['rejected (invalid XML)'], $decision['log'],
-			'empty method name adds no method suffix to the log');
-	}
-
-	public function testMalformedOwnedLoadsAreTerminallyRejected()
-	{
-		$badXmls = [
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params><param><value><string></string></value></param><param><value><base64>!!!not-valid-base64!!!</base64></value></param></params></methodCall>',
-		];
-		foreach($badXmls as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'malformed load call must be rejected');
-			$this->assertTrue($d['payload'] === '', 'malformed load rejection payload must be empty');
-		}
-	}
-
-	public function testInvalidExactElevatedShapesAreTerminallyRejected()
-	{
-		$hashCases = [
-			'd.open' => [
-				'<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
-			],
-			'd.start' => [
-				'<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
-				'<param><value><string>12345678901234567890123456789012345678901</string></value></param>', // 41
-				'<param><value><string>123456789012345678901234567890123456789G</string></value></param>', // non-hex
-				'<param><value><array><data><value><string>1234567890123456789012345678901234567890</string></value></data></array></value></param>',
-				'<param><value><struct><member><name>hash</name><value><string>1234567890123456789012345678901234567890</string></value></member></struct></value></param>',
-			],
-			'd.stop' => [
-				'<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
-			],
-			'd.custom1.set' => [
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param>', // missing 2nd
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><array><data><value><string>val</string></value></data></array></value></param>',
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param><param><value><string>v2</string></value></param>', // extra 3rd
-			],
-			'd.custom2.set' => [
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param>', // missing 2nd
-			],
-			'd.custom.set' => [
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param>', // missing 3rd
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param><param><value><string>v2</string></value></param><param><value><string>v3</string></value></param>', // extra 4th
-			],
-			'd.priority.set' => [
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>01</string></value></param>', // leading zero
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>+5</string></value></param>', // plus sign
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>-0</string></value></param>', // negative zero
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>abc</string></value></param>', // non-int
-				'<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string> 5 </string></value></param>', // whitespace
-			],
-			'network.xmlrpc.size_limit.set' => [
-				'<param><value><string>target</string></value></param><param><value><int>1024</int></value></param>', // non-empty target
-				'<param><value><string></string></value></param><param><value><string>0</string></value></param>', // zero size
-				'<param><value><string></string></value></param><param><value><string>-1</string></value></param>', // negative size
-				'<param><value><string></string></value></param><param><value><string>0500</string></value></param>', // leading zero
-				'<param><value><string></string></value></param><param><value><string>+500</string></value></param>', // plus sign
-				'<param><value><string></string></value></param><param><value><string>bad</string></value></param>', // bad size
-			],
-		];
-
-		foreach($hashCases as $method => $paramVariants)
-		{
-			foreach($paramVariants as $pv)
-			{
-				$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>' . $pv . '</params></methodCall>';
-				$d = self::decideOnModernDaemon($xml, 'sanitize');
-				$this->assertTrue($d['action'] === 'reject', $method . ' with invalid shape must be rejected');
-				$this->assertTrue($d['payload'] === '', 'rejection payload must be empty');
-				$this->assertTrue($d['trusted'] === false, 'rejection must be untrusted');
-			}
-		}
-	}
-
-	public function testInvalidModeIsTerminallyRejectedBeforeXmlParsing()
-	{
-		$d1 = self::decideOnModernDaemon('not xml', 'invalid_mode');
-		$this->assertTrue($d1['action'] === 'reject', 'invalid mode must be rejected');
-		$this->assertTrue($d1['payload'] === '', 'invalid mode payload must be empty');
-
-		$d2 = self::decideOnModernDaemon('not xml', 'off');
-		$this->assertTrue($d2['action'] === 'reject', 'off mode must be rejected');
-		$this->assertTrue($d2['payload'] === '', 'off mode payload must be empty');
-	}
-
-	public function testDiagnosticsBoundsAndNormalization()
-	{
-		$longBadMethod = 'method.bad*name/with@punctuation#and;characters!' . str_repeat('X', 200);
-		$xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($longBadMethod) . '</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'method must be rejected');
-		$this->assertTrue(strlen($d['method']) <= 96, 'refusal method must be capped at 96 bytes');
-		$this->assertTrue(strpos($d['method'], '?') !== false, 'non-whitelisted chars in method must be normalized to ?');
-
-		$cleanMsg = XMLRPCProxy::formatLogMessage("line1\r\nline2\tline3\x00line4");
-		$this->assertTrue(strpos($cleanMsg, "\n") === false, 'formatLogMessage must strip newlines');
-		$this->assertTrue(strpos($cleanMsg, "\r") === false, 'formatLogMessage must strip CR');
-		$this->assertTrue(strpos($cleanMsg, "\x00") === false, 'formatLogMessage must strip NUL');
-		$this->assertTrue(strlen($cleanMsg) <= 512, 'formatLogMessage must cap at 512 bytes');
-	}
-
-	public function testStoppedShapesAreTerminallyRejected()
-	{
-		// 1. non-methodCall root carrying load.start
-		$xml1 = '<?xml version="1.0"?><bogus><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param></params></bogus>';
-		$d1 = self::decideOnModernDaemon($xml1, 'sanitize');
-		$this->assertTrue($d1['action'] === 'reject', 'non-methodCall root must be rejected');
-		$this->assertTrue($d1['trusted'] === false, 'non-methodCall root must not be trusted');
-
-		// 2. sibling methodName values
-		$xml2 = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><methodName>execute</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param></params></methodCall>';
-		$d2 = self::decideOnModernDaemon($xml2, 'sanitize');
-		$this->assertTrue($d2['action'] === 'reject', 'sibling methodName elements must be rejected');
-
-		// 3. load.raw data slot is string, not base64
-		$xml3 = '<?xml version="1.0"?><methodCall><methodName>load.raw</methodName><params><param><value><string></string></value></param><param><value><string>raw_not_base64_data</string></value></param></params></methodCall>';
-		$d3 = self::decideOnModernDaemon($xml3, 'sanitize');
-		$this->assertTrue($d3['action'] === 'reject', 'load.raw string data must be rejected');
-
-		// 4. d.multicall.filtered with filter but no result
-		$xml4 = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.is_active=</string></value></param></params></methodCall>';
-		$d4 = self::decideOnModernDaemon($xml4, 'sanitize');
-		$this->assertTrue($d4['action'] === 'reject', 'd.multicall.filtered without results must be rejected');
-
-		// 5. d.multicall2 with target/view but no result
-		$xml5 = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param></params></methodCall>';
-		$d5 = self::decideOnModernDaemon($xml5, 'sanitize');
-		$this->assertTrue($d5['action'] === 'reject', 'd.multicall2 without results must be rejected');
-
-		// 6. d.start value containing both string and int children
-		$xml6 = '<?xml version="1.0"?><methodCall><methodName>d.start</methodName><params><param><value><string>1234567890123456789012345678901234567890</string><int>1</int></value></param></params></methodCall>';
-		$d6 = self::decideOnModernDaemon($xml6, 'sanitize');
-		$this->assertTrue($d6['action'] === 'reject', 'd.start with mixed string and int types must be rejected');
-	}
-
-	public function testMalformedStructuralEnvelopeAndValuesAreTerminallyRejected()
-	{
-		// missing <value> in param
-		$xmlMissingVal = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param></param></params></methodCall>';
-		try {
-			$d = self::decideOnModernDaemon($xmlMissingVal, 'sanitize');
-			$this->assertTrue(is_array($d) && $d['action'] === 'reject', 'missing value must be rejected');
-		} catch (Throwable $e) {
-			$this->assertTrue(false, 'missing value crashed with ' . get_class($e) . ': ' . $e->getMessage());
-		}
-
-		// duplicate <value> in param
-		$xmlDupVal = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value><value><string>http://example.com</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlDupVal, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate value under param must be rejected');
-
-		// missing <params> on owned method
-		$xmlMissingParams = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName></methodCall>';
-		$d = self::decideOnModernDaemon($xmlMissingParams, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'missing params on owned method must be rejected');
-
-		// duplicate <params>
-		$xmlDupParams = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param></params><params><param><value><string></string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlDupParams, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate params containers must be rejected');
-
-		// unexpected child under <params>
-		$xmlUnexpChild = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><extra>bad</extra></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlUnexpChild, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'unexpected child under params must be rejected');
-
-		// duplicate type child in value
-		$xmlDupType = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlDupType, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate type children in value must be rejected');
-
-		// unknown type child in value
-		$xmlUnknownType = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><bogustype>a</bogustype></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlUnknownType, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'unknown type in value must be rejected');
-
-		// mixed implicit text and typed child
-		$xmlMixedImplicit = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value>implicit<string>typed</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlMixedImplicit, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'mixed implicit text and typed child must be rejected');
-
-		// ordinary method with structural defects must also be rejected by the decoder
-		$xmlOrdDupParams = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value></param></params><params><param><value><string>b</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlOrdDupParams, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate params containers on ordinary method must be rejected');
-
-		$xmlOrdUnexpChild = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value></param><extra>bad</extra></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlOrdUnexpChild, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'unexpected child under params on ordinary method must be rejected');
-
-		$xmlOrdDupVal = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value><value><string>b</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlOrdDupVal, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate value under param on ordinary method must be rejected');
-
-		$xmlOrdDupType = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlOrdDupType, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'duplicate type children in value on ordinary method must be rejected');
-
-		$xmlOrdMixedImplicit = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value>implicit<string>typed</string></value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xmlOrdMixedImplicit, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'mixed implicit text and typed child on ordinary method must be rejected');
-	}
-
-	public function testResultlessMulticallsAreTerminallyRejected()
-	{
-		$multicalls = [
-			'd.multicall', 'd.multicall2', 'd.multicall.filtered',
-			't.multicall', 'f.multicall', 'p.multicall',
-		];
-		foreach($multicalls as $mc)
-		{
-			$paramsXml = '<param><value><string></string></value></param><param><value><string>main</string></value></param>';
-			if($mc === 'd.multicall.filtered') {
-				$paramsXml .= '<param><value><string>d.is_active=</string></value></param>'; }
-			$xml = '<?xml version="1.0"?><methodCall><methodName>' . $mc . '</methodName><params>' . $paramsXml . '</params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', $mc . ' without results must be rejected');
-			$this->assertTrue($d['method'] === $mc, 'refusal must name outer ' . $mc);
-		}
-	}
-
-	public function testSafePlusUnknownMulticallRejectsEntireCall()
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_label</string></value></param>'
-			. '<param><value><string>d.unknown_non_deny_method=data</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'safe plus unknown non-deny member must reject entire call');
-		$this->assertTrue($d['method'] === 'd.multicall2', 'refusal must name outer method d.multicall2');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-	}
-
-	// --- C1: Filter Owner Tests ---
-
-	public function testFilteredMulticallRejectsGetterOutsideSetterOnlyFilterPolicy()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.is_active=</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'a reader outside the setter-only filter policy must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method d.multicall.filtered');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process must return null on rejected filter');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on rejected filter');
-	}
-
-	public function testFilteredMulticallRejectsDollarCommandFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>$method.insert=fixture</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'dollar command filter must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testFilteredMulticallRejectsParenthesizedCommandFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>(method.insert,fixture)</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'parenthesized command filter must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testFilteredMulticallRejectsNestedCommandFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>(branch,(method.insert,fixture))</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'nested command filter must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testFilteredMulticallRejectsUnclosedQuotedFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.custom1.set="unterminated</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'unclosed quoted filter must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testFilteredMulticallRejectsMalformedEscapedFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.custom1.set="val\\</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe_val</string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'malformed escaped filter must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
-		$this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testFilteredMulticallCanonicallyRebuildsSetterFilter()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.custom1.set=filter value</string></value></param>'
-			. '<param><value><string>d.custom.set=result_val</string></value></param>'
-			. '</params></methodCall>';
-		$safeParams = ['d.custom1.set', 'd.custom.set'];
-		$d = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
-		$this->assertTrue($d['action'] === 'send', 'allowlisted setter filter must be admitted for send');
-		$this->assertTrue($d['trusted'] === true, 'setter-only filter multicall must be trusted');
-		$this->assertTrue(strpos($d['payload'], 'd.custom1.set="filter value"') !== false,
-			'filter must become canonical rebuilt form');
-		$this->assertTrue(strpos($d['payload'], 'd.custom1.set=filter value') === false,
-			'original filter bytes must be absent');
-		$this->assertTrue(strpos($d['payload'], 'd.custom.set="result_val"') !== false,
-			'result slot must become canonical rebuilt form');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, $safeParams);
-		$this->assertEquals(1, rXMLRPCRequest::$sent, 'exactly one send');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'sent as trusted');
-	}
-
-	// --- C2: Structural Decoder Tests ---
-
-	public function testStructuralDecoderRejectsTextUnderMethodCall()
-	{
-		$this->resetMocks();
-		$p = '<param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param>';
-		$inputs = [
-			'<?xml version="1.0"?><methodCall>text_before<methodName>load.start</methodName><params>' . $p . '</params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName>text_between<params>' . $p . '</params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p . '</params>text_after</methodCall>',
-		];
-		foreach($inputs as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'text directly below methodCall must be rejected');
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsTextUnderParams()
-	{
-		$this->resetMocks();
-		$p1 = '<param><value><string></string></value></param>';
-		$p2 = '<param><value><string>http://example.com/test.torrent</string></value></param>';
-		$inputs = [
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>text_before' . $p1 . $p2 . '</params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p1 . 'text_between' . $p2 . '</params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p1 . $p2 . 'text_after</params></methodCall>',
-		];
-		foreach($inputs as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'text directly below params must be rejected');
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsTextUnderParam()
-	{
-		$this->resetMocks();
-		$p2 = '<param><value><string>http://example.com/test.torrent</string></value></param>';
-		$inputs = [
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param>text_before<value><string></string></value></param>' . $p2 . '</params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value>text_after</param>' . $p2 . '</params></methodCall>',
-		];
-		foreach($inputs as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'text directly below param must be rejected');
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsMixedValueContent()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value>text_before<string>test</string></value></param></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string>test</string>text_after</value></param></params></methodCall>',
-		];
-		foreach($inputs as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'mixed value content must be rejected');
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsChildrenInsideScalarTypes()
-	{
-		$this->resetMocks();
-		$types = ['string', 'base64', 'int', 'i4', 'i8'];
-		foreach($types as $tag)
-		{
-			$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><'
-				. $tag . '>http://example.com/test.torrent<bogus>ignored</bogus></' . $tag . '></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'child inside scalar type <' . $tag . '> must be rejected');
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsAttributes()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall attr="1"><methodName>load.start</methodName><params></params></methodCall>',
-			'<methodCall><methodName attr="1">load.start</methodName><params></params></methodCall>',
-			'<methodCall><methodName>load.start</methodName><params attr="1"></params></methodCall>',
-			'<methodCall><methodName>load.start</methodName><params><param attr="1"><value><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>load.start</methodName><params><param><value attr="1"><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>load.start</methodName><params><param><value><string attr="1"></string></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'attributes on XMLRPC elements must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsNamespaces()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall xmlns="http://example.com"><methodName>system.client_version</methodName><params></params></methodCall>',
-			'<ns:methodCall xmlns:ns="http://example.com"><ns:methodName>system.client_version</ns:methodName><params></params></ns:methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params xmlns="http://example.com"></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value xmlns="http://example.com"><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><string xmlns="http://example.com"></string></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'namespaces must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsDuplicateNodes()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall><methodName>system.client_version</methodName><methodName>d.start</methodName><params></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params></params><params></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><string></string></value><value><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'duplicate nodes must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsMissingRequiredNodes()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall><params></params></methodCall>', // missing methodName
-			'<methodCall><methodName>system.client_version</methodName><params><param></param></params></methodCall>', // missing value
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><array></array></value></param></params></methodCall>', // array missing data
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><value><string>v</string></value></member></struct></value></param></params></methodCall>', // struct member missing name
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name></member></struct></value></param></params></methodCall>', // struct member missing value
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'missing required nodes must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsUnknownChildren()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall><extra>bad</extra><methodName>system.client_version</methodName><params></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><extra>bad</extra><params></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><extra>bad</extra><param><value><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><extra>bad</extra><value><string></string></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><extra>bad</extra></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'unknown child elements must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsMalformedArrays()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><array><data></data><data></data></array></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><array><data><unknown>x</unknown></data></array></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><array>unconsumed_text<data></data></array></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'malformed array must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsMalformedStructs()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name><value><string>v</string></value></member><extra>bad</extra></struct></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k1</name><name>k2</name><value><string>v</string></value></member></struct></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name><value><string>v1</string></value><value><string>v2</string></value></member></struct></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><unknown>bad</unknown></member></struct></value></param></params></methodCall>',
-			'<methodCall><methodName>system.client_version</methodName><params><param><value><struct>unconsumed_text<member><name>k</name><value><string>v</string></value></member></struct></value></param></params></methodCall>',
-		];
-		foreach($inputs as $body)
-		{
-			$xml = '<?xml version="1.0"?>' . $body;
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'malformed struct must be rejected: ' . $body);
-			$this->assertTrue($d['payload'] === '', 'payload must be empty');
-			$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-			$res = self::processOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($res === null, 'process must return null');
-			$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-		}
-	}
-
-	public function testStructuralDecoderRejectsNestedElementInsideHash()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.start</methodName><params><param><value>'
-			. '<string>0123456789abcdef0123456789abcdef01234567<bogus>ignored</bogus></string>'
-			. '</value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'nested element inside hash must be rejected');
-		$this->assertTrue($d['payload'] === '', 'payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-		$res = self::processOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($res === null, 'process must return null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testStructuralDecoderRejectsNestedElementInsideRawLoadCommand()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>ZGF0YQ==</base64></value></param>'
-			. '<param><value><string>d.custom1.set=safe<bogus>ignored</bogus></string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'nested element inside load.raw_start trailing command must be rejected');
-		$this->assertTrue($d['payload'] === '', 'payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-		$res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-		$this->assertTrue($res === null, 'process must return null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testStructuralDecoderRejectsMalformedOrdinaryMethod()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params attr="1"></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'malformed ordinary method must be rejected and never enter untrusted fallback');
-		$this->assertTrue($d['payload'] === '', 'payload must be empty');
-		$this->assertTrue($d['trusted'] === false, 'trusted must be false');
-		$res = self::processOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($res === null, 'process must return null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
-	}
-
-	public function testStructuralDecoderPreservesValidRecursiveOrdinaryValues()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value>'
-			. '<array><data><value><struct><member><name>key</name><value><string>val</string></value></member></struct></value></data></array>'
-			. '</value></param></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'valid recursive structure on ordinary method must be accepted');
-		$this->assertTrue($d['trusted'] === false, 'ordinary method must be untrusted');
-		$this->assertEquals($xml, $d['payload'], 'original payload preserved');
-		$res = self::processOnModernDaemon($xml, 'sanitize');
-		$this->assertEquals(1, rXMLRPCRequest::$sent, 'one send');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'sent as untrusted');
-	}
-
-	// --- I1: URI Encoding Tests ---
-
-	public function testUriLoadRejectsBase64DecodedInvalidUtf8WithoutSending()
-	{
-		$this->resetMocks();
-		// 1. Invalid UTF-8 bytes (\xFF)
-		$invalidUtf8Bytes = "http://example.test/x\xFF";
-		$b64Invalid = base64_encode($invalidUtf8Bytes);
-		$xmlInvalid = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . $b64Invalid . '</base64></value></param>'
-			. '</params></methodCall>';
-		$d1 = self::decideOnModernDaemon($xmlInvalid, 'sanitize');
-		$this->assertTrue($d1['action'] === 'reject', 'invalid UTF-8 URI must be rejected');
-		$this->assertTrue($d1['method'] === 'load.start', 'refusal must name load.start');
-		$this->assertTrue($d1['payload'] === '', 'payload must be empty');
-		$this->assertTrue($d1['trusted'] === false, 'trusted must be false');
-		$res1 = self::processOnModernDaemon($xmlInvalid, 'sanitize');
-		$this->assertTrue($res1 === null, 'process must return null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on invalid UTF-8 URI');
-
-		// 2. XML 1.0 forbidden control byte (\x00, \x0b)
-		$ctrlBytes = "http://example.test/x\x0b";
-		$b64Ctrl = base64_encode($ctrlBytes);
-		$xmlCtrl = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . $b64Ctrl . '</base64></value></param>'
-			. '</params></methodCall>';
-		$d2 = self::decideOnModernDaemon($xmlCtrl, 'sanitize');
-		$this->assertTrue($d2['action'] === 'reject', 'XML forbidden control byte URI must be rejected');
-		$this->assertTrue($d2['method'] === 'load.start', 'refusal must name load.start');
-		$this->assertTrue($d2['payload'] === '', 'payload must be empty');
-		$this->assertTrue($d2['trusted'] === false, 'trusted must be false');
-		$res2 = self::processOnModernDaemon($xmlCtrl, 'sanitize');
-		$this->assertTrue($res2 === null, 'process must return null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on control byte URI');
-
-		// 3. Valid UTF-8 URI
-		$validUtf8Uri = "http://example.test/тест";
-		$b64Valid = base64_encode($validUtf8Uri);
-		$xmlValid = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . $b64Valid . '</base64></value></param>'
-			. '</params></methodCall>';
-		$d3 = self::decideOnModernDaemon($xmlValid, 'sanitize');
-		$this->assertTrue($d3['action'] === 'send', 'valid UTF-8 URI must be accepted');
-		$this->assertTrue($d3['trusted'] === true, 'valid load.start must be trusted');
-		$this->assertTrue(strpos($d3['payload'], htmlspecialchars($validUtf8Uri, ENT_NOQUOTES, 'UTF-8')) !== false,
-			'canonical string re-emission must contain valid URI');
-		$res3 = self::processOnModernDaemon($xmlValid, 'sanitize');
-		$this->assertEquals(1, rXMLRPCRequest::$sent, 'one send on valid URI');
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'sent as trusted');
-	}
-
-	public function testUriLoadRejectsXmlForbiddenUnicodeBeforeTransport()
-	{
-		foreach(['load.normal', 'load.start', 'load.verbose', 'load.start_verbose'] as $method)
-		{
-			foreach(["\xef\xbf\xbe", "\xef\xbf\xbf"] as $forbidden)
-			{
-				$this->resetMocks();
-				$xml = '<methodCall><methodName>'.$method.'</methodName><params>'
-					. '<param><value><string></string></value></param>'
-					. '<param><value><base64>'.base64_encode('https://example.test/'.$forbidden)
-					. '</base64></value></param></params></methodCall>';
-				$decision = self::decideOnModernDaemon($xml);
-				$this->assertTrue($decision['action'] === 'reject', $method.': XML-forbidden Unicode is rejected');
-				$this->assertTrue($decision['method'] === $method, 'refusal retains the outer URI load method');
-				$this->assertTrue($decision['payload'] === '', 'no malformed canonical XML is emitted');
-				$this->assertTrue($decision['trusted'] === false, 'rejected input is never trusted');
-				$this->assertTrue(self::processOnModernDaemon($xml) === null, 'rejection is terminal');
-				$this->assertTrue(rXMLRPCRequest::$sent === 0, 'XML-forbidden URI never reaches transport');
-			}
-		}
-	}
-
-	public function testUriLoadPreservesXmlAllowedUnicodeAtTheForbiddenBoundary()
-	{
-		// XML 1.0 excludes U+FFFE/U+FFFF, not the entire supplementary range.
-		foreach(['load.normal', 'load.start', 'load.verbose', 'load.start_verbose'] as $method)
-		{
-			foreach(["\xef\xbf\xbd", "\xf0\x90\x80\x80", "\xf4\x8f\xbf\xbf"] as $allowed)
-			{
-				$this->resetMocks();
-				$uri = 'https://example.test/'.$allowed;
-				$xml = '<methodCall><methodName>'.$method.'</methodName><params>'
-					. '<param><value><string></string></value></param>'
-					. '<param><value><base64>'.base64_encode($uri)
-					. '</base64></value></param></params></methodCall>';
-				self::processOnModernDaemon($xml);
-				$this->assertTrue(rXMLRPCRequest::$sent === 1, 'XML-allowed Unicode URI is sent exactly once');
-				$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'valid URI load remains trusted');
-				$parsed = @simplexml_load_string(rXMLRPCRequest::$lastPayload);
-				$this->assertTrue($parsed !== false, 'canonical payload is valid XML');
-				$this->assertTrue($parsed !== false && (string)$parsed->params->param[1]->value->string === $uri,
-					'allowed URI code points survive byte for byte');
-			}
-		}
-	}
-
-	public function testRawMetainfoDoesNotApplyTheUriUnicodeRestriction()
-	{
-		$bytes = "\x00\xff\xef\xbf\xbe\xef\xbf\xbf";
-		foreach(['load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose'] as $method)
-		{
-			$this->resetMocks();
-			$xml = '<methodCall><methodName>'.$method.'</methodName><params>'
-				. '<param><value><string></string></value></param>'
-				. '<param><value><base64>'.base64_encode($bytes)
-				. '</base64></value></param></params></methodCall>';
-			self::processOnModernDaemon($xml);
-			$this->assertTrue(rXMLRPCRequest::$sent === 1, 'raw metainfo is not interpreted as URI text');
-			$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'raw load remains trusted');
-			$parsed = @simplexml_load_string(rXMLRPCRequest::$lastPayload);
-			$this->assertTrue($parsed !== false && base64_decode((string)$parsed->params->param[1]->value->base64, true) === $bytes,
-				'arbitrary raw bytes remain exact base64 data');
-		}
-	}
-
-	// --- I2: Outer Identity Preservation Tests ---
-
-	public function testOuterIdentitySurvivesMissingValue()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
-		$this->assertTrue(in_array('rejected (not allowed on this connection): d.multicall2', $d['log'], true)
-			|| in_array('rejected (malformed XML envelope or structure): d.multicall2', $d['log'], true),
-			'log must name normalized outer d.multicall2');
-	}
-
-	public function testOuterIdentitySurvivesMixedTypeChildren()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
-			. '<param><value><string>s</string><int>1</int></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
-	}
-
-	public function testOuterIdentitySurvivesMalformedArray()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
-			. '<param><value><array><data><unknown>x</unknown></data></array></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
-	}
-
-	public function testOuterIdentitySurvivesMalformedResultSlot()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>main</string></value></param>'
-			. '<param><value><string>d.custom1.set=safe<bogus>x</bogus></string></value></param>'
-			. '</params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
-		$this->assertTrue($d['action'] === 'reject', 'must be rejected');
-		$this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
-	}
-
-	public function testOuterIdentityRemainsNullBeforeAValidMethodIsKnown()
-	{
-		$this->resetMocks();
-		$inputs = [
-			'not xml at all',
-			'<?xml version="1.0"?><methodCall><params></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName>m1</methodName><methodName>m2</methodName><params></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><nested><methodName>nested</methodName></nested><params></params></methodCall>',
-			'<?xml version="1.0"?><methodCall><methodName><bogus>x</bogus></methodName><params></params></methodCall>',
-		];
-		foreach($inputs as $xml)
-		{
-			$d = self::decideOnModernDaemon($xml, 'sanitize');
-			$this->assertTrue($d['action'] === 'reject', 'must be rejected');
-			$this->assertTrue($d['method'] === null, 'method must remain null when no valid method is established');
-		}
-	}
-
-	// --- I4: Surface Gaps & Preserved Matrix Tests ---
-
-	public function testLegacyLoadRawStartIsDeniedBeforeTransport()
-	{
-		$this->resetMocks();
-		$xml = $this->methodCallXml('load_raw_start', ['', 'torrent_data']);
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'legacy raw load alias is denied locally');
-		self::processOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'legacy raw load alias never reaches transport');
-	}
-
-	public function testCatchExtraIsOrdinaryNotRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>catch.extra</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'catch.extra must not be refused');
-		$this->assertTrue($d['trusted'] === false, 'catch.extra must be untrusted');
-	}
-
-	public function testDirectoryWatchReadyIsDirectlyRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>directory.watch.ready</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'reject', 'directory.watch.ready must be directly refused');
-		$this->assertTrue($d['method'] === 'directory.watch.ready', 'refusal names directory.watch.ready');
-	}
-
-	public function testDirectoryWatchfulIsOrdinaryNotRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>directory.watchful</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'directory.watchful must not be refused');
-		$this->assertTrue($d['trusted'] === false, 'directory.watchful must be untrusted');
-	}
-
-	public function testViewFilterOnIsOrdinaryNotRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>view.filter_on</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'view.filter_on must not be refused');
-		$this->assertTrue($d['trusted'] === false, 'view.filter_on must be untrusted');
-	}
-
-	public function testViewSortIsOrdinaryNotRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>view.sort</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'view.sort must not be refused');
-		$this->assertTrue($d['trusted'] === false, 'view.sort must be untrusted');
-	}
-
-	public function testViewSetIsOrdinaryNotRefused()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>view.set</methodName><params></params></methodCall>';
-		$d = self::decideOnModernDaemon($xml, 'sanitize');
-		$this->assertTrue($d['action'] === 'send', 'view.set must not be refused');
-		$this->assertTrue($d['trusted'] === false, 'view.set must be untrusted');
-	}
-
-	public function testDirectMulticallFamiliesGrammarMatrix()
-	{
-		$this->resetMocks();
-		$families = ['d.multicall', 'd.multicall2', 'd.multicall.filtered', 't.multicall', 'f.multicall', 'p.multicall'];
-		$safeParams = ['d.custom1.set', 'd.custom.set', 't.url'];
-
-		foreach($families as $family)
-		{
-			$isFiltered = ($family === 'd.multicall.filtered');
-			$prefixParams = '<param><value><string></string></value></param><param><value><string>main</string></value></param>';
-			if($isFiltered) {
-				$prefixParams .= '<param><value><string>d.custom.set=filter_val</string></value></param>'; }
-
-			// 1. dollar argument
-			$xmlDollar = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>d.custom1.set=$bad</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlDollar, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with dollar argument must reject outer call');
-			$this->assertTrue($d['method'] === $family, $family . ' dollar refusal names outer method');
-
-			// 2. parenthesized command
-			$xmlParen = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>(d.custom1.set,val)</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlParen, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with parenthesized command must reject outer call');
-
-			// 3. nested-parenthesis command
-			$xmlNested = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>(branch,(d.custom1.set,val))</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlNested, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with nested parenthesis must reject outer call');
-
-			// 4. unclosed quote
-			$xmlUnclosed = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>d.custom1.set="val</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlUnclosed, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with unclosed quote must reject outer call');
-
-			// 5. malformed escape
-			$xmlEscape = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>d.custom1.set="val\\</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlEscape, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with malformed escape must reject outer call');
-
-			// 6. unknown command
-			$xmlUnknown = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>unknown.command=val</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlUnknown, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with unknown command must reject outer call');
-
-			// 7. mixed safe and unsafe
-			$xmlMixed = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>d.custom1.set=safe</string></value></param>'
-				. '<param><value><string>unknown.command=bad</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlMixed, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'reject', $family . ' with mixed commands must reject outer call');
-
-			// 8. valid canonical slots
-			$xmlValid = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
-				. $prefixParams . '<param><value><string>d.custom1.set=canonical_val</string></value></param></params></methodCall>';
-			$d = self::decideOnModernDaemon($xmlValid, 'sanitize', $safeParams);
-			$this->assertTrue($d['action'] === 'send', $family . ' with valid canonical slot must be admitted');
-			$this->assertTrue($d['trusted'] === true, $family . ' must be trusted');
-			$this->assertTrue(strpos($d['payload'], 'd.custom1.set="canonical_val"') !== false,
-				$family . ' payload must be canonically rebuilt');
-		}
-	}
-
-	public function testFixtureSourceHasNoDuplicateKeys()
-	{
-		if(!function_exists('token_get_all'))
-		{
-			$this->assertTrue(false, 'tokenizer extension is required for source-aware duplicate key detection');
-			return;
-		}
-
-		$fixturePath = __DIR__ . '/XMLRPCProxyContractFixture.php';
-		$source = file_get_contents($fixturePath);
-		$tokens = token_get_all($source);
-
-		$inCases = false;
-		$arrayDepth = 0;
-		$sourceKeys = [];
-		$dynamicDetected = false;
-		$state = 0; // 0: expecting key, 1: expecting =>, 2: in value
-		$count = count($tokens);
-
-		for($i = 0; $i < $count; $i++)
-		{
-			$tok = $tokens[$i];
-			if(!$inCases)
-			{
-				if(is_array($tok) && ($tok[0] === T_VARIABLE) && ($tok[1] === '$cases'))
-				{
-					while(++$i < $count)
-					{
-						if($tokens[$i] === '(')
-						{
-							$inCases = true;
-							$arrayDepth = 1;
-							$state = 0;
-							break;
-						}
-					}
-				}
-				continue;
-			}
-
-			if($tokens[$i] === '(')
-			{
-				$arrayDepth++;
-				continue;
-			}
-			elseif($tokens[$i] === ')')
-			{
-				$arrayDepth--;
-				if($arrayDepth === 0) {
-					break; }
-				continue;
-			}
-
-			if($arrayDepth === 1)
-			{
-				if(is_array($tok) && in_array($tok[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-					continue; }
-
-				if($state === 0)
-				{
-					if($tokens[$i] === ',') {
-						continue; }
-					if(is_array($tok) && ($tok[0] === T_CONSTANT_ENCAPSED_STRING))
-					{
-						$strVal = eval('return ' . $tok[1] . ';');
-						$sourceKeys[] = $strVal;
-						$state = 1;
-					}
-					else
-					{
-						$dynamicDetected = true;
-						break;
-					}
-				}
-				elseif($state === 1)
-				{
-					if(is_array($tok) && ($tok[0] === T_DOUBLE_ARROW))
-					{
-						$state = 2;
-					}
-					else
-					{
-						$dynamicDetected = true;
-						break;
-					}
-				}
-				elseif($state === 2)
-				{
-					if($tokens[$i] === ',') {
-						$state = 0; }
-				}
-			}
-		}
-
-		$this->assertTrue(!$dynamicDetected, 'fixture source must contain no dynamic or unrecognized top-level registrations');
-		$this->assertTrue(count($sourceKeys) > 0, 'source keys must not be empty');
-		$this->assertEquals(73, count($sourceKeys), 'source must contain exactly 73 top-level literal registrations');
-		$this->assertEquals(count($sourceKeys), count(array_unique($sourceKeys)), 'source keys must have no duplicates before array overwrite');
-
-		$runtimeFixture = require($fixturePath);
-		$runtimeKeys = array_keys($runtimeFixture);
-
-		$this->assertEquals(count($sourceKeys), count($runtimeKeys), 'source registration count must equal runtime array_keys count');
-		$this->assertEquals(73, count($runtimeKeys), 'exact 73-key runtime set must remain unchanged');
-		$this->assertEquals($sourceKeys, $runtimeKeys, 'source key order and values must match runtime keys exactly');
-	}
-
-	// ---- Correction A: Strict Structural XML Validation ----
-
-	public function testStructuralDecoderRejectsParamsBeforeMethodName()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><params></params><methodName>system.client_version</methodName></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'reversed methodCall children rejected');
-		$this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
-		$this->assertTrue($res['method'] === null, 'method remains null');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testStructuralDecoderRejectsValueBeforeNameInStructMember()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><value><string>foo</string></value><name>k</name></member></struct></value></param></params></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'reversed struct member children rejected');
-		$this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
-		$this->assertEquals('system.client_version', $res['method'], 'outer method retained');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testStructuralDecoderRejectsCommentInsideMethodName()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system<!-- comment -->.client_version</methodName></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'comment inside methodName rejected');
-		$this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testStructuralDecoderRejectsWhitespaceInsideMethodName()
-	{
-		$this->resetMocks();
-		$xml1 = '<?xml version="1.0"?><methodCall><methodName> system.client_version </methodName></methodCall>';
-		$res1 = self::decideOnModernDaemon($xml1);
-		$error1 = isset($res1['error']) ? $res1['error'] : null;
-		$this->assertEquals('reject', $res1['action'], 'leading/trailing whitespace inside methodName rejected');
-		$this->assertEquals('rejected (invalid XML)', $error1, 'error is rejected (invalid XML)');
-		$this->assertTrue(self::processOnModernDaemon($xml1) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-
-		$xml2 = "<?xml version=\"1.0\"?><methodCall><methodName>\nsystem.client_version\n</methodName></methodCall>";
-		$res2 = self::decideOnModernDaemon($xml2);
-		$error2 = isset($res2['error']) ? $res2['error'] : null;
-		$this->assertEquals('reject', $res2['action'], 'newlines inside methodName rejected');
-		$this->assertEquals('rejected (invalid XML)', $error2, 'error is rejected (invalid XML)');
-		$this->assertTrue(self::processOnModernDaemon($xml2) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-	}
-
-	public function testStructuralDecoderRejectsProcessingInstructionInsideMethodName()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system<?pi target?>.client_version</methodName></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'processing instruction inside methodName rejected');
-		$this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testStructuralDecoderRejectsCommentInsideScalarValue()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>hello<!-- comment -->world</string></value></param></params></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'comment inside string scalar rejected');
-		$this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-
-		$xmlInt = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><int>12<!-- comment -->34</int></value></param></params></methodCall>';
-		$resInt = self::decideOnModernDaemon($xmlInt);
-		$errorInt = isset($resInt['error']) ? $resInt['error'] : null;
-		$this->assertEquals('reject', $resInt['action'], 'comment inside int scalar rejected');
-		$this->assertEquals('rejected (malformed XML envelope or structure)', $errorInt, 'error is malformed envelope');
-		$this->assertTrue(self::processOnModernDaemon($xmlInt) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-	}
-
-	public function testStructuralDecoderRejectsProcessingInstructionInsideScalarValue()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>hello<?pi target?>world</string></value></param></params></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'processing instruction inside scalar value rejected');
-		$this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testStructuralDecoderRejectsDoctypeOrEntityDeclaration()
-	{
-		$this->resetMocks();
-		$xml = '<!DOCTYPE methodCall [<!ENTITY xxe "evil">]><methodCall><methodName>system.client_version</methodName></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'DOCTYPE/entity declaration rejected');
-		$this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	// ---- Correction B: Load-Expression All-Or-Nothing ----
-
-	public function testLoadWithUnclassifiableExpressionMemberIsLocallyNonProcessing()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/a.torrent</string></value></param><param><value><string>not_a_valid_command=foo</string></value></param></params></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'unclassifiable load expression member rejected');
-		$this->assertEquals('rejected (not allowed on this connection): load.start', $error, 'error names outer load.start');
-		$this->assertEquals('load.start', $res['method'], 'outer method retained');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls for unclassifiable load param');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testLoadWithDeniedExpressionMemberIsLocallyNonProcessing()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/a.torrent</string></value></param><param><value><string>execute=evil</string></value></param></params></methodCall>';
-		$res = self::decideOnModernDaemon($xml);
-		$error = isset($res['error']) ? $res['error'] : null;
-		$this->assertEquals('reject', $res['action'], 'denied load expression member rejected');
-		$this->assertEquals('rejected (not allowed on this connection): load.start', $error, 'error names outer load.start');
-		$this->assertEquals('load.start', $res['method'], 'outer method retained');
-		$this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls for denied load param');
-		$this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
-	}
-
-	public function testLoadWithBoundaryRefusedDirectoryMemberIsTerminal()
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>http://example.test/a.torrent</string></value></param>'
-			. '<param><value><string>d.directory.set=/var/www/user1/rtorrent/share/settings/x/</string></value></param>'
-			. '</params></methodCall>';
-		$options = ['directory' => ['root' => '/torrents1/downloads']];
-		$res = self::decideOnModernDaemon($xml, 'sanitize', ['d.directory.set'], false, $options);
-		$this->assertEquals('reject', $res['action'], 'action = reject');
-		$this->assertEquals(false, $res['trusted'], 'trusted = false');
-		$this->assertTrue($res['payload'] === '' || $res['payload'] === null, 'payload = empty');
-		$this->assertEquals('load.start', $res['method'], 'normalized method = the outer load method');
-
-		$processRes = self::processOnModernDaemon($xml, 'sanitize', true, ['d.directory.set'], false, $options);
-		$this->assertTrue($processRes === null, 'process returns null');
-		$this->assertEquals(0, rXMLRPCRequest::$sent, 'transport call count = 0');
-	}
-	public function testReviewedDaemon1625AllowsNativeListingAndElevatedStop()
-	{
-		$options = ['rtorrentVersion' => 0x1019];
-		foreach([$this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']),
-			$this->systemMulticallXml([['d.stop', [str_repeat('A', 40)]]])] as $xml)
-		{
-			$result = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, $options);
-			$this->assertTrue($result['action'] === 'send' && $result['trusted'],
-				'reviewed 0.16.25 listing and stop retain their checked trusted route');
-		}
-	}
-
-	public function testReviewedDaemons1626And1627KeepNativeListingStopLabelAndSettingsRead()
-	{
-		foreach([0x101A => '0.16.26', 0x101B => '0.16.27'] as $version => $release) {
-			$this->assertReviewedDaemonKeepsNativeListingStopLabelAndSettingsRead($version, $release); }
-	}
-
-	/**
-	 * Bit 27 is v0.16.26 (62899bd0). Its CMD and CMD_REDIRECT registrations are
-	 * those of v0.16.25 plus session.umask and session.umask.set; none was
-	 * removed or renamed, and the rutorrent-native merge c0afbc17 adds the same
-	 * two upstream names. Both are recorded: the table is provenance, and
-	 * rTorrent itself refuses the startup-only setter after startup, as it
-	 * does session.use_lock.set (see the table header).
-	 */
-	public function testNative1626ColumnIsThe1625ColumnPlusBothSessionUmaskCommands()
-	{
-		$native = require(__DIR__.'/../../php/xmlrpc_proxy_native.php');
-		$changed = [];
-		foreach($native as $name => $mask) {
-			if((($mask >> 26) & 1) !== (($mask >> 27) & 1)) {
-				$changed[] = $name; } }
-		$this->assertEquals(['session.umask', 'session.umask.set'], $changed,
-			'only the two session.umask commands differ between the 0.16.25 and 0.16.26 columns');
-		foreach(['session.umask', 'session.umask.set'] as $name) {
-			$this->assertEquals(1 << 27, isset($native[$name]) ? $native[$name] & ((2 << 27) - 1) : null,
-				$name.' is native from 0.16.26, in no earlier column'); }
-
-		$options = ['rtorrentVersion' => 0x101A];
-		$policy = XMLRPCProxy::defaultSafeParams();
-		foreach(['session.umask' => [], 'session.umask.set' => ['', '18']] as $name => $args)
-		{
-			$direct = XMLRPCProxy::decide($this->methodCallXml($name, $args), 'sanitize', $policy, false, $options);
-			$this->assertTrue($direct['action'] === 'send' && !$direct['trusted'],
-				$name.' is forwarded untrusted on 0.16.26; rTorrent applies its own safe list');
-		}
-		// An operator policy that names a startup-only setter carries it in a
-		// load tail the way it carries session.use_lock.set; rTorrent then
-		// answers "cannot be changed after startup". On 0.16.25 the umask
-		// setter is not native, so the same policy cannot carry it there.
-		$operator = ['session.umask.set', 'session.use_lock.set', 'd.custom1.set'];
-		$tail = function($command, $version) use ($operator) {
-			return XMLRPCProxy::decide($this->methodCallXml('load.start',
-				['', 'https://example.test/a.torrent', $command]), 'sanitize', $operator, false,
-				['rtorrentVersion' => $version]);
-		};
-		foreach(['session.umask.set=0022', 'session.use_lock.set=0', 'd.custom1.set=label'] as $command) {
-			foreach([0x101A => '0.16.26', 0x1019 => '0.16.25'] as $version => $release)
-			{
-				$decision = $tail($command, $version);
-				if($command === 'session.umask.set=0022' && $version === 0x1019) {
-					$this->assertEquals('reject', $decision['action'],
-						'session.umask.set is not native on 0.16.25, so no policy carries it there'); }
-				else {
-					$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
-						$command.' named by the operator policy is carried in a '.$release.' load tail'); }
-			} }
-	}
-
-	/**
-	 * Bit 28 is v0.16.27 (cab23f12). Its CMD and CMD_REDIRECT registrations,
-	 * mark_safe() names and method.insert strings are those of v0.16.26
-	 * (62899bd0), so the two columns are equal (see the table header).
-	 */
-	public function testNative1627ColumnIsThe1626Column()
-	{
-		$native = require(__DIR__.'/../../php/xmlrpc_proxy_native.php');
-		$changed = [];
-		$beyond = [];
-		foreach($native as $name => $mask)
-		{
-			if((($mask >> 27) & 1) !== (($mask >> 28) & 1)) {
-				$changed[] = $name; }
-			if($mask >= (1 << 29)) {
-				$beyond[] = $name; }
-		}
-		$this->assertEquals([], $changed, 'no name differs between the 0.16.26 and 0.16.27 columns');
-		$this->assertEquals([], $beyond, 'no name claims a release after 0.16.27');
-	}
-
-	/**
-	 * Every release the version parser accepts must also pass the other
-	 * ceilings and have a native column; a release past the newest reviewed
-	 * one must fail closed. A bump that edits only some of them fails here.
-	 */
-	public function testEveryAcceptedReleaseHasAColumnAndTheNextReleaseFailsClosed()
-	{
-		$policy = XMLRPCProxy::defaultSafeParams();
-		$listing = $this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']);
-		$settings = file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml');
-		$accepted = [];
-		for($minor = 0; $minor <= 99; $minor++)
-		{
-			$version = XMLRPCProxy::daemonVersionFromString('0.16.'.$minor);
-			if($version !== null) {
-				$accepted[$minor] = $version; }
-		}
-		$this->assertEquals(range(0, 27), array_keys($accepted),
-			'the parser accepts exactly 0.16.0 through 0.16.27');
-		$failures = [];
-		foreach($accepted as $minor => $version)
-		{
-			if($version !== 0x1000 + $minor) {
-				$failures[] = '0.16.'.$minor.' parse'; }
-			$decision = XMLRPCProxy::decide($listing, 'sanitize', $policy, false,
-				['rtorrentVersion' => $version]);
-			if($decision['action'] !== 'send' || !$decision['trusted']) {
-				$failures[] = '0.16.'.$minor.' listing'; }
-			if($version < 0x1012) {
-				continue; }
-			$read = XMLRPCProxy::decide($settings, 'sanitize', $policy, false,
-				['rtorrentVersion' => $version]);
-			if($read['action'] !== 'send' || !$read['trusted']) {
-				$failures[] = '0.16.'.$minor.' settings read'; }
-		}
-		$this->assertEquals([], $failures,
-			'every accepted 0.16 release passes each proxy ceiling and has a native column');
-		// 0.16.28, then values no parser returns: an API caller's typo must not
-		// select some other release's column.
-		foreach([0x101C, 0x0907, 0x0FFF, 0x001A, 0, '0.16.26', (float)0x101A] as $unsupported)
-		{
-			$next = XMLRPCProxy::decide($listing, 'sanitize', $policy, false,
-				['rtorrentVersion' => $unsupported]);
-			$this->assertTrue($next['action'] === 'reject'
-				&& strpos(implode("\n", $next['log']), 'unsupported or unreadable rTorrent version') !== false,
-				var_export($unsupported, true).' handed to decide() fails closed as an unsupported version');
-		}
-
-		// The legacy baseline is unchanged.
-		$old = ['rtorrentVersion' => 0x0908];
-		$this->assertEquals(0x0908, XMLRPCProxy::daemonVersionFromString('0.9.8'), '0.9.8 is still recognized');
-		$legacy = XMLRPCProxy::decide($listing, 'sanitize', $policy, false, $old);
-		$this->assertTrue($legacy['action'] === 'send' && $legacy['trusted'],
-			'a native 0.9.8 listing keeps its trusted route');
-		$newer = XMLRPCProxy::decide($this->methodCallXml('d.multicall2',
-			['', 'main', 'd.base_path.realpath.or_empty=']), 'sanitize', $policy, false, $old);
-		$this->assertEquals('reject', $newer['action'], 'a 0.16-only getter is still not native on 0.9.8');
-		$legacyRead = XMLRPCProxy::decide($settings, 'sanitize', $policy, false, $old);
-		$this->assertEquals('reject', $legacyRead['action'],
-			'the 0.16 Settings batch grant does not reach a 0.9.8 daemon');
-		$umask = XMLRPCProxy::decide($this->methodCallXml('session.umask'), 'sanitize', $policy, false, $old);
-		$this->assertEquals('reject', $umask['action'], 'session.umask is not native on 0.9.8');
-	}
-
-	/**
-	 * Without a version the proxy may use only a name native on every reviewed
-	 * release. No shipped name lacks just the newest column, so the
-	 * intersection mask is checked against a synthetic table in a child.
-	 */
-	public function testOmittedVersionIntersectsEveryReviewedColumn()
-	{
-		$tree = sys_get_temp_dir().'/rutorrent-native-mask-'.getmypid().'-'.bin2hex(random_bytes(6));
-		try
-		{
-			if(!mkdir($tree, 0700) || !copy(__DIR__.'/../../php/xmlrpc_proxy.php', $tree.'/xmlrpc_proxy.php')) {
-				throw new Exception('could not create the synthetic native table tree'); }
-			$every = (2 << 28) - 1;
-			file_put_contents($tree.'/xmlrpc_proxy_native.php', '<?php return '.var_export([
-				'every.release' => $every,
-				'not.newest' => $every & ~(1 << 28),
-				'not.legacy' => $every & ~1,
-			], true).';');
-			$script = 'require $argv[1];'
-				.' $m = new ReflectionMethod("XMLRPCProxy", "nativeOnDaemon");'
-				.' if(PHP_VERSION_ID < 80100) $m->setAccessible(true);'
-				.' foreach(array("every.release", "not.newest", "not.legacy") as $n)'
-				.' echo $n, "=", var_export($m->invoke(null, $n, null), true), ";";';
-			$process = proc_open([PHP_BINARY, '-r', $script, $tree.'/xmlrpc_proxy.php'],
-				[0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-			if(!is_resource($process)) {
-				throw new Exception('could not start the synthetic table child'); }
-			fclose($pipes[0]);
-			$output = stream_get_contents($pipes[1]);
-			$error = stream_get_contents($pipes[2]);
-			fclose($pipes[1]);
-			fclose($pipes[2]);
-			$this->assertEquals(0, proc_close($process), 'the synthetic table child exits cleanly');
-			$this->assertEquals('', $error, 'the synthetic table child prints no diagnostic');
-			$this->assertEquals('every.release=true;not.newest=false;not.legacy=false;', $output,
-				'an omitted version admits only a name native on 0.9.8 and on 0.16.0 through 0.16.27');
-		}
-		finally
-		{
-			foreach(['xmlrpc_proxy.php', 'xmlrpc_proxy_native.php'] as $file) {
-				if(is_file($tree.'/'.$file)) {
-					unlink($tree.'/'.$file); } }
-			if(is_dir($tree)) {
-				rmdir($tree); }
-		}
-	}
-
-	/**
-	 * nativeOnDaemon() keeps its own ceiling although decide() checks the
-	 * version first: sanitizeHttprpcCommandParameter() is public. Without it,
-	 * minor 63 or more shifts the column bit out of the integer (1 << 64 is
-	 * 0) and every name matches; minor 256 wraps to the 0.16.0 column.
-	 */
-	public function testNativeTableRefusesAnUnreviewedReleaseOnItsOwn()
-	{
-		$native = new ReflectionMethod('XMLRPCProxy', 'nativeOnDaemon');
-		if(PHP_VERSION_ID < 80100) { $native->setAccessible(true); }
-		$this->assertTrue($native->invoke(null, 'd.name', 0x101A) === true
-			&& $native->invoke(null, 'session.umask', 0x101A) === true
-			&& $native->invoke(null, 'd.name', 0x101B) === true
-			&& $native->invoke(null, 'session.umask', 0x101B) === true
-			&& $native->invoke(null, 'network.port_open', 0x0908) === true,
-			'the reviewed columns still answer for themselves');
-		foreach([0x101C, 0x103E, 0x103F, 0x1040, 0x10FF, 0x1100, 0x1FFF, PHP_INT_MAX] as $version) {
-			foreach(['d.name', 'network.port_open', 'session.umask', 'no.such.command'] as $name) {
-				$this->assertTrue($native->invoke(null, $name, $version) === false,
-					sprintf('%s is not native on the unreviewed 0x%X', $name, $version)); } }
-		foreach([0x101C, 0x103F, 0x1100] as $version) {
-			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
-				'd.name=', 'd.name=', 'list', [], $version) === null,
-				sprintf('the public httprpc rebuilder refuses d.name= on the unreviewed 0x%X', $version)); }
-	}
-
-	public function testAnUnreviewedDaemonReleaseIsNamedForTheOperator()
-	{
-		$reply = function($value) {
-			return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
-				.htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8')
-				.'</string></value></param></params></methodResponse>';
-		};
-		$supported = ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
-		foreach(['0.16.28', '0.16.28-rc1', '0.16.999', '0.17.0', '1.0.0', '0.9.7'] as $value) {
-			$this->assertEquals('rTorrent '.$value.$supported,
-				XMLRPCProxy::daemonVersionRefusal($reply($value)),
-				'the unreviewed release '.$value.' is named with the supported range'); }
-		foreach(['0.16.27', '0.16.26', '0.16.25', '0.9.8'] as $value) {
-			$this->assertTrue(XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
-				'a supported release '.$value.' has nothing to refuse'); }
-		// The bounds of the repeated text: three runs of at most three digits
-		// and a suffix of at most 32 characters.
-		foreach(['999.999.999', '0.16.28-'.str_repeat('a', 32), '0.16.28+build.7_x-y'] as $value) {
-			$this->assertEquals('rTorrent '.$value.$supported,
-				XMLRPCProxy::daemonVersionRefusal($reply($value)),
-				'the plain release '.$value.' is named'); }
-		// Only a version-shaped answer is repeated; other reply text stays out of
-		// the operator log and the HTTP body. Each case below fails one part of
-		// the filter alone: the suffix characters, the end anchor (/D), the
-		// digit and suffix lengths, or the separator.
-		foreach(['unparseable', '0.16.22evil', '0.16.28 <b>', '0.16.28'."\n".'x', '',
-			'0.16.28-'.str_repeat('a', 40), '0.16.28-'.str_repeat('a', 33),
-			'0.16.28-<b>', '0.16.28-<svg/onload=alert(1)>', '0.16.28-a"b', "0.16.28-a'b", '0.16.28-a&b',
-			'0.16.28-a b', '0.16.28-a/b', "0.16.28\n", "0.16.28-rc1\n", "0.16.28\r\n", "0.16.28\t",
-			'1234.16.28', '0.1234.28', '0.16.1234', '0.16.28-', '0.16.28=rc1', '0.16', '.16.28'] as $value) {
-			$this->assertTrue(XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
-				'a reply that is not a plain version is not repeated: '.json_encode($value)); }
-		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(
-			'<methodResponse><fault><value><string>0.16.28</string></value></fault></methodResponse>') === null,
-			'a fault names no version');
-		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(self::faultBesideVersionReply('0.16.28')) === null,
-			'a reply that carries a fault beside a version names none');
-		$this->assertTrue(XMLRPCProxy::daemonVersionRefusal(null) === null, 'no reply names no version');
-	}
-
-	// The historical policy cases model a 0.16.22 daemon. Keep that version
-	// explicit so an omitted production version can be tested fail-closed above.
-	private static function decideOnModernDaemon($raw, $mode = 'sanitize', $safe = [],
-		$allowPaths = false, $options = [])
-	{
-		if(!array_key_exists('rtorrentVersion', $options)) {
-			$options['rtorrentVersion'] = 0x1016; }
-		return XMLRPCProxy::decide($raw, $mode, $safe, $allowPaths, $options);
-	}
-
-	private static function processOnModernDaemon($raw, $mode = 'sanitize', $enableLog = true,
-		$safe = [], $allowPaths = false, $options = [])
-	{
-		if(!array_key_exists('rtorrentVersion', $options)) {
-			$options['rtorrentVersion'] = 0x1016; }
-		return XMLRPCProxy::process($raw, $mode, $enableLog, $safe, $allowPaths, $options);
-	}
-
-	/** A malformed reply with both a version string and a fault. */
-	private static function faultBesideVersionReply($value)
-	{
-		return '<?xml version="1.0"?><methodResponse><params><param><value><string>'.$value
-			.'</string></value></param></params><fault><value><struct>'
-			.'<member><name>faultCode</name><value><i4>-501</i4></value></member>'
-			.'<member><name>faultString</name><value><string>refused</string></value></member>'
-			.'</struct></value></fault></methodResponse>';
-	}
-	private function resetMocks()
-	{
-		rXMLRPCRequest::$lastPayload = null;
-		rXMLRPCRequest::$lastTrusted = null;
-		rXMLRPCRequest::$sent = 0;
-		FileUtil::$log = [];
-	}
-
-	private function methodCallXml($method, $params = [])
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>'
-			.htmlspecialchars($method, ENT_QUOTES, 'UTF-8').'</methodName><params>';
-		foreach($params as $value) {
-			$xml .= '<param><value><string>'.htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8').'</string></value></param>'; }
-		return $xml.'</params></methodCall>';
-	}
-
-	private function systemMulticallXml($calls)
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName><params><param><value><array><data>';
-		foreach($calls as $call)
-		{
-			$xml .= '<value><struct><member><name>methodName</name><value><string>'
-				. htmlspecialchars($call[0], ENT_NOQUOTES, 'UTF-8')
-				. '</string></value></member><member><name>params</name><value><array><data>';
-			foreach($call[1] as $parameter)
-			{
-				$type = is_int($parameter) ? 'i4' : 'string';
-				$xml .= '<value><'.$type.'>'.htmlspecialchars((string)$parameter, ENT_NOQUOTES, 'UTF-8')
-					.'</'.$type.'></value>';
-			}
-			$xml .= '</data></array></value></member></struct></value>';
-		}
-		return $xml.'</data></array></value></param></params></methodCall>';
-	}
-
-	// ---- A command parameter is not one command ----
-
-	private function sanitizeParam($param, $safeParams = ['d.custom1.set', 'd.custom2.set', 'd.custom.set'])
-	{
-		$this->resetMocks();
-		$torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
-			. '<param><value><string>' . htmlspecialchars($param, ENT_NOQUOTES) . '</string></value></param>'
-			. '</params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', false, $safeParams);
-		return (string) rXMLRPCRequest::$lastPayload;
-	}
-
-	// ---- what the log says ----
-
-	private function logText()
-	{
-		return implode("\n", FileUtil::$log);
-	}
-
-	private function sanitizeParamLogged($param)
-	{
-		$torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
-			. '<param><value><string>' . htmlspecialchars($param, ENT_NOQUOTES) . '</string></value></param>'
-			. '</params></methodCall>';
-		self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
-	}
-
-	// ---- multicalls carry commands too ----
-
-	private function multicall($params, $safeParams = ['d.custom1.set'])
-	{
-		$this->resetMocks();
-		$xml = $this->methodCallXml('d.multicall2', $params);
-		self::processOnModernDaemon($xml, 'sanitize', true, $safeParams);
-		return $xml;
-	}
-
-	// ---- load.* may not name a path on rtorrent's own filesystem ----
-
-	private function load($uri, $allowLocalPaths = false, $method = 'load.start')
-	{
-		$this->resetMocks();
-		$xml = $this->methodCallXml($method, ['', $uri]);
-		return self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set'], $allowLocalPaths);
-	}
-
-
-	// ---- refused outright, without asking rtorrent ----
-
-	private function callMethod($method, $params = [], $mode = 'sanitize')
-	{
-		$this->resetMocks();
-		$xml = $this->methodCallXml($method, $params);
-		return self::processOnModernDaemon($xml, $mode, true, ['d.custom1.set']);
-	}
-
-	// ---- where a download may be written ----
-	//
-	// d.directory.set names the directory rtorrent writes a download into, and
-	// the caller supplies the torrent, so it names the file too. Unconfined and
-	// forwarded trusted, that is an arbitrary file write as the rtorrent user —
-	// found by a tester writing a .php into a webroot and running it.
-
-	private function loadInto($dir, $policy = null, $command = 'd.directory.set',
-		$uri = 'http://example.test/x.torrent', $allowLocalPaths = false)
-	{
-		$this->resetMocks();
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-			. '<param><value><string></string></value></param>'
-			. '<param><value><string>' . htmlspecialchars($uri, ENT_NOQUOTES) . '</string></value></param>'
-			. '<param><value><string>' . $command . '=' . htmlspecialchars($dir, ENT_NOQUOTES)
-			. '</string></value></param>'
-			. '</params></methodCall>';
-		$options = ($policy === null) ? [] : ['directory' => $policy];
-		self::processOnModernDaemon($xml, 'sanitize', true,
-			self::DIRECTORY_SETTERS, $allowLocalPaths, $options);
-		return strpos((string) rXMLRPCRequest::$lastPayload, $command . '=') !== false;
-	}
-
-	private function assertReviewedDaemonKeepsNativeListingStopLabelAndSettingsRead($version, $release)
-	{
-		$options = ['rtorrentVersion' => $version];
-		$policy = XMLRPCProxy::defaultSafeParams();
-		foreach([
-			'listing' => $this->methodCallXml('d.multicall2',
-				['', 'main', 'd.name=', 'd.custom=chk-state']),
-			'stop batch' => $this->systemMulticallXml([['d.stop', [str_repeat('A', 40)]]]),
-			'label' => $this->methodCallXml('d.custom1.set', [str_repeat('A', 40), 'label']),
-		] as $label => $xml)
-		{
-			$result = XMLRPCProxy::decide($xml, 'sanitize', $policy, false, $options);
-			$this->assertTrue($result['action'] === 'send' && $result['trusted'],
-				'reviewed '.$release.' '.$label.' keeps its checked trusted route');
-		}
-		// The Settings dialog sends the same batch on 0.16.26 and 0.16.27: no
-		// command it reads changed after 0.16.24.
-		$read = XMLRPCProxy::decide(file_get_contents(__DIR__.'/fixtures/settings-read-rtorrent-0.16.24.xml'),
-			'sanitize', $policy, false, $options);
-		$this->assertTrue($read['action'] === 'send' && $read['trusted'],
-			'the captured Settings read batch keeps its exact trusted grant on '.$release);
-		$refused = XMLRPCProxy::decide($this->methodCallXml('execute.capture', ['', 'id']),
-			'sanitize', $policy, false, $options);
-		$this->assertEquals('reject', $refused['action'], 'an execution primitive stays refused on '.$release);
-		$this->assertEquals('execute.capture', $refused['method'], 'and the refusal names it');
-		$alias = XMLRPCProxy::decide($this->methodCallXml('d.multicall2', ['', 'main', 'd.get_name=']),
-			'sanitize', $policy, false, $options);
-		$this->assertEquals('reject', $alias['action'], 'a client-only spelling is still not native on '.$release);
-	}
+    // 0.16.22 keeps directory_base.set as a redirect to directory.base.set.
+    public const DIRECTORY_SETTERS = ['d.directory.set', 'd.directory_base.set', 'd.directory.base.set'];
+    private $hadCallTracingFlag;
+    private $previousCallTracingFlag;
+    private $previousBuiltInPolicyReported;
+
+    public function setUp()
+    {
+        $this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
+        $this->previousCallTracingFlag = $this->hadCallTracingFlag ? $GLOBALS['rpcLogCalls'] : null;
+        $GLOBALS['rpcLogCalls'] = false;
+        $reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
+        $this->previousBuiltInPolicyReported = $reported->getValue();
+        $reported->setValue(null, false);
+    }
+
+    public function tearDown()
+    {
+        if ($this->hadCallTracingFlag) {
+            $GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag;
+        } else {
+            unset($GLOBALS['rpcLogCalls']);
+        }
+        $reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
+        $reported->setValue(null, $this->previousBuiltInPolicyReported);
+    }
+
+    public function testD4NativeGateRejectsAliasesAcrossDirectAndTrustedSlots()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $old = ['rtorrentVersion' => 0x0908];
+        $new = ['rtorrentVersion' => 0x1016];
+        $direct = XMLRPCProxy::decide(
+            $this->methodCallXml('my_shell_alias', []),
+            'sanitize',
+            $policy,
+            false,
+            $old,
+        );
+        $this->assertTrue(
+            $direct['action'] === 'reject' && !$direct['trusted'],
+            'an arbitrary direct alias cannot rely on an ignored untrusted flag in 0.9.8',
+        );
+        $modernGetter = $this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.base_path.realpath.or_empty=/outside'],
+        );
+        $slot = XMLRPCProxy::decide($modernGetter, 'sanitize', $policy, false, $old);
+        $this->assertTrue(
+            $slot['action'] === 'reject' && !$slot['trusted'],
+            'a 0.16.21 getter name is not native in a 0.9.8 trusted slot',
+        );
+        $clientAlias = $this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.get_name='],
+        );
+        $slot = XMLRPCProxy::decide($clientAlias, 'sanitize', $policy, false, $new);
+        $this->assertTrue(
+            $slot['action'] === 'reject' && !$slot['trusted'],
+            'a client-only getter spelling is not a native method even on 0.16.22',
+        );
+        $native = XMLRPCProxy::decide($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.name='],
+        ), 'sanitize', $policy, false, $old);
+        $this->assertTrue(
+            $native['action'] === 'send' && $native['trusted'],
+            'a stock 0.9.8 native getter keeps the established trusted listing path',
+        );
+    }
+
+
+    public function testD4OmittedVersionUsesOnlyMethodsNativeOnEverySupportedDaemon()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $alias = XMLRPCProxy::decide(
+            $this->methodCallXml('my_shell_alias', []),
+            'sanitize',
+            $policy,
+        );
+        $this->assertEquals(
+            'reject',
+            $alias['action'],
+            'an omitted version cannot forward an rc alias to an old daemon',
+        );
+        $newerSlot = XMLRPCProxy::decide($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.base_path.realpath.or_empty='],
+        ), 'sanitize', $policy);
+        $this->assertEquals(
+            'reject',
+            $newerSlot['action'],
+            'an omitted version cannot elevate a getter absent from 0.9.8',
+        );
+        $native = XMLRPCProxy::decide($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.name='],
+        ), 'sanitize', $policy);
+        $this->assertTrue(
+            $native['action'] === 'send' && $native['trusted'],
+            'a common native getter remains available when a caller omits version',
+        );
+    }
+
+
+    public function testD4VersionParserRefusesUnknownAndMalformedReplies()
+    {
+        $reply = function ($value) {
+            return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+                . $value . '</string></value></param></params></methodResponse>';
+        };
+        $this->assertEquals(
+            0x0908,
+            XMLRPCProxy::daemonVersionFromReply($reply('0.9.8')),
+            'the supported 0.9.8 baseline is recognized',
+        );
+        $this->assertEquals(
+            0x1019,
+            XMLRPCProxy::daemonVersionFromReply($reply('0.16.25')),
+            'reviewed 0.16.25 is supported',
+        );
+        $this->assertEquals(
+            0x101A,
+            XMLRPCProxy::daemonVersionFromReply($reply('0.16.26')),
+            'reviewed 0.16.26 is supported',
+        );
+        $this->assertEquals(
+            0x101B,
+            XMLRPCProxy::daemonVersionFromReply($reply('0.16.27')),
+            'reviewed 0.16.27 is supported',
+        );
+        $this->assertEquals(
+            0x1016,
+            XMLRPCProxy::daemonVersionFromReply($reply('0.16.22')),
+            'a reviewed 0.16 release is recognized',
+        );
+        foreach (['0.16.28', '0.9.7', '0.16.22evil', '0.16.999'] as $value) {
+            $this->assertTrue(
+                XMLRPCProxy::daemonVersionFromReply($reply($value)) === null,
+                'unreviewed version ' . $value . ' fails closed',
+            );
+        }
+        $this->assertTrue(
+            XMLRPCProxy::daemonVersionFromReply('<methodResponse><fault/></methodResponse>') === null,
+            'a fault is not a version',
+        );
+        $this->assertTrue(
+            XMLRPCProxy::daemonVersionFromReply(self::faultBesideVersionReply('0.16.26')) === null,
+            'a reply that carries a fault beside a reviewed version selects no version',
+        );
+    }
+
+    public function testD4OldDaemonChecksLoadTailAndSystemBatchMembers()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $old = ['rtorrentVersion' => 0x0908];
+        $load = XMLRPCProxy::decide(
+            $this->methodCallXml(
+                'load.start',
+                ['', 'http://example.test/a.torrent', 'd.directory.base.set=/outside'],
+            ),
+            'sanitize',
+            $policy,
+            false,
+            $old,
+        );
+        $this->assertTrue(
+            $load['action'] === 'reject',
+            'a newer setter spelling cannot be executed as an old-daemon alias in a load tail',
+        );
+        $batch = XMLRPCProxy::decide($this->systemMulticallXml([
+            ['d.stop', [str_repeat('A', 40)]],
+            ['my_shell_alias', []],
+        ]), 'sanitize', $policy, false, $old);
+        $this->assertTrue(
+            $batch['action'] === 'reject' && !$batch['trusted'],
+            'an unknown member cannot borrow system.multicall trust on an old daemon',
+        );
+        $native = XMLRPCProxy::decide($this->systemMulticallXml([
+            ['d.stop', [str_repeat('A', 40)]],
+        ]), 'sanitize', $policy, false, $old);
+        $this->assertTrue(
+            $native['action'] === 'send' && $native['trusted'],
+            'a native elevated action remains available in a system batch on 0.9.8',
+        );
+    }
+
+    public function testMulticallDirectoryRefusalDoesNotSuggestAnIneffectivePolicyEdit()
+    {
+        $xml = $this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.directory.base.set=/downloads/x'],
+        );
+        foreach ([
+            ['d.directory_base.set'],
+            ['d.directory_base.set', 'd.directory.base.set'],
+        ] as $safeParams) {
+            $decision = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
+            $this->assertTrue(
+                $decision['action'] === 'reject',
+                'a directory setter never belongs in a multicall result slot',
+            );
+            $this->assertTrue(
+                strpos(implode(' ', $decision['log']), 'add it to conf/xmlrpc_proxy.php') === false,
+                'the refusal does not suggest a policy edit that cannot allow this slot',
+            );
+        }
+    }
+
+    public function testHomogeneousUntrustedFallbackMembersCanShareAnUntrustedCarrier()
+    {
+        $hash = str_repeat('A', 40);
+        foreach (['sonarr_imported', 'radarr_imported'] as $view) {
+            $single = self::decideOnModernDaemon($this->methodCallXml(
+                'd.views.push_back_unique',
+                [$hash, $view],
+            ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $single['action'] === 'send' && !$single['trusted'],
+                $view . ' individually takes the unchanged untrusted route',
+            );
+        }
+        $xml = $this->systemMulticallXml([
+            ['d.views.push_back_unique', [$hash, 'sonarr_imported']],
+            ['d.views.push_back_unique', [$hash, 'radarr_imported']],
+        ]);
+        $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted'],
+            'members that individually forward untrusted can share one untrusted carrier',
+        );
+        $this->assertTrue(
+            strpos($decision['payload'], 'sonarr_imported') !== false
+            && strpos($decision['payload'], 'radarr_imported') !== false,
+            'both member values survive canonical rebuilding',
+        );
+        $this->assertTrue(
+            strpos($decision['log'][0], 'd.views.push_back_unique') !== false
+            && strpos($decision['log'][0], 'sonarr_imported') === false,
+            'the untrusted carrier names its command without logging argument values',
+        );
+    }
+
+    public function testUntrustedMulticallLogNamesBoundedDistinctCommands()
+    {
+        $hash = str_repeat('A', 40);
+        $members = [];
+        foreach (['d.name', 'd.hash', 'd.size_bytes', 'd.is_active'] as $method) {
+            $members[] = [$method, [$hash]];
+        }
+        $decision = self::decideOnModernDaemon(
+            $this->systemMulticallXml($members),
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+        );
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted'],
+            'the read-only batch remains untrusted',
+        );
+        $this->assertEquals(
+            ['untrusted: system.multicall (4 members) '
+            . '[methods: d.name, d.hash, d.size_bytes, ...]'],
+            $decision['log'],
+            'the one summary bounds method names without logging their arguments',
+        );
+    }
+
+    public function testSuccessfulSystemMulticallLogsOnlySummaryAndNonroutineWarnings()
+    {
+        $hash = str_repeat('A', 40);
+        $decision = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [$hash]], ['d.close', [$hash]],
+            ['d.open', [$hash]],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertEquals(
+            1,
+            count($decision['log']),
+            'routine member decisions do not multiply a successful batch log',
+        );
+        $this->assertTrue(
+            strpos($decision['log'][0], 'system.multicall (3 members)') !== false,
+            'the summary still says what request was sent',
+        );
+        $warning = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['load.start', ['', '/tmp/sample.torrent']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams(), true);
+        $this->assertTrue(
+            $warning['action'] === 'send' && count($warning['log']) === 2
+            && strpos($warning['log'][1], 'WARNING: operator-enabled local path') !== false,
+            'a nonroutine local-path warning remains visible with its member slot',
+        );
+    }
+
+    public function testUntrustedFirstThenTrustedSystemBatchKeepsUntrustedTransport()
+    {
+        $hash = str_repeat('A', 40);
+        $decision = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.wibble.set', [$hash, '1']],
+            ['d.stop', [$hash]],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted']
+            && strpos($decision['payload'], 'd.wibble.set') !== false
+            && strpos($decision['payload'], 'd.stop') !== false,
+            'an untrusted first member cannot be upgraded or lost beside a later trusted member',
+        );
+    }
+
+    public function testStopBatchElevatesCloseWhileGetSavePathKeepsUntrustedTransport()
+    {
+        $hash = str_repeat('A', 40);
+        $stop = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [$hash]], ['d.close', [$hash]],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $stop['action'] === 'send' && $stop['trusted'],
+            'the raw WebUI stop batch keeps its checked close member',
+        );
+        $badClose = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [$hash]], ['d.close', [$hash, 'extra']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $badClose['action'] === 'reject',
+            'an unvalidated close member cannot borrow batch trust',
+        );
+        foreach (['d.base_path', 'd.get_base_path'] as $method) {
+            $xml = $this->methodCallXml($method, [$hash]);
+            $direct = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $direct['action'] === 'send' && !$direct['trusted']
+                && $direct['payload'] === $xml,
+                $method . ' stays on the direct untrusted read path',
+            );
+            $batch = self::decideOnModernDaemon($this->systemMulticallXml([
+                ['d.open', [$hash]], [$method, [$hash]],
+                ['d.close', [$hash]],
+            ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $batch['action'] === 'send' && !$batch['trusted']
+                && strpos($batch['payload'], '<string>' . $method . '</string>') !== false
+                && strpos($batch['payload'], '<string>d.open</string>') !== false
+                && strpos($batch['payload'], '<string>d.close</string>') !== false,
+                $method . ' getsavepath batch retains every member on the untrusted route',
+            );
+        }
+    }
+
+    public function testSocketAllocationMutatorsStayUntrustedForDirectAndHomogeneousCalls()
+    {
+        $mutators = [
+            'system.sockets.files.min_alloc.set', 'system.sockets.files.max_alloc.set',
+            'system.sockets.http.min_alloc.set', 'system.sockets.http.max_alloc.set',
+            'system.sockets.adjust_alloc',
+        ];
+        foreach ($mutators as $method) {
+            $params = $method === 'system.sockets.adjust_alloc' ? [] : ['', 1048576];
+            $xml = $this->methodCallXml($method, $params);
+            $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $decision['action'] === 'send' && !$decision['trusted']
+                && $decision['payload'] === $xml,
+                $method . ' is forwarded unchanged to the daemon untrusted gate',
+            );
+        }
+        $call = $this->systemMulticallXml([
+            ['system.sockets.files.max_alloc.set', ['', 1048576]],
+            ['system.sockets.adjust_alloc', []],
+        ]);
+        $decision = self::decideOnModernDaemon($call, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted'],
+            'homogeneous socket allocation batch reaches the daemon untrusted gate',
+        );
+        $decision = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [str_repeat('A', 40)]],
+            ['system.sockets.adjust_alloc', []],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted'],
+            'a socket mutator cannot borrow trust from another batch member',
+        );
+        $read = self::decideOnModernDaemon(
+            $this->methodCallXml('system.sockets.files.max_alloc'),
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+        );
+        $this->assertTrue(
+            $read['action'] === 'send' && !$read['trusted'],
+            'a socket allocation getter remains a normal untrusted read',
+        );
+    }
+
+    public function testXmlrpcSizeLimitCannotBeLoweredBelowRecoveryRequestSize()
+    {
+        $xml = $this->methodCallXml('network.xmlrpc.size_limit.set', ['', '1']);
+        $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'size-limit setter keeps its checked elevation',
+        );
+        $this->assertTrue(
+            strpos($decision['payload'], '<i8>1024</i8>') !== false,
+            'the proxy retains enough XMLRPC budget for a follow-up recovery request',
+        );
+        $this->assertTrue(in_array(
+            'WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024',
+            $decision['log'],
+            true,
+        ), 'a silently raised size limit is named in the decision log');
+        $recovery = self::decideOnModernDaemon($this->methodCallXml(
+            'network.xmlrpc.size_limit.set',
+            ['', '16777216'],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $recovery['action'] === 'send' && $recovery['trusted']
+            && strlen($recovery['payload']) < 1024,
+            'the actual emitted recovery setter fits below the enforced floor',
+        );
+        $this->assertEquals(
+            1,
+            count($recovery['log']),
+            'an unchanged size limit does not produce a clamp warning',
+        );
+        $ceiling = self::decideOnModernDaemon($this->methodCallXml(
+            'network.xmlrpc.size_limit.set',
+            ['', '999999999'],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(in_array(
+            'WARNING: network.xmlrpc.size_limit.set requested 999999999, sent 16777216',
+            $ceiling['log'],
+            true,
+        ), 'the upper clamp is visible too');
+    }
+
+    public function testExplicitPolicyCannotSetXmlrpcLimitThroughNestedCommands()
+    {
+        $safeParams = ['network.xmlrpc.size_limit.set'];
+        $expression = 'network.xmlrpc.size_limit.set=1';
+        $cases = [
+            'load tail' => $this->methodCallXml(
+                'load.start',
+                ['', 'https://example.test/a.torrent', $expression],
+            ),
+            'multicall result' => $this->methodCallXml(
+                'd.multicall2',
+                ['', 'main', $expression],
+            ),
+            'multicall filter' => $this->methodCallXml(
+                'd.multicall.filtered',
+                ['', 'main', $expression, 'd.name='],
+            ),
+            'view-first multicall' => $this->methodCallXml(
+                'd.multicall',
+                ['main', $expression],
+            ),
+        ];
+        foreach ($cases as $label => $xml) {
+            $decision = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
+            $this->assertTrue(
+                $decision['action'] === 'reject'
+                && !$decision['trusted'] && $decision['payload'] === '',
+                $label . ' cannot bypass the direct size-limit floor under an explicit policy',
+            );
+        }
+        $direct = self::decideOnModernDaemon($this->methodCallXml(
+            'network.xmlrpc.size_limit.set',
+            ['', '1'],
+        ), 'sanitize', $safeParams);
+        $this->assertTrue(
+            $direct['action'] === 'send' && $direct['trusted']
+            && strpos($direct['payload'], '<i8>1024</i8>') !== false,
+            'the direct recovery setter still clamps an explicit-policy call',
+        );
+        $member = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['network.xmlrpc.size_limit.set', ['', '1']],
+        ]), 'sanitize', $safeParams);
+        $this->assertTrue(
+            $member['action'] === 'send' && $member['trusted']
+            && strpos($member['payload'], '<i8>1024</i8>') !== false,
+            'a system.multicall member uses the same direct size shape and floor',
+        );
+        $this->assertTrue(
+            strpos(
+                implode("\n", $member['log']),
+                '[slot 1] WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024',
+            ) !== false,
+            'a batch member reports the same clamp without repeating a routine decision',
+        );
+    }
+
+    public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallDenialLine()
+    {
+        $policy = XMLRPCProxy::policySettings([]);
+        $hash = str_repeat('A', 40);
+        $decision = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [$hash]], ['execute.capture', ['id']],
+        ]), 'sanitize', $policy['safeParams']);
+        $lines = XMLRPCProxy::decisionLogLines($decision, $policy);
+        $this->assertTrue(
+            $decision['action'] === 'reject' && count($lines) >= 2
+            && strpos($lines[0], 'system.multicall') !== false
+            && strpos($lines[1], '[slot 2]') !== false,
+            'denied multicall has an outer refusal and a member reason',
+        );
+        $this->assertEquals(
+            2,
+            substr_count(implode("\n", $lines), '[built-in policy]'),
+            'the outer refusal and one runtime warning identify the fallback',
+        );
+        $this->assertTrue(
+            strpos($lines[0], '[built-in policy]') !== false,
+            'the outer refusal carries the policy source',
+        );
+    }
+
+    public function testBuiltInPolicyHintAppearsOnlyOnFirstMulticallWarningLine()
+    {
+        $policy = XMLRPCProxy::policySettings([]);
+        $decision = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['load.start', ['', '/tmp/sample.torrent']],
+        ]), 'sanitize', $policy['safeParams'], true);
+        $lines = XMLRPCProxy::decisionLogLines($decision, $policy);
+        $this->assertTrue(
+            $decision['action'] === 'send' && count($lines) === 3
+            && strpos($lines[0], 'system.multicall') !== false
+            && strpos($lines[1], '[slot 1] WARNING:') !== false,
+            'allowed local-path multicall logs a separate member warning',
+        );
+        $this->assertEquals(
+            2,
+            substr_count(implode("\n", $lines), '[built-in policy]'),
+            'the outer summary and one runtime warning identify the fallback',
+        );
+        $this->assertTrue(
+            strpos($lines[0], '[built-in policy]') !== false,
+            'the outer summary carries the policy source',
+        );
+    }
+
+    /**
+     * Production 2026-10-11 logged "trusted: d.multicall2 (8 params) [built-in
+     * policy]" and "untrusted: system.client_version" for ordinary reads at
+     * the shipped default. A routine forward is per-call tracing, which is
+     * what $rpcLogCalls opts into; refusals and warnings are not.
+     */
+    public function testRoutineForwardsAreTracedOnlyWithRpcLogCalls()
+    {
+        $read = $this->methodCallXml('d.multicall2', ['', 'main', 'd.hash=', 'd.name=']);
+        $version = $this->methodCallXml('system.client_version');
+        $fallbackReported = false;
+        foreach ([[], ['XMLRPCProxySafeParams' => XMLRPCProxy::defaultSafeParams()]] as $vars) {
+            $default = XMLRPCProxy::policySettings($vars);
+            $traced = XMLRPCProxy::policySettings($vars + ['rpcLogCalls' => true]);
+            $suffix = $default['logSuffix'];
+            foreach ([[$read, 'trusted: d.multicall2 (4 params)'],
+                [$version, 'untrusted: system.client_version']] as $case) {
+                $decision = self::decideOnModernDaemon($case[0], 'sanitize', $default['safeParams']);
+                $this->assertTrue($decision['action'] === 'send', $case[1] . ': the routine call is forwarded');
+                $expected = (!$fallbackReported && $suffix !== '')
+                    ? ['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'] : [];
+                $fallbackReported = $fallbackReported || $suffix !== '';
+                $this->assertEquals(
+                    $expected,
+                    XMLRPCProxy::decisionLogLines($decision, $default),
+                    $case[1] . ': no routine decision line at the shipped default' . $suffix,
+                );
+                $this->assertEquals(
+                    [$case[1] . $suffix],
+                    XMLRPCProxy::decisionLogLines($decision, $traced),
+                    $case[1] . ': $rpcLogCalls traces the routine decision' . $suffix,
+                );
+            }
+            $this->assertTrue(
+                XMLRPCProxy::policySettings($vars + ['rpcLogCalls' => false])['traceCalls'] === false,
+                'an explicit false keeps tracing off',
+            );
+        }
+    }
+
+    public function testRefusalsAndWarningsStayLoggedWithoutCallTracing()
+    {
+        $policy = XMLRPCProxy::policySettings([]);
+        $hash = str_repeat('A', 40);
+        $cases = [
+            'refusal' => [self::decideOnModernDaemon(
+                $this->methodCallXml('execute.capture', ['', 'id']),
+                'sanitize',
+                $policy['safeParams'],
+            ), 'rejected ('],
+            'local path' => [self::decideOnModernDaemon($this->methodCallXml(
+                'load.start',
+                ['', '/tmp/sample.torrent'],
+            ), 'sanitize', $policy['safeParams'], true),
+                'WARNING: operator-enabled local path forwarded'],
+            'size clamp' => [self::decideOnModernDaemon($this->methodCallXml(
+                'network.xmlrpc.size_limit.set',
+                ['', '1'],
+            ), 'sanitize', $policy['safeParams']),
+                'WARNING: network.xmlrpc.size_limit.set requested 1, sent 1024'],
+            'member warning' => [self::decideOnModernDaemon($this->systemMulticallXml([
+                ['d.stop', [$hash]], ['load.start', ['', '/tmp/sample.torrent']],
+            ]), 'sanitize', $policy['safeParams'], true), '[slot 2] WARNING:'],
+            'unsafe mode' => [XMLRPCProxy::decide(
+                $this->methodCallXml('system.client_version'),
+                'passthrough_unsafe',
+            ), 'passthrough (UNSAFE mode)'],
+        ];
+        foreach ($cases as $name => $case) {
+            $lines = XMLRPCProxy::decisionLogLines($case[0], $policy);
+            $this->assertTrue(
+                strpos(implode("\n", $lines), $case[1]) !== false,
+                $name . ' is reported at the shipped default: ' . implode(' | ', $lines),
+            );
+        }
+        $routine = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.stop', [$hash]], ['d.close', [$hash]],
+        ]), 'sanitize', $policy['safeParams']);
+        $this->assertTrue($routine['action'] === 'send', 'a checked WebUI batch is forwarded');
+        $this->assertEquals(
+            [],
+            XMLRPCProxy::decisionLogLines($routine, $policy),
+            'a batch without member warnings is routine',
+        );
+    }
+
+    public function testBuiltInPolicyWarningAppearsOncePerRuntimeWithoutCallTracing()
+    {
+        $script = 'require ' . var_export(realpath(__DIR__ . '/../../php/xmlrpc_proxy.php'), true) . ';'
+            . '$xml = ' . var_export($this->methodCallXml('system.client_version'), true) . ';'
+            . '$decision = XMLRPCProxy::decide($xml, "sanitize", array(), false, array("rtorrentVersion" => 0x1019));'
+            . '$explicit = XMLRPCProxy::policySettings(array("XMLRPCProxySafeParams" => array()));'
+            . '$fallback = XMLRPCProxy::policySettings(array("XMLRPCProxy" => "sanitize"));'
+            . '$lines = array(XMLRPCProxy::decisionLogLines($decision, $explicit));'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+            . '$fallback["traceCalls"] = true;'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+            . 'echo json_encode($lines);';
+        $result = SCGITransportFixture::runPhpChild(['-r', $script]);
+        $this->assertEquals(0, $result['exitCode'], 'the isolated runtime completed');
+        $this->assertEquals('', $result['stderr'], 'the isolated runtime emitted no PHP diagnostics');
+        $this->assertEquals(
+            [
+                [],
+                ['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'],
+                [],
+                ['untrusted: system.client_version [built-in policy]'],
+            ],
+            json_decode($result['stdout'], true),
+            'explicit policies stay quiet, fallback warns once, and later tracing retains its source',
+        );
+    }
+
+    public function testProcessUsesTheSharedCallTracingFilterWithoutLoggingArguments()
+    {
+        $cases = [
+            [$this->methodCallXml('system.client_version'), false,
+                'untrusted: system.client_version'],
+            [$this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']), true,
+                'trusted: d.multicall2 (3 params)'],
+        ];
+        foreach ($cases as $case) {
+            foreach ([false, true] as $trace) {
+                $this->resetMocks();
+                $GLOBALS['rpcLogCalls'] = $trace;
+                $result = self::processOnModernDaemon($case[0]);
+                $this->assertTrue(
+                    $result === '' && rXMLRPCRequest::$sent === 1
+                    && rXMLRPCRequest::$lastTrusted === $case[1],
+                    'the adapter preserves transport and trust with tracing ' . ($trace ? 'on' : 'off'),
+                );
+                $this->assertEquals(
+                    $trace ? ['xmlrpc-proxy: ' . $case[2]] : [],
+                    FileUtil::$log,
+                    'the adapter shares the HTTP doors\' routine tracing policy',
+                );
+            }
+        }
+        $GLOBALS['rpcLogCalls'] = false;
+        foreach ([
+            ['execute.capture', ['', 'private-argument'], false, 'rejected ('],
+            ['load.start', ['', '/private-argument.torrent'], true, 'WARNING: operator-enabled local path'],
+            ['network.xmlrpc.size_limit.set', ['', '1'], false, 'WARNING: network.xmlrpc.size_limit.set'],
+        ] as $case) {
+            $this->resetMocks();
+            self::processOnModernDaemon(
+                $this->methodCallXml($case[0], $case[1]),
+                'sanitize',
+                true,
+                XMLRPCProxy::defaultSafeParams(),
+                $case[2],
+            );
+            $this->assertTrue(
+                strpos($this->logText(), $case[3]) !== false,
+                'the adapter keeps operational refusals and warnings without tracing',
+            );
+            $this->assertTrue(
+                strpos($this->logText(), 'private-argument') === false,
+                'operational decisions do not include caller argument values',
+            );
+        }
+        $this->resetMocks();
+        $GLOBALS['rpcLogCalls'] = true;
+        self::processOnModernDaemon($this->methodCallXml('execute.capture'), 'sanitize', false);
+        $this->assertEquals(
+            [],
+            FileUtil::$log,
+            'the explicit adapter logging switch silences refusals even with tracing on',
+        );
+    }
+
+    public function testExplicitNullSafeParamsCannotSelectBuiltInPolicy()
+    {
+        $settings = XMLRPCProxy::policySettings(['XMLRPCProxySafeParams' => null]);
+        $this->assertEquals(
+            [],
+            $settings['safeParams'],
+            'an explicitly invalid policy fails closed',
+        );
+        $this->assertEquals(
+            '',
+            $settings['logSuffix'],
+            'an explicit policy cannot claim the built-in fallback',
+        );
+        $this->assertEquals(
+            'XMLRPCProxySafeParams must be an array; proxy disabled',
+            $settings['policyError'],
+            'an invalid policy names its failing key and consequence',
+        );
+        $call = $this->methodCallXml(
+            'load.start',
+            ['', 'https://example.test/a.torrent', 'd.custom1.set=secret'],
+        );
+        $decision = self::decideOnModernDaemon($call, 'sanitize', $settings['safeParams']);
+        $this->assertTrue(
+            $decision['action'] === 'reject',
+            'an explicit null policy cannot authorize a custom-field write',
+        );
+    }
+
+    /**
+     * Without httprpc the WebUI sends a label as d.custom1.set for each
+     * download followed by d.save_resume for each, so the label reaches the
+     * session at once rather than at the next periodic session.save
+     * (ACC-OWN-A-02). Trusting each save like its label keeps the homogeneous
+     * batch eligible for the trusted route; mixed batches use the daemon gate.
+     */
+    public function testALabelBatchCarriesTheSessionSaveOfEachDownload()
+    {
+        $a = str_repeat('A', 40);
+        $b = str_repeat('B', 40);
+        $batch = $this->systemMulticallXml([
+            ['d.custom1.set', [$a, 'tv shows']],
+            ['d.custom1.set', [$b, 'tv shows']],
+            ['d.save_resume', [$a]],
+            ['d.save_resume', [$b]],
+        ]);
+        foreach ([0x0908, 0x1016, 0x1019] as $version) {
+            $decision = XMLRPCProxy::decide(
+                $batch,
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+                false,
+                ['rtorrentVersion' => $version],
+            );
+            $this->assertTrue(
+                $decision['action'] === 'send' && $decision['trusted'],
+                sprintf(
+                    'a label batch with its saves is one trusted request on 0x%04x: %s',
+                    $version,
+                    implode(' | ', $decision['log']),
+                ),
+            );
+            $this->assertEquals(
+                2,
+                substr_count($decision['payload'], 'd.save_resume'),
+                'both saves are forwarded',
+            );
+        }
+        $direct = $this->methodCallXml('d.save_resume', [$a]);
+        foreach ([0x0908, 0x1019] as $version) {
+            $decision = XMLRPCProxy::decide(
+                $direct,
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+                false,
+                ['rtorrentVersion' => $version],
+            );
+            $this->assertTrue(
+                $decision['action'] === 'send' && $decision['trusted'],
+                sprintf('one download\'s save is the same call alone on 0x%04x', $version),
+            );
+        }
+        // The save names a download and nothing else; another shape keeps the
+        // route it had before the WebUI needed it in a batch.
+        foreach ([[], ['main'], [$a, 'extra']] as $params) {
+            $xml = $this->methodCallXml('d.save_resume', $params);
+            $modern = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $modern['action'] === 'send' && !$modern['trusted']
+                && $modern['payload'] === $xml,
+                'd.save_resume(' . implode(',', $params) . ') keeps the untrusted direct route on 0.16',
+            );
+            $old = XMLRPCProxy::decide(
+                $xml,
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+                false,
+                ['rtorrentVersion' => 0x0908],
+            );
+            $this->assertEquals(
+                'reject',
+                $old['action'],
+                'd.save_resume(' . implode(',', $params) . ') is refused where 0.9.8 would ignore the untrusted flag',
+            );
+        }
+        $borrowing = XMLRPCProxy::decide($this->systemMulticallXml([
+            ['d.custom1.set', [$a, 'tv']],
+            ['d.save_resume', ['main']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams(), false, ['rtorrentVersion' => 0x1019]);
+        $this->assertTrue(
+            $borrowing['action'] === 'send' && !$borrowing['trusted'],
+            'a save outside its shape does not borrow the label\'s trust',
+        );
+    }
+
+    /**
+     * Without httprpc each WebUI action that changes a setting rTorrent keeps
+     * in the session ends its batch with d.save_resume for the downloads it
+     * changed (R4-NF-2). Every such batch must stay one trusted request, or the
+     * proxy would refuse the change together with its save.
+     */
+    public function testWebUiSettingBatchesCarryTheirSessionSaves()
+    {
+        $h = str_repeat('A', 40);
+        $save = ['d.save_resume', [$h]];
+        $batches = [
+            'dsetprio' => [['d.priority.set', [$h, 3]]],
+            'start' => [['d.open', [$h]], ['d.start', [$h]]],
+            'stop' => [['d.stop', [$h]], ['d.close', [$h]]],
+            'pause' => [['d.stop', [$h]]],
+            'unpause' => [['d.start', [$h]]],
+            'setprioritize' => [['f.prioritize_first.enable', [$h . ':f0']],
+                ['f.prioritize_last.disable', [$h . ':f0']], ['d.update_priorities', [$h]]],
+            'setratio' => [['view.set_not_visible', [$h, 'rat_0']],
+                ['d.views.remove', [$h, 'rat_0']],
+                ['d.views.push_back_unique', [$h, 'rat_1']],
+                ['view.set_visible', [$h, 'rat_1']]],
+            'schignore' => [['d.stop', [$h]], ['d.throttle_name.set', [$h, 'NULL']],
+                ['d.start', [$h]], ['d.custom.set', [$h, 'sch_ignore', '1']]],
+        ];
+        foreach ([0x0908, 0x1016, 0x1019] as $version) {
+            foreach ($batches as $action => $calls) {
+                $calls[] = $save;
+                $decision = XMLRPCProxy::decide(
+                    $this->systemMulticallXml($calls),
+                    'sanitize',
+                    XMLRPCProxy::defaultSafeParams(),
+                    false,
+                    ['rtorrentVersion' => $version],
+                );
+                $this->assertTrue(
+                    $decision['action'] === 'send' && $decision['trusted'],
+                    sprintf(
+                        '%s with its save is one trusted request on 0x%04x: %s',
+                        $action,
+                        $version,
+                        implode(' | ', $decision['log']),
+                    ),
+                );
+            }
+        }
+    }
+
+    public function testNewBatchElevationsKeepUnsupportedDirectCallsUntrusted()
+    {
+        $hash = str_repeat('a', 40);
+        foreach ([
+            ['d.views.push_back_unique', [$hash, 'sonarr_imported']],
+            ['view.set_visible', [$hash, 'main']],
+            ['view.set_visible', [$hash, 'sonarr_imported']],
+            ['d.throttle_name.set', [$hash, 'thr_1']],
+            ['d.views.remove', [$hash]],
+            ['d.views.remove', [$hash, 'sonarr_imported']],
+        ] as $call) {
+            $xml = $this->methodCallXml($call[0], $call[1]);
+            $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                $decision['action'] === 'send' && !$decision['trusted'],
+                $call[0] . ' outside the batch elevation shape retains the direct untrusted route',
+            );
+            $this->assertEquals(
+                $xml,
+                $decision['payload'],
+                $call[0] . ' outside the elevation shape reaches rTorrent byte for byte',
+            );
+        }
+        $batched = $this->systemMulticallXml([
+            ['d.stop', [strtoupper($hash)]],
+            ['d.views.push_back_unique', [$hash, 'sonarr_imported']],
+        ]);
+        $decision = self::decideOnModernDaemon($batched, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted'],
+            'an unsupported member must not borrow trust from another batch member',
+        );
+        $oldElevation = self::decideOnModernDaemon(
+            $this->methodCallXml('d.stop', [$hash, 'extra']),
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+        );
+        $this->assertTrue(
+            $oldElevation['action'] === 'reject',
+            'an existing elevation keeps its terminal shape refusal',
+        );
+        $missingHash = self::decideOnModernDaemon(
+            $this->methodCallXml('d.start', []),
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+        );
+        $this->assertTrue(
+            $missingHash['action'] === 'reject' && !$missingHash['trusted']
+            && $missingHash['payload'] === '',
+            'd.start without a download hash is refused before reaching the daemon',
+        );
+    }
+
+    public function testWebUiGetTotalReadBatchRemainsUntrusted()
+    {
+        $xml = $this->systemMulticallXml([
+            ['throttle.global_up.total', []],
+            ['throttle.global_down.total', []],
+            ['throttle.global_up.max_rate', []],
+            ['throttle.global_down.max_rate', []],
+        ]);
+        $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && !$decision['trusted']
+            && strpos($decision['log'][0], 'untrusted: system.multicall (4 members)') === 0,
+            'the four gettotal readers need no trusted XMLRPC connection',
+        );
+    }
+
+    public function testSavedPolicyRefusalNamesBothRecreateFilesSetters()
+    {
+        $oldPolicy = ['d.directory_base.set', 'd.custom1.set'];
+        $hash = str_repeat('A', 40);
+        $call = [$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0'];
+        foreach ([$this->methodCallXml('f.multicall', $call),
+            $this->systemMulticallXml([['f.multicall', $call]])] as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize', $oldPolicy);
+            $this->assertTrue($d['action'] === 'reject', 'saved policy still refuses unlisted setters');
+            $this->assertTrue(
+                strpos(implode(' ', $d['log']), 'f.set_create_queued') !== false
+                && strpos(implode(' ', $d['log']), 'f.set_resize_queued') !== false
+                && strpos(implode(' ', $d['log']), 'conf/xmlrpc_proxy.php') !== false,
+                'the operator sees both required policy additions at either nesting level',
+            );
+        }
+    }
+
+    public function testSystemMulticallRetainsMemberDecisionReasonsAndLocalPathWarning()
+    {
+        $local = $this->systemMulticallXml([
+            ['load.start', ['', '/srv/watch/x.torrent']],
+        ]);
+        $d = self::decideOnModernDaemon($local, 'sanitize', XMLRPCProxy::defaultSafeParams(), true);
+        $this->assertTrue($d['action'] === 'send' && $d['trusted'], 'operator-enabled local load is still sent');
+        $this->assertTrue(
+            strpos(implode(' ', $d['log']), '[slot 1] WARNING: operator-enabled local path forwarded') !== false,
+            'the outer decision carries the local-path warning of its member',
+        );
+        $denied = $this->systemMulticallXml([
+            ['load.start', ['', 'http://example.test/x.torrent', 'execute.capture=id']],
+        ]);
+        $d = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue($d['action'] === 'reject', 'unsafe nested load is refused');
+        $this->assertTrue(
+            strpos(implode(' ', $d['log']), '[slot 1] rejected (not allowed on this connection): load.start [slot 3: execute.capture]') !== false,
+            'the log keeps the member reason and inner command slot',
+        );
+    }
+
+    public function testDirectoryBoundaryRefusalHasItsOwnDiagnostic()
+    {
+        $xml = $this->methodCallXml('load.start', ['', 'http://example.test/x.torrent',
+            'd.directory.set=/outside']);
+        $d = self::decideOnModernDaemon(
+            $xml,
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+            false,
+            ['directory' => ['root' => '/downloads']],
+        );
+        $this->assertTrue($d['action'] === 'reject', 'the outside path is refused');
+        $this->assertTrue(
+            strpos($d['log'][0], 'directory outside boundary') !== false
+            && strpos($d['log'][0], '$topDirectory') === false,
+            'a configured boundary reports the path refusal without a missing-configuration hint',
+        );
+        $d = self::decideOnModernDaemon(
+            $xml,
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+            false,
+            ['directory' => ['root' => '']],
+        );
+        $this->assertTrue(
+            strpos($d['log'][0], '$topDirectory') !== false
+            && strpos($d['log'][0], '$XMLRPCProxyAllowRootDirectory') !== false,
+            'an empty boundary points the operator to its configuration',
+        );
+    }
+
+    public function testLegacyViewFirstResultGetsResultExceptionAndAccurateRefusal()
+    {
+        $d = self::decideOnModernDaemon($this->methodCallXml(
+            'd.multicall',
+            ['main', 'cat=$d.views='],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $d['action'] === 'send' && $d['trusted']
+            && strpos($d['payload'], 'cat=$d.views=') !== false,
+            'the exact read-only cat expression works in the first result slot',
+        );
+        $d = self::decideOnModernDaemon($this->methodCallXml(
+            'd.multicall',
+            ['main', 'd.wibble='],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            strpos($d['log'][0], 'not allowed on this connection') !== false
+            && strpos($d['log'][0], 'ambiguous multicall view') === false,
+            'an invalid legacy result is reported as a command refusal',
+        );
+    }
+
+    public function testTrustedSystemMulticallPayloadIsCanonicalAcrossMembers()
+    {
+        $hash = str_repeat('a', 40);
+        $xml = $this->systemMulticallXml([
+            ['network.xmlrpc.size_limit.set', ['', '999999999']],
+            ['d.priority.set', [$hash, '2']],
+        ]);
+        $d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            . '<methodCall><methodName>system.multicall</methodName><params><param><value><array><data>'
+            . '<value><struct><member><name>methodName</name><value><string>network.xmlrpc.size_limit.set</string></value></member>'
+            . '<member><name>params</name><value><array><data><value><string></string></value><value><i8>16777216</i8></value>'
+            . '</data></array></value></member></struct></value>'
+            . '<value><struct><member><name>methodName</name><value><string>d.priority.set</string></value></member>'
+            . '<member><name>params</name><value><array><data><value><string>' . str_repeat('A', 40)
+            . '</string></value><value><i8>2</i8></value></data></array></value></member></struct></value>'
+            . '</data></array></value></param></params></methodCall>';
+        $this->assertTrue(
+            $d['action'] === 'send' && $d['trusted'],
+            'two validated members form one trusted carrier',
+        );
+        $this->assertEquals(
+            $expected,
+            $d['payload'],
+            'the carrier clamps size, uppercases the hash, and emits integer values',
+        );
+    }
+
+    public function testAllUntrustedReadMembersCanShareOnlyAnUntrustedCarrier()
+    {
+        $hash = str_repeat('A', 40);
+        $xml = $this->systemMulticallXml([
+            ['system.client_version', []],
+            ['d.name', [$hash]],
+        ]);
+        $d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $d['action'] === 'send' && !$d['trusted'],
+            'a batch of individually untrusted reads is sent without trust',
+        );
+        $this->assertTrue(
+            strpos($d['payload'], '<?xml version="1.0" encoding="UTF-8"?>') === 0
+            && strpos($d['payload'], '<methodName>d.name</methodName>') === false
+            && strpos($d['payload'], '<string>d.name</string>') !== false,
+            'the all-untrusted carrier is rebuilt from parsed members',
+        );
+        $denied = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['system.client_version', []],
+            ['execute.capture', ['id']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $denied['action'] === 'reject',
+            'a locally forbidden member still refuses the entire carrier',
+        );
+    }
+
+    public function testSystemMulticallTrustRequiresEveryMemberToBeIndividuallyTrusted()
+    {
+        $hash = str_repeat('A', 40);
+        $allowed = $this->systemMulticallXml([
+            ['d.stop', [$hash]], ['d.start', [$hash]],
+        ]);
+        $decision = self::decideOnModernDaemon($allowed, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'validated WebUI action members may share one trusted request',
+        );
+        foreach (['system.client_version', 'execute.capture', 'system.multicall'] as $untrusted) {
+            $denied = $this->systemMulticallXml([
+                ['d.stop', [$hash]], [$untrusted, []],
+            ]);
+            $decision = self::decideOnModernDaemon($denied, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue(
+                !$decision['trusted'],
+                $untrusted . ' must not inherit trust from another member',
+            );
+            if ($untrusted === 'system.client_version') {
+                $this->assertTrue(
+                    $decision['action'] === 'send' && $decision['method'] === null,
+                    'an admitted read retains the mixed untrusted carrier',
+                );
+            } else {
+                $refused = $untrusted === 'execute.capture' ? $untrusted : 'system.multicall';
+                $this->assertTrue(
+                    $decision['action'] === 'reject' && $decision['method'] === $refused,
+                    'a denied member remains terminal and names its refused command',
+                );
+            }
+        }
+    }
+
+    public function testWebUiFileSchedulerAndRatioActionsHaveCheckedBatchShapes()
+    {
+        $hash = str_repeat('B', 40);
+        $bundledCalls = [
+            ['f.prioritize_first.enable', [$hash . ':f0']],
+            ['f.prioritize_last.disable', [$hash . ':f0']],
+            ['d.update_priorities', [$hash]],
+            ['d.throttle_name.set', [$hash, 'NULL']],
+            ['d.custom.set', [$hash, 'sch_ignore', '1']],
+            ['view.set_not_visible', [$hash, 'rat_0']],
+            ['d.views.remove', [$hash, 'rat_0']],
+            ['d.views.push_back_unique', [$hash, 'rat_1']],
+            ['view.set_visible', [$hash, 'rat_1']],
+        ];
+        $decision = self::decideOnModernDaemon(
+            $this->systemMulticallXml($bundledCalls),
+            'sanitize',
+            XMLRPCProxy::defaultSafeParams(),
+        );
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'the bundled WebUI and plugin multicall methods are accepted with their real argument shapes',
+        );
+        foreach ([
+            ['f.prioritize_first.enable', [$hash . ':f0;execute.capture=id']],
+            ['d.set_custom', [$hash, 'sch_ignore', '$execute.capture=id']],
+            ['view.set_visible', [$hash, 'other_view']],
+        ] as $bad) {
+            $decision = self::decideOnModernDaemon(
+                $this->systemMulticallXml([$bad]),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue(
+                $decision['action'] === ($bad[0] === 'd.set_custom' ? 'reject' : 'send')
+                && !$decision['trusted'],
+                $bad[0] . ' cannot become a trusted unchecked batch member',
+            );
+        }
+    }
+
+    public function testSchedulerUnignoreAcceptsEmptyThrottleAndState()
+    {
+        $hash = str_repeat('A', 40);
+        foreach ([
+            [['d.stop', [$hash]], ['d.throttle_name.set', [$hash, '']],
+                ['d.start', [$hash]], ['d.custom.set', [$hash, 'sch_ignore', '']]],
+        ] as $calls) {
+            $d = self::decideOnModernDaemon(
+                $this->systemMulticallXml($calls),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue(
+                $d['action'] === 'send' && $d['trusted'],
+                'scheduler unignore uses the empty throttle and state forms',
+            );
+        }
+        $legacy = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['d.set_throttle_name', [$hash, '']],
+            ['d.set_custom', [$hash, 'sch_ignore', '']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertEquals(
+            'reject',
+            $legacy['action'],
+            'a client-side alias cannot borrow trust as an XMLRPC method',
+        );
+
+    }
+
+    public function testRecreateFilesUsesTheRegisteredRTorrentSetterSpellings()
+    {
+        $hash = str_repeat('C', 40);
+        $xml = $this->methodCallXml('f.multicall', [$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0']);
+        $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'one torrent recreates files through the two registered f setters',
+        );
+        $this->assertTrue(
+            strpos($decision['payload'], 'f.set_create_queued="0"') !== false,
+            'the requested value is rebuilt as a single literal argument',
+        );
+        $batched = $this->systemMulticallXml([['f.multicall',
+            [$hash, '', 'f.set_create_queued=0', 'f.set_resize_queued=0']]]);
+        $decision = self::decideOnModernDaemon($batched, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'multiple torrent actions can use the same validated member',
+        );
+    }
+
+    public function testRatioListingKeepsTheStringProducedByTheExactCatExpression()
+    {
+        $good = $this->methodCallXml('d.multicall2', ['', 'main', 'cat=$d.views=', 'd.name=']);
+        $decision = self::decideOnModernDaemon($good, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'the exact shipped ratio expression can return a string',
+        );
+        $this->assertTrue(
+            strpos($decision['payload'], 'cat=$d.views=') !== false,
+            'the return type preserving expression reaches rTorrent unchanged',
+        );
+        foreach (['cat=$execute.capture=id', 'cat=$d.views=,$execute.capture=id', 'cat=$d.views=;execute.capture=id'] as $bad) {
+            $decision = self::decideOnModernDaemon($this->methodCallXml('d.multicall2', ['', 'main', $bad]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue($decision['action'] === 'reject', 'nearby executable cat expression is refused');
+        }
+        $filtered = $this->methodCallXml(
+            'd.multicall.filtered',
+            ['', 'main', 'cat=$d.views=', 'd.name='],
+        );
+        $decision = self::decideOnModernDaemon($filtered, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $decision['action'] === 'reject',
+            'the ratio result exception does not become an executable filter exception',
+        );
+    }
+
+    public function testShowPeersReadExpressionsAreExactResultOnlyExceptions()
+    {
+        foreach (['t.scrape_complete=', 't.scrape_incomplete='] as $counter) {
+            $expression = 'cat="$t.multicall=d.hash=,' . $counter . ',cat={#}"';
+            $d = self::decideOnModernDaemon(
+                $this->methodCallXml(
+                    'd.multicall2',
+                    ['', 'main', 'd.hash=', $expression],
+                ),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue(
+                $d['action'] === 'send' && $d['trusted']
+                && strpos($d['payload'], $expression) !== false,
+                'the lab-verified ' . $counter . ' read expression remains an exact result',
+            );
+            $unsafe = str_replace($counter, 'execute.capture=id', $expression);
+            $d = self::decideOnModernDaemon(
+                $this->methodCallXml(
+                    'd.multicall2',
+                    ['', 'main', 'd.hash=', $unsafe],
+                ),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue(
+                $d['action'] === 'reject',
+                'an executable expression beside the exception is refused',
+            );
+        }
+    }
+
+    public function testRejectedMulticallLogsTheSlotButKeepsTheOuterFaultIdentity()
+    {
+        $xml = $this->methodCallXml('d.multicall2', ['', 'main', 'd.name=', 'd.wibble=']);
+        $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue($decision['action'] === 'reject', 'one unknown result rejects the full call');
+        $this->assertTrue(
+            $decision['method'] === 'd.multicall2',
+            'the client-visible fault retains the outer method',
+        );
+        $this->assertTrue(
+            $decision['log'] === [
+                'rejected (not allowed on this connection): d.multicall2 [slot 4: d.wibble]'],
+            'the classified log identifies the rejected command and its slot',
+        );
+    }
+
+    public function testRejectedCommandSlotNormalizesAndBoundsItsName()
+    {
+        $forged = "d.x\nxmlrpc-proxy: trusted: forged=1";
+        $d = self::decideOnModernDaemon($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', $forged],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $d['action'] === 'reject'
+            && strpos($d['log'][0], '[slot 3: d.x?xmlrpc-proxy:?trusted:?forged]') !== false,
+            'control characters and spaces in the slot name cannot impersonate another log entry',
+        );
+        $long = str_repeat('x', 120) . '=1';
+        $d = self::decideOnModernDaemon($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', $long],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            strpos($d['log'][0], '[slot 3: ' . str_repeat('x', 96) . ']') !== false,
+            'the displayed command name is limited to 96 bytes',
+        );
+    }
+
+    public function testOnlyLegacyViewFirstMulticallCanRebuildAnEqualsViewSlot()
+    {
+        foreach (['d.multicall2', 'd.multicall.filtered'] as $method) {
+            $params = ['', 'd.custom1.set=not-a-view'];
+            if ($method === 'd.multicall.filtered') {
+                $params[] = 'd.custom1.set=filter';
+            }
+            $params[] = 'd.name=';
+            $decision = self::decideOnModernDaemon(
+                $this->methodCallXml($method, $params),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue(
+                $decision['action'] === 'reject'
+                && strpos($decision['log'][0], 'ambiguous multicall view') !== false,
+                $method . ' reports an ambiguous modern view rather than rewriting it',
+            );
+        }
+        $legacy = self::decideOnModernDaemon($this->methodCallXml(
+            'd.multicall',
+            ['main', 'd.name='],
+        ), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $legacy['action'] === 'send' && $legacy['trusted'],
+            'the old view-first form is still supported',
+        );
+    }
+
+    public function testFilesystemMutatorsCannotBypassDirectoryConfinementOnOldDaemons()
+    {
+        foreach (['d.create_link', 'd.delete_link', 'd.tied_to_file.set', 'd.set_directory', 'd.set_directory_base', 'create_link', 'delete_link', 'd.set_tied_to_file'] as $method) {
+            $this->resetMocks();
+            $xml = $this->methodCallXml($method, [str_repeat('A', 40), '/outside/file']);
+            $d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue($d['action'] === 'reject', $method . ' must be refused locally, including on a daemon that ignores untrusted');
+            self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue(rXMLRPCRequest::$sent === 0, $method . ' must never reach transport');
+        }
+    }
+
+    public function testLegacyAliasesOfDeniedCommandsNeverReachTransport()
+    {
+        // Four redirects from rTorrent v0.9.8 src/main.cc; the remaining names
+        // are pre-0.9.4 spellings in php/methods-0.9.4.php.
+        foreach (['directory', 'session', 'scgi_port', 'scgi_local',
+            'set_directory', 'set_session', 'get_scgi_dont_route', 'set_scgi_dont_route',
+            'load', 'load_verbose', 'load_start', 'load_start_verbose',
+            'load_raw', 'load_raw_start', 'load_raw_verbose',
+            'set_xmlrpc_size_limit', 'xmlrpc_size_limit',
+            'system.method.erase', 'system.method.get', 'system.method.has_key',
+            'system.method.insert', 'system.method.list_keys', 'system.method.set',
+            'system.method.set_key', 'view_filter', 'view_sort_new', 'view_sort_current'] as $method) {
+            $this->resetMocks();
+            $xml = $this->methodCallXml($method, ['', '/outside']);
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', $method . ' is locally denied without relying on daemon trust support');
+            self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue(rXMLRPCRequest::$sent === 0, $method . ' never reaches transport');
+        }
+    }
+
+    public function testLegacyViewFirstListingsRebuildTheirFirstResultSlot()
+    {
+        foreach ([['main', 'd.hash='], ['main', 'd.hash=', 'd.name='],
+            ['main', 'd.custom=key;execute.throw=id', 'd.name=']] as $params) {
+            $d = self::decideOnModernDaemon($this->methodCallXml('d.multicall', $params), 'sanitize');
+            $this->assertTrue($d['action'] === 'send' && $d['trusted'], 'safe view-first listing remains available');
+            $expected = count($params) === 3 && $params[1] !== 'd.hash='
+                ? 'd.custom="key;execute.throw=id"' : 'd.hash=""';
+            $this->assertTrue(strpos($d['payload'], $expected) !== false, 'the first result slot is rebuilt with quoted data');
+        }
+        foreach (['d.get_hash=', 'd.get_name='] as $alias) {
+            $d = self::decideOnModernDaemon($this->methodCallXml(
+                'd.multicall',
+                ['main', $alias],
+            ), 'sanitize');
+            $this->assertEquals(
+                'reject',
+                $d['action'],
+                'a client-side getter alias cannot execute in a trusted result slot',
+            );
+        }
+        foreach (['execute.throw=id', 'd.wibble=', 'd.directory.set=/downloads/x',
+            'd.custom=$execute.capture=id'] as $command) {
+            $d = self::decideOnModernDaemon($this->methodCallXml('d.multicall', ['main', $command]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue($d['action'] === 'reject', 'a single legacy result slot cannot bypass command validation: ' . $command);
+        }
+    }
+
+    public function testNonDownloadMulticallsKeepEqualsInTheirDataSlot()
+    {
+        foreach (['f.multicall' => 'f.path=', 't.multicall' => 't.url=', 'p.multicall' => 'p.address='] as $method => $command) {
+            $d = self::decideOnModernDaemon($this->methodCallXml($method, [str_repeat('A', 40), '*v=abc*', $command]), 'sanitize');
+            $this->assertTrue($d['action'] === 'send' && $d['trusted'], $method . ' permits equals in the non-executable data slot');
+            $this->assertTrue(strpos($d['payload'], '<string>*v=abc*</string>') !== false, 'data slot reaches the daemon unchanged');
+        }
+    }
+
+    public function testSymlinkDotSegmentsCannotChangeTheCheckedDirectory()
+    {
+        require_once(__DIR__ . '/../../php/xmlrpc_path.php');
+        $root = sys_get_temp_dir() . '/proxy-dot-' . uniqid();
+        if (!mkdir($root . '/inside', 0700, true) || !mkdir($root . '/outside/child', 0700, true)
+            || !symlink($root . '/outside/child', $root . '/inside/link')) {
+            throw new Exception('could not create directory boundary fixture');
+        }
+        try {
+            $policy = ['root' => $root . '/inside', 'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor']];
+            foreach (self::DIRECTORY_SETTERS as $setter) {
+                foreach (['/link/..', '/link/../new', '/./new', '/new/../target'] as $tail) {
+                    $this->assertTrue(!$this->loadInto($root . '/inside' . $tail, $policy, $setter), $setter . ' refuses dot segments before path normalization: ' . $tail);
+                    $this->assertTrue(rXMLRPCRequest::$sent === 0, 'dot segments never reach transport');
+                }
+            }
+            $this->assertTrue($this->loadInto($root . '/inside//new/', $policy), 'repeated and trailing separators remain valid');
+        } finally {
+            unlink($root . '/inside/link');
+            rmdir($root . '/inside');
+            rmdir($root . '/outside/child');
+            rmdir($root . '/outside');
+            rmdir($root);
+        }
+    }
+
+    public function testMulticallFilterMayNotChangeAnyDownloadDirectory()
+    {
+        foreach (self::DIRECTORY_SETTERS as $setter) {
+            $xml = $this->methodCallXml('d.multicall.filtered', ['', 'main', $setter . '=/downloads/x', 'd.name=']);
+            $d = self::decideOnModernDaemon($xml, 'sanitize', [$setter], false, ['directory' => ['root' => '/downloads']]);
+            $this->assertTrue($d['action'] === 'reject', $setter . ' in a filter is as unsafe as in a result slot');
+        }
+    }
+
+    public function testQuotedDirectoryWhitespaceCannotChangeThePathBeingChecked()
+    {
+        foreach (['" /downloads/x"', '"' . "\t" . '/downloads/x"', '"/downloads/x "'] as $path) {
+            $this->assertTrue(!$this->loadInto($path, ['root' => '/downloads']), 'quoted boundary whitespace must not be trimmed only for validation');
+            $this->assertTrue(rXMLRPCRequest::$sent === 0, 'refused path never reaches transport');
+        }
+        $this->assertTrue($this->loadInto('"/downloads/a b"', ['root' => '/downloads']), 'internal spaces are valid path data');
+        $this->assertTrue(strpos(rXMLRPCRequest::$lastPayload, 'd.directory.set="/downloads/a b"') !== false, 'the exact checked path reaches transport');
+    }
+
+    public function testDefaultPolicyAllowsCanonicalBaseDirectoryWithinBoundary()
+    {
+        $xml = $this->methodCallXml('load.start', ['', 'https://example.test/x.torrent', 'd.directory.base.set=/downloads/x']);
+        $d = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, ['directory' => ['root' => '/downloads']]);
+        $this->assertTrue($d['action'] === 'send' && $d['trusted'], 'the canonical setter is available under the same boundary as its alias');
+    }
+
+    public function testPersistedDirectoryPolicyRemainsAnExactOverride()
+    {
+        foreach (['d.directory_base.set' => 'send', 'd.directory.base.set' => 'reject'] as $setter => $action) {
+            $xml = $this->methodCallXml('load.start', ['', 'https://example.test/x.torrent', $setter . '=/downloads/x']);
+            $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.directory_base.set'], false, ['directory' => ['root' => '/downloads']]);
+            $this->assertTrue($d['action'] === $action, 'an existing explicit policy permits only its configured spelling: ' . $setter);
+            if ($setter === 'd.directory.base.set') {
+                $this->assertTrue(
+                    $d['method'] === 'load.start',
+                    'the client fault still names the outer load call',
+                );
+                $this->assertTrue(
+                    strpos(
+                        $d['log'][0],
+                        'policy lists d.directory_base.set but not d.directory.base.set; add it to conf/xmlrpc_proxy.php or the httprpc policy override]',
+                    ) !== false,
+                    'the deployed policy mismatch has a precise actionable log message',
+                );
+            }
+        }
+    }
+
+    // ---- Mode dispatch ----
+
+    public function testOffModeReturnsNull()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>';
+        $this->assertTrue(self::processOnModernDaemon($xml, 'off') === null, 'off mode returns null');
+    }
+
+    public function testOffModeRejectsGarbage()
+    {
+        $this->resetMocks();
+        $this->assertTrue(self::processOnModernDaemon('not xml at all', 'off') === null, 'off mode rejects garbage too');
+    }
+
+    public function testPassthroughUnsafeForwardsTrusted()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>execute</methodName><params></params></methodCall>';
+        self::processOnModernDaemon($xml, 'passthrough_unsafe');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'passthrough_unsafe forwards as trusted');
+        $this->assertEquals($xml, rXMLRPCRequest::$lastPayload, 'passthrough_unsafe forwards payload verbatim');
+    }
+
+    /**
+     * The legacy method name says "ForwardsUntrusted" for compatibility with
+     * test inventories; the current contract is terminal rejection.
+     */
+    public function testInvalidXmlForwardsUntrusted()
+    {
+        $this->resetMocks();
+        $this->assertTrue(self::processOnModernDaemon('not xml at all', 'sanitize') === null, 'invalid XML is rejected');
+    }
+
+    public function testNonLoadMethodForwardsUntrusted()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'non-load method forwarded as untrusted');
+    }
+
+    // ---- Sanitize-mode whitelist (the security-critical path) ----
+
+    public function testSanitizeEndToEndForwardsCleanedPayload()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/t.torrent</string></value></param><param><value><string>execute=evil</string></value></param></params></methodCall>';
+        $result = self::processOnModernDaemon($xml, 'sanitize', false, ['d.directory.set']);
+        $this->assertTrue($result === null, 'all-or-nothing load with denied parameter returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport sends for denied parameter');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded for denied parameter');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === null, 'null trust for denied parameter');
+    }
+
+    // ---- Sanity ----
+
+    public function testSanitizeMethodsList()
+    {
+        $ref = new ReflectionProperty('XMLRPCProxy', 'sanitizeMethods');
+        if (PHP_VERSION_ID < 80100) {
+            $ref->setAccessible(true);
+        }
+        $methods = $ref->getValue();
+        $this->assertTrue(in_array('load.start', $methods), 'load.start in sanitize list');
+        $this->assertTrue(in_array('load.raw_start', $methods), 'load.raw_start in sanitize list');
+        $this->assertTrue(!in_array('execute', $methods), 'execute NOT in sanitize list');
+        $this->assertTrue(!in_array('system.multicall', $methods), 'system.multicall NOT in sanitize list');
+        $this->assertTrue(!in_array('execute2', $methods), 'execute2 NOT in sanitize list');
+    }
+
+    public function testChainedCommandIsNotForwarded()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=A;d.custom2.set=(execute.capture,/bin/sh,-c,id)');
+        // The ';' and everything after it end up inside the quoted argument.
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="A;d.custom2.set=(execute.capture,/bin/sh,-c,id)"') !== false,
+            'a chained command is forwarded as text inside an argument, not as a command',
+        );
+    }
+
+    public function testNestedCommandValueIsQuoted()
+    {
+        $sent = $this->sanitizeParam('d.custom2.set=(execute.capture,/bin/sh,-c,id)');
+        $this->assertTrue(
+            strpos($sent, 'd.custom2.set="(execute.capture,/bin/sh,-c,id)"') !== false,
+            'a parenthesised value must be forwarded quoted, as an argument',
+        );
+    }
+
+    public function testCommandNameMustMatchExactly()
+    {
+        $sent = $this->sanitizeParam('d.custom1.setEVIL=x;d.custom2.set=(execute.capture,/bin/sh,-c,"id")');
+        $this->assertTrue(strpos($sent, 'custom1.setEVIL') === false, 'a command that merely starts with an allowed name is dropped');
+        $this->assertTrue(strpos($sent, 'execute.capture') === false, 'and its payload goes with it');
+    }
+
+    public function testParameterWithoutSeparatorIsDropped()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set');
+        $this->assertTrue(strpos($sent, 'd.custom1.set') === false, 'a parameter with no = is dropped');
+    }
+
+    // ---- and the values clients legitimately send still arrive ----
+
+    public function testValueKeepsCharactersThatUsedToBreakIt()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=Movies (2024)');
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="Movies (2024)"') !== false,
+            'parentheses and spaces survive as a quoted argument',
+        );
+    }
+
+    public function testSingleArgumentCommandsPreserveCommasInValues()
+    {
+        $sent1 = $this->sanitizeParam('d.custom1.set=Movies, Inc');
+        $this->assertTrue(
+            strpos($sent1, 'd.custom1.set="Movies, Inc"') !== false,
+            'commas in single-argument commands are preserved inside the argument',
+        );
+
+        $sent2 = $this->sanitizeParam('d.directory.set=/data/Movies, Inc', ['d.directory.set']);
+        $this->assertTrue(
+            strpos($sent2, 'd.directory.set="/data/Movies, Inc"') !== false,
+            'commas in directory path argument are preserved',
+        );
+    }
+
+    public function testMultiArgumentCommandsSplitProperly()
+    {
+        $sent = $this->sanitizeParam('d.custom.set=category,Movies, Inc', ['d.custom.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom.set="category","Movies, Inc"') !== false,
+            'd.custom.set splits key from value and preserves commas in the value',
+        );
+    }
+
+    // The one read command that takes two arguments. Measured 2026-09-14 on
+    // 0.16.22: d.custom.if_z=key,fallback answers the fallback when the key is
+    // unset, and d.custom.if_z="key,fallback" -- one argument -- faults
+    // "Missing default argument." A read is split like the two-argument setter
+    // is, and each half is screened for an evaluator on its own.
+    public function testTheTwoArgumentReadCommandIsSplitLikeTheSetter()
+    {
+        $this->multicall(['', 'main', 'd.custom.if_z=chk-state,none']);
+        $this->assertTrue(rXMLRPCRequest::$sent === 1, 'the listing reaches rtorrent');
+        $this->assertTrue(
+            strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom.if_z="chk-state","none"') !== false,
+            'key and fallback are two quoted arguments, not one',
+        );
+
+        $this->multicall(['', 'main', 'd.custom.if_z="chk-state","none"']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1
+            && strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom.if_z="chk-state","none"') !== false,
+            'the already-quoted spelling is accepted and rebuilt the same way',
+        );
+
+        $this->multicall(['', 'main', 'd.custom.if_z=chk-state,$execute.capture=/bin/hostname']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'an evaluator in the fallback slot is refused, not quoted into the key',
+        );
+    }
+
+    public function testQuotesAndBackslashesAreEscaped()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=say "hi" \\ bye');
+        $this->assertTrue(strpos($sent, '\\"hi\\"') !== false, 'a quote in the value is escaped, not closing the argument');
+    }
+
+    public function testMultipleArgumentsArePreserved()
+    {
+        $sent = $this->sanitizeParam('d.custom.set=chk-state,7');
+        $this->assertTrue(
+            strpos($sent, 'd.custom.set="chk-state","7"') !== false,
+            'a command taking two arguments still gets two',
+        );
+    }
+
+    // ---- trust ----
+
+    public function testRebuiltRequestIsTrusted()
+    {
+        $this->sanitizeParam('d.custom1.set=label');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'a fully rebuilt request may be trusted');
+    }
+
+    public function testRequestIsUntrustedWhenAParamCannotBeRebuilt()
+    {
+        $this->resetMocks();
+        // An <int> target is a type this side does not rebuild, so the malformed load is rejected.
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><int>1</int></value></param>'
+            . '<param><value><string>http://example.test/x.torrent</string></value></param>'
+            . '</params></methodCall>';
+        $res = self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'anything not rebuilt here is terminally rejected, for rtorrent never to see');
+    }
+
+    public function testDollarPrefixedArgumentIsDropped()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=$execute.capture=/bin/hostname');
+        $this->assertTrue(
+            strpos($sent, 'execute.capture') === false,
+            'an argument that would be re-parsed as a command is dropped, not quoted',
+        );
+    }
+
+    public function testDollarPrefixedSecondArgumentIsDropped()
+    {
+        $sent = $this->sanitizeParam('d.custom.set=key,$execute.capture=/bin/hostname');
+        $this->assertTrue(
+            strpos($sent, 'execute.capture') === false,
+            'a denied second argument rejects the whole load',
+        );
+    }
+
+    public function testDollarInsideAValueIsKept()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=cost 20$ or so');
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="cost 20$ or so"') !== false,
+            'only a leading $ is special, so ordinary values keep theirs',
+        );
+    }
+
+    public function testUntrustedRequestIsNeverLoggedAsTrusted()
+    {
+        $this->resetMocks();
+        $GLOBALS['rpcLogCalls'] = true;
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'the call is sent untrusted');
+        foreach (FileUtil::$log as $line) {
+            $this->assertTrue(
+                strpos($line, 'xmlrpc-proxy: trusted') !== 0,
+                'a request sent untrusted is never logged as trusted',
+            );
+        }
+        $this->assertTrue(strpos($this->logText(), 'untrusted') !== false, 'and it is logged as untrusted');
+    }
+
+    public function testStrippedValueCannotForgeALogLine()
+    {
+        $this->resetMocks();
+        $this->sanitizeParamLogged("execute=evil\nxmlrpc-proxy: trusted: load.raw_start (2 params)");
+        $this->assertTrue(
+            strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
+            'a rejected command cannot inject a second log entry',
+        );
+    }
+
+    public function testLoggedValueIsLengthCapped()
+    {
+        $this->resetMocks();
+        $this->sanitizeParamLogged('execute=' . str_repeat('A', 500));
+        $this->assertTrue(strlen($this->logText()) < 400, 'a long rejected command is bounded in the log');
+    }
+
+    // ---- shapes rtorrent itself accepts ----
+
+    public function testWhitespaceAroundTheCommandNameIsAccepted()
+    {
+        $this->assertTrue(
+            strpos($this->sanitizeParam(' d.custom1.set=x'), 'd.custom1.set="x"') !== false,
+            'a leading space does not hide the command name',
+        );
+        $this->assertTrue(
+            strpos($this->sanitizeParam('d.custom1.set =x'), 'd.custom1.set="x"') !== false,
+            'nor does a space before the =',
+        );
+    }
+
+    public function testArgumentsAreTrimmedAsRtorrentTrimsThem()
+    {
+        $this->assertTrue(
+            strpos($this->sanitizeParam('d.custom.set=chk-state, 7'), 'd.custom.set="chk-state","7"') !== false,
+            'an unquoted argument is trimmed, matching what rtorrent stores',
+        );
+    }
+
+    public function testDollarIsCheckedAfterTrimming()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set= $execute.capture=/bin/hostname');
+        $this->assertTrue(
+            strpos($sent, 'execute.capture') === false,
+            'trimming must not quote a leading space into a leading $',
+        );
+    }
+
+    // ---- parameter forms ----
+
+    public function testImplicitStringParamFormIsRead()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>http://example.test/x.torrent</string></value></param>'
+            . '<param><value>d.custom1.set=label</value></param>'
+            . '</params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
+        $this->assertTrue(
+            strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom1.set="label"') !== false,
+            'a value without an explicit <string> is read the same way',
+        );
+    }
+
+    public function testBase64DataParamIsRebuiltAndStillTrusted()
+    {
+        $this->resetMocks();
+        $data = str_repeat("torrent-bytes\x00\xc8", 20);
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . chunk_split(base64_encode($data), 76, "\n") . '</base64></value></param>'
+            . '<param><value><string>d.custom1.set=label</string></value></param>'
+            . '</params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', false, ['d.custom1.set']);
+        $sent = (string) rXMLRPCRequest::$lastPayload;
+
+        $this->assertTrue(preg_match('#<base64>(.*?)</base64>#s', $sent, $m) === 1, 'the data param is still base64');
+        $this->assertTrue(base64_decode($m[1], true) === $data, 'and it carries the same bytes, wrapping removed');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'a rebuilt base64 param does not force the call untrusted');
+    }
+
+    public function testPreQuotedValueIsKeptAsOneArgument()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set="Movies, Inc"');
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="Movies, Inc"') !== false,
+            'a value the client quoted itself is unquoted and re-quoted as one argument',
+        );
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="Movies","Inc"') === false,
+            'and the comma inside the quotes does not split it',
+        );
+    }
+
+    public function testCrossSeedQuotedLoadParamsAreKept()
+    {
+        $sent = $this->sanitizeParam(
+            'd.custom1.set="cross-seed"',
+            ['d.custom1.set', 'd.directory_base.set', 'd.custom.set'],
+        );
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="cross-seed"') !== false,
+            'cross-seed quotes the label; that must still set custom1',
+        );
+
+        $sent = $this->sanitizeParam(
+            'd.directory_base.set="/data/Media/torrent/download/cross-seed/PassThePopcorn"',
+            ['d.custom1.set', 'd.directory_base.set', 'd.custom.set'],
+        );
+        $this->assertTrue(
+            strpos(
+                $sent,
+                'd.directory_base.set="/data/Media/torrent/download/cross-seed/PassThePopcorn"',
+            ) !== false,
+            'and the quoted save path must still set directory_base',
+        );
+    }
+
+    public function testQuotedDollarPrefixedArgumentIsDropped()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set="$execute.capture=/bin/hostname"');
+        $this->assertTrue(
+            strpos($sent, 'execute.capture') === false,
+            'quoting does not hide a leading $; the load is rejected',
+        );
+    }
+
+    public function testUnclosedQuoteIsDropped()
+    {
+        $this->resetMocks();
+        $this->sanitizeParamLogged('d.custom1.set="Movies, Inc');
+        $this->assertTrue(
+            strpos((string) rXMLRPCRequest::$lastPayload, 'd.custom1.set') === false,
+            'an unclosed quote rejects the whole load without forwarding it',
+        );
+        $this->assertTrue(
+            strpos($this->logText(), 'rejected') !== false,
+            'and the rejection is visible in the log',
+        );
+    }
+
+    public function testUnknownMethodNameCannotForgeALogLine()
+    {
+        $this->resetMocks();
+        $GLOBALS['rpcLogCalls'] = true;
+        $name = "system.foo\nxmlrpc-proxy: trusted: forged";
+        $xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($name)
+            . '</methodName><params></params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', true, []);
+
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'an unknown method is sent untrusted');
+        $this->assertEquals(1, count(FileUtil::$log), 'call tracing records the normalized method name');
+        $this->assertTrue(
+            strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
+            'a method name cannot start a log line of its own',
+        );
+    }
+
+    public function testMulticallCommandsAreRebuiltLikeLoadParams()
+    {
+        $this->multicall(['', 'main', 'd.custom1.set=Movies (2024)']);
+        $this->assertTrue(
+            strpos(
+                (string) rXMLRPCRequest::$lastPayload,
+                'd.custom1.set="Movies (2024)"',
+            ) !== false,
+            'an allowed command in a multicall is quoted the same way as in a load',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === true,
+            'and a multicall of nothing but allowed commands may be trusted',
+        );
+    }
+
+    // An unknown command in a multicall causes terminal outer rejection.
+    public function testMulticallWithAnUnknownCommandIsRejected()
+    {
+        // d.name= used to stand here, and stopped being unknown when the read
+        // list arrived. A command on neither list is what this case is about.
+        $this->multicall(['', 'main', 'd.wibble=']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'the request is rejected, not forwarded',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === null,
+            'and not trusted',
+        );
+    }
+
+
+    // The listing request every remote client makes. It names no setter, so
+    // before the read list it matched nothing in $safeParams and took the
+    // whole outer call down with it -- which is what the live instance did to
+    // a client on 2026-09-08, four times, before it gave up and asked about
+    // each download one command at a time.
+    public function testMulticallOfReadCommandsIsRebuiltAndTrusted()
+    {
+        $this->multicall(['', 'main', 'd.hash=', 'd.name=', 'd.custom=chk-state']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1,
+            'a listing request reaches rtorrent',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === true,
+            'rebuilt from its parsed parts, so it goes trusted',
+        );
+        $this->assertTrue(
+            strpos(rXMLRPCRequest::$lastPayload, 'd.custom="chk-state"') !== false,
+            'a read command that carries an argument keeps it, quoted',
+        );
+    }
+
+    // A multicall applies its commands to everything in a view, so a directory
+    // setter in one names where every download in that view is written. It is
+    // refused outright here, ahead of the rebuild, rather than left to the
+    // $topDirectory boundary -- which is configuration, and is absent on a
+    // caller that passes no directory policy at all.
+    //
+    // Measured by mutation 2026-09-12: dropping the isDirectDenied() call from
+    // the result slot let d.directory.set= through with no suite noticing.
+    public function testMulticallMayNotCarryADirectorySetter()
+    {
+        foreach (self::DIRECTORY_SETTERS as $setter) {
+            $this->multicall(['', 'main', $setter . '=/srv/anywhere'], [$setter]);
+            $this->assertTrue(rXMLRPCRequest::$sent === 0, $setter . ' is refused in result slots even when allowed in load tails');
+            $this->assertTrue(rXMLRPCRequest::$lastTrusted === null, 'a refused setter never reaches transport');
+        }
+    }
+
+    // Quoting cannot make a $-prefixed argument safe: rtorrent parses and calls
+    // it. rebuildSafeLoadParam() refuses it for setters, and a read command
+    // goes through the same rebuild, so it is refused there too.
+    public function testReadCommandArgumentNamingAnEvaluatorIsRefused()
+    {
+        $this->multicall(['', 'main', 'd.custom=$execute.capture=/bin/hostname']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'an evaluator smuggled into a read command argument is refused',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === null,
+            'and nothing is trusted',
+        );
+    }
+
+    public function testMulticallCarryingExecuteIsRefused()
+    {
+        $this->multicall(['', 'main', 'execute.capture=/bin/sh,-c,id']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'a multicall carrying execute.capture is refused, not forwarded',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === null,
+            'and it certainly is not trusted',
+        );
+    }
+
+    public function testMulticallDollarArgumentIsNeverTrusted()
+    {
+        $this->multicall(['', 'main', 'd.custom1.set=$execute.capture=/bin/hostname']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'a multicall whose argument would be re-parsed is rejected, not forwarded',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === null,
+            'and not trusted',
+        );
+    }
+
+    public function testMulticallViewNameIsDataNotACommand()
+    {
+        $this->multicall(['', 'a view with spaces', 'd.custom1.set=label']);
+        $this->assertTrue(
+            strpos(
+                (string) rXMLRPCRequest::$lastPayload,
+                '<string>a view with spaces</string>',
+            ) !== false,
+            'the view name is re-emitted as the value it is, not quoted as a command',
+        );
+    }
+
+    public function testCommandCarryingMethodsList()
+    {
+        $ref = new ReflectionProperty('XMLRPCProxy', 'multicallMethods');
+        if (PHP_VERSION_ID < 80100) {
+            $ref->setAccessible(true);
+        }
+        $methods = $ref->getValue();
+        $this->assertTrue(in_array('d.multicall2', $methods), 'd.multicall2 is command-carrying');
+        $this->assertTrue(in_array('t.multicall', $methods), 't.multicall is command-carrying');
+        $this->assertTrue(
+            !in_array('system.multicall', $methods),
+            'system.multicall is NOT: its members are calls, not command strings',
+        );
+        $this->assertTrue(
+            !in_array('load.start', $methods),
+            'load.start belongs to the list that strips, not this one',
+        );
+    }
+
+    public function testLoadFromALocalPathIsRejected()
+    {
+        $this->assertTrue(
+            $this->load('/srv/watch/x.torrent') === null,
+            'a load naming a path on rtorrent\'s own filesystem is refused',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastPayload === null,
+            'and nothing is sent, not even untrusted',
+        );
+    }
+
+    /**
+     * Untrusted is not a refusal on rtorrent below 0.16.9 — the header is read
+     * and ignored — so this one cannot be left for rtorrent to sort out.
+     */
+    public function testLocalPathIsRefusedRatherThanForwardedUntrusted()
+    {
+        $this->load('/srv/watch/x.torrent');
+        $this->assertTrue(rXMLRPCRequest::$sent === 0, 'the request never reaches rtorrent');
+        $this->assertTrue(
+            strpos($this->logText(), 'local path') !== false,
+            'and the refusal says why',
+        );
+    }
+
+    public function testNetworkAndMagnetUrisAreAccepted()
+    {
+        foreach (['http://example.test/x.torrent', 'https://example.test/x.torrent',
+            'ftp://example.test/x.torrent', 'magnet:?xt=urn:btih:abc'] as $uri) {
+            $this->load($uri);
+            $this->assertTrue(rXMLRPCRequest::$sent === 1, $uri . ' is forwarded');
+        }
+    }
+
+    /**
+     * rtorrent compares these with strncmp, so anything it would not recognise
+     * as a URI is a path to it, and has to be a path here too. Matching more
+     * loosely than rtorrent does is exactly the hole this closes.
+     */
+    public function testSchemeMatchingIsAsStrictAsRtorrents()
+    {
+        foreach (['HTTP://example.test/x.torrent', 'Magnet:?xt=urn:btih:abc',
+            'magnet:xt=urn:btih:abc', ' http://example.test/x.torrent',
+            'file:///srv/watch/x.torrent', 'watch/x.torrent', '~/x.torrent'] as $uri) {
+            $this->assertTrue($this->load($uri) === null, $uri . ' is treated as a local path');
+        }
+    }
+
+    public function testBase64EncodingDoesNotHideALocalPath()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . base64_encode('/srv/watch/x.torrent') . '</base64></value></param>'
+            . '</params></methodCall>';
+        $this->assertTrue(
+            self::processOnModernDaemon($xml, 'sanitize', true, [], false) === null,
+            'a base64 parameter is read as the URI it decodes to',
+        );
+    }
+
+    public function testRawLoadIsUnaffected()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . base64_encode('d4:infoe') . '</base64></value></param>'
+            . '</params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', true, [], false);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1,
+            'load.raw_start carries the torrent itself, not a URI, so it is untouched',
+        );
+    }
+
+    public function testOperatorCanAllowLocalPathsWithAnExplicitRiskWarning()
+    {
+        $this->load('/srv/watch/x.torrent', true);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1,
+            'the setting exists for automation that posts server-local paths',
+        );
+        $this->assertTrue(
+            strpos($this->logText(), 'operator-enabled local path forwarded') !== false,
+            'the exceptional path mode is visible in the operational log',
+        );
+    }
+
+    public function testCapturedSettingsReadBatchUsesTrustOnlyForItsExactReadShape()
+    {
+        // Captured from the actual WebUI on rt-lab rTorrent 0.16.24.
+        $xml = file_get_contents(__DIR__ . '/fixtures/settings-read-rtorrent-0.16.24.xml');
+        $this->assertTrue($xml !== false, 'the captured settings request is present');
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $decision = self::decideOnModernDaemon(
+            $xml,
+            'sanitize',
+            $policy,
+            false,
+            ['rtorrentVersion' => 0x1018],
+        );
+        $this->assertTrue(
+            $decision['action'] === 'send' && $decision['trusted'],
+            'the complete Settings read runs trusted so both listener flag getters answer',
+        );
+        $this->assertTrue(
+            strpos($decision['payload'], 'network.scgi.dont_route') !== false,
+            'the exact read-only SCGI flag survives the rebuilt request',
+        );
+        foreach ([
+            ['network.scgi.dont_route', 'network.scgi.open_port'],
+            ['network.scgi.dont_route', 'system.sockets.files.min_alloc.set'],
+            ['network.listen.port.range', 'execute.capture'],
+        ] as $replacement) {
+            $changed = str_replace(
+                '<string>' . $replacement[0] . '</string>',
+                '<string>' . $replacement[1] . '</string>',
+                $xml,
+            );
+            $this->assertTrue($changed !== $xml, 'the mutation changed a captured member');
+            $blocked = self::decideOnModernDaemon(
+                $changed,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => 0x1018],
+            );
+            if ($replacement[1] === 'system.sockets.files.min_alloc.set') {
+                $this->assertTrue(
+                    $blocked['action'] !== 'send' || !$blocked['trusted'],
+                    'a socket setter cannot borrow trust from the settings read batch',
+                );
+            } else {
+                $this->assertEquals(
+                    'reject',
+                    $blocked['action'],
+                    $replacement[1] . ' cannot borrow trust from the settings read batch',
+                );
+            }
+        }
+        $slot = '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data></data>';
+        $withArgument = str_replace($slot, '<string>network.scgi.dont_route</string></value></member><member><name>params</name><value><array><data><value><string>x</string></value></data>', $xml);
+        $this->assertTrue($withArgument !== $xml, 'the extra-argument mutation changed slot 37');
+        $blocked = self::decideOnModernDaemon(
+            $withArgument,
+            'sanitize',
+            $policy,
+            false,
+            ['rtorrentVersion' => 0x1018],
+        );
+        $this->assertEquals(
+            'reject',
+            $blocked['action'],
+            'the settings batch cannot carry a parameter in the SCGI getter slot',
+        );
+        $mixed = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['throttle.max_uploads.global', []],
+            ['d.open', [str_repeat('A', 40)]],
+        ]), 'sanitize', $policy);
+        $this->assertTrue(
+            $mixed['action'] === 'send' && !$mixed['trusted'],
+            'an arbitrary read plus privileged write cannot use the settings exception',
+        );
+        $direct = self::decideOnModernDaemon(
+            $this->methodCallXml('network.scgi.dont_route'),
+            'sanitize',
+            $policy,
+        );
+        $this->assertEquals(
+            'reject',
+            $direct['action'],
+            'the exact read exception belongs to the captured batch only',
+        );
+        $short = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['throttle.max_uploads.global', []],
+            ['network.scgi.dont_route', []],
+        ]), 'sanitize', $policy);
+        $this->assertEquals(
+            'reject',
+            $short['action'],
+            'an arbitrary read batch cannot gain the special settings trust',
+        );
+    }
+
+    public function testCapturedLegacyPanelReadBatchesRequireExactTrustedShapes()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        foreach ([
+            'settings-read-rtorrent-0.9.8.xml' => 49,
+            'panel-total-rtorrent-0.9.8.xml' => 4,
+            'panel-open-rtorrent-0.9.8.xml' => 2,
+        ] as $fixture => $count) {
+            $xml = file_get_contents(__DIR__ . '/fixtures/' . $fixture);
+            $this->assertTrue($xml !== false, $fixture . ' is a captured browser request');
+            $this->assertEquals(
+                $count,
+                substr_count($xml, '<name>methodName</name>'),
+                $fixture . ' keeps its captured number of result slots',
+            );
+            $decision = self::decideOnModernDaemon(
+                $xml,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => 0x0908],
+            );
+            $this->assertTrue(
+                $decision['action'] === 'send' && $decision['trusted'],
+                $fixture . ' is the exact read-only batch allowed on 0.9.8',
+            );
+        }
+    }
+
+    public function testCapturedLegacyReadBatchesCannotElevateChangedCalls()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $old = ['rtorrentVersion' => 0x0908];
+        foreach (['settings-read-rtorrent-0.9.8.xml',
+            'panel-total-rtorrent-0.9.8.xml', 'panel-open-rtorrent-0.9.8.xml'] as $fixture) {
+            $xml = file_get_contents(__DIR__ . '/fixtures/' . $fixture);
+            $this->assertTrue($xml !== false, $fixture . ' exists for the security mutations');
+            $withWrite = preg_replace(
+                '/<name>methodName<\/name><value><string>[^<]+<\/string>/',
+                '<name>methodName</name><value><string>execute.capture</string>',
+                $xml,
+                1,
+            );
+            $this->assertTrue($withWrite !== $xml, $fixture . ' changed its first method');
+            $blocked = self::decideOnModernDaemon($withWrite, 'sanitize', $policy, false, $old);
+            $this->assertEquals(
+                'reject',
+                $blocked['action'],
+                $fixture . ' cannot borrow trust for an execution command',
+            );
+            $withArgument = preg_replace(
+                '/<name>params<\/name><value><array><data><\/data>/',
+                '<name>params</name><value><array><data><value><string>x</string></value></data>',
+                $xml,
+                1,
+            );
+            $this->assertTrue($withArgument !== $xml, $fixture . ' changed its first argument list');
+            $blocked = self::decideOnModernDaemon($withArgument, 'sanitize', $policy, false, $old);
+            $this->assertEquals(
+                'reject',
+                $blocked['action'],
+                $fixture . ' cannot borrow trust with a parameter',
+            );
+            preg_match_all(
+                '/<name>methodName<\/name><value><string>([^<]+)<\/string>/',
+                $xml,
+                $names,
+            );
+            $this->assertTrue(count($names[1]) >= 2, $fixture . ' has ordered read slots');
+            $reordered = str_replace(
+                '<string>' . $names[1][0] . '</string>',
+                '<string>SWAP_SLOT</string>',
+                $xml,
+            );
+            $reordered = str_replace(
+                '<string>' . $names[1][1] . '</string>',
+                '<string>' . $names[1][0] . '</string>',
+                $reordered,
+            );
+            $reordered = str_replace(
+                '<string>SWAP_SLOT</string>',
+                '<string>' . $names[1][1] . '</string>',
+                $reordered,
+            );
+            $blocked = self::decideOnModernDaemon($reordered, 'sanitize', $policy, false, $old);
+            $this->assertEquals(
+                'reject',
+                $blocked['action'],
+                $fixture . ' cannot reorder the captured read slots',
+            );
+            $wrongVersion = self::decideOnModernDaemon(
+                $xml,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => 0x1016],
+            );
+            $this->assertTrue(
+                !$wrongVersion['trusted'],
+                $fixture . ' exact legacy trust does not apply to a newer daemon',
+            );
+        }
+        $mixed = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['throttle.global_up.total', []],
+            ['d.open', [str_repeat('A', 40)]],
+        ]), 'sanitize', $policy, false, $old);
+        $this->assertEquals(
+            'reject',
+            $mixed['action'],
+            'a shorter read and write batch cannot borrow the captured read grant',
+        );
+        foreach (['dht.statistics', 'throttle.global_up.total',
+            'network.http.current_open', 'network.http.max_open', 'network.port_open'] as $name) {
+            $direct = self::decideOnModernDaemon(
+                $this->methodCallXml($name),
+                'sanitize',
+                $policy,
+                false,
+                $old,
+            );
+            $this->assertEquals(
+                'reject',
+                $direct['action'],
+                $name . ' alone cannot borrow trust from a captured batch',
+            );
+        }
+        $native = require(__DIR__ . '/../../php/xmlrpc_proxy_native.php');
+        foreach (['network.http.max_open', 'network.port_open',
+            'network.port_random', 'network.port_range'] as $name) {
+            $this->assertEquals(
+                0x1,
+                $native[$name],
+                $name . ' is registered only for the live 0.9.8 daemon',
+            );
+        }
+    }
+
+    public function testExecutionPrimitivesAreRefused()
+    {
+        foreach (['execute', 'execute.capture', 'execute.raw.bg', 'execute2',
+            'method.insert', 'method.set_key', 'import', 'try_import',
+            'schedule', 'schedule2', 'schedule.remove', 'log.execute',
+            'log.open_file', 'network.scgi.open_port', 'catch', 'system.env'] as $method) {
+            $this->assertTrue($this->callMethod($method) === null, $method . ' is refused');
+            $this->assertTrue(rXMLRPCRequest::$sent === 0, $method . ' never reaches rtorrent');
+        }
+    }
+
+    /**
+     * The families are spelled differently across versions — 0.9.8 has execute2
+     * and schedule_remove2, 0.16.x has execute.raw.bg and schedule.remove — so
+     * the list matches prefixes. An exact list would go stale silently, and for
+     * a refusal list that is the wrong way to fail.
+     */
+    public function testRefusalMatchesTheWholeFamily()
+    {
+        $ref = new ReflectionProperty('XMLRPCProxy', 'denyPrefixes');
+        if (PHP_VERSION_ID < 80100) {
+            $ref->setAccessible(true);
+        }
+        $this->assertTrue(
+            in_array('execute', $ref->getValue()),
+            'one entry covers every execute spelling',
+        );
+        $this->assertTrue(
+            $this->callMethod('execute.capture_nothrow') === null,
+            'including the ones not written down anywhere',
+        );
+    }
+
+    public function testHarmlessMethodsAreNotCaughtByTheRefusalList()
+    {
+        foreach (['system.client_version', 'd.name', 'view.list', 'directory.default'] as $method) {
+            $this->callMethod($method);
+            $this->assertTrue(rXMLRPCRequest::$sent === 1, $method . ' is still forwarded');
+            $this->assertTrue(rXMLRPCRequest::$lastTrusted === false, $method . ' untrusted');
+        }
+    }
+
+    public function testPassthroughUnsafeIsNotSubjectToTheRefusalList()
+    {
+        $this->callMethod('execute.capture', ['', '/bin/sh'], 'passthrough_unsafe');
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1,
+            'passthrough_unsafe is documented as dangerous and stays literal',
+        );
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'and trusted');
+    }
+
+    public function testSystemMulticallMembersAreJudgedToo()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+            . '<params><param><value><array><data><value><struct>'
+            . '<member><name>methodName</name><value><string>execute.capture</string></value></member>'
+            . '<member><name>params</name><value><array><data>'
+            . '<value><string></string></value></data></array></value></member>'
+            . '</struct></value></data></array></value></param></params></methodCall>';
+        $this->assertTrue(
+            self::processOnModernDaemon($xml, 'sanitize', true, []) === null,
+            'a refused method does not get through inside a struct',
+        );
+        $this->assertTrue(rXMLRPCRequest::$sent === 0, 'and nothing is forwarded');
+    }
+
+    // ---- elevated: refused by rtorrent untrusted, needed by real clients ----
+
+    public function testOneDownloadByHashIsElevated()
+    {
+        foreach (['d.open', 'd.start', 'd.stop', 'd.delete_tied'] as $method) {
+            $this->callMethod($method, ['0123456789abcdef0123456789ABCDEF01234567']);
+            $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, $method . ' is elevated');
+            $this->assertTrue(
+                strpos(
+                    (string) rXMLRPCRequest::$lastPayload,
+                    '0123456789ABCDEF0123456789ABCDEF01234567',
+                ) !== false,
+                $method . ' is re-emitted with the hash this side validated',
+            );
+        }
+    }
+
+    public function testAnArgumentThatIsNotAHashIsNotElevated()
+    {
+        foreach (['not-a-hash', '', '0123456789abcdef0123456789ABCDEF0123456',
+            '0123456789abcdef0123456789ABCDEF012345678', '../../etc/passwd'] as $bad) {
+            $this->assertTrue(
+                $this->callMethod('d.start', [$bad]) === null,
+                var_export($bad, true) . ' is not a hash, so the call returns a refusal',
+            );
+            $this->assertTrue(
+                rXMLRPCRequest::$sent === 0,
+                var_export($bad, true) . ' never reaches rtorrent',
+            );
+        }
+    }
+
+    public function testTheArgumentCountHasToMatch()
+    {
+        $this->callMethod('d.start', ['0123456789ABCDEF0123456789ABCDEF01234567', 'extra']);
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'an extra argument means the call is not the shape that was approved',
+        );
+    }
+
+    public function testExactElevatedShapesRejectTrailingNewlinesBeforeTrust()
+    {
+        $hash = str_repeat('A', 40);
+        foreach ([
+            ['d.stop', [$hash . "\n"]],
+            ['f.prioritize_first.enable', [$hash . ":f0\n"]],
+            ['view.set_visible', [$hash, "rat_1\n"]],
+            ['d.priority.set', [$hash, "2\n"]],
+            ['network.xmlrpc.size_limit.set', ['', "1024\n"]],
+        ] as $call) {
+            $decision = self::decideOnModernDaemon($this->methodCallXml($call[0], $call[1]));
+            $this->assertTrue(
+                !$decision['trusted'],
+                $call[0] . ' cannot elevate a value outside its exact canonical shape',
+            );
+            $legacy = XMLRPCProxy::decide(
+                $this->methodCallXml($call[0], $call[1]),
+                'sanitize',
+                [],
+                false,
+                ['rtorrentVersion' => 0x0908],
+            );
+            $this->assertEquals(
+                'reject',
+                $legacy['action'],
+                $call[0] . ' refuses the malformed shape when the daemon ignores untrusted flags',
+            );
+        }
+    }
+
+    public function testAnElevatedValueIsCarriedAsDataNotAsACommand()
+    {
+        $this->callMethod(
+            'd.custom1.set',
+            ['0123456789ABCDEF0123456789ABCDEF01234567', '$execute.capture=/bin/hostname'],
+        );
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
+        $this->assertTrue(
+            strpos(
+                (string) rXMLRPCRequest::$lastPayload,
+                '<string>$execute.capture=/bin/hostname</string>',
+            ) !== false,
+            'and the value travels as a string parameter, which rtorrent stores rather than parses',
+        );
+    }
+
+    public function testTheSizeLimitIsClamped()
+    {
+        $this->callMethod('network.xmlrpc.size_limit.set', ['', '999999999']);
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
+        $this->assertTrue(
+            strpos((string) rXMLRPCRequest::$lastPayload, '<i8>16777216</i8>') !== false,
+            'a client raising it to add a big torrent is fine; an unbounded value is not',
+        );
+        $this->callMethod('network.xmlrpc.size_limit.set', ['', '2097152']);
+        $this->assertTrue(
+            strpos((string) rXMLRPCRequest::$lastPayload, '<i8>2097152</i8>') !== false,
+            'a value under the ceiling is passed through as asked',
+        );
+    }
+
+    public function testElevationListHoldsNoCommandCarryingMethod()
+    {
+        $ref = new ReflectionProperty('XMLRPCProxy', 'elevate');
+        if (PHP_VERSION_ID < 80100) {
+            $ref->setAccessible(true);
+        }
+        $elevated = array_keys($ref->getValue());
+        foreach (['load.start', 'load.raw_start', 'd.multicall2', 't.multicall'] as $method) {
+            $this->assertTrue(
+                !in_array($method, $elevated),
+                $method . ' takes command strings, so it is rebuilt rather than elevated',
+            );
+        }
+    }
+
+    public function testRootBoundaryOptInDoesNotImplicitlyEnableLocalPaths()
+    {
+        $this->assertTrue(
+            !$this->loadInto(
+                '/var/lib/downloads',
+                ['root' => '/'],
+                'd.directory.set',
+                '/srv/watch/x.torrent',
+                false,
+            ),
+            'an explicit root boundary does not bypass the independent local-path switch',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'the local-path request remains fail-closed before reaching rtorrent',
+        );
+    }
+
+    public function testBothPathOptInsPreserveLocalPathAutomation()
+    {
+        $this->assertTrue(
+            $this->loadInto(
+                '/var/lib/downloads',
+                ['root' => '/'],
+                'd.directory.set',
+                '/srv/watch/x.torrent',
+                true,
+            ),
+            'an operator may combine local paths with an explicit root boundary',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 1,
+            'the explicitly enabled automation still reaches rtorrent',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$lastTrusted === true,
+            'the fully rebuilt request keeps the same trusted transport contract',
+        );
+    }
+
+    public function testADirectoryOutsideTheBoundaryIsDropped()
+    {
+        $policy = ['root' => '/torrents1/downloads'];
+        $this->assertTrue(
+            !$this->loadInto('/var/www/user1/rtorrent/share/settings/x/', $policy),
+            'the reported attack — a webroot path — does not reach rtorrent',
+        );
+        $this->assertTrue(
+            rXMLRPCRequest::$sent === 0,
+            'and the request is rejected with zero transport calls',
+        );
+    }
+
+    public function testADirectoryInsideTheBoundaryIsKept()
+    {
+        $policy = ['root' => '/torrents1/downloads'];
+        $this->assertTrue(
+            $this->loadInto('/torrents1/downloads/Movies', $policy),
+            'a directory the customer is entitled to still works',
+        );
+        $this->assertTrue(
+            $this->loadInto('/torrents1/downloads', $policy),
+            'the boundary itself is inside it',
+        );
+    }
+
+    public function testAllDirectorySettersAreConfinedTheSameWay()
+    {
+        $policy = ['root' => '/torrents1/downloads'];
+        foreach (self::DIRECTORY_SETTERS as $setter) {
+            $this->assertTrue(
+                !$this->loadInto('/var/www/user1', $policy, $setter),
+                $setter . ' cannot place torrent data outside the configured boundary',
+            );
+            $this->assertTrue(
+                $this->loadInto('/torrents1/downloads/x', $policy, $setter),
+                $setter . ' still works inside the boundary',
+            );
+        }
+    }
+
+    public function testQuotedDirectoryInsideTheBoundaryIsKept()
+    {
+        $policy = ['root' => '/torrents1/downloads'];
+        $this->assertTrue(
+            $this->loadInto('"/torrents1/downloads/cross-seed"', $policy, 'd.directory_base.set'),
+            'a client-quoted path is unquoted before the boundary check',
+        );
+    }
+
+    public function testPathTricksDoNotEscape()
+    {
+        $policy = ['root' => '/torrents1/downloads'];
+        foreach ([
+            '/torrents1/downloads/../../var/www',   // climbing out
+            '/torrents1/downloads/./../../etc',     // with a . in the way
+            '/torrents1/downloadsEVIL',             // a prefix, not a child
+            '/torrents1/downloads/../downloads2',   // sibling
+            'downloads/x',                          // not absolute at all
+            '',                                     // nothing
+        ] as $dir) {
+            $this->assertTrue(
+                !$this->loadInto($dir, $policy),
+                var_export($dir, true) . ' is not inside the boundary',
+            );
+        }
+    }
+
+    /**
+     * The value normally does not exist yet, so realpath() on it answers
+     * nothing and a lexical check is all that is left — which one symlink
+     * inside the tree defeats, and the customer can create symlinks. The
+     * resolver is asked about the deepest part that does exist.
+     */
+    public function testASymlinkOutOfTheTreeIsCaught()
+    {
+        $policy = [
+            'root' => '/torrents1/downloads',
+            'resolve' => function ($path) {
+                // stands in for a symlink at /torrents1/downloads/escape
+                if (strpos($path, '/torrents1/downloads/escape') === 0) {
+                    return '/var/www/user1' . substr($path, strlen('/torrents1/downloads/escape'));
+                }
+                return $path;
+            },
+        ];
+        $this->assertTrue(
+            !$this->loadInto('/torrents1/downloads/escape/x', $policy),
+            'a path that is inside on paper and outside in fact is dropped',
+        );
+        $this->assertTrue(
+            $this->loadInto('/torrents1/downloads/real/x', $policy),
+            'and one that resolves where it says still works',
+        );
+    }
+
+    public function testAResolverThatCannotAnswerIsANo()
+    {
+        $policy = [
+            'root' => '/torrents1/downloads',
+            'resolve' => function ($path) {
+                return '';
+            },
+        ];
+        $this->assertTrue(
+            !$this->loadInto('/torrents1/downloads/x', $policy),
+            'an open question about a write target is not a yes',
+        );
+    }
+
+    public function testNoBoundaryStatedMeansNoBoundaryChecked()
+    {
+        // The library keeps this compatibility mode for callers that omit a
+        // policy. Both shipped endpoints now state a boundary; rpc2.php refuses
+        // to start when its configured boundary is empty or implicit root.
+        $this->assertTrue(
+            $this->loadInto('/anywhere/at/all', null),
+            'a caller that states no boundary is not policed here',
+        );
+    }
+
+    public function testAPolicyWithNoRootRefuses()
+    {
+        $this->assertTrue(
+            !$this->loadInto('/torrents1/downloads/x', []),
+            'a stated policy that names no root permits nothing, rather than everything',
+        );
+    }
+
+
+    public function testMalformedSystemMulticallIsRejected()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+            . '<params><param><value><string>x</string></value></param></params></methodCall>';
+        $this->assertTrue(self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']) === null, 'system.multicall is rejected');
+    }
+
+    public function testEnvCheckRecommendsTheAvailableSimpleXMLFunction()
+    {
+        $envCheckPath = realpath(__DIR__ . '/../../env_check.php');
+        $child = SCGITransportFixture::runPhpChild(['-d',
+            'disable_functions=simplexml_load_string', $envCheckPath]);
+
+        $this->assertEquals(
+            0,
+            $child['exitCode'],
+            'env_check keeps optional proxy sanitisation a recommendation',
+        );
+        $this->assertEquals('', $child['stderr'], 'env_check emits no fatal or warning');
+        $this->assertTrue(
+            strpos($child['stdout'], 'Recommended:') !== false,
+            'Recommended section present',
+        );
+        $recommendedSection = '';
+        if (preg_match('/Recommended:(.*?)(?:Configuration:|$)/s', $child['stdout'], $m)) {
+            $recommendedSection = $m[1];
+        }
+        $this->assertTrue(
+            preg_match(
+                '/^  \[WARN\] PHP extension: simplexml\s+'
+            . 'XMLRPC proxy sanitisation \(Sonarr\/Radarr raw pass-through\)$/m',
+                $recommendedSection,
+            ) === 1,
+            'simplexml must be a recommendation with the exact proxy-sanitisation reason',
+        );
+    }
+
+    // ---- an escaped comma is part of the value, not a separator ----
+
+    public function testAnEscapedCommaDoesNotSeparateArguments()
+    {
+        $sent = $this->sanitizeParam('d.custom.set=a\,b', ['d.custom.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom.set="a,b"') !== false,
+            'rtorrent reads a\,b as the one argument a,b; splitting on it invented a second',
+        );
+    }
+
+    public function testAnEscapedCommaAtTheEndOfAValueIsKept()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=a\,', ['d.custom1.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="a,"') !== false,
+            'the comma is value content, so it survives to the end',
+        );
+    }
+
+    public function testAnUnescapedCommaStillSeparates()
+    {
+        $sent = $this->sanitizeParam('d.custom.set=chk-state,7', ['d.custom.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom.set="chk-state","7"') !== false,
+            'a bare comma keeps separating arguments',
+        );
+    }
+
+    /**
+     * Every other backslash is left where it is. rtorrent would read it as an
+     * escape and turn C:\downloads into C:downloads, but this side re-quotes
+     * the value, so the backslash reaches rtorrent whole -- and clients have
+     * been sending paths and labels through here on that basis.
+     */
+    public function testABackslashThatIsNotBeforeACommaIsKept()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=C:\downloads\tv', ['d.custom1.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="C:\\\\downloads\\\\tv"') !== false,
+            'a windows-style path survives, re-escaped on the way out',
+        );
+    }
+
+    public function testATrailingBackslashIsStillJustAValue()
+    {
+        $sent = $this->sanitizeParam('d.custom1.set=abc\\', ['d.custom1.set']);
+        $this->assertTrue(
+            strpos($sent, 'd.custom1.set="abc\\\\"') !== false,
+            'a value ending in a backslash is quoted, not dropped',
+        );
+    }
+
+    public function testVerboseDotLoadsAreOwnedAndSanitized()
+    {
+        $methods = [
+            'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
+            'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
+        ];
+        $torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
+        foreach ($methods as $method) {
+            $isRaw = (strpos($method, '.raw') !== false);
+            $dataVal = $isRaw
+                ? '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
+                : '<param><value><string>http://example.test/test.torrent</string></value></param>';
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>'
+                . '<param><value><string></string></value></param>'
+                . $dataVal
+                . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+                . '</params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+            $this->assertTrue($d['action'] === 'send', $method . ' should be accepted');
+            $this->assertTrue($d['trusted'] === true, $method . ' should be trusted');
+            $this->assertTrue(strpos($d['payload'], 'd.custom1.set="safe_val"') !== false, $method . ' should have sanitized param');
+        }
+    }
+
+    public function testExactEvaluatorsAreRejected()
+    {
+        $evaluators = ['catch', 'branch', 'try', 'and', 'or', 'less', 'greater', 'equal', 'match'];
+        foreach ($evaluators as $ev) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $ev . '</methodName><params></params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', $ev . ' must be rejected');
+            $this->assertTrue($d['trusted'] === false, $ev . ' must not be trusted');
+        }
+    }
+
+    public function testIfEvaluatorIsNotOverblockedAndNearMissesPass()
+    {
+        $nearMisses = ['if', 'not', 'compare', 'catch_extra', 'branching', 'trying'];
+        foreach ($nearMisses as $nm) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $nm . '</methodName><params></params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'send', $nm . ' must not be blocked');
+            $this->assertTrue($d['trusted'] === false, $nm . ' must be ordinary untrusted');
+        }
+    }
+
+    public function testDirectCarriersAreRejected()
+    {
+        $carriers = [
+            'p.call_target',
+            'directory.watch.added',
+            'view.filter',
+            'view.filter.temp',
+            'view.sort_new',
+            'view.sort_current',
+            'view.event_added',
+            'view.event_removed',
+        ];
+        foreach ($carriers as $carrier) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $carrier . '</methodName><params></params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', $carrier . ' must be rejected');
+        }
+    }
+
+    public function testDirectDirectorySettersAreRejected()
+    {
+        $setters = self::DIRECTORY_SETTERS;
+        foreach ($setters as $setter) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $setter . '</methodName><params>'
+                . '<param><value><string>1234567890123456789012345678901234567890</string></value></param>'
+                . '<param><value><string>/tmp</string></value></param>'
+                . '</params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize', [$setter]);
+            $this->assertTrue($d['action'] === 'reject', 'direct call to ' . $setter . ' must be rejected');
+        }
+    }
+
+    public function testUnknownUnderscoreLoadNameRemainsUntrusted()
+    {
+        $xml = $this->methodCallXml('load_normal', ['http://example.com/test.torrent']);
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue(
+            $d['action'] === 'send' && !$d['trusted'],
+            'an unregistered underscore spelling remains an ordinary unknown method',
+        );
+        $this->assertEquals($xml, $d['payload'], 'unknown method retains its original bytes');
+    }
+
+    public function testDirectMulticallsAdversarialGrammarRejectsWholeCall()
+    {
+        $multicalls = [
+            'd.multicall',
+            'd.multicall2',
+            't.multicall',
+            'f.multicall',
+            'p.multicall',
+        ];
+        foreach ($multicalls as $mc) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $mc . '</methodName><params>'
+                . '<param><value><string></string></value></param>'
+                . '<param><value><string>main</string></value></param>'
+                . '<param><value><string>execute.capture=/bin/id</string></value></param>'
+                . '</params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+            $this->assertTrue($d['action'] === 'reject', $mc . ' with unallowed command must be rejected');
+            $this->assertTrue($d['method'] === $mc, 'refusal must name outer method ' . $mc);
+        }
+    }
+
+    public function testDirectMulticallFilteredFilterSlotRejectsWhenUnsafe()
+    {
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>execute.capture=/bin/id</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'd.multicall.filtered with unsafe filter must reject outer call');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer d.multicall.filtered');
+    }
+
+
+    public function testSystemMulticallWithAnUntrustedReadMemberRemainsUntrusted()
+    {
+        $xml = $this->systemMulticallXml([['system.client_version', []]]);
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue(
+            $d['action'] === 'send' && !$d['trusted'],
+            'a read method can use the carrier without gaining trust',
+        );
+        $this->assertTrue($d['method'] === null, 'a forwarded batch names no refused method');
+    }
+
+    public function testMalformedXmlOrMissingMethodIsTerminallyRejected()
+    {
+        $cases = [
+            'not xml at all',
+            '',
+            '<?xml version="1.0"?><methodCall></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName></methodName></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>   </methodName></methodCall>',
+        ];
+        foreach ($cases as $raw) {
+            $d = self::decideOnModernDaemon($raw, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'malformed XML must be rejected');
+            $this->assertTrue($d['payload'] === '', 'malformed XML rejection payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'malformed XML rejection must be untrusted');
+        }
+    }
+
+    public function testEmptyMethodNameHasNoRefusedMethodOrEmptyLogSuffix()
+    {
+        $xml = '<?xml version="1.0"?><methodCall><methodName></methodName></methodCall>';
+        $decision = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertEquals('reject', $decision['action'], 'empty method name is rejected');
+        $this->assertEquals(null, $decision['method'], 'empty method name identifies no method');
+        $this->assertEquals(
+            ['rejected (invalid XML)'],
+            $decision['log'],
+            'empty method name adds no method suffix to the log',
+        );
+    }
+
+    public function testMalformedOwnedLoadsAreTerminallyRejected()
+    {
+        $badXmls = [
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params><param><value><string></string></value></param><param><value><base64>!!!not-valid-base64!!!</base64></value></param></params></methodCall>',
+        ];
+        foreach ($badXmls as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'malformed load call must be rejected');
+            $this->assertTrue($d['payload'] === '', 'malformed load rejection payload must be empty');
+        }
+    }
+
+    public function testInvalidExactElevatedShapesAreTerminallyRejected()
+    {
+        $hashCases = [
+            'd.open' => [
+                '<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
+            ],
+            'd.start' => [
+                '<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
+                '<param><value><string>12345678901234567890123456789012345678901</string></value></param>', // 41
+                '<param><value><string>123456789012345678901234567890123456789G</string></value></param>', // non-hex
+                '<param><value><array><data><value><string>1234567890123456789012345678901234567890</string></value></data></array></value></param>',
+                '<param><value><struct><member><name>hash</name><value><string>1234567890123456789012345678901234567890</string></value></member></struct></value></param>',
+            ],
+            'd.stop' => [
+                '<param><value><string>123456789012345678901234567890123456789</string></value></param>', // 39
+            ],
+            'd.custom1.set' => [
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param>', // missing 2nd
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><array><data><value><string>val</string></value></data></array></value></param>',
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param><param><value><string>v2</string></value></param>', // extra 3rd
+            ],
+            'd.custom2.set' => [
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param>', // missing 2nd
+            ],
+            'd.custom.set' => [
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param>', // missing 3rd
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>v1</string></value></param><param><value><string>v2</string></value></param><param><value><string>v3</string></value></param>', // extra 4th
+            ],
+            'd.priority.set' => [
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>01</string></value></param>', // leading zero
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>+5</string></value></param>', // plus sign
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>-0</string></value></param>', // negative zero
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string>abc</string></value></param>', // non-int
+                '<param><value><string>1234567890123456789012345678901234567890</string></value></param><param><value><string> 5 </string></value></param>', // whitespace
+            ],
+            'network.xmlrpc.size_limit.set' => [
+                '<param><value><string>target</string></value></param><param><value><int>1024</int></value></param>', // non-empty target
+                '<param><value><string></string></value></param><param><value><string>0</string></value></param>', // zero size
+                '<param><value><string></string></value></param><param><value><string>-1</string></value></param>', // negative size
+                '<param><value><string></string></value></param><param><value><string>0500</string></value></param>', // leading zero
+                '<param><value><string></string></value></param><param><value><string>+500</string></value></param>', // plus sign
+                '<param><value><string></string></value></param><param><value><string>bad</string></value></param>', // bad size
+            ],
+        ];
+
+        foreach ($hashCases as $method => $paramVariants) {
+            foreach ($paramVariants as $pv) {
+                $xml = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>' . $pv . '</params></methodCall>';
+                $d = self::decideOnModernDaemon($xml, 'sanitize');
+                $this->assertTrue($d['action'] === 'reject', $method . ' with invalid shape must be rejected');
+                $this->assertTrue($d['payload'] === '', 'rejection payload must be empty');
+                $this->assertTrue($d['trusted'] === false, 'rejection must be untrusted');
+            }
+        }
+    }
+
+    public function testInvalidModeIsTerminallyRejectedBeforeXmlParsing()
+    {
+        $d1 = self::decideOnModernDaemon('not xml', 'invalid_mode');
+        $this->assertTrue($d1['action'] === 'reject', 'invalid mode must be rejected');
+        $this->assertTrue($d1['payload'] === '', 'invalid mode payload must be empty');
+
+        $d2 = self::decideOnModernDaemon('not xml', 'off');
+        $this->assertTrue($d2['action'] === 'reject', 'off mode must be rejected');
+        $this->assertTrue($d2['payload'] === '', 'off mode payload must be empty');
+    }
+
+    public function testDiagnosticsBoundsAndNormalization()
+    {
+        $longBadMethod = 'method.bad*name/with@punctuation#and;characters!' . str_repeat('X', 200);
+        $xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($longBadMethod) . '</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'method must be rejected');
+        $this->assertTrue(strlen($d['method']) <= 96, 'refusal method must be capped at 96 bytes');
+        $this->assertTrue(strpos($d['method'], '?') !== false, 'non-whitelisted chars in method must be normalized to ?');
+
+        $cleanMsg = XMLRPCProxy::formatLogMessage("line1\r\nline2\tline3\x00line4");
+        $this->assertTrue(strpos($cleanMsg, "\n") === false, 'formatLogMessage must strip newlines');
+        $this->assertTrue(strpos($cleanMsg, "\r") === false, 'formatLogMessage must strip CR');
+        $this->assertTrue(strpos($cleanMsg, "\x00") === false, 'formatLogMessage must strip NUL');
+        $this->assertTrue(strlen($cleanMsg) <= 512, 'formatLogMessage must cap at 512 bytes');
+    }
+
+    public function testStoppedShapesAreTerminallyRejected()
+    {
+        // 1. non-methodCall root carrying load.start
+        $xml1 = '<?xml version="1.0"?><bogus><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param></params></bogus>';
+        $d1 = self::decideOnModernDaemon($xml1, 'sanitize');
+        $this->assertTrue($d1['action'] === 'reject', 'non-methodCall root must be rejected');
+        $this->assertTrue($d1['trusted'] === false, 'non-methodCall root must not be trusted');
+
+        // 2. sibling methodName values
+        $xml2 = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><methodName>execute</methodName><params><param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param></params></methodCall>';
+        $d2 = self::decideOnModernDaemon($xml2, 'sanitize');
+        $this->assertTrue($d2['action'] === 'reject', 'sibling methodName elements must be rejected');
+
+        // 3. load.raw data slot is string, not base64
+        $xml3 = '<?xml version="1.0"?><methodCall><methodName>load.raw</methodName><params><param><value><string></string></value></param><param><value><string>raw_not_base64_data</string></value></param></params></methodCall>';
+        $d3 = self::decideOnModernDaemon($xml3, 'sanitize');
+        $this->assertTrue($d3['action'] === 'reject', 'load.raw string data must be rejected');
+
+        // 4. d.multicall.filtered with filter but no result
+        $xml4 = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.is_active=</string></value></param></params></methodCall>';
+        $d4 = self::decideOnModernDaemon($xml4, 'sanitize');
+        $this->assertTrue($d4['action'] === 'reject', 'd.multicall.filtered without results must be rejected');
+
+        // 5. d.multicall2 with target/view but no result
+        $xml5 = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param></params></methodCall>';
+        $d5 = self::decideOnModernDaemon($xml5, 'sanitize');
+        $this->assertTrue($d5['action'] === 'reject', 'd.multicall2 without results must be rejected');
+
+        // 6. d.start value containing both string and int children
+        $xml6 = '<?xml version="1.0"?><methodCall><methodName>d.start</methodName><params><param><value><string>1234567890123456789012345678901234567890</string><int>1</int></value></param></params></methodCall>';
+        $d6 = self::decideOnModernDaemon($xml6, 'sanitize');
+        $this->assertTrue($d6['action'] === 'reject', 'd.start with mixed string and int types must be rejected');
+    }
+
+    public function testMalformedStructuralEnvelopeAndValuesAreTerminallyRejected()
+    {
+        // missing <value> in param
+        $xmlMissingVal = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param></param></params></methodCall>';
+        try {
+            $d = self::decideOnModernDaemon($xmlMissingVal, 'sanitize');
+            $this->assertTrue(is_array($d) && $d['action'] === 'reject', 'missing value must be rejected');
+        } catch (Throwable $e) {
+            $this->assertTrue(false, 'missing value crashed with ' . get_class($e) . ': ' . $e->getMessage());
+        }
+
+        // duplicate <value> in param
+        $xmlDupVal = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value><value><string>http://example.com</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlDupVal, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate value under param must be rejected');
+
+        // missing <params> on owned method
+        $xmlMissingParams = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName></methodCall>';
+        $d = self::decideOnModernDaemon($xmlMissingParams, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'missing params on owned method must be rejected');
+
+        // duplicate <params>
+        $xmlDupParams = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param></params><params><param><value><string></string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlDupParams, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate params containers must be rejected');
+
+        // unexpected child under <params>
+        $xmlUnexpChild = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><extra>bad</extra></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlUnexpChild, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'unexpected child under params must be rejected');
+
+        // duplicate type child in value
+        $xmlDupType = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlDupType, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate type children in value must be rejected');
+
+        // unknown type child in value
+        $xmlUnknownType = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><bogustype>a</bogustype></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlUnknownType, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'unknown type in value must be rejected');
+
+        // mixed implicit text and typed child
+        $xmlMixedImplicit = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value>implicit<string>typed</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlMixedImplicit, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'mixed implicit text and typed child must be rejected');
+
+        // ordinary method with structural defects must also be rejected by the decoder
+        $xmlOrdDupParams = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value></param></params><params><param><value><string>b</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlOrdDupParams, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate params containers on ordinary method must be rejected');
+
+        $xmlOrdUnexpChild = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value></param><extra>bad</extra></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlOrdUnexpChild, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'unexpected child under params on ordinary method must be rejected');
+
+        $xmlOrdDupVal = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string></value><value><string>b</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlOrdDupVal, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate value under param on ordinary method must be rejected');
+
+        $xmlOrdDupType = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlOrdDupType, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'duplicate type children in value on ordinary method must be rejected');
+
+        $xmlOrdMixedImplicit = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value>implicit<string>typed</string></value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xmlOrdMixedImplicit, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'mixed implicit text and typed child on ordinary method must be rejected');
+    }
+
+    public function testResultlessMulticallsAreTerminallyRejected()
+    {
+        $multicalls = [
+            'd.multicall', 'd.multicall2', 'd.multicall.filtered',
+            't.multicall', 'f.multicall', 'p.multicall',
+        ];
+        foreach ($multicalls as $mc) {
+            $paramsXml = '<param><value><string></string></value></param><param><value><string>main</string></value></param>';
+            if ($mc === 'd.multicall.filtered') {
+                $paramsXml .= '<param><value><string>d.is_active=</string></value></param>';
+            }
+            $xml = '<?xml version="1.0"?><methodCall><methodName>' . $mc . '</methodName><params>' . $paramsXml . '</params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', $mc . ' without results must be rejected');
+            $this->assertTrue($d['method'] === $mc, 'refusal must name outer ' . $mc);
+        }
+    }
+
+    public function testSafePlusUnknownMulticallRejectsEntireCall()
+    {
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_label</string></value></param>'
+            . '<param><value><string>d.unknown_non_deny_method=data</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'safe plus unknown non-deny member must reject entire call');
+        $this->assertTrue($d['method'] === 'd.multicall2', 'refusal must name outer method d.multicall2');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+    }
+
+    // --- C1: Filter Owner Tests ---
+
+    public function testFilteredMulticallRejectsGetterOutsideSetterOnlyFilterPolicy()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.is_active=</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'a reader outside the setter-only filter policy must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method d.multicall.filtered');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process must return null on rejected filter');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on rejected filter');
+    }
+
+    public function testFilteredMulticallRejectsDollarCommandFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>$method.insert=fixture</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'dollar command filter must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testFilteredMulticallRejectsParenthesizedCommandFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>(method.insert,fixture)</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'parenthesized command filter must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testFilteredMulticallRejectsNestedCommandFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>(branch,(method.insert,fixture))</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'nested command filter must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testFilteredMulticallRejectsUnclosedQuotedFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.custom1.set="unterminated</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'unclosed quoted filter must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testFilteredMulticallRejectsMalformedEscapedFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.custom1.set="val\\</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe_val</string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'malformed escaped filter must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall.filtered', 'refusal must name outer method');
+        $this->assertTrue($d['payload'] === '', 'refusal payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'refusal must be untrusted');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testFilteredMulticallCanonicallyRebuildsSetterFilter()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall.filtered</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.custom1.set=filter value</string></value></param>'
+            . '<param><value><string>d.custom.set=result_val</string></value></param>'
+            . '</params></methodCall>';
+        $safeParams = ['d.custom1.set', 'd.custom.set'];
+        $d = self::decideOnModernDaemon($xml, 'sanitize', $safeParams);
+        $this->assertTrue($d['action'] === 'send', 'allowlisted setter filter must be admitted for send');
+        $this->assertTrue($d['trusted'] === true, 'setter-only filter multicall must be trusted');
+        $this->assertTrue(
+            strpos($d['payload'], 'd.custom1.set="filter value"') !== false,
+            'filter must become canonical rebuilt form',
+        );
+        $this->assertTrue(
+            strpos($d['payload'], 'd.custom1.set=filter value') === false,
+            'original filter bytes must be absent',
+        );
+        $this->assertTrue(
+            strpos($d['payload'], 'd.custom.set="result_val"') !== false,
+            'result slot must become canonical rebuilt form',
+        );
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, $safeParams);
+        $this->assertEquals(1, rXMLRPCRequest::$sent, 'exactly one send');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'sent as trusted');
+    }
+
+    // --- C2: Structural Decoder Tests ---
+
+    public function testStructuralDecoderRejectsTextUnderMethodCall()
+    {
+        $this->resetMocks();
+        $p = '<param><value><string></string></value></param><param><value><string>http://example.com/test.torrent</string></value></param>';
+        $inputs = [
+            '<?xml version="1.0"?><methodCall>text_before<methodName>load.start</methodName><params>' . $p . '</params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName>text_between<params>' . $p . '</params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p . '</params>text_after</methodCall>',
+        ];
+        foreach ($inputs as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'text directly below methodCall must be rejected');
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsTextUnderParams()
+    {
+        $this->resetMocks();
+        $p1 = '<param><value><string></string></value></param>';
+        $p2 = '<param><value><string>http://example.com/test.torrent</string></value></param>';
+        $inputs = [
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>text_before' . $p1 . $p2 . '</params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p1 . 'text_between' . $p2 . '</params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>' . $p1 . $p2 . 'text_after</params></methodCall>',
+        ];
+        foreach ($inputs as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'text directly below params must be rejected');
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsTextUnderParam()
+    {
+        $this->resetMocks();
+        $p2 = '<param><value><string>http://example.com/test.torrent</string></value></param>';
+        $inputs = [
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param>text_before<value><string></string></value></param>' . $p2 . '</params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value>text_after</param>' . $p2 . '</params></methodCall>',
+        ];
+        foreach ($inputs as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'text directly below param must be rejected');
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsMixedValueContent()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value>text_before<string>test</string></value></param></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string>test</string>text_after</value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'mixed value content must be rejected');
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsChildrenInsideScalarTypes()
+    {
+        $this->resetMocks();
+        $types = ['string', 'base64', 'int', 'i4', 'i8'];
+        foreach ($types as $tag) {
+            $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><'
+                . $tag . '>http://example.com/test.torrent<bogus>ignored</bogus></' . $tag . '></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'child inside scalar type <' . $tag . '> must be rejected');
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsAttributes()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall attr="1"><methodName>load.start</methodName><params></params></methodCall>',
+            '<methodCall><methodName attr="1">load.start</methodName><params></params></methodCall>',
+            '<methodCall><methodName>load.start</methodName><params attr="1"></params></methodCall>',
+            '<methodCall><methodName>load.start</methodName><params><param attr="1"><value><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>load.start</methodName><params><param><value attr="1"><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>load.start</methodName><params><param><value><string attr="1"></string></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'attributes on XMLRPC elements must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsNamespaces()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall xmlns="http://example.com"><methodName>system.client_version</methodName><params></params></methodCall>',
+            '<ns:methodCall xmlns:ns="http://example.com"><ns:methodName>system.client_version</ns:methodName><params></params></ns:methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params xmlns="http://example.com"></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value xmlns="http://example.com"><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><string xmlns="http://example.com"></string></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'namespaces must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsDuplicateNodes()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall><methodName>system.client_version</methodName><methodName>d.start</methodName><params></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params></params><params></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><string></string></value><value><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><string>a</string><string>b</string></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'duplicate nodes must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsMissingRequiredNodes()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall><params></params></methodCall>', // missing methodName
+            '<methodCall><methodName>system.client_version</methodName><params><param></param></params></methodCall>', // missing value
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><array></array></value></param></params></methodCall>', // array missing data
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><value><string>v</string></value></member></struct></value></param></params></methodCall>', // struct member missing name
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name></member></struct></value></param></params></methodCall>', // struct member missing value
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'missing required nodes must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsUnknownChildren()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall><extra>bad</extra><methodName>system.client_version</methodName><params></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><extra>bad</extra><params></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><extra>bad</extra><param><value><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><extra>bad</extra><value><string></string></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><extra>bad</extra></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'unknown child elements must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsMalformedArrays()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><array><data></data><data></data></array></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><array><data><unknown>x</unknown></data></array></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><array>unconsumed_text<data></data></array></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'malformed array must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsMalformedStructs()
+    {
+        $this->resetMocks();
+        $inputs = [
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name><value><string>v</string></value></member><extra>bad</extra></struct></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k1</name><name>k2</name><value><string>v</string></value></member></struct></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><name>k</name><value><string>v1</string></value><value><string>v2</string></value></member></struct></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><unknown>bad</unknown></member></struct></value></param></params></methodCall>',
+            '<methodCall><methodName>system.client_version</methodName><params><param><value><struct>unconsumed_text<member><name>k</name><value><string>v</string></value></member></struct></value></param></params></methodCall>',
+        ];
+        foreach ($inputs as $body) {
+            $xml = '<?xml version="1.0"?>' . $body;
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'malformed struct must be rejected: ' . $body);
+            $this->assertTrue($d['payload'] === '', 'payload must be empty');
+            $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+            $res = self::processOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($res === null, 'process must return null');
+            $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+        }
+    }
+
+    public function testStructuralDecoderRejectsNestedElementInsideHash()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.start</methodName><params><param><value>'
+            . '<string>0123456789abcdef0123456789abcdef01234567<bogus>ignored</bogus></string>'
+            . '</value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'nested element inside hash must be rejected');
+        $this->assertTrue($d['payload'] === '', 'payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+        $res = self::processOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($res === null, 'process must return null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testStructuralDecoderRejectsNestedElementInsideRawLoadCommand()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>ZGF0YQ==</base64></value></param>'
+            . '<param><value><string>d.custom1.set=safe<bogus>ignored</bogus></string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'nested element inside load.raw_start trailing command must be rejected');
+        $this->assertTrue($d['payload'] === '', 'payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+        $res = self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+        $this->assertTrue($res === null, 'process must return null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testStructuralDecoderRejectsMalformedOrdinaryMethod()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params attr="1"></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'malformed ordinary method must be rejected and never enter untrusted fallback');
+        $this->assertTrue($d['payload'] === '', 'payload must be empty');
+        $this->assertTrue($d['trusted'] === false, 'trusted must be false');
+        $res = self::processOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($res === null, 'process must return null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends');
+    }
+
+    public function testStructuralDecoderPreservesValidRecursiveOrdinaryValues()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value>'
+            . '<array><data><value><struct><member><name>key</name><value><string>val</string></value></member></struct></value></data></array>'
+            . '</value></param></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'valid recursive structure on ordinary method must be accepted');
+        $this->assertTrue($d['trusted'] === false, 'ordinary method must be untrusted');
+        $this->assertEquals($xml, $d['payload'], 'original payload preserved');
+        $res = self::processOnModernDaemon($xml, 'sanitize');
+        $this->assertEquals(1, rXMLRPCRequest::$sent, 'one send');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'sent as untrusted');
+    }
+
+    // --- I1: URI Encoding Tests ---
+
+    public function testUriLoadRejectsBase64DecodedInvalidUtf8WithoutSending()
+    {
+        $this->resetMocks();
+        // 1. Invalid UTF-8 bytes (\xFF)
+        $invalidUtf8Bytes = "http://example.test/x\xFF";
+        $b64Invalid = base64_encode($invalidUtf8Bytes);
+        $xmlInvalid = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . $b64Invalid . '</base64></value></param>'
+            . '</params></methodCall>';
+        $d1 = self::decideOnModernDaemon($xmlInvalid, 'sanitize');
+        $this->assertTrue($d1['action'] === 'reject', 'invalid UTF-8 URI must be rejected');
+        $this->assertTrue($d1['method'] === 'load.start', 'refusal must name load.start');
+        $this->assertTrue($d1['payload'] === '', 'payload must be empty');
+        $this->assertTrue($d1['trusted'] === false, 'trusted must be false');
+        $res1 = self::processOnModernDaemon($xmlInvalid, 'sanitize');
+        $this->assertTrue($res1 === null, 'process must return null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on invalid UTF-8 URI');
+
+        // 2. XML 1.0 forbidden control byte (\x00, \x0b)
+        $ctrlBytes = "http://example.test/x\x0b";
+        $b64Ctrl = base64_encode($ctrlBytes);
+        $xmlCtrl = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . $b64Ctrl . '</base64></value></param>'
+            . '</params></methodCall>';
+        $d2 = self::decideOnModernDaemon($xmlCtrl, 'sanitize');
+        $this->assertTrue($d2['action'] === 'reject', 'XML forbidden control byte URI must be rejected');
+        $this->assertTrue($d2['method'] === 'load.start', 'refusal must name load.start');
+        $this->assertTrue($d2['payload'] === '', 'payload must be empty');
+        $this->assertTrue($d2['trusted'] === false, 'trusted must be false');
+        $res2 = self::processOnModernDaemon($xmlCtrl, 'sanitize');
+        $this->assertTrue($res2 === null, 'process must return null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero sends on control byte URI');
+
+        // 3. Valid UTF-8 URI
+        $validUtf8Uri = "http://example.test/тест";
+        $b64Valid = base64_encode($validUtf8Uri);
+        $xmlValid = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . $b64Valid . '</base64></value></param>'
+            . '</params></methodCall>';
+        $d3 = self::decideOnModernDaemon($xmlValid, 'sanitize');
+        $this->assertTrue($d3['action'] === 'send', 'valid UTF-8 URI must be accepted');
+        $this->assertTrue($d3['trusted'] === true, 'valid load.start must be trusted');
+        $this->assertTrue(
+            strpos($d3['payload'], htmlspecialchars($validUtf8Uri, ENT_NOQUOTES, 'UTF-8')) !== false,
+            'canonical string re-emission must contain valid URI',
+        );
+        $res3 = self::processOnModernDaemon($xmlValid, 'sanitize');
+        $this->assertEquals(1, rXMLRPCRequest::$sent, 'one send on valid URI');
+        $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'sent as trusted');
+    }
+
+    public function testUriLoadRejectsXmlForbiddenUnicodeBeforeTransport()
+    {
+        foreach (['load.normal', 'load.start', 'load.verbose', 'load.start_verbose'] as $method) {
+            foreach (["\xef\xbf\xbe", "\xef\xbf\xbf"] as $forbidden) {
+                $this->resetMocks();
+                $xml = '<methodCall><methodName>' . $method . '</methodName><params>'
+                    . '<param><value><string></string></value></param>'
+                    . '<param><value><base64>' . base64_encode('https://example.test/' . $forbidden)
+                    . '</base64></value></param></params></methodCall>';
+                $decision = self::decideOnModernDaemon($xml);
+                $this->assertTrue($decision['action'] === 'reject', $method . ': XML-forbidden Unicode is rejected');
+                $this->assertTrue($decision['method'] === $method, 'refusal retains the outer URI load method');
+                $this->assertTrue($decision['payload'] === '', 'no malformed canonical XML is emitted');
+                $this->assertTrue($decision['trusted'] === false, 'rejected input is never trusted');
+                $this->assertTrue(self::processOnModernDaemon($xml) === null, 'rejection is terminal');
+                $this->assertTrue(rXMLRPCRequest::$sent === 0, 'XML-forbidden URI never reaches transport');
+            }
+        }
+    }
+
+    public function testUriLoadPreservesXmlAllowedUnicodeAtTheForbiddenBoundary()
+    {
+        // XML 1.0 excludes U+FFFE/U+FFFF, not the entire supplementary range.
+        foreach (['load.normal', 'load.start', 'load.verbose', 'load.start_verbose'] as $method) {
+            foreach (["\xef\xbf\xbd", "\xf0\x90\x80\x80", "\xf4\x8f\xbf\xbf"] as $allowed) {
+                $this->resetMocks();
+                $uri = 'https://example.test/' . $allowed;
+                $xml = '<methodCall><methodName>' . $method . '</methodName><params>'
+                    . '<param><value><string></string></value></param>'
+                    . '<param><value><base64>' . base64_encode($uri)
+                    . '</base64></value></param></params></methodCall>';
+                self::processOnModernDaemon($xml);
+                $this->assertTrue(rXMLRPCRequest::$sent === 1, 'XML-allowed Unicode URI is sent exactly once');
+                $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'valid URI load remains trusted');
+                $parsed = @simplexml_load_string(rXMLRPCRequest::$lastPayload);
+                $this->assertTrue($parsed !== false, 'canonical payload is valid XML');
+                $this->assertTrue(
+                    $parsed !== false && (string) $parsed->params->param[1]->value->string === $uri,
+                    'allowed URI code points survive byte for byte',
+                );
+            }
+        }
+    }
+
+    public function testRawMetainfoDoesNotApplyTheUriUnicodeRestriction()
+    {
+        $bytes = "\x00\xff\xef\xbf\xbe\xef\xbf\xbf";
+        foreach (['load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose'] as $method) {
+            $this->resetMocks();
+            $xml = '<methodCall><methodName>' . $method . '</methodName><params>'
+                . '<param><value><string></string></value></param>'
+                . '<param><value><base64>' . base64_encode($bytes)
+                . '</base64></value></param></params></methodCall>';
+            self::processOnModernDaemon($xml);
+            $this->assertTrue(rXMLRPCRequest::$sent === 1, 'raw metainfo is not interpreted as URI text');
+            $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'raw load remains trusted');
+            $parsed = @simplexml_load_string(rXMLRPCRequest::$lastPayload);
+            $this->assertTrue(
+                $parsed !== false && base64_decode((string) $parsed->params->param[1]->value->base64, true) === $bytes,
+                'arbitrary raw bytes remain exact base64 data',
+            );
+        }
+    }
+
+    // --- I2: Outer Identity Preservation Tests ---
+
+    public function testOuterIdentitySurvivesMissingValue()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
+        $this->assertTrue(
+            in_array('rejected (not allowed on this connection): d.multicall2', $d['log'], true)
+            || in_array('rejected (malformed XML envelope or structure): d.multicall2', $d['log'], true),
+            'log must name normalized outer d.multicall2',
+        );
+    }
+
+    public function testOuterIdentitySurvivesMixedTypeChildren()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param><value><string>s</string><int>1</int></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
+    }
+
+    public function testOuterIdentitySurvivesMalformedArray()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param><value><array><data><unknown>x</unknown></data></array></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
+    }
+
+    public function testOuterIdentitySurvivesMalformedResultSlot()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>main</string></value></param>'
+            . '<param><value><string>d.custom1.set=safe<bogus>x</bogus></string></value></param>'
+            . '</params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize', ['d.custom1.set']);
+        $this->assertTrue($d['action'] === 'reject', 'must be rejected');
+        $this->assertTrue($d['method'] === 'd.multicall2', 'rejection must name outer method d.multicall2');
+    }
+
+    public function testOuterIdentityRemainsNullBeforeAValidMethodIsKnown()
+    {
+        $this->resetMocks();
+        $inputs = [
+            'not xml at all',
+            '<?xml version="1.0"?><methodCall><params></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName>m1</methodName><methodName>m2</methodName><params></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><nested><methodName>nested</methodName></nested><params></params></methodCall>',
+            '<?xml version="1.0"?><methodCall><methodName><bogus>x</bogus></methodName><params></params></methodCall>',
+        ];
+        foreach ($inputs as $xml) {
+            $d = self::decideOnModernDaemon($xml, 'sanitize');
+            $this->assertTrue($d['action'] === 'reject', 'must be rejected');
+            $this->assertTrue($d['method'] === null, 'method must remain null when no valid method is established');
+        }
+    }
+
+    // --- I4: Surface Gaps & Preserved Matrix Tests ---
+
+    public function testLegacyLoadRawStartIsDeniedBeforeTransport()
+    {
+        $this->resetMocks();
+        $xml = $this->methodCallXml('load_raw_start', ['', 'torrent_data']);
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'legacy raw load alias is denied locally');
+        self::processOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue(rXMLRPCRequest::$sent === 0, 'legacy raw load alias never reaches transport');
+    }
+
+    public function testCatchExtraIsOrdinaryNotRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>catch.extra</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'catch.extra must not be refused');
+        $this->assertTrue($d['trusted'] === false, 'catch.extra must be untrusted');
+    }
+
+    public function testDirectoryWatchReadyIsDirectlyRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>directory.watch.ready</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'reject', 'directory.watch.ready must be directly refused');
+        $this->assertTrue($d['method'] === 'directory.watch.ready', 'refusal names directory.watch.ready');
+    }
+
+    public function testDirectoryWatchfulIsOrdinaryNotRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>directory.watchful</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'directory.watchful must not be refused');
+        $this->assertTrue($d['trusted'] === false, 'directory.watchful must be untrusted');
+    }
+
+    public function testViewFilterOnIsOrdinaryNotRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>view.filter_on</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'view.filter_on must not be refused');
+        $this->assertTrue($d['trusted'] === false, 'view.filter_on must be untrusted');
+    }
+
+    public function testViewSortIsOrdinaryNotRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>view.sort</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'view.sort must not be refused');
+        $this->assertTrue($d['trusted'] === false, 'view.sort must be untrusted');
+    }
+
+    public function testViewSetIsOrdinaryNotRefused()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>view.set</methodName><params></params></methodCall>';
+        $d = self::decideOnModernDaemon($xml, 'sanitize');
+        $this->assertTrue($d['action'] === 'send', 'view.set must not be refused');
+        $this->assertTrue($d['trusted'] === false, 'view.set must be untrusted');
+    }
+
+    public function testDirectMulticallFamiliesGrammarMatrix()
+    {
+        $this->resetMocks();
+        $families = ['d.multicall', 'd.multicall2', 'd.multicall.filtered', 't.multicall', 'f.multicall', 'p.multicall'];
+        $safeParams = ['d.custom1.set', 'd.custom.set', 't.url'];
+
+        foreach ($families as $family) {
+            $isFiltered = ($family === 'd.multicall.filtered');
+            $prefixParams = '<param><value><string></string></value></param><param><value><string>main</string></value></param>';
+            if ($isFiltered) {
+                $prefixParams .= '<param><value><string>d.custom.set=filter_val</string></value></param>';
+            }
+
+            // 1. dollar argument
+            $xmlDollar = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>d.custom1.set=$bad</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlDollar, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with dollar argument must reject outer call');
+            $this->assertTrue($d['method'] === $family, $family . ' dollar refusal names outer method');
+
+            // 2. parenthesized command
+            $xmlParen = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>(d.custom1.set,val)</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlParen, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with parenthesized command must reject outer call');
+
+            // 3. nested-parenthesis command
+            $xmlNested = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>(branch,(d.custom1.set,val))</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlNested, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with nested parenthesis must reject outer call');
+
+            // 4. unclosed quote
+            $xmlUnclosed = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>d.custom1.set="val</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlUnclosed, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with unclosed quote must reject outer call');
+
+            // 5. malformed escape
+            $xmlEscape = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>d.custom1.set="val\\</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlEscape, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with malformed escape must reject outer call');
+
+            // 6. unknown command
+            $xmlUnknown = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>unknown.command=val</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlUnknown, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with unknown command must reject outer call');
+
+            // 7. mixed safe and unsafe
+            $xmlMixed = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>d.custom1.set=safe</string></value></param>'
+                . '<param><value><string>unknown.command=bad</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlMixed, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'reject', $family . ' with mixed commands must reject outer call');
+
+            // 8. valid canonical slots
+            $xmlValid = '<?xml version="1.0"?><methodCall><methodName>' . $family . '</methodName><params>'
+                . $prefixParams . '<param><value><string>d.custom1.set=canonical_val</string></value></param></params></methodCall>';
+            $d = self::decideOnModernDaemon($xmlValid, 'sanitize', $safeParams);
+            $this->assertTrue($d['action'] === 'send', $family . ' with valid canonical slot must be admitted');
+            $this->assertTrue($d['trusted'] === true, $family . ' must be trusted');
+            $this->assertTrue(
+                strpos($d['payload'], 'd.custom1.set="canonical_val"') !== false,
+                $family . ' payload must be canonically rebuilt',
+            );
+        }
+    }
+
+    public function testFixtureSourceHasNoDuplicateKeys()
+    {
+        if (!function_exists('token_get_all')) {
+            $this->assertTrue(false, 'tokenizer extension is required for source-aware duplicate key detection');
+            return;
+        }
+
+        $fixturePath = __DIR__ . '/XMLRPCProxyContractFixture.php';
+        $source = file_get_contents($fixturePath);
+        $tokens = token_get_all($source);
+
+        $inCases = false;
+        $arrayDepth = 0;
+        $sourceKeys = [];
+        $dynamicDetected = false;
+        $state = 0; // 0: expecting key, 1: expecting =>, 2: in value
+        $count = count($tokens);
+
+        for ($i = 0; $i < $count; $i++) {
+            $tok = $tokens[$i];
+            if (!$inCases) {
+                if (is_array($tok) && ($tok[0] === T_VARIABLE) && ($tok[1] === '$cases')) {
+                    while (++$i < $count) {
+                        if ($tokens[$i] === '[') {
+                            $inCases = true;
+                            $arrayDepth = 1;
+                            $state = 0;
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if ($tokens[$i] === '(' || $tokens[$i] === '[') {
+                $arrayDepth++;
+                continue;
+            } elseif ($tokens[$i] === ')' || $tokens[$i] === ']') {
+                $arrayDepth--;
+                if ($arrayDepth === 0) {
+                    break;
+                }
+                continue;
+            }
+
+            if ($arrayDepth === 1) {
+                if (is_array($tok) && in_array($tok[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+
+                if ($state === 0) {
+                    if ($tokens[$i] === ',') {
+                        continue;
+                    }
+                    if (is_array($tok) && ($tok[0] === T_CONSTANT_ENCAPSED_STRING)) {
+                        $strVal = eval('return ' . $tok[1] . ';');
+                        $sourceKeys[] = $strVal;
+                        $state = 1;
+                    } else {
+                        $dynamicDetected = true;
+                        break;
+                    }
+                } elseif ($state === 1) {
+                    if (is_array($tok) && ($tok[0] === T_DOUBLE_ARROW)) {
+                        $state = 2;
+                    } else {
+                        $dynamicDetected = true;
+                        break;
+                    }
+                } elseif ($state === 2) {
+                    if ($tokens[$i] === ',') {
+                        $state = 0;
+                    }
+                }
+            }
+        }
+
+        $this->assertTrue(!$dynamicDetected, 'fixture source must contain no dynamic or unrecognized top-level registrations');
+        $this->assertTrue(count($sourceKeys) > 0, 'source keys must not be empty');
+        $this->assertEquals(73, count($sourceKeys), 'source must contain exactly 73 top-level literal registrations');
+        $this->assertEquals(count($sourceKeys), count(array_unique($sourceKeys)), 'source keys must have no duplicates before array overwrite');
+
+        $runtimeFixture = require($fixturePath);
+        $runtimeKeys = array_keys($runtimeFixture);
+
+        $this->assertEquals(count($sourceKeys), count($runtimeKeys), 'source registration count must equal runtime array_keys count');
+        $this->assertEquals(73, count($runtimeKeys), 'exact 73-key runtime set must remain unchanged');
+        $this->assertEquals($sourceKeys, $runtimeKeys, 'source key order and values must match runtime keys exactly');
+    }
+
+    // ---- Correction A: Strict Structural XML Validation ----
+
+    public function testStructuralDecoderRejectsParamsBeforeMethodName()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><params></params><methodName>system.client_version</methodName></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'reversed methodCall children rejected');
+        $this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
+        $this->assertTrue($res['method'] === null, 'method remains null');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testStructuralDecoderRejectsValueBeforeNameInStructMember()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><struct><member><value><string>foo</string></value><name>k</name></member></struct></value></param></params></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'reversed struct member children rejected');
+        $this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
+        $this->assertEquals('system.client_version', $res['method'], 'outer method retained');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testStructuralDecoderRejectsCommentInsideMethodName()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system<!-- comment -->.client_version</methodName></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'comment inside methodName rejected');
+        $this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testStructuralDecoderRejectsWhitespaceInsideMethodName()
+    {
+        $this->resetMocks();
+        $xml1 = '<?xml version="1.0"?><methodCall><methodName> system.client_version </methodName></methodCall>';
+        $res1 = self::decideOnModernDaemon($xml1);
+        $error1 = isset($res1['error']) ? $res1['error'] : null;
+        $this->assertEquals('reject', $res1['action'], 'leading/trailing whitespace inside methodName rejected');
+        $this->assertEquals('rejected (invalid XML)', $error1, 'error is rejected (invalid XML)');
+        $this->assertTrue(self::processOnModernDaemon($xml1) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+
+        $xml2 = "<?xml version=\"1.0\"?><methodCall><methodName>\nsystem.client_version\n</methodName></methodCall>";
+        $res2 = self::decideOnModernDaemon($xml2);
+        $error2 = isset($res2['error']) ? $res2['error'] : null;
+        $this->assertEquals('reject', $res2['action'], 'newlines inside methodName rejected');
+        $this->assertEquals('rejected (invalid XML)', $error2, 'error is rejected (invalid XML)');
+        $this->assertTrue(self::processOnModernDaemon($xml2) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+    }
+
+    public function testStructuralDecoderRejectsProcessingInstructionInsideMethodName()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system<?pi target?>.client_version</methodName></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'processing instruction inside methodName rejected');
+        $this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testStructuralDecoderRejectsCommentInsideScalarValue()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>hello<!-- comment -->world</string></value></param></params></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'comment inside string scalar rejected');
+        $this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+
+        $xmlInt = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><int>12<!-- comment -->34</int></value></param></params></methodCall>';
+        $resInt = self::decideOnModernDaemon($xmlInt);
+        $errorInt = isset($resInt['error']) ? $resInt['error'] : null;
+        $this->assertEquals('reject', $resInt['action'], 'comment inside int scalar rejected');
+        $this->assertEquals('rejected (malformed XML envelope or structure)', $errorInt, 'error is malformed envelope');
+        $this->assertTrue(self::processOnModernDaemon($xmlInt) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+    }
+
+    public function testStructuralDecoderRejectsProcessingInstructionInsideScalarValue()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params><param><value><string>hello<?pi target?>world</string></value></param></params></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'processing instruction inside scalar value rejected');
+        $this->assertEquals('rejected (malformed XML envelope or structure)', $error, 'error is malformed envelope');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testStructuralDecoderRejectsDoctypeOrEntityDeclaration()
+    {
+        $this->resetMocks();
+        $xml = '<!DOCTYPE methodCall [<!ENTITY xxe "evil">]><methodCall><methodName>system.client_version</methodName></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'DOCTYPE/entity declaration rejected');
+        $this->assertEquals('rejected (invalid XML)', $error, 'error is rejected (invalid XML)');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls at production seam');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    // ---- Correction B: Load-Expression All-Or-Nothing ----
+
+    public function testLoadWithUnclassifiableExpressionMemberIsLocallyNonProcessing()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/a.torrent</string></value></param><param><value><string>not_a_valid_command=foo</string></value></param></params></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'unclassifiable load expression member rejected');
+        $this->assertEquals('rejected (not allowed on this connection): load.start', $error, 'error names outer load.start');
+        $this->assertEquals('load.start', $res['method'], 'outer method retained');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls for unclassifiable load param');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testLoadWithDeniedExpressionMemberIsLocallyNonProcessing()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params><param><value><string></string></value></param><param><value><string>http://example.test/a.torrent</string></value></param><param><value><string>execute=evil</string></value></param></params></methodCall>';
+        $res = self::decideOnModernDaemon($xml);
+        $error = isset($res['error']) ? $res['error'] : null;
+        $this->assertEquals('reject', $res['action'], 'denied load expression member rejected');
+        $this->assertEquals('rejected (not allowed on this connection): load.start', $error, 'error names outer load.start');
+        $this->assertEquals('load.start', $res['method'], 'outer method retained');
+        $this->assertTrue(self::processOnModernDaemon($xml) === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'zero transport calls for denied load param');
+        $this->assertTrue(rXMLRPCRequest::$lastPayload === null, 'no payload forwarded');
+    }
+
+    public function testLoadWithBoundaryRefusedDirectoryMemberIsTerminal()
+    {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>http://example.test/a.torrent</string></value></param>'
+            . '<param><value><string>d.directory.set=/var/www/user1/rtorrent/share/settings/x/</string></value></param>'
+            . '</params></methodCall>';
+        $options = ['directory' => ['root' => '/torrents1/downloads']];
+        $res = self::decideOnModernDaemon($xml, 'sanitize', ['d.directory.set'], false, $options);
+        $this->assertEquals('reject', $res['action'], 'action = reject');
+        $this->assertEquals(false, $res['trusted'], 'trusted = false');
+        $this->assertTrue($res['payload'] === '' || $res['payload'] === null, 'payload = empty');
+        $this->assertEquals('load.start', $res['method'], 'normalized method = the outer load method');
+
+        $processRes = self::processOnModernDaemon($xml, 'sanitize', true, ['d.directory.set'], false, $options);
+        $this->assertTrue($processRes === null, 'process returns null');
+        $this->assertEquals(0, rXMLRPCRequest::$sent, 'transport call count = 0');
+    }
+    public function testReviewedDaemon1625AllowsNativeListingAndElevatedStop()
+    {
+        $options = ['rtorrentVersion' => 0x1019];
+        foreach ([$this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']),
+            $this->systemMulticallXml([['d.stop', [str_repeat('A', 40)]]])] as $xml) {
+            $result = XMLRPCProxy::decide($xml, 'sanitize', XMLRPCProxy::defaultSafeParams(), false, $options);
+            $this->assertTrue(
+                $result['action'] === 'send' && $result['trusted'],
+                'reviewed 0.16.25 listing and stop retain their checked trusted route',
+            );
+        }
+    }
+
+    public function testReviewedDaemons1626And1627KeepNativeListingStopLabelAndSettingsRead()
+    {
+        foreach ([0x101A => '0.16.26', 0x101B => '0.16.27'] as $version => $release) {
+            $this->assertReviewedDaemonKeepsNativeListingStopLabelAndSettingsRead($version, $release);
+        }
+    }
+
+    /**
+     * Bit 27 is v0.16.26 (62899bd0). Its CMD and CMD_REDIRECT registrations are
+     * those of v0.16.25 plus session.umask and session.umask.set; none was
+     * removed or renamed, and the rutorrent-native merge c0afbc17 adds the same
+     * two upstream names. Both are recorded: the table is provenance, and
+     * rTorrent itself refuses the startup-only setter after startup, as it
+     * does session.use_lock.set (see the table header).
+     */
+    public function testNative1626ColumnIsThe1625ColumnPlusBothSessionUmaskCommands()
+    {
+        $native = require(__DIR__ . '/../../php/xmlrpc_proxy_native.php');
+        $changed = [];
+        foreach ($native as $name => $mask) {
+            if ((($mask >> 26) & 1) !== (($mask >> 27) & 1)) {
+                $changed[] = $name;
+            }
+        }
+        $this->assertEquals(
+            ['session.umask', 'session.umask.set'],
+            $changed,
+            'only the two session.umask commands differ between the 0.16.25 and 0.16.26 columns',
+        );
+        foreach (['session.umask', 'session.umask.set'] as $name) {
+            $this->assertEquals(
+                1 << 27,
+                isset($native[$name]) ? $native[$name] & ((2 << 27) - 1) : null,
+                $name . ' is native from 0.16.26, in no earlier column',
+            );
+        }
+
+        $options = ['rtorrentVersion' => 0x101A];
+        $policy = XMLRPCProxy::defaultSafeParams();
+        foreach (['session.umask' => [], 'session.umask.set' => ['', '18']] as $name => $args) {
+            $direct = XMLRPCProxy::decide($this->methodCallXml($name, $args), 'sanitize', $policy, false, $options);
+            $this->assertTrue(
+                $direct['action'] === 'send' && !$direct['trusted'],
+                $name . ' is forwarded untrusted on 0.16.26; rTorrent applies its own safe list',
+            );
+        }
+        // An operator policy that names a startup-only setter carries it in a
+        // load tail the way it carries session.use_lock.set; rTorrent then
+        // answers "cannot be changed after startup". On 0.16.25 the umask
+        // setter is not native, so the same policy cannot carry it there.
+        $operator = ['session.umask.set', 'session.use_lock.set', 'd.custom1.set'];
+        $tail = function ($command, $version) use ($operator) {
+            return XMLRPCProxy::decide(
+                $this->methodCallXml(
+                    'load.start',
+                    ['', 'https://example.test/a.torrent', $command],
+                ),
+                'sanitize',
+                $operator,
+                false,
+                ['rtorrentVersion' => $version],
+            );
+        };
+        foreach (['session.umask.set=0022', 'session.use_lock.set=0', 'd.custom1.set=label'] as $command) {
+            foreach ([0x101A => '0.16.26', 0x1019 => '0.16.25'] as $version => $release) {
+                $decision = $tail($command, $version);
+                if ($command === 'session.umask.set=0022' && $version === 0x1019) {
+                    $this->assertEquals(
+                        'reject',
+                        $decision['action'],
+                        'session.umask.set is not native on 0.16.25, so no policy carries it there',
+                    );
+                } else {
+                    $this->assertTrue(
+                        $decision['action'] === 'send' && $decision['trusted'],
+                        $command . ' named by the operator policy is carried in a ' . $release . ' load tail',
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Bit 28 is v0.16.27 (cab23f12). Its CMD and CMD_REDIRECT registrations,
+     * mark_safe() names and method.insert strings are those of v0.16.26
+     * (62899bd0), so the two columns are equal (see the table header).
+     */
+    public function testNative1627ColumnIsThe1626Column()
+    {
+        $native = require(__DIR__ . '/../../php/xmlrpc_proxy_native.php');
+        $changed = [];
+        $beyond = [];
+        foreach ($native as $name => $mask) {
+            if ((($mask >> 27) & 1) !== (($mask >> 28) & 1)) {
+                $changed[] = $name;
+            }
+            if ($mask >= (1 << 29)) {
+                $beyond[] = $name;
+            }
+        }
+        $this->assertEquals([], $changed, 'no name differs between the 0.16.26 and 0.16.27 columns');
+        $this->assertEquals([], $beyond, 'no name claims a release after 0.16.27');
+    }
+
+    /**
+     * Every release the version parser accepts must also pass the other
+     * ceilings and have a native column; a release past the newest reviewed
+     * one must fail closed. A bump that edits only some of them fails here.
+     */
+    public function testEveryAcceptedReleaseHasAColumnAndTheNextReleaseFailsClosed()
+    {
+        $policy = XMLRPCProxy::defaultSafeParams();
+        $listing = $this->methodCallXml('d.multicall2', ['', 'main', 'd.name=']);
+        $settings = file_get_contents(__DIR__ . '/fixtures/settings-read-rtorrent-0.16.24.xml');
+        $accepted = [];
+        for ($minor = 0; $minor <= 99; $minor++) {
+            $version = XMLRPCProxy::daemonVersionFromString('0.16.' . $minor);
+            if ($version !== null) {
+                $accepted[$minor] = $version;
+            }
+        }
+        $this->assertEquals(
+            range(0, 27),
+            array_keys($accepted),
+            'the parser accepts exactly 0.16.0 through 0.16.27',
+        );
+        $failures = [];
+        foreach ($accepted as $minor => $version) {
+            if ($version !== 0x1000 + $minor) {
+                $failures[] = '0.16.' . $minor . ' parse';
+            }
+            $decision = XMLRPCProxy::decide(
+                $listing,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => $version],
+            );
+            if ($decision['action'] !== 'send' || !$decision['trusted']) {
+                $failures[] = '0.16.' . $minor . ' listing';
+            }
+            if ($version < 0x1012) {
+                continue;
+            }
+            $read = XMLRPCProxy::decide(
+                $settings,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => $version],
+            );
+            if ($read['action'] !== 'send' || !$read['trusted']) {
+                $failures[] = '0.16.' . $minor . ' settings read';
+            }
+        }
+        $this->assertEquals(
+            [],
+            $failures,
+            'every accepted 0.16 release passes each proxy ceiling and has a native column',
+        );
+        // 0.16.28, then values no parser returns: an API caller's typo must not
+        // select some other release's column.
+        foreach ([0x101C, 0x0907, 0x0FFF, 0x001A, 0, '0.16.26', (float) 0x101A] as $unsupported) {
+            $next = XMLRPCProxy::decide(
+                $listing,
+                'sanitize',
+                $policy,
+                false,
+                ['rtorrentVersion' => $unsupported],
+            );
+            $this->assertTrue(
+                $next['action'] === 'reject'
+                && strpos(implode("\n", $next['log']), 'unsupported or unreadable rTorrent version') !== false,
+                var_export($unsupported, true) . ' handed to decide() fails closed as an unsupported version',
+            );
+        }
+
+        // The legacy baseline is unchanged.
+        $old = ['rtorrentVersion' => 0x0908];
+        $this->assertEquals(0x0908, XMLRPCProxy::daemonVersionFromString('0.9.8'), '0.9.8 is still recognized');
+        $legacy = XMLRPCProxy::decide($listing, 'sanitize', $policy, false, $old);
+        $this->assertTrue(
+            $legacy['action'] === 'send' && $legacy['trusted'],
+            'a native 0.9.8 listing keeps its trusted route',
+        );
+        $newer = XMLRPCProxy::decide($this->methodCallXml(
+            'd.multicall2',
+            ['', 'main', 'd.base_path.realpath.or_empty='],
+        ), 'sanitize', $policy, false, $old);
+        $this->assertEquals('reject', $newer['action'], 'a 0.16-only getter is still not native on 0.9.8');
+        $legacyRead = XMLRPCProxy::decide($settings, 'sanitize', $policy, false, $old);
+        $this->assertEquals(
+            'reject',
+            $legacyRead['action'],
+            'the 0.16 Settings batch grant does not reach a 0.9.8 daemon',
+        );
+        $umask = XMLRPCProxy::decide($this->methodCallXml('session.umask'), 'sanitize', $policy, false, $old);
+        $this->assertEquals('reject', $umask['action'], 'session.umask is not native on 0.9.8');
+    }
+
+    /**
+     * Without a version the proxy may use only a name native on every reviewed
+     * release. No shipped name lacks just the newest column, so the
+     * intersection mask is checked against a synthetic table in a child.
+     */
+    public function testOmittedVersionIntersectsEveryReviewedColumn()
+    {
+        $tree = sys_get_temp_dir() . '/rutorrent-native-mask-' . getmypid() . '-' . bin2hex(random_bytes(6));
+        try {
+            if (!mkdir($tree, 0700) || !copy(__DIR__ . '/../../php/xmlrpc_proxy.php', $tree . '/xmlrpc_proxy.php')) {
+                throw new Exception('could not create the synthetic native table tree');
+            }
+            $every = (2 << 28) - 1;
+            file_put_contents($tree . '/xmlrpc_proxy_native.php', '<?php return ' . var_export([
+                'every.release' => $every,
+                'not.newest' => $every & ~(1 << 28),
+                'not.legacy' => $every & ~1,
+            ], true) . ';');
+            $script = 'require $argv[1];'
+                . ' $m = new ReflectionMethod("XMLRPCProxy", "nativeOnDaemon");'
+                . ' if(PHP_VERSION_ID < 80100) $m->setAccessible(true);'
+                . ' foreach(array("every.release", "not.newest", "not.legacy") as $n)'
+                . ' echo $n, "=", var_export($m->invoke(null, $n, null), true), ";";';
+            $process = proc_open(
+                [PHP_BINARY, '-r', $script, $tree . '/xmlrpc_proxy.php'],
+                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+            );
+            if (!is_resource($process)) {
+                throw new Exception('could not start the synthetic table child');
+            }
+            fclose($pipes[0]);
+            $output = stream_get_contents($pipes[1]);
+            $error = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertEquals(0, proc_close($process), 'the synthetic table child exits cleanly');
+            $this->assertEquals('', $error, 'the synthetic table child prints no diagnostic');
+            $this->assertEquals(
+                'every.release=true;not.newest=false;not.legacy=false;',
+                $output,
+                'an omitted version admits only a name native on 0.9.8 and on 0.16.0 through 0.16.27',
+            );
+        } finally {
+            foreach (['xmlrpc_proxy.php', 'xmlrpc_proxy_native.php'] as $file) {
+                if (is_file($tree . '/' . $file)) {
+                    unlink($tree . '/' . $file);
+                }
+            }
+            if (is_dir($tree)) {
+                rmdir($tree);
+            }
+        }
+    }
+
+    /**
+     * nativeOnDaemon() keeps its own ceiling although decide() checks the
+     * version first: sanitizeHttprpcCommandParameter() is public. Without it,
+     * minor 63 or more shifts the column bit out of the integer (1 << 64 is
+     * 0) and every name matches; minor 256 wraps to the 0.16.0 column.
+     */
+    public function testNativeTableRefusesAnUnreviewedReleaseOnItsOwn()
+    {
+        $native = new ReflectionMethod('XMLRPCProxy', 'nativeOnDaemon');
+        if (PHP_VERSION_ID < 80100) {
+            $native->setAccessible(true);
+        }
+        $this->assertTrue(
+            $native->invoke(null, 'd.name', 0x101A) === true
+            && $native->invoke(null, 'session.umask', 0x101A) === true
+            && $native->invoke(null, 'd.name', 0x101B) === true
+            && $native->invoke(null, 'session.umask', 0x101B) === true
+            && $native->invoke(null, 'network.port_open', 0x0908) === true,
+            'the reviewed columns still answer for themselves',
+        );
+        foreach ([0x101C, 0x103E, 0x103F, 0x1040, 0x10FF, 0x1100, 0x1FFF, PHP_INT_MAX] as $version) {
+            foreach (['d.name', 'network.port_open', 'session.umask', 'no.such.command'] as $name) {
+                $this->assertTrue(
+                    $native->invoke(null, $name, $version) === false,
+                    sprintf('%s is not native on the unreviewed 0x%X', $name, $version),
+                );
+            }
+        }
+        foreach ([0x101C, 0x103F, 0x1100] as $version) {
+            $this->assertTrue(
+                XMLRPCProxy::sanitizeHttprpcCommandParameter(
+                    'd.name=',
+                    'd.name=',
+                    'list',
+                    [],
+                    $version,
+                ) === null,
+                sprintf('the public httprpc rebuilder refuses d.name= on the unreviewed 0x%X', $version),
+            );
+        }
+    }
+
+    public function testAnUnreviewedDaemonReleaseIsNamedForTheOperator()
+    {
+        $reply = function ($value) {
+            return '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+                . htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8')
+                . '</string></value></param></params></methodResponse>';
+        };
+        $supported = ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
+        foreach (['0.16.28', '0.16.28-rc1', '0.16.999', '0.17.0', '1.0.0', '0.9.7'] as $value) {
+            $this->assertEquals(
+                'rTorrent ' . $value . $supported,
+                XMLRPCProxy::daemonVersionRefusal($reply($value)),
+                'the unreviewed release ' . $value . ' is named with the supported range',
+            );
+        }
+        foreach (['0.16.27', '0.16.26', '0.16.25', '0.9.8'] as $value) {
+            $this->assertTrue(
+                XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
+                'a supported release ' . $value . ' has nothing to refuse',
+            );
+        }
+        // The bounds of the repeated text: three runs of at most three digits
+        // and a suffix of at most 32 characters.
+        foreach (['999.999.999', '0.16.28-' . str_repeat('a', 32), '0.16.28+build.7_x-y'] as $value) {
+            $this->assertEquals(
+                'rTorrent ' . $value . $supported,
+                XMLRPCProxy::daemonVersionRefusal($reply($value)),
+                'the plain release ' . $value . ' is named',
+            );
+        }
+        // Only a version-shaped answer is repeated; other reply text stays out of
+        // the operator log and the HTTP body. Each case below fails one part of
+        // the filter alone: the suffix characters, the end anchor (/D), the
+        // digit and suffix lengths, or the separator.
+        foreach (['unparseable', '0.16.22evil', '0.16.28 <b>', '0.16.28' . "\n" . 'x', '',
+            '0.16.28-' . str_repeat('a', 40), '0.16.28-' . str_repeat('a', 33),
+            '0.16.28-<b>', '0.16.28-<svg/onload=alert(1)>', '0.16.28-a"b', "0.16.28-a'b", '0.16.28-a&b',
+            '0.16.28-a b', '0.16.28-a/b', "0.16.28\n", "0.16.28-rc1\n", "0.16.28\r\n", "0.16.28\t",
+            '1234.16.28', '0.1234.28', '0.16.1234', '0.16.28-', '0.16.28=rc1', '0.16', '.16.28'] as $value) {
+            $this->assertTrue(
+                XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
+                'a reply that is not a plain version is not repeated: ' . json_encode($value),
+            );
+        }
+        $this->assertTrue(
+            XMLRPCProxy::daemonVersionRefusal(
+                '<methodResponse><fault><value><string>0.16.28</string></value></fault></methodResponse>',
+            ) === null,
+            'a fault names no version',
+        );
+        $this->assertTrue(
+            XMLRPCProxy::daemonVersionRefusal(self::faultBesideVersionReply('0.16.28')) === null,
+            'a reply that carries a fault beside a version names none',
+        );
+        $this->assertTrue(XMLRPCProxy::daemonVersionRefusal(null) === null, 'no reply names no version');
+    }
+
+    // The historical policy cases model a 0.16.22 daemon. Keep that version
+    // explicit so an omitted production version can be tested fail-closed above.
+    private static function decideOnModernDaemon(
+        $raw,
+        $mode = 'sanitize',
+        $safe = [],
+        $allowPaths = false,
+        $options = []
+    ) {
+        if (!array_key_exists('rtorrentVersion', $options)) {
+            $options['rtorrentVersion'] = 0x1016;
+        }
+        return XMLRPCProxy::decide($raw, $mode, $safe, $allowPaths, $options);
+    }
+
+    private static function processOnModernDaemon(
+        $raw,
+        $mode = 'sanitize',
+        $enableLog = true,
+        $safe = [],
+        $allowPaths = false,
+        $options = []
+    ) {
+        if (!array_key_exists('rtorrentVersion', $options)) {
+            $options['rtorrentVersion'] = 0x1016;
+        }
+        return XMLRPCProxy::process($raw, $mode, $enableLog, $safe, $allowPaths, $options);
+    }
+
+    /** A malformed reply with both a version string and a fault. */
+    private static function faultBesideVersionReply($value)
+    {
+        return '<?xml version="1.0"?><methodResponse><params><param><value><string>' . $value
+            . '</string></value></param></params><fault><value><struct>'
+            . '<member><name>faultCode</name><value><i4>-501</i4></value></member>'
+            . '<member><name>faultString</name><value><string>refused</string></value></member>'
+            . '</struct></value></fault></methodResponse>';
+    }
+    private function resetMocks()
+    {
+        rXMLRPCRequest::$lastPayload = null;
+        rXMLRPCRequest::$lastTrusted = null;
+        rXMLRPCRequest::$sent = 0;
+        FileUtil::$log = [];
+    }
+
+    private function methodCallXml($method, $params = [])
+    {
+        $xml = '<?xml version="1.0"?><methodCall><methodName>'
+            . htmlspecialchars($method, ENT_QUOTES, 'UTF-8') . '</methodName><params>';
+        foreach ($params as $value) {
+            $xml .= '<param><value><string>' . htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8') . '</string></value></param>';
+        }
+        return $xml . '</params></methodCall>';
+    }
+
+    private function systemMulticallXml($calls)
+    {
+        $xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName><params><param><value><array><data>';
+        foreach ($calls as $call) {
+            $xml .= '<value><struct><member><name>methodName</name><value><string>'
+                . htmlspecialchars($call[0], ENT_NOQUOTES, 'UTF-8')
+                . '</string></value></member><member><name>params</name><value><array><data>';
+            foreach ($call[1] as $parameter) {
+                $type = is_int($parameter) ? 'i4' : 'string';
+                $xml .= '<value><' . $type . '>' . htmlspecialchars((string) $parameter, ENT_NOQUOTES, 'UTF-8')
+                    . '</' . $type . '></value>';
+            }
+            $xml .= '</data></array></value></member></struct></value>';
+        }
+        return $xml . '</data></array></value></param></params></methodCall>';
+    }
+
+    // ---- A command parameter is not one command ----
+
+    private function sanitizeParam($param, $safeParams = ['d.custom1.set', 'd.custom2.set', 'd.custom.set'])
+    {
+        $this->resetMocks();
+        $torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
+            . '<param><value><string>' . htmlspecialchars($param, ENT_NOQUOTES) . '</string></value></param>'
+            . '</params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', false, $safeParams);
+        return (string) rXMLRPCRequest::$lastPayload;
+    }
+
+    // ---- what the log says ----
+
+    private function logText()
+    {
+        return implode("\n", FileUtil::$log);
+    }
+
+    private function sanitizeParamLogged($param)
+    {
+        $torrentB64 = base64_encode("d8:announce11:http://test4:infod6:lengthi1234eee");
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><base64>' . $torrentB64 . '</base64></value></param>'
+            . '<param><value><string>' . htmlspecialchars($param, ENT_NOQUOTES) . '</string></value></param>'
+            . '</params></methodCall>';
+        self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set']);
+    }
+
+    // ---- multicalls carry commands too ----
+
+    private function multicall($params, $safeParams = ['d.custom1.set'])
+    {
+        $this->resetMocks();
+        $xml = $this->methodCallXml('d.multicall2', $params);
+        self::processOnModernDaemon($xml, 'sanitize', true, $safeParams);
+        return $xml;
+    }
+
+    // ---- load.* may not name a path on rtorrent's own filesystem ----
+
+    private function load($uri, $allowLocalPaths = false, $method = 'load.start')
+    {
+        $this->resetMocks();
+        $xml = $this->methodCallXml($method, ['', $uri]);
+        return self::processOnModernDaemon($xml, 'sanitize', true, ['d.custom1.set'], $allowLocalPaths);
+    }
+
+
+    // ---- refused outright, without asking rtorrent ----
+
+    private function callMethod($method, $params = [], $mode = 'sanitize')
+    {
+        $this->resetMocks();
+        $xml = $this->methodCallXml($method, $params);
+        return self::processOnModernDaemon($xml, $mode, true, ['d.custom1.set']);
+    }
+
+    // ---- where a download may be written ----
+    //
+    // d.directory.set names the directory rtorrent writes a download into, and
+    // the caller supplies the torrent, so it names the file too. Unconfined and
+    // forwarded trusted, that is an arbitrary file write as the rtorrent user —
+    // found by a tester writing a .php into a webroot and running it.
+
+    private function loadInto(
+        $dir,
+        $policy = null,
+        $command = 'd.directory.set',
+        $uri = 'http://example.test/x.torrent',
+        $allowLocalPaths = false
+    ) {
+        $this->resetMocks();
+        $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+            . '<param><value><string></string></value></param>'
+            . '<param><value><string>' . htmlspecialchars($uri, ENT_NOQUOTES) . '</string></value></param>'
+            . '<param><value><string>' . $command . '=' . htmlspecialchars($dir, ENT_NOQUOTES)
+            . '</string></value></param>'
+            . '</params></methodCall>';
+        $options = ($policy === null) ? [] : ['directory' => $policy];
+        self::processOnModernDaemon(
+            $xml,
+            'sanitize',
+            true,
+            self::DIRECTORY_SETTERS,
+            $allowLocalPaths,
+            $options,
+        );
+        return strpos((string) rXMLRPCRequest::$lastPayload, $command . '=') !== false;
+    }
+
+    private function assertReviewedDaemonKeepsNativeListingStopLabelAndSettingsRead($version, $release)
+    {
+        $options = ['rtorrentVersion' => $version];
+        $policy = XMLRPCProxy::defaultSafeParams();
+        foreach ([
+            'listing' => $this->methodCallXml(
+                'd.multicall2',
+                ['', 'main', 'd.name=', 'd.custom=chk-state'],
+            ),
+            'stop batch' => $this->systemMulticallXml([['d.stop', [str_repeat('A', 40)]]]),
+            'label' => $this->methodCallXml('d.custom1.set', [str_repeat('A', 40), 'label']),
+        ] as $label => $xml) {
+            $result = XMLRPCProxy::decide($xml, 'sanitize', $policy, false, $options);
+            $this->assertTrue(
+                $result['action'] === 'send' && $result['trusted'],
+                'reviewed ' . $release . ' ' . $label . ' keeps its checked trusted route',
+            );
+        }
+        // The Settings dialog sends the same batch on 0.16.26 and 0.16.27: no
+        // command it reads changed after 0.16.24.
+        $read = XMLRPCProxy::decide(
+            file_get_contents(__DIR__ . '/fixtures/settings-read-rtorrent-0.16.24.xml'),
+            'sanitize',
+            $policy,
+            false,
+            $options,
+        );
+        $this->assertTrue(
+            $read['action'] === 'send' && $read['trusted'],
+            'the captured Settings read batch keeps its exact trusted grant on ' . $release,
+        );
+        $refused = XMLRPCProxy::decide(
+            $this->methodCallXml('execute.capture', ['', 'id']),
+            'sanitize',
+            $policy,
+            false,
+            $options,
+        );
+        $this->assertEquals('reject', $refused['action'], 'an execution primitive stays refused on ' . $release);
+        $this->assertEquals('execute.capture', $refused['method'], 'and the refusal names it');
+        $alias = XMLRPCProxy::decide(
+            $this->methodCallXml('d.multicall2', ['', 'main', 'd.get_name=']),
+            'sanitize',
+            $policy,
+            false,
+            $options,
+        );
+        $this->assertEquals('reject', $alias['action'], 'a client-only spelling is still not native on ' . $release);
+    }
 
 }

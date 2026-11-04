@@ -1,60 +1,57 @@
 <?php
 
-require_once( dirname(__FILE__).'/../_task/task.php' );
-require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
-eval( FileUtil::getPluginConf( 'mediainfo' ) );
+require_once(dirname(__FILE__) . '/../_task/task.php');
+require_once(dirname(__FILE__) . '/../../php/rtorrent.php');
+eval(FileUtil::getPluginConf('mediainfo'));
 
 class mediainfoSettings
 {
-	public $hash = "mediainfo.dat";
-	public $modified = false;
-	public $data = [];
-	public static function load()
-	{
-		$cache = new rCache();
-		$rt = new mediainfoSettings();
-		return( $cache->get($rt) ? $rt : null );
-	}
+    public $hash = "mediainfo.dat";
+    public $modified = false;
+    public $data = [];
+    public static function load()
+    {
+        $cache = new rCache();
+        $rt = new mediainfoSettings();
+        return($cache->get($rt) ? $rt : null);
+    }
 }
 
-$ret = [ "status"=>255, "errors"=>["Can't retrieve information"] ];
+$ret = [ "status" => 255, "errors" => ["Can't retrieve information"] ];
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 
-if(isset($input['hash']) &&
-	isset($input['no']) &&
-	isset($input['cmd']))
-{
-	switch($input['cmd'])
-	{
-		case "mediainfo":
-		{
-			Requests::requirePost();
-			$filename = rTorrent::getFilePath($input['hash'], $input['no']);
-			if($filename !== false)
-			{
-				$commands = [];
-				$flags = '';
-				$st = mediainfoSettings::load();
-				$task = new rTask( 
-				[
-					'arg' => FileUtil::getFileName($filename),
-					'requester'=>'mediainfo',
-					'name'=>'mediainfo',
-					'hash'=>$input['hash'],
-					'no'=>$input['no'],
-				] );
-				if($st && !empty($st->data["mediainfousetemplate"]))
-				{
-					$randName = $task->makeDirectory()."/opts";
-					file_put_contents( $randName, $st->data["mediainfotemplate"] );
-					$flags = "--Inform=file://".Utility::escapeShellArg($randName);
-				}
-				$commands[] = Utility::getExternal("mediainfo")." ".$flags." ".Utility::escapeShellArg($filename);
-				$ret = $task->start($commands, 0);
-			}
-			break;
-		}
-	}
+if (isset($input['hash'])
+    && isset($input['no'])
+    && isset($input['cmd'])) {
+    switch ($input['cmd']) {
+        case "mediainfo":
+            {
+                Requests::requirePost();
+                $filename = rTorrent::getFilePath($input['hash'], $input['no']);
+                if ($filename !== false) {
+                    $commands = [];
+                    $flags = '';
+                    $st = mediainfoSettings::load();
+                    $task = new rTask(
+                        [
+                            'arg' => FileUtil::getFileName($filename),
+                            'requester' => 'mediainfo',
+                            'name' => 'mediainfo',
+                            'hash' => $input['hash'],
+                            'no' => $input['no'],
+                        ],
+                    );
+                    if ($st && !empty($st->data["mediainfousetemplate"])) {
+                        $randName = $task->makeDirectory() . "/opts";
+                        file_put_contents($randName, $st->data["mediainfotemplate"]);
+                        $flags = "--Inform=file://" . Utility::escapeShellArg($randName);
+                    }
+                    $commands[] = Utility::getExternal("mediainfo") . " " . $flags . " " . Utility::escapeShellArg($filename);
+                    $ret = $task->start($commands, 0);
+                }
+                break;
+            }
+    }
 }
 
-CachedEcho::send(JSON::safeEncode($ret),"application/json");
+CachedEcho::send(JSON::safeEncode($ret), "application/json");

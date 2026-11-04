@@ -1,7 +1,8 @@
 <?php
-require_once __DIR__.'/TestCase.php';
-require_once __DIR__.'/FakeRtorrentDaemon.php';
-require_once __DIR__.'/../../php/xmlrpc.php';
+
+require_once __DIR__ . '/TestCase.php';
+require_once __DIR__ . '/FakeRtorrentDaemon.php';
+require_once __DIR__ . '/../../php/xmlrpc.php';
 
 /** Synthetic type adversaries travel through the real SCGI transport and parser. */
 class XMLRPCStringTableTest extends TestCase
@@ -14,7 +15,7 @@ class XMLRPCStringTableTest extends TestCase
 
     public function setUp()
     {
-        $this->directory = sys_get_temp_dir().'/rpc-table-'.getmypid();
+        $this->directory = sys_get_temp_dir() . '/rpc-table-' . getmypid();
         mkdir($this->directory, 0700);
         $reflection = new ReflectionClass('rTorrentSettings');
         $settings = $reflection->newInstanceWithoutConstructor();
@@ -25,8 +26,8 @@ class XMLRPCStringTableTest extends TestCase
         self::makeAccessible($this->settingsProperty);
         $this->previousSettings = $this->settingsProperty->getValue();
         $this->settingsProperty->setValue(null, $settings);
-        foreach(['scgi_host'=>'127.0.0.1', 'rpcTimeOut'=>3, 'rpcLogCalls'=>false,
-            'rpcLogFaults'=>false, 'log_file'=>$this->directory.'/app.log', 'scgi_port'=>0] as $key=>$value) {
+        foreach (['scgi_host' => '127.0.0.1', 'rpcTimeOut' => 3, 'rpcLogCalls' => false,
+            'rpcLogFaults' => false, 'log_file' => $this->directory . '/app.log', 'scgi_port' => 0] as $key => $value) {
             $this->globals[$key] = [array_key_exists($key, $GLOBALS), $GLOBALS[$key] ?? null];
             $GLOBALS[$key] = $value;
         }
@@ -34,11 +35,20 @@ class XMLRPCStringTableTest extends TestCase
 
     public function tearDown()
     {
-        if($this->daemon !== null) { $this->daemon->stop(); }
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+        }
         $this->settingsProperty->setValue(null, $this->previousSettings);
-        foreach($this->globals as $key=>$value) {
-            if($value[0]) { $GLOBALS[$key] = $value[1]; } else { unset($GLOBALS[$key]); } }
-        foreach(glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
+        foreach ($this->globals as $key => $value) {
+            if ($value[0]) {
+                $GLOBALS[$key] = $value[1];
+            } else {
+                unset($GLOBALS[$key]);
+            }
+        }
+        foreach (glob($this->directory . '/*') ?: [] as $file) {
+            unlink($file);
+        }
         rmdir($this->directory);
     }
 
@@ -49,14 +59,19 @@ class XMLRPCStringTableTest extends TestCase
         $this->serve([self::multicallEnvelope([self::value('string', '/downloads'), self::value('i8', '1'), $table])]);
         $request = $this->batchRequest();
         $this->assertTrue($request->success(), 'the scalar roots and file table are read in one batch');
-        $this->assertSame([[['/downloads'], ['1'], [[[$bytes]]]]],
-            $request->responseValues, 'the legacy semantic accessor retains native multicall wrappers');
+        $this->assertSame(
+            [[['/downloads'], ['1'], [[[$bytes]]]]],
+            $request->responseValues,
+            'the legacy semantic accessor retains native multicall wrappers',
+        );
         $this->assertSame([[$bytes]], $request->stringTable(1, 2), 'the indexed table retains exact path bytes');
         $this->assertSame(null, $request->stringTable(1), 'the default still requires one sole result');
-        foreach([0, 1, 3, -1, '2', 2.0, true, false, []] as $index) {
-            $this->assertSame(null, $request->stringTable(1, $index), 'only a present nonnegative integer table index is valid'); }
-        foreach([0, -1, '1', 2] as $columns) {
-            $this->assertSame(null, $request->stringTable($columns, 2), 'indexed results retain the exact positive integer width contract'); }
+        foreach ([0, 1, 3, -1, '2', 2.0, true, false, []] as $index) {
+            $this->assertSame(null, $request->stringTable(1, $index), 'only a present nonnegative integer table index is valid');
+        }
+        foreach ([0, -1, '1', 2] as $columns) {
+            $this->assertSame(null, $request->stringTable($columns, 2), 'indexed results retain the exact positive integer width contract');
+        }
     }
 
     public function testIndexedTablesRemainSeparateAndAnEmptyTableIsConfirmed()
@@ -79,20 +94,26 @@ class XMLRPCStringTableTest extends TestCase
     {
         $live = self::value('string', 'selected-live');
         $padding = self::value('string', 'selected-pad');
-        $map = self::value('struct', '<member><name>1</name>'.$live.'</member><member><name>0</name>'.$padding.'</member>');
+        $map = self::value('struct', '<member><name>1</name>' . $live . '</member><member><name>0</name>' . $padding . '</member>');
         $valid = self::arrayValue([self::arrayValue([$live]), self::arrayValue([$padding])]);
         $bad = [self::arrayValue([$map]), self::arrayValue([$live, $padding]),
             self::arrayValue([self::arrayValue([$live, $padding])]), $map];
-        $this->serve(array_map(function($table) {
+        $this->serve(array_map(function ($table) {
             return self::multicallEnvelope([self::value('string', '/downloads'), self::value('i8', '1'), $table]);
         }, array_merge([$valid], $bad)));
-        foreach(array_merge([$valid], $bad) as $index=>$table) {
+        foreach (array_merge([$valid], $bad) as $index => $table) {
             $request = $this->batchRequest();
             $this->assertTrue($request->success(), 'the indexed adversary is well-formed XML-RPC');
-            $this->assertSame(['/downloads', '1', 'selected-live', 'selected-pad'], $request->val,
-                'all shapes have the same legacy flat accessors');
-            $this->assertSame($index === 0 ? [['selected-live'], ['selected-pad']] : null,
-                $request->stringTable(1, 2), 'only genuine one-column XML rows can attest positional metadata indexes');
+            $this->assertSame(
+                ['/downloads', '1', 'selected-live', 'selected-pad'],
+                $request->val,
+                'all shapes have the same legacy flat accessors',
+            );
+            $this->assertSame(
+                $index === 0 ? [['selected-live'], ['selected-pad']] : null,
+                $request->stringTable(1, 2),
+                'only genuine one-column XML rows can attest positional metadata indexes',
+            );
         }
     }
 
@@ -100,9 +121,9 @@ class XMLRPCStringTableTest extends TestCase
     {
         $table = self::arrayValue([self::arrayValue([self::value('string', 'one')])]);
         $fault = '<methodResponse><fault><value><struct><member><name>faultCode</name>'
-            .self::value('i4', '-1').'</member><member><name>faultString</name>'
-            .self::value('string', 'refused').'</member></struct></value></fault></methodResponse>';
-        foreach(['<methodResponse>', '', $fault] as $late) {
+            . self::value('i4', '-1') . '</member><member><name>faultString</name>'
+            . self::value('string', 'refused') . '</member></struct></value></fault></methodResponse>';
+        foreach (['<methodResponse>', '', $fault] as $late) {
             $this->serve([self::envelope($table), $late,
                 self::multicallEnvelope([self::value('string', '/downloads'), self::value('i8', '1'), $table])]);
             $big = str_repeat('x', 1100000);
@@ -114,9 +135,10 @@ class XMLRPCStringTableTest extends TestCase
             $this->assertSame(null, $request->stringTable(1, 1), 'no later table is invented');
             $this->assertSame([], $request->responseCommandValues, 'failed requests expose no earlier command snapshot');
             $this->assertSame([], $request->responseCommandTypes, 'failed requests expose no earlier command type proof');
-            foreach([new rXMLRPCCommand('d.directory', 'A'), new rXMLRPCCommand('d.is_multi_file', 'A'),
+            foreach ([new rXMLRPCCommand('d.directory', 'A'), new rXMLRPCCommand('d.is_multi_file', 'A'),
                 new rXMLRPCCommand('f.multicall', ['A', '', 'f.path='])] as $command) {
-                $request->addCommand($command); }
+                $request->addCommand($command);
+            }
             $this->assertTrue($request->success(), 'request reuse reads a fresh batch');
             $this->assertSame([['one']], $request->stringTable(1, 2), 'only fresh indexed table provenance is published');
         }
@@ -131,8 +153,11 @@ class XMLRPCStringTableTest extends TestCase
         $request = $this->batchRequest();
         $request->addCommand(new rXMLRPCCommand('d.name', 'A'));
         $this->assertTrue($request->success(), 'well-formed XML keeps malformed command wrappers distinguishable');
-        $this->assertSame([null, 'array', null, null], $request->responseCommandTypes,
-            'invalid wrappers retain null slots instead of shifting later results');
+        $this->assertSame(
+            [null, 'array', null, null],
+            $request->responseCommandTypes,
+            'invalid wrappers retain null slots instead of shifting later results',
+        );
         $this->assertSame(null, $request->stringTable(1, 0), 'a scalar command slot cannot impersonate a table');
         $this->assertSame([['selected']], $request->stringTable(1, 1), 'the second command remains at index one');
         $this->assertSame(null, $request->stringTable(1, 2), 'an empty success wrapper does not invent an empty table');
@@ -154,18 +179,26 @@ class XMLRPCStringTableTest extends TestCase
     {
         $table = self::arrayValue([self::arrayValue([self::value('string', 'forged')])]);
         $bodies = [];
-        foreach([0, 2, 4] as $count) {
-            $bodies[] = self::multicallEnvelope(array_fill(0, $count, $table)); }
+        foreach ([0, 2, 4] as $count) {
+            $bodies[] = self::multicallEnvelope(array_fill(0, $count, $table));
+        }
         $this->serve($bodies);
-        foreach([0, 2, 4] as $count) {
+        foreach ([0, 2, 4] as $count) {
             $request = $this->batchRequest();
-            $this->assertTrue($request->success(), 'legacy accessors keep their response handling for '.$count.' results');
-            $this->assertSame([], $request->responseCommandValues,
-                'a missing or extra command result cannot attest any snapshot field');
-            $this->assertSame([], $request->responseCommandTypes,
-                'a count mismatch cannot publish command type proof');
-            foreach([0, 1, 2, 3] as $index) {
-                $this->assertSame(null, $request->stringTable(1, $index), 'no position in an unmatched batch is trusted'); }
+            $this->assertTrue($request->success(), 'legacy accessors keep their response handling for ' . $count . ' results');
+            $this->assertSame(
+                [],
+                $request->responseCommandValues,
+                'a missing or extra command result cannot attest any snapshot field',
+            );
+            $this->assertSame(
+                [],
+                $request->responseCommandTypes,
+                'a count mismatch cannot publish command type proof',
+            );
+            foreach ([0, 1, 2, 3] as $index) {
+                $this->assertSame(null, $request->stringTable(1, $index), 'no position in an unmatched batch is trusted');
+            }
         }
     }
 
@@ -173,7 +206,7 @@ class XMLRPCStringTableTest extends TestCase
     {
         $table = self::arrayValue([self::arrayValue([self::value('string', 'forged')])]);
         $fresh = self::arrayValue([self::arrayValue([self::value('string', 'fresh')])]);
-        foreach([[0, 2], [2, 0]] as $counts) {
+        foreach ([[0, 2], [2, 0]] as $counts) {
             $this->serve([self::multicallEnvelope(array_fill(0, $counts[0], $table)),
                 self::multicallEnvelope(array_fill(0, $counts[1], $table)), self::envelope($table), self::envelope($fresh)]);
             $big = str_repeat('x', 1100000);
@@ -184,12 +217,19 @@ class XMLRPCStringTableTest extends TestCase
             $request->important = false;
             $this->assertTrue($request->success(), 'legacy chunk parsing can succeed despite mismatched result counts');
             $this->assertSame(3, count($this->daemon->bodies()), 'the three commands were sent in three separate calls');
-            $this->assertSame(['forged', 'forged', 'forged'], $request->val,
-                'missing and extra chunks compensate in the legacy flat count');
-            $this->assertSame([], $request->responseCommandValues,
-                'a bad chunk invalidates the complete logical command snapshot');
-            foreach([0, 1, 2] as $index) {
-                $this->assertSame(null, $request->stringTable(1, $index), 'later chunks cannot shift or restore a command position'); }
+            $this->assertSame(
+                ['forged', 'forged', 'forged'],
+                $request->val,
+                'missing and extra chunks compensate in the legacy flat count',
+            );
+            $this->assertSame(
+                [],
+                $request->responseCommandValues,
+                'a bad chunk invalidates the complete logical command snapshot',
+            );
+            foreach ([0, 1, 2] as $index) {
+                $this->assertSame(null, $request->stringTable(1, $index), 'later chunks cannot shift or restore a command position');
+            }
             $request->addCommand(new rXMLRPCCommand('d.multicall2', ['', 'main', 'd.name=']));
             $this->assertTrue($request->success(), 'the next run may establish a new command snapshot');
             $this->assertSame([['fresh']], $request->stringTable(1, 0), 'count refusal is reset only by a new run');
@@ -199,8 +239,9 @@ class XMLRPCStringTableTest extends TestCase
     public function testExactChunkCountsKeepGlobalCommandIndexes()
     {
         $tables = [];
-        foreach(['first', 'second', 'third'] as $name) {
-            $tables[] = self::arrayValue([self::arrayValue([self::value('string', $name)])]); }
+        foreach (['first', 'second', 'third'] as $name) {
+            $tables[] = self::arrayValue([self::arrayValue([self::value('string', $name)])]);
+        }
         $this->serve([self::multicallEnvelope([$tables[0]]),
             self::multicallEnvelope([$tables[1]]), self::envelope($tables[2])]);
         $big = str_repeat('x', 1100000);
@@ -211,9 +252,13 @@ class XMLRPCStringTableTest extends TestCase
         $request->important = false;
         $this->assertTrue($request->success(), 'matching command results may span separate calls');
         $this->assertSame(3, count($this->daemon->bodies()), 'the fixture sent three calls');
-        foreach(['first', 'second', 'third'] as $index=>$name) {
-            $this->assertSame([[$name]], $request->stringTable(1, $index),
-                'the global command index survives a native wrapper followed by a direct response'); }
+        foreach (['first', 'second', 'third'] as $index => $name) {
+            $this->assertSame(
+                [[$name]],
+                $request->stringTable(1, $index),
+                'the global command index survives a native wrapper followed by a direct response',
+            );
+        }
         $this->assertSame(null, $request->stringTable(1), 'default top-level table semantics remain unchanged across calls');
     }
 
@@ -239,13 +284,16 @@ class XMLRPCStringTableTest extends TestCase
         $values = [self::value('string', 'one'), self::value('string', 'two')];
         $table = self::arrayValue([self::arrayValue([self::value('string', 'inner table')])]);
         $this->serve([self::multicallEnvelope($values), self::multicallEnvelope([$table])]);
-        foreach([[['one'], ['two']], null] as $expectedDefault) {
+        foreach ([[['one'], ['two']], null] as $expectedDefault) {
             $request = new rXMLRPCRequest(new rXMLRPCCommand('system.multicall', ['opaque caller arguments']));
             $request->important = false;
             $this->assertTrue($request->success(), 'the explicit multicall keeps its legacy response contract');
             $this->assertSame($expectedDefault, $request->stringTable(1), 'the default table accessor remains unchanged');
-            $this->assertSame([], $request->responseCommandValues,
-                'the request owner cannot attest inner command indexes of an opaque multicall');
+            $this->assertSame(
+                [],
+                $request->responseCommandValues,
+                'the request owner cannot attest inner command indexes of an opaque multicall',
+            );
             $this->assertSame(null, $request->stringTable(1, 0), 'even one opaque inner result has no indexed proof');
         }
     }
@@ -261,8 +309,9 @@ class XMLRPCStringTableTest extends TestCase
         $this->assertSame([['a&b', $bytes, '']], $request->stringTable(3, 0), 'a direct command is indexed at zero');
         $this->assertSame(null, $request->stringTable(3, 1), 'a direct command cannot invent another result');
         $this->assertSame(['a&b', $bytes, ''], $request->val, 'the legacy flat scalar accessor remains unchanged');
-        foreach([0, -1, '3', 2, 4] as $columns) {
-            $this->assertSame(null, $request->stringTable($columns), 'a table requires its positive integer width'); }
+        foreach ([0, -1, '3', 2, 4] as $columns) {
+            $this->assertSame(null, $request->stringTable($columns), 'a table requires its positive integer width');
+        }
         $request->addCommand(new rXMLRPCCommand('d.multicall2', ['', 'main', 'd.name=']));
         $this->assertTrue($request->success(), 'an empty inventory is a successful response');
         $this->assertSame([], $request->stringTable(3), 'an empty table is valid for the requested width');
@@ -272,16 +321,17 @@ class XMLRPCStringTableTest extends TestCase
     public function testXmlMapsAndNonStringCellsCannotMasqueradeAsStringRows()
     {
         $string = self::value('string', '1');
-        $numericMap = self::value('struct', '<member><name>0</name>'.$string.'</member>');
+        $numericMap = self::value('struct', '<member><name>0</name>' . $string . '</member>');
         $bad = [$string, $numericMap, self::arrayValue([$numericMap]),
             self::arrayValue([self::arrayValue([])]),
             self::arrayValue([self::arrayValue([$string]), self::arrayValue([$string, $string])])];
-        foreach([self::value('i8', '1'), self::value('boolean', '1'), self::value('double', '1'),
+        foreach ([self::value('i8', '1'), self::value('boolean', '1'), self::value('double', '1'),
             '<value><nil/></value>', self::value('dateTime.iso8601', '20261009T10:00:00'),
             self::arrayValue([$string]), $numericMap] as $cell) {
-            $bad[] = self::arrayValue([self::arrayValue([$cell])]); }
+            $bad[] = self::arrayValue([self::arrayValue([$cell])]);
+        }
         $this->serve(array_map([__CLASS__, 'envelope'], $bad));
-        foreach($bad as $value) {
+        foreach ($bad as $value) {
             $request = $this->request();
             $this->assertTrue($request->run(), 'the adversary is valid XML-RPC grammar');
             $this->assertSame(null, $request->stringTable(1), 'only genuine uniform arrays of string cells are a string table');
@@ -291,7 +341,7 @@ class XMLRPCStringTableTest extends TestCase
     public function testLateRefusalClearsGrammarMetadataAndReusePublishesOnlyTheNewTable()
     {
         $row = self::arrayValue([self::value('string', 'one'), self::value('string', 'two')]);
-        foreach(['<methodResponse>', ''] as $late) {
+        foreach (['<methodResponse>', ''] as $late) {
             $this->serve([self::envelope(self::arrayValue([$row])), $late,
                 self::envelope(self::arrayValue([self::arrayValue([self::value('string', 'new')])]))]);
             $big = str_repeat('x', 1100000);
@@ -312,8 +362,8 @@ class XMLRPCStringTableTest extends TestCase
     {
         $table = self::arrayValue([self::arrayValue([self::value('string', 'one')])]);
         $fault = '<methodResponse><fault><value><struct><member><name>faultCode</name>'
-            .self::value('i4', '-1').'</member><member><name>faultString</name>'
-            .self::value('string', 'refused').'</member></struct></value></fault></methodResponse>';
+            . self::value('i4', '-1') . '</member><member><name>faultString</name>'
+            . self::value('string', 'refused') . '</member></struct></value></fault></methodResponse>';
         $this->serve([self::envelope($table), self::envelope($table), $fault]);
         $big = str_repeat('x', 1100000);
         $request = new rXMLRPCRequest([new rXMLRPCCommand('d.custom.set', ['A', 'k', $big]),
@@ -328,25 +378,27 @@ class XMLRPCStringTableTest extends TestCase
 
     private static function value($type, $text = '')
     {
-        return '<value><'.$type.'>'.$text.'</'.$type.'></value>';
+        return '<value><' . $type . '>' . $text . '</' . $type . '></value>';
     }
 
     private static function arrayValue($members)
     {
-        return self::value('array', '<data>'.implode('', $members).'</data>');
+        return self::value('array', '<data>' . implode('', $members) . '</data>');
     }
 
     private static function envelope($value)
     {
-        return '<methodResponse><params><param>'.$value.'</param></params></methodResponse>';
+        return '<methodResponse><params><param>' . $value . '</param></params></methodResponse>';
     }
 
     private function serve($bodies)
     {
-        if($this->daemon !== null) { $this->daemon->stop(); }
-        $this->daemon = new FakeRtorrentDaemon(array_map(function($body) {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+        }
+        $this->daemon = new FakeRtorrentDaemon(array_map(function ($body) {
             return new FakeRtorrentRawReply($body);
-        }, $bodies), $this->directory.'/calls.log');
+        }, $bodies), $this->directory . '/calls.log');
         $GLOBALS['scgi_port'] = $this->daemon->port();
     }
 
@@ -359,7 +411,7 @@ class XMLRPCStringTableTest extends TestCase
 
     private static function multicallEnvelope(array $values)
     {
-        return self::envelope(self::arrayValue(array_map(function($value) {
+        return self::envelope(self::arrayValue(array_map(function ($value) {
             return self::arrayValue([$value]);
         }, $values)));
     }

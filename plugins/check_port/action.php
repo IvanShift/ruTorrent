@@ -1,4 +1,5 @@
 <?php
+
 require_once(dirname(__FILE__) . "/../../php/settings.php");
 require_once(dirname(__FILE__) . "/../../php/Snoopy.class.inc");
 require_once(dirname(__FILE__) . "/parse.php");
@@ -6,23 +7,24 @@ require_once(dirname(__FILE__) . "/providers.php");
 require_once(dirname(__FILE__) . "/ports.php");
 
 if (isset($_GET['setport']) || isset($_POST['setport'])) {
-	Requests::requirePost(); }
+    Requests::requirePost();
+}
 
 // Load the plugin's configuration settings from conf.php
 eval(FileUtil::getPluginConf('check_port'));
 
 // Default values for configuration, used if not set in conf.php
-$currentCheckPortTimeout = isset($checkPortTimeout) ? (int)$checkPortTimeout : 15;
+$currentCheckPortTimeout = isset($checkPortTimeout) ? (int) $checkPortTimeout : 15;
 $currentUseWebsiteIPv4 = isset($useWebsiteIPv4) ? $useWebsiteIPv4 : "yougetsignal";
 $currentUseWebsiteIPv6 = isset($useWebsiteIPv6) ? $useWebsiteIPv6 : "portchecker";
 
 $currentFailoverProvidersIPv4 = isset($failoverProvidersIPv4)
-	? $failoverProvidersIPv4
-	: ["portchecker", "globalping"];
+    ? $failoverProvidersIPv4
+    : ["portchecker", "globalping"];
 
 $currentFailoverProvidersIPv6 = isset($failoverProvidersIPv6)
-	? $failoverProvidersIPv6
-	: ["globalping"];
+    ? $failoverProvidersIPv6
+    : ["globalping"];
 
 /**
  * Gets the public IP address (IPv4 or IPv6) from ipify.org
@@ -32,29 +34,30 @@ $currentFailoverProvidersIPv6 = isset($failoverProvidersIPv6)
  * @param int $timeout Request timeout
  * @return string|null The public IP address or null on failure
  */
-function get_public_ip($version, $timeout) {
-	if (!Utility::getExternal('curl')) {
-		error_log("check_port plugin: 'curl' executable not found");
-		return null;
-	}
+function get_public_ip($version, $timeout)
+{
+    if (!Utility::getExternal('curl')) {
+        error_log("check_port plugin: 'curl' executable not found");
+        return null;
+    }
 
-	$snoopy = new Snoopy();
-	$snoopy->agent = "ruTorrent CheckPort Plugin/IP Check";
-	$snoopy->read_timeout = max(1, (int)floor($timeout));
-	$snoopy->proxy_host = "";
+    $snoopy = new Snoopy();
+    $snoopy->agent = "ruTorrent CheckPort Plugin/IP Check";
+    $snoopy->read_timeout = max(1, (int) floor($timeout));
+    $snoopy->proxy_host = "";
 
-	$url = ($version == '6') ? "https://api64.ipify.org/" : "https://api4.ipify.org/";
-	@$snoopy->fetch($url);
+    $url = ($version == '6') ? "https://api64.ipify.org/" : "https://api4.ipify.org/";
+    @$snoopy->fetch($url);
 
-	if ($snoopy->status == 200 && !empty($snoopy->results)) {
-		$ip = trim($snoopy->results);
-		$flag = ($version == '6') ? FILTER_FLAG_IPV6 : FILTER_FLAG_IPV4;
-		if (filter_var($ip, FILTER_VALIDATE_IP, $flag)) {
-			return $ip;
-		}
-	}
+    if ($snoopy->status == 200 && !empty($snoopy->results)) {
+        $ip = trim($snoopy->results);
+        $flag = ($version == '6') ? FILTER_FLAG_IPV6 : FILTER_FLAG_IPV4;
+        if (filter_var($ip, FILTER_VALIDATE_IP, $flag)) {
+            return $ip;
+        }
+    }
 
-	return null;
+    return null;
 }
 
 /**
@@ -67,68 +70,69 @@ function get_public_ip($version, $timeout) {
  * @param int $timeout Total time budget for IP detection and the provider chain
  * @return array An associative array with 'ip' and 'status' keys
  */
-function get_and_check_ip($ip_version, $use_website, $rtorrent_ip, $rtorrent_port, $timeout) {
-	global $checkPortProviders, $currentFailoverProvidersIPv4, $currentFailoverProvidersIPv6;
+function get_and_check_ip($ip_version, $use_website, $rtorrent_ip, $rtorrent_port, $timeout)
+{
+    global $checkPortProviders, $currentFailoverProvidersIPv4, $currentFailoverProvidersIPv6;
 
-	$ip_to_check = null;
-	$flag = ($ip_version == '6') ? FILTER_FLAG_IPV6 : FILTER_FLAG_IPV4;
-	$deadline = microtime(true) + max(1, (int)$timeout);
+    $ip_to_check = null;
+    $flag = ($ip_version == '6') ? FILTER_FLAG_IPV6 : FILTER_FLAG_IPV4;
+    $deadline = microtime(true) + max(1, (int) $timeout);
 
-	if (!empty($rtorrent_ip) && filter_var($rtorrent_ip, FILTER_VALIDATE_IP, $flag)) {
-		$ip_to_check = $rtorrent_ip;
-	} else {
-		$remaining = $deadline - microtime(true);
-		if ($remaining >= 1) {
-			$ip_to_check = get_public_ip($ip_version, $remaining);
-		}
-	}
+    if (!empty($rtorrent_ip) && filter_var($rtorrent_ip, FILTER_VALIDATE_IP, $flag)) {
+        $ip_to_check = $rtorrent_ip;
+    } else {
+        $remaining = $deadline - microtime(true);
+        if ($remaining >= 1) {
+            $ip_to_check = get_public_ip($ip_version, $remaining);
+        }
+    }
 
-	if ($ip_to_check) {
-		$version = ($ip_version == '4') ? 'ipv4' : 'ipv6';
-		$failover = ($ip_version == '4')
-			? $currentFailoverProvidersIPv4
-			: $currentFailoverProvidersIPv6;
-		$providers = array_unique(array_merge([$use_website], $failover));
+    if ($ip_to_check) {
+        $version = ($ip_version == '4') ? 'ipv4' : 'ipv6';
+        $failover = ($ip_version == '4')
+            ? $currentFailoverProvidersIPv4
+            : $currentFailoverProvidersIPv6;
+        $providers = array_unique(array_merge([$use_website], $failover));
 
-		foreach ($providers as $provider) {
-			if (
-				!isset($checkPortProviders[$provider]) ||
-				empty($checkPortProviders[$provider][$version])
-			) {
-				continue;
-			}
+        foreach ($providers as $provider) {
+            if (
+                !isset($checkPortProviders[$provider])
+                || empty($checkPortProviders[$provider][$version])
+            ) {
+                continue;
+            }
 
-			$remaining = $deadline - microtime(true);
-			if ($remaining < 1) {
-				break;
-			}
+            $remaining = $deadline - microtime(true);
+            if ($remaining < 1) {
+                break;
+            }
 
-			// Provider timeout is an integer number of seconds and must never
-			// exceed the remaining shared budget.
-			$providerTimeout = max(1, (int)floor($remaining));
+            // Provider timeout is an integer number of seconds and must never
+            // exceed the remaining shared budget.
+            $providerTimeout = max(1, (int) floor($remaining));
 
-			$status = call_user_func(
-				$checkPortProviders[$provider]["function"],
-				$ip_to_check,
-				$rtorrent_port,
-				$providerTimeout,
-			);
+            $status = call_user_func(
+                $checkPortProviders[$provider]["function"],
+                $ip_to_check,
+                $rtorrent_port,
+                $providerTimeout,
+            );
 
-			if ($status === 1 || $status === 2) {
-				return [
-					"ip" => $ip_to_check,
-					"status" => $status,
-				];
-			}
-		}
+            if ($status === 1 || $status === 2) {
+                return [
+                    "ip" => $ip_to_check,
+                    "status" => $status,
+                ];
+            }
+        }
 
-		return [
-			"ip" => $ip_to_check,
-			"status" => 0,
-		];
-	}
+        return [
+            "ip" => $ip_to_check,
+            "status" => 0,
+        ];
+    }
 
-	return ["ip" => "-", "status" => -1];
+    return ["ip" => "-", "status" => -1];
 }
 
 // --- Main Execution ---
@@ -137,40 +141,41 @@ $port = $settings->port;
 $ip_glob = $settings->ip;
 
 if (isset($_POST['setport'])) {
-	$newport = (int)$_POST['setport'];
-	if ($newport >= 1 && $newport <= 65535) {
-		$sreq = new rXMLRPCRequest(new rXMLRPCCommand("network.listen.port.set", ["", $newport]));
-		if ($sreq->success()) {
-			$port = $newport; }
-	}
+    $newport = (int) $_POST['setport'];
+    if ($newport >= 1 && $newport <= 65535) {
+        $sreq = new rXMLRPCRequest(new rXMLRPCCommand("network.listen.port.set", ["", $newport]));
+        if ($sreq->success()) {
+            $port = $newport;
+        }
+    }
 }
 
-$ports = check_port_effective_ports($port, $settings->iVersion, function($command) {
-	$req = new rXMLRPCRequest(new rXMLRPCCommand($command));
-	$req->important = false;
-	if (!$req->success() || !isset($req->val[0])) {
-		$fallback = $command === 'network.listen.port' ? 'cached listening port' : 'listening port';
-		FileUtil::toLog("check_port: $command unavailable; using $fallback");
-		return null;
-	}
-	return $req->val[0];
+$ports = check_port_effective_ports($port, $settings->iVersion, function ($command) {
+    $req = new rXMLRPCRequest(new rXMLRPCCommand($command));
+    $req->important = false;
+    if (!$req->success() || !isset($req->val[0])) {
+        $fallback = $command === 'network.listen.port' ? 'cached listening port' : 'listening port';
+        FileUtil::toLog("check_port: $command unavailable; using $fallback");
+        return null;
+    }
+    return $req->val[0];
 });
 $response = [
-	"listen_port" => $ports['listen'],
-	"ipv4" => "-", "ipv4_port" => $ports['ipv4'], "ipv4_status" => -1,
-	"ipv6" => "-", "ipv6_port" => $ports['ipv6'], "ipv6_status" => -1,
+    "listen_port" => $ports['listen'],
+    "ipv4" => "-", "ipv4_port" => $ports['ipv4'], "ipv4_status" => -1,
+    "ipv6" => "-", "ipv6_port" => $ports['ipv6'], "ipv6_status" => -1,
 ];
 
 if ($currentUseWebsiteIPv4 !== false) {
-	$ipv4_result = get_and_check_ip('4', $currentUseWebsiteIPv4, $ip_glob, $ports['ipv4'], $currentCheckPortTimeout);
-	$response["ipv4"] = $ipv4_result["ip"];
-	$response["ipv4_status"] = $ipv4_result["status"];
+    $ipv4_result = get_and_check_ip('4', $currentUseWebsiteIPv4, $ip_glob, $ports['ipv4'], $currentCheckPortTimeout);
+    $response["ipv4"] = $ipv4_result["ip"];
+    $response["ipv4_status"] = $ipv4_result["status"];
 }
 
 if ($currentUseWebsiteIPv6 !== false) {
-	$ipv6_result = get_and_check_ip('6', $currentUseWebsiteIPv6, $ip_glob, $ports['ipv6'], $currentCheckPortTimeout);
-	$response["ipv6"] = $ipv6_result["ip"];
-	$response["ipv6_status"] = $ipv6_result["status"];
+    $ipv6_result = get_and_check_ip('6', $currentUseWebsiteIPv6, $ip_glob, $ports['ipv6'], $currentCheckPortTimeout);
+    $response["ipv6"] = $ipv6_result["ip"];
+    $response["ipv6_status"] = $ipv6_result["status"];
 }
 
 CachedEcho::send(JSON::safeEncode($response), "application/json");

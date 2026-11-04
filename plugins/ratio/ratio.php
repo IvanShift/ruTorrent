@@ -1,347 +1,347 @@
 <?php
 
-require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
-require_once( dirname(__FILE__)."/../../php/rtorrent.php" );
-require_once( dirname(__FILE__)."/../../php/cache.php" );
-require_once( dirname(__FILE__)."/../../php/settings.php" );
+require_once(dirname(__FILE__) . "/../../php/xmlrpc.php");
+require_once(dirname(__FILE__) . "/../../php/rtorrent.php");
+require_once(dirname(__FILE__) . "/../../php/cache.php");
+require_once(dirname(__FILE__) . "/../../php/settings.php");
 eval(FileUtil::getPluginConf('ratio'));
 
-@define('RAT_STOP',0);
-@define('RAT_STOP_AND_REMOVE',1);
-@define('RAT_ERASE',2);
-@define('RAT_ERASEDATA',3);
-@define('RAT_ERASEDATAALL',4);
-@define('RAT_FIRSTTHROTTLE',10);
+@define('RAT_STOP', 0);
+@define('RAT_STOP_AND_REMOVE', 1);
+@define('RAT_ERASE', 2);
+@define('RAT_ERASEDATA', 3);
+@define('RAT_ERASEDATAALL', 4);
+@define('RAT_FIRSTTHROTTLE', 10);
 
 class rRatio
 {
-	public $hash = "ratio.dat";
-	public $modified = false;
-	public $rat = [];
-	public $default = 0;
-	private $version = 3;
+    public $hash = "ratio.dat";
+    public $modified = false;
+    public $rat = [];
+    public $default = 0;
+    private $version = 3;
 
-	public static function load()
-	{
-		$cache = new rCache();
-		$rt = new rRatio();
-		if(!$cache->get($rt))
-		{
-			$rt->fillArray();
-			$rt->version = 4;
-			$cache->set($rt);
-		}
-		elseif ($rt->version != 4)
-		{
-			$rt->migrate();
-			$rt->pad();
-			$rt->version = 4;
-			$cache->set($rt);
-		}
-		else {
-			$rt->pad(); }
-		return($rt);
-	}
-	public function pad()
-	{
-	        for($i=0; $i<count($this->rat); $i++)
-	        {
-	        	$rat = &$this->rat[$i];
-	        	$rat["min"] = Math::iclamp($rat["min"]);
-	        	$rat["max"] = Math::iclamp($rat["max"]);
-	        	$rat["upload"] = $rat["upload"] == 0 ? 0 : Math::fRoundClamp($rat["upload"]);
-	        }
-		for($i=count($this->rat); $i<MAX_RATIO; $i++) {
-			$this->rat[] = [ "action"=>RAT_STOP, "min"=>100, "max"=>300, "upload"=>0.1, "name"=>"ratio".$i, "time"=>-1 ]; }
-	}
-	public function fillArray()
-	{
-		$this->rat = [];
-		$this->pad();
-		$this->default = 0;
-	}
-	public function getTimes()
-	{
-		$ret = [];
-		for($i=0; $i<MAX_RATIO; $i++) {
-			if(array_key_exists("time",$this->rat[$i]) && ($this->rat[$i]["time"]>=0)) {
-				$ret[]=$i; } }
-		return($ret);
-	}
-	public function hasTimes()
-	{
-		for($i=0; $i<MAX_RATIO; $i++) {
-			if(array_key_exists("time",$this->rat[$i]) && ($this->rat[$i]["time"]>=0)) {
-				return(true); } }
-		return(false);
-	}
-	public function checkTimes()
-	{
-		$times = $this->getTimes();
-		$cnt = count($times);
-		if($cnt)
-		{
-			$cmd = new rXMLRPCCommand("d.multicall",["complete",getCmd("d.get_hash="),getCmd("d.get_custom=")."seedingtime",getCmd("d.is_active=") ]);
-			foreach($times as $i) {
-				$cmd->addParameters( [ getCmd("cat")."=".$i, getCmd("d.views.has")."=rat_".$i] ); }
-			$req = new rXMLRPCRequest($cmd);
-			if($req->success())
-			{
-				$tm = time();
-				$req1 = new rXMLRPCRequest();
-				for($i=0; $i<count($req->val); $i+=(3+$cnt*2))
-				{
-					$hash = $req->val[$i];
-					$finished = intval($req->val[$i+1]);
-					$active = intval($req->val[$i+2]);
+    public static function load()
+    {
+        $cache = new rCache();
+        $rt = new rRatio();
+        if (!$cache->get($rt)) {
+            $rt->fillArray();
+            $rt->version = 4;
+            $cache->set($rt);
+        } elseif ($rt->version != 4) {
+            $rt->migrate();
+            $rt->pad();
+            $rt->version = 4;
+            $cache->set($rt);
+        } else {
+            $rt->pad();
+        }
+        return($rt);
+    }
+    public function pad()
+    {
+        for ($i = 0; $i < count($this->rat); $i++) {
+            $rat = &$this->rat[$i];
+            $rat["min"] = Math::iclamp($rat["min"]);
+            $rat["max"] = Math::iclamp($rat["max"]);
+            $rat["upload"] = $rat["upload"] == 0 ? 0 : Math::fRoundClamp($rat["upload"]);
+        }
+        for ($i = count($this->rat); $i < MAX_RATIO; $i++) {
+            $this->rat[] = [ "action" => RAT_STOP, "min" => 100, "max" => 300, "upload" => 0.1, "name" => "ratio" . $i, "time" => -1 ];
+        }
+    }
+    public function fillArray()
+    {
+        $this->rat = [];
+        $this->pad();
+        $this->default = 0;
+    }
+    public function getTimes()
+    {
+        $ret = [];
+        for ($i = 0; $i < MAX_RATIO; $i++) {
+            if (array_key_exists("time", $this->rat[$i]) && ($this->rat[$i]["time"] >= 0)) {
+                $ret[] = $i;
+            }
+        }
+        return($ret);
+    }
+    public function hasTimes()
+    {
+        for ($i = 0; $i < MAX_RATIO; $i++) {
+            if (array_key_exists("time", $this->rat[$i]) && ($this->rat[$i]["time"] >= 0)) {
+                return(true);
+            }
+        }
+        return(false);
+    }
+    public function checkTimes()
+    {
+        $times = $this->getTimes();
+        $cnt = count($times);
+        if ($cnt) {
+            $cmd = new rXMLRPCCommand("d.multicall", ["complete",getCmd("d.get_hash="),getCmd("d.get_custom=") . "seedingtime",getCmd("d.is_active=") ]);
+            foreach ($times as $i) {
+                $cmd->addParameters([ getCmd("cat") . "=" . $i, getCmd("d.views.has") . "=rat_" . $i]);
+            }
+            $req = new rXMLRPCRequest($cmd);
+            if ($req->success()) {
+                $tm = time();
+                $req1 = new rXMLRPCRequest();
+                for ($i = 0; $i < count($req->val); $i += (3 + $cnt * 2)) {
+                    $hash = $req->val[$i];
+                    $finished = intval($req->val[$i + 1]);
+                    $active = intval($req->val[$i + 2]);
 
-					if($active && $finished)
-					{
-						for($j=0; $j<$cnt*2; $j+=2)
-						{
-							if(intval($req->val[$i+$j+4])==1)
-							{
-								$rat = $this->rat[intval($req->val[$i+$j+3])];
-								if( $tm>=$finished+$rat["time"]*3600 ) {
-									$req1->addCommand( new rXMLRPCCommand("group.rat_".$req->val[$i+$j+3].".ratio.command",$hash) ); }
-							}
-						}
-					}
-				}
-				return(($req1->getCommandsCount()==0) || ($req1->success()));
-			}
-			return(false);
-		}
-		return(true);
-	}
-	public function setHandlers()
-	{
-		global $checkTimesInterval;
-		$req =  new rXMLRPCRequest( $this->hasTimes() ?
-			rTorrentSettings::get()->getAlignedScheduleCommand("ratio",$checkTimesInterval*60,
-				getCmd('execute').'={sh,-c,'.Utility::escapeShellArg(Utility::getPHP()).' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php').' '.Utility::escapeShellArg(User::getUser()).' &}' ) :
-			rTorrentSettings::get()->getRemoveScheduleCommand("ratio") );
-		return($req->success());
-	}
-	public function isCorrect($no)
-	{
-		return( ($no>=0) &&
-			($no<count($this->rat)) &&
-		        ($this->rat[$no]["name"]!=""));
-	}
-	// A download's data is deleted by the erasedata plugin, which needs the file
-	// list read over RPC while the download still exists. Hand the erase to that
-	// plugin's helper instead of erasing here, so a ratio group deletes the same
-	// way the web UI's "Remove and delete data" does. Backgrounded: a foreground
-	// execute would block rtorrent while the helper waits for rtorrent to answer.
-	public function getEraseWithDataCommand($force)
-	{
-		// Only the two force literals supported by erase.php may be passed as
-		// execute.nothrow.bg argv; any other value becomes a no-op.
-		if(!is_string($force) || ($force !== "1" && $force !== "2")) {
-			return(getCmd("cat=")); }
-		$prefix = getCmd("d.stop=")."; ".getCmd("d.close=")."; ";
-		$helper = dirname(dirname(__FILE__))."/erasedata/erase.php";
-		// Deliberately a no-op, not the legacy "d.set_custom5=<force>; d.erase="
-		// fallback: nothing reads custom5 as a delete-data flag any more (the
-		// web UI reuses that field as the message column), so that fallback
-		// would erase the download and strand its data on disk -- and once the
-		// download is gone its file list can no longer be read over RPC, so the
-		// data could never be collected. A missing helper means a broken
-		// install; fail closed and keep the download so the erase stays possible.
-		if(!is_file($helper))
-		{
-			FileUtil::toLog('ratio: erasedata-helper-unavailable');
-			return(getCmd("cat="));
-		}
-		// User::getUser() already normalizes the login for an rTorrent argv
-		// component; filtering it again here would define a second user policy.
-		return($prefix.'execute.nothrow.bg={'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($helper).
-			',$'.getCmd("d.get_hash").'=,'.$force.','.rTorrent::quoteCommandArg((string)User::getUser()).'}');
-	}
+                    if ($active && $finished) {
+                        for ($j = 0; $j < $cnt * 2; $j += 2) {
+                            if (intval($req->val[$i + $j + 4]) == 1) {
+                                $rat = $this->rat[intval($req->val[$i + $j + 3])];
+                                if ($tm >= $finished + $rat["time"] * 3600) {
+                                    $req1->addCommand(new rXMLRPCCommand("group.rat_" . $req->val[$i + $j + 3] . ".ratio.command", $hash));
+                                }
+                            }
+                        }
+                    }
+                }
+                return(($req1->getCommandsCount() == 0) || ($req1->success()));
+            }
+            return(false);
+        }
+        return(true);
+    }
+    public function setHandlers()
+    {
+        global $checkTimesInterval;
+        $req = new rXMLRPCRequest($this->hasTimes()
+            ? rTorrentSettings::get()->getAlignedScheduleCommand(
+                "ratio",
+                $checkTimesInterval * 60,
+                getCmd('execute') . '={sh,-c,' . Utility::escapeShellArg(Utility::getPHP()) . ' ' . Utility::escapeShellArg(dirname(__FILE__) . '/update.php') . ' ' . Utility::escapeShellArg(User::getUser()) . ' &}',
+            )
+            : rTorrentSettings::get()->getRemoveScheduleCommand("ratio"));
+        return($req->success());
+    }
+    public function isCorrect($no)
+    {
+        return(($no >= 0)
+            && ($no < count($this->rat))
+                && ($this->rat[$no]["name"] != ""));
+    }
+    // A download's data is deleted by the erasedata plugin, which needs the file
+    // list read over RPC while the download still exists. Hand the erase to that
+    // plugin's helper instead of erasing here, so a ratio group deletes the same
+    // way the web UI's "Remove and delete data" does. Backgrounded: a foreground
+    // execute would block rtorrent while the helper waits for rtorrent to answer.
+    public function getEraseWithDataCommand($force)
+    {
+        // Only the two force literals supported by erase.php may be passed as
+        // execute.nothrow.bg argv; any other value becomes a no-op.
+        if (!is_string($force) || ($force !== "1" && $force !== "2")) {
+            return(getCmd("cat="));
+        }
+        $prefix = getCmd("d.stop=") . "; " . getCmd("d.close=") . "; ";
+        $helper = dirname(dirname(__FILE__)) . "/erasedata/erase.php";
+        // Deliberately a no-op, not the legacy "d.set_custom5=<force>; d.erase="
+        // fallback: nothing reads custom5 as a delete-data flag any more (the
+        // web UI reuses that field as the message column), so that fallback
+        // would erase the download and strand its data on disk -- and once the
+        // download is gone its file list can no longer be read over RPC, so the
+        // data could never be collected. A missing helper means a broken
+        // install; fail closed and keep the download so the erase stays possible.
+        if (!is_file($helper)) {
+            FileUtil::toLog('ratio: erasedata-helper-unavailable');
+            return(getCmd("cat="));
+        }
+        // User::getUser() already normalizes the login for an rTorrent argv
+        // component; filtering it again here would define a second user policy.
+        return($prefix . 'execute.nothrow.bg={' . rTorrent::quoteCommandArg(Utility::getPHP()) . ',' . rTorrent::quoteCommandArg($helper)
+            . ',$' . getCmd("d.get_hash") . '=,' . $force . ',' . rTorrent::quoteCommandArg((string) User::getUser()) . '}');
+    }
 
-	public function correct()
-	{
-		$cmd = new rXMLRPCCommand("d.multicall",["default",getCmd("d.get_hash=")]);
-		for($i=0; $i<MAX_RATIO; $i++) {
-			$cmd->addParameters( [ getCmd("d.views.has")."=rat_".$i, getCmd("view.set_not_visible")."=rat_".$i ] ); }
-		$req = new rXMLRPCRequest($cmd);
-		$req->setParseByTypes();
-		if($req->success())
-		{
-			$req1 = new rXMLRPCRequest();
-			foreach($req->strings as $no=>$hash)
-			{
-			        for($i=0; $i<MAX_RATIO; $i++)
-			        {
-					if($req->i8s[$no*MAX_RATIO*2+$i*2]==1) {
-						$req1->addCommand(new rXMLRPCCommand("view.set_visible",[$hash,"rat_".$i])); }
-				}
-			}
-			return(($req1->getCommandsCount()==0) || ($req1->success()));
-		}
-		return(false);
-	}
-	public function obtain()
-	{
-        	return($this->flush() && $this->correct() && $this->setHandlers());
-	}
-	public function flush()
-	{
-		$req1 = new rXMLRPCRequest(new rXMLRPCCommand("view_list"));
-		if($req1->run() && !$req1->fault)
-		{
-			// Best-effort insert of the rat_* persistent views that view.list
-			// reports missing. Run as its own request so any fault here
-			// (typically "View with same name already inserted" when the
-			// session restored rat_* but our cached view.list lagged) does
-			// not propagate into the settings multicall below and sink the
-			// whole plugin start with a misleading "Plugin failed to start".
-			$insertReq = new rXMLRPCRequest();
-			// Another initializer may insert a missing view after our snapshot.
-			$insertReq->important = false;
-			for($i=0; $i<MAX_RATIO; $i++)
-			{
-				if(!in_array("rat_".$i,$req1->val)) {
-					$insertReq->addCommand(new rXMLRPCCommand("group.insert_persistent_view", ["", "rat_".$i])); }
-			}
-			if($insertReq->getCommandsCount()) {
-				$insertReq->run(); }
+    public function correct()
+    {
+        $cmd = new rXMLRPCCommand("d.multicall", ["default",getCmd("d.get_hash=")]);
+        for ($i = 0; $i < MAX_RATIO; $i++) {
+            $cmd->addParameters([ getCmd("d.views.has") . "=rat_" . $i, getCmd("view.set_not_visible") . "=rat_" . $i ]);
+        }
+        $req = new rXMLRPCRequest($cmd);
+        $req->setParseByTypes();
+        if ($req->success()) {
+            $req1 = new rXMLRPCRequest();
+            foreach ($req->strings as $no => $hash) {
+                for ($i = 0; $i < MAX_RATIO; $i++) {
+                    if ($req->i8s[$no * MAX_RATIO * 2 + $i * 2] == 1) {
+                        $req1->addCommand(new rXMLRPCCommand("view.set_visible", [$hash,"rat_" . $i]));
+                    }
+                }
+            }
+            return(($req1->getCommandsCount() == 0) || ($req1->success()));
+        }
+        return(false);
+    }
+    public function obtain()
+    {
+        return($this->flush() && $this->correct() && $this->setHandlers());
+    }
+    public function flush()
+    {
+        $req1 = new rXMLRPCRequest(new rXMLRPCCommand("view_list"));
+        if ($req1->run() && !$req1->fault) {
+            // Best-effort insert of the rat_* persistent views that view.list
+            // reports missing. Run as its own request so any fault here
+            // (typically "View with same name already inserted" when the
+            // session restored rat_* but our cached view.list lagged) does
+            // not propagate into the settings multicall below and sink the
+            // whole plugin start with a misleading "Plugin failed to start".
+            $insertReq = new rXMLRPCRequest();
+            // Another initializer may insert a missing view after our snapshot.
+            $insertReq->important = false;
+            for ($i = 0; $i < MAX_RATIO; $i++) {
+                if (!in_array("rat_" . $i, $req1->val)) {
+                    $insertReq->addCommand(new rXMLRPCCommand("group.insert_persistent_view", ["", "rat_" . $i]));
+                }
+            }
+            if ($insertReq->getCommandsCount()) {
+                $insertReq->run();
+            }
 
-			$req = new rXMLRPCRequest();
-			for($i=0; $i<MAX_RATIO; $i++)
-			{
-				$rat = $this->rat[$i];
-				if($this->isCorrect($i))
-				{
-					$req->addCommand( rTorrentSettings::get()->getRatioGroupCommand("rat_".$i,'ratio.enable',[""]) );
-					$req->addCommand( rTorrentSettings::get()->getRatioGroupCommand("rat_".$i,'ratio.min.set',$rat["min"]) );
-					$req->addCommand( rTorrentSettings::get()->getRatioGroupCommand("rat_".$i,'ratio.max.set',$rat["max"]) );
-					$req->addCommand( rTorrentSettings::get()->getRatioGroupCommand("rat_".$i,'ratio.upload.set',floatval($rat["upload"]*1024*1024*1024)) );
-					switch($rat["action"])
-					{
-						case RAT_STOP:
-						{
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								getCmd("d.stop=")."; ".getCmd("d.close=")]));
-							break;
-						}
-						case RAT_STOP_AND_REMOVE:
-						{
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								getCmd("d.stop=")."; ".getCmd("d.close=")."; ".getCmd("view.set_not_visible")."=rat_".$i."; ".getCmd("d.views.remove")."=rat_".$i]));
-							break;
-						}
-						case RAT_ERASE:
-						{
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								getCmd("d.stop=")."; ".getCmd("d.close=")."; ".getCmd("d.erase=")]));
-							break;
-						}
-						case RAT_ERASEDATA:
-						{
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								$this->getEraseWithDataCommand("1")]));
-							break;
-						}
-						case RAT_ERASEDATAALL:
-						{
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								$this->getEraseWithDataCommand("2")]));
-							break;
-						}
-						default:
-						{
-							$thr = "thr_".($rat["action"]-RAT_FIRSTTHROTTLE);
-							$req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_".$i.".ratio.command",
-								getCmd('cat').'=$'.getCmd("d.stop").'=,$'.rTorrent::additionCommand("d.set_throttle_name", $thr).',$'.getCmd('d.start=')]));
-							break;
-						}
-					}
-				}
-			}
+            $req = new rXMLRPCRequest();
+            for ($i = 0; $i < MAX_RATIO; $i++) {
+                $rat = $this->rat[$i];
+                if ($this->isCorrect($i)) {
+                    $req->addCommand(rTorrentSettings::get()->getRatioGroupCommand("rat_" . $i, 'ratio.enable', [""]));
+                    $req->addCommand(rTorrentSettings::get()->getRatioGroupCommand("rat_" . $i, 'ratio.min.set', $rat["min"]));
+                    $req->addCommand(rTorrentSettings::get()->getRatioGroupCommand("rat_" . $i, 'ratio.max.set', $rat["max"]));
+                    $req->addCommand(rTorrentSettings::get()->getRatioGroupCommand("rat_" . $i, 'ratio.upload.set', floatval($rat["upload"] * 1024 * 1024 * 1024)));
+                    switch ($rat["action"]) {
+                        case RAT_STOP:
+                            {
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    getCmd("d.stop=") . "; " . getCmd("d.close=")]));
+                                break;
+                            }
+                        case RAT_STOP_AND_REMOVE:
+                            {
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    getCmd("d.stop=") . "; " . getCmd("d.close=") . "; " . getCmd("view.set_not_visible") . "=rat_" . $i . "; " . getCmd("d.views.remove") . "=rat_" . $i]));
+                                break;
+                            }
+                        case RAT_ERASE:
+                            {
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    getCmd("d.stop=") . "; " . getCmd("d.close=") . "; " . getCmd("d.erase=")]));
+                                break;
+                            }
+                        case RAT_ERASEDATA:
+                            {
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    $this->getEraseWithDataCommand("1")]));
+                                break;
+                            }
+                        case RAT_ERASEDATAALL:
+                            {
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    $this->getEraseWithDataCommand("2")]));
+                                break;
+                            }
+                        default:
+                            {
+                                $thr = "thr_" . ($rat["action"] - RAT_FIRSTTHROTTLE);
+                                $req->addCommand(new rXMLRPCCommand("system.method.set", ["group.rat_" . $i . ".ratio.command",
+                                    getCmd('cat') . '=$' . getCmd("d.stop") . '=,$' . rTorrent::additionCommand("d.set_throttle_name", $thr) . ',$' . getCmd('d.start=')]));
+                                break;
+                            }
+                    }
+                }
+            }
 
-			// Apply the default ratio group to newly added torrents, but only when
-			// the torrent is not already in one of the rat_* views (e.g. one assigned
-			// by the extratio rules plugin). The membership checks are grouped with
-			// the (or,...) object form: rtorrent >=0.16.16 made `branch` strictly
-			// ternary and silently drops surplus arguments, so the previous flat
-			// many-argument branch left the trailing view.set_visible unreachable and
-			// the default group was never applied (issue #3100). The object syntax is
-			// understood by rtorrent 0.9.8 and the 0.16.x series alike.
-			$insCmd = getCmd('branch').'=('.getCmd('or');
-			for($i=0; $i<MAX_RATIO; $i++) {
-				$insCmd .= ',('.getCmd('d.views.has').',rat_'.$i.')'; }
-			$insCmd .= '),,';
-			if($this->isCorrect($this->default-1)) {
-				$req->addCommand(rTorrentSettings::get()->getOnInsertCommand(['_ratio'.User::getUser(),
-					$insCmd.getCmd('view.set_visible=').'rat_'.($this->default-1)])); }
-			else {
-				$req->addCommand(rTorrentSettings::get()->getOnInsertCommand(['_ratio'.User::getUser(), getCmd('cat=')])); }
+            // Apply the default ratio group to newly added torrents, but only when
+            // the torrent is not already in one of the rat_* views (e.g. one assigned
+            // by the extratio rules plugin). The membership checks are grouped with
+            // the (or,...) object form: rtorrent >=0.16.16 made `branch` strictly
+            // ternary and silently drops surplus arguments, so the previous flat
+            // many-argument branch left the trailing view.set_visible unreachable and
+            // the default group was never applied (issue #3100). The object syntax is
+            // understood by rtorrent 0.9.8 and the 0.16.x series alike.
+            $insCmd = getCmd('branch') . '=(' . getCmd('or');
+            for ($i = 0; $i < MAX_RATIO; $i++) {
+                $insCmd .= ',(' . getCmd('d.views.has') . ',rat_' . $i . ')';
+            }
+            $insCmd .= '),,';
+            if ($this->isCorrect($this->default - 1)) {
+                $req->addCommand(rTorrentSettings::get()->getOnInsertCommand(['_ratio' . User::getUser(),
+                    $insCmd . getCmd('view.set_visible=') . 'rat_' . ($this->default - 1)]));
+            } else {
+                $req->addCommand(rTorrentSettings::get()->getOnInsertCommand(['_ratio' . User::getUser(), getCmd('cat=')]));
+            }
 
-			return($req->run() && !$req->fault);
-		}
-		return(false);
-	}
-	public function store()
-	{
-		$cache = new rCache();
-		return($cache->set($this));
-	}
+            return($req->run() && !$req->fault);
+        }
+        return(false);
+    }
+    public function store()
+    {
+        $cache = new rCache();
+        return($cache->set($this));
+    }
 
-	public function set()
-	{
-		$this->rat = [];
-		$this->default = 0;
-		for($i = 0; $i<MAX_RATIO; $i++)
-		{
-			$arr = [ "action"=>RAT_STOP, "min"=>100, "max"=>300, "upload"=>0.1, "name"=>"", "time"=>-1 ];
-			if(isset($_POST['rat_action'.$i])) {
-				$arr["action"] = intval($_POST['rat_action'.$i]); }
-			if(isset($_POST['rat_min'.$i])) {
-			        $arr["min"] = Math::iclamp($_POST['rat_min'.$i]); }
-			if(isset($_POST['rat_max'.$i])) {
-			        $arr["max"] = Math::iclamp($_POST['rat_max'.$i]); }
-			if(isset($_POST['rat_upload'.$i]))
-			{
-				$upload = $_POST['rat_upload'.$i];
-				$arr["upload"] = $upload == 0 ? 0 : Math::fRoundClamp($upload);
-			}
-			if(isset($_POST['rat_time'.$i])) {
-			        $arr["time"] = (is_numeric($_POST['rat_time'.$i]) ? floatval($_POST['rat_time'.$i]) : -1); }
-			if(isset($_POST['rat_name'.$i]))
-			{
-			        $v = trim($_POST['rat_name'.$i]);
-			        if($v!='') {
-					$arr["name"] = $v; }
-			}
-			$this->rat[] = $arr;
-		}
-		if(isset($_POST['default'])) {
-			$this->default = floatval($_POST['default']); }
-                $this->store();
-		$this->flush();
-		$this->setHandlers();
-	}
-	public function get()
-	{
-		$ret = "theWebUI.ratios = [";
-		foreach($this->rat as $item)
-		{
-			$tm = (array_key_exists("time",$item) ? $item["time"] : -1);
-			$ret.="{ action: ".$item["action"].", min: ".$item["min"].", max: ".$item["max"].
-				", time: ".$tm.", upload: ".$item["upload"].", name : ".Utility::quoteAndDeslashEachItem($item["name"])." },";
-		}
-		$len = strlen($ret);
-		if($ret[$len-1]==',') {
-			$ret = substr($ret,0,$len-1); }
-		return($ret."];\ntheWebUI.maxRatio = ".MAX_RATIO.";\ntheWebUI.defaultRatio = ".$this->default.";\n");
-	}
-	private function migrate()
-	{
-		for($i=0; $i<count($this->rat); $i++)
-		{
-			$this->rat[$i]["upload"] /= 1024;
-		}
-	}
+    public function set()
+    {
+        $this->rat = [];
+        $this->default = 0;
+        for ($i = 0; $i < MAX_RATIO; $i++) {
+            $arr = [ "action" => RAT_STOP, "min" => 100, "max" => 300, "upload" => 0.1, "name" => "", "time" => -1 ];
+            if (isset($_POST['rat_action' . $i])) {
+                $arr["action"] = intval($_POST['rat_action' . $i]);
+            }
+            if (isset($_POST['rat_min' . $i])) {
+                $arr["min"] = Math::iclamp($_POST['rat_min' . $i]);
+            }
+            if (isset($_POST['rat_max' . $i])) {
+                $arr["max"] = Math::iclamp($_POST['rat_max' . $i]);
+            }
+            if (isset($_POST['rat_upload' . $i])) {
+                $upload = $_POST['rat_upload' . $i];
+                $arr["upload"] = $upload == 0 ? 0 : Math::fRoundClamp($upload);
+            }
+            if (isset($_POST['rat_time' . $i])) {
+                $arr["time"] = (is_numeric($_POST['rat_time' . $i]) ? floatval($_POST['rat_time' . $i]) : -1);
+            }
+            if (isset($_POST['rat_name' . $i])) {
+                $v = trim($_POST['rat_name' . $i]);
+                if ($v != '') {
+                    $arr["name"] = $v;
+                }
+            }
+            $this->rat[] = $arr;
+        }
+        if (isset($_POST['default'])) {
+            $this->default = floatval($_POST['default']);
+        }
+        $this->store();
+        $this->flush();
+        $this->setHandlers();
+    }
+    public function get()
+    {
+        $ret = "theWebUI.ratios = [";
+        foreach ($this->rat as $item) {
+            $tm = (array_key_exists("time", $item) ? $item["time"] : -1);
+            $ret .= "{ action: " . $item["action"] . ", min: " . $item["min"] . ", max: " . $item["max"]
+                . ", time: " . $tm . ", upload: " . $item["upload"] . ", name : " . Utility::quoteAndDeslashEachItem($item["name"]) . " },";
+        }
+        $len = strlen($ret);
+        if ($ret[$len - 1] == ',') {
+            $ret = substr($ret, 0, $len - 1);
+        }
+        return($ret . "];\ntheWebUI.maxRatio = " . MAX_RATIO . ";\ntheWebUI.defaultRatio = " . $this->default . ";\n");
+    }
+    private function migrate()
+    {
+        for ($i = 0; $i < count($this->rat); $i++) {
+            $this->rat[$i]["upload"] /= 1024;
+        }
+    }
 }

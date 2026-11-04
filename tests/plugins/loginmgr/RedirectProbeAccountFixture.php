@@ -7,7 +7,10 @@ class RedirectProbeAccount extends commonAccount
     {
         return UrlHost::urlIsOneOf($url, ['tracker.example'], 'https', '/file');
     }
-    protected function isOK($client) { return true; }
+    protected function isOK($client)
+    {
+        return true;
+    }
     protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
     {
         self::$loginCalls++;

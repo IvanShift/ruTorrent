@@ -4,7 +4,8 @@
 // not a scanner. Declared with if(!defined()) so a caller that loads this file
 // can shorten it first; the shipped value is what the handler always used.
 if (!defined('TOLOKA_CLOUDFLARE_PAUSE')) {
-    define('TOLOKA_CLOUDFLARE_PAUSE', 5); }
+    define('TOLOKA_CLOUDFLARE_PAUSE', 5);
+}
 
 // Toloka.to support by ReMMeR github@r3mm3r.net
 
@@ -18,20 +19,22 @@ class tolokaCheckImpl
         // Every sibling handler escapes; this one did not.
         if (preg_match('`^https?://toloka\.to/p(?P<id>\d+)$`', $url, $matches)) {
             $topic_id = $matches["id"];
-	    $req_url = "https://toloka.to/p".$topic_id;
-	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
+            $req_url = "https://toloka.to/p" . $topic_id;
+            sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
             $client = ruTrackerChecker::makeClient($req_url);
-            if ($client->status != 200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            if ($client->status != 200) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
 
-	    $hash_now='';
-	    if (preg_match('`href=\"magnet:[^:]+:[^:]+:(?P<hash>[0-9A-Fa-f]{40})`', $client->results, $matches)) {
-		$hash_now = $matches["hash"];
-	    }
+            $hash_now = '';
+            if (preg_match('`href=\"magnet:[^:]+:[^:]+:(?P<hash>[0-9A-Fa-f]{40})`', $client->results, $matches)) {
+                $hash_now = $matches["hash"];
+            }
 
-	    $dow_id=0;
-	    if (preg_match('`href=\"download.php\?id=(?P<id>\d+)`', $client->results, $matches)) {
-		$dow_id = intval($matches["id"]);
-	    }
+            $dow_id = 0;
+            if (preg_match('`href=\"download.php\?id=(?P<id>\d+)`', $client->results, $matches)) {
+                $dow_id = intval($matches["id"]);
+            }
 
             // Strict comparison, as the Kinozal handler's hash check documents: a
             // loose == reads a hex hash shaped like scientific notation
@@ -53,10 +56,12 @@ class tolokaCheckImpl
             }
             // Nothing to download: that is "could not fetch", exactly as the
             // three sibling handlers answer it.
-            if (!$dow_id) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            if (!$dow_id) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
             $client->setcookies();
 
-	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
+            sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
             if (!$client->fetchComplex("https://toloka.to/download.php?id=" . $dow_id)) {
                 $reason = RuTrackerFetchError::classify($client->error);
                 ruTrackerChecker::logDebug('[Toloka] download fetch returned false: error='

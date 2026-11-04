@@ -17,10 +17,18 @@
 // one this project can vouch for, so none is trusted by default: until the
 // setting below is filled in, that account claims no URL, posts no
 // credentials, and says so once in the log.
-if(!isset($abTorrentsOrigin)) { $abTorrentsOrigin = ''; }
-if(!isset($revolutionTTOrigin)) { $revolutionTTOrigin = ''; }
-if(!isset($tfileOrigin)) { $tfileOrigin = ''; }
-if(!isset($redactedOrigin)) { $redactedOrigin = ''; }
+if (!isset($abTorrentsOrigin)) {
+    $abTorrentsOrigin = '';
+}
+if (!isset($revolutionTTOrigin)) {
+    $revolutionTTOrigin = '';
+}
+if (!isset($tfileOrigin)) {
+    $tfileOrigin = '';
+}
+if (!isset($redactedOrigin)) {
+    $redactedOrigin = '';
+}
 
 // KinozalTV: $kinozalHosts in conf/config.php orders the Kinozal hosts. Its
 // first entry is where the automatic refresh logs in, and only the mirrors it

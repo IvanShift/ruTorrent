@@ -6,29 +6,30 @@ require_once(__DIR__ . '/SCGITransportFixture.php');
 // The mocks stand in for what plugins/httprpc/action.php loads before calling
 // the proxy. The reply is a marker so the fixture can pin what process()
 // returns, not merely that it returned something.
-if(!class_exists('FileUtil'))
-{
-	class FileUtil
-	{
-		public static $log = [];
-		public static function toLog($msg) { self::$log[] = $msg; }
-	}
+if (!class_exists('FileUtil')) {
+    class FileUtil
+    {
+        public static $log = [];
+        public static function toLog($msg)
+        {
+            self::$log[] = $msg;
+        }
+    }
 }
-if(!class_exists('rXMLRPCRequest'))
-{
-	class rXMLRPCRequest
-	{
-		public static $lastPayload = null;
-		public static $lastTrusted = null;
-		public static $sent = 0;
-		public static function send($data, $trusted)
-		{
-			self::$lastPayload = $data;
-			self::$lastTrusted = $trusted;
-			self::$sent++;
-			return 'SCGI-REPLY';
-		}
-	}
+if (!class_exists('rXMLRPCRequest')) {
+    class rXMLRPCRequest
+    {
+        public static $lastPayload = null;
+        public static $lastTrusted = null;
+        public static $sent = 0;
+        public static function send($data, $trusted)
+        {
+            self::$lastPayload = $data;
+            self::$lastTrusted = $trusted;
+            self::$sent++;
+            return 'SCGI-REPLY';
+        }
+    }
 }
 
 require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
@@ -44,234 +45,278 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
  */
 class XMLRPCProxyContractTest extends TestCase
 {
-	// The fixture describes the modern daemon contract, not an unknown daemon.
-	private const DAEMON_OPTIONS = ['rtorrentVersion' => 0x1018];
+    // The fixture describes the modern daemon contract, not an unknown daemon.
+    private const DAEMON_OPTIONS = ['rtorrentVersion' => 0x1018];
 
-	private $cases = [];
-	private $hadCallTracingFlag;
-	private $previousCallTracingFlag;
+    private $cases = [];
+    private $hadCallTracingFlag;
+    private $previousCallTracingFlag;
 
-	public function setUp()
-	{
-		$this->cases = require(__DIR__ . '/XMLRPCProxyContractFixture.php');
-		$this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
-		$this->previousCallTracingFlag = $GLOBALS['rpcLogCalls'] ?? null;
-		// The literal tuples include the opt-in routine decision trace.
-		$GLOBALS['rpcLogCalls'] = true;
-	}
+    public function setUp()
+    {
+        $this->cases = require(__DIR__ . '/XMLRPCProxyContractFixture.php');
+        $this->hadCallTracingFlag = array_key_exists('rpcLogCalls', $GLOBALS);
+        $this->previousCallTracingFlag = $GLOBALS['rpcLogCalls'] ?? null;
+        // The literal tuples include the opt-in routine decision trace.
+        $GLOBALS['rpcLogCalls'] = true;
+    }
 
-	public function tearDown()
-	{
-		if($this->hadCallTracingFlag) {
-			$GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag; }
-		else {
-			unset($GLOBALS['rpcLogCalls']); }
-	}
+    public function tearDown()
+    {
+        if ($this->hadCallTracingFlag) {
+            $GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag;
+        } else {
+            unset($GLOBALS['rpcLogCalls']);
+        }
+    }
 
-	public function testFixtureCoversRejectTrustedAndUntrustedOutcomes()
-	{
-		$this->assertTrue(count($this->cases) > 0, 'the contract fixture loaded');
+    public function testFixtureCoversRejectTrustedAndUntrustedOutcomes()
+    {
+        $this->assertTrue(count($this->cases) > 0, 'the contract fixture loaded');
 
-		$seen = [];
-		foreach($this->cases as $case)
-		{
-			if($case['sends'] === 0) {
-				$seen['reject'] = true; }
-			elseif($case['trusted'] === true) {
-				$seen['trusted'] = true; }
-			else {
-				$seen['untrusted'] = true; }
-		}
-		$this->assertTrue(isset($seen['reject']), 'a rejected request is covered');
-		$this->assertTrue(isset($seen['trusted']), 'a trusted forward is covered');
-		$this->assertTrue(isset($seen['untrusted']), 'an untrusted forward is covered');
-	}
+        $seen = [];
+        foreach ($this->cases as $case) {
+            if ($case['sends'] === 0) {
+                $seen['reject'] = true;
+            } elseif ($case['trusted'] === true) {
+                $seen['trusted'] = true;
+            } else {
+                $seen['untrusted'] = true;
+            }
+        }
+        $this->assertTrue(isset($seen['reject']), 'a rejected request is covered');
+        $this->assertTrue(isset($seen['trusted']), 'a trusted forward is covered');
+        $this->assertTrue(isset($seen['untrusted']), 'an untrusted forward is covered');
+    }
 
-	public function testSharedPathResolverConfinesMissingTailsAcrossRealSymlinks()
-	{
-		$helper = __DIR__ . '/../../php/xmlrpc_path.php';
-		if(!is_file($helper))
-		{
-			$this->assertTrue(false, 'the standalone path resolver is available');
-			return;
-		}
-		require_once($helper);
+    public function testSharedPathResolverConfinesMissingTailsAcrossRealSymlinks()
+    {
+        $helper = __DIR__ . '/../../php/xmlrpc_path.php';
+        if (!is_file($helper)) {
+            $this->assertTrue(false, 'the standalone path resolver is available');
+            return;
+        }
+        require_once($helper);
 
-		$base = sys_get_temp_dir() . '/xmlrpc-path-' . getmypid() . '-' . bin2hex(random_bytes(6));
-		$root = $base . '/root';
-		$outside = $base . '/outside';
-		mkdir($root, 0700, true);
-		mkdir($outside, 0700, true);
-		$link = $root . '/escape';
-		$this->assertTrue(symlink($outside, $link), 'the real-filesystem symlink fixture was created');
+        $base = sys_get_temp_dir() . '/xmlrpc-path-' . getmypid() . '-' . bin2hex(random_bytes(6));
+        $root = $base . '/root';
+        $outside = $base . '/outside';
+        mkdir($root, 0700, true);
+        mkdir($outside, 0700, true);
+        $link = $root . '/escape';
+        $this->assertTrue(symlink($outside, $link), 'the real-filesystem symlink fixture was created');
 
-		try
-		{
-			$normalTail = $root . '/missing/child';
-			$escapedTail = $link . '/missing/child';
-			$this->assertTrue(
-				XMLRPCPathResolver::deepestExistingAncestor($normalTail)
-					=== realpath($root) . '/missing/child',
-				'a missing tail stays attached to its deepest existing root ancestor',
-			);
-			$this->assertTrue(
-				XMLRPCPathResolver::deepestExistingAncestor($escapedTail)
-					=== realpath($outside) . '/missing/child',
-				'a missing tail below a symlink resolves below the symlink target',
-			);
+        try {
+            $normalTail = $root . '/missing/child';
+            $escapedTail = $link . '/missing/child';
+            $this->assertTrue(
+                XMLRPCPathResolver::deepestExistingAncestor($normalTail)
+                    === realpath($root) . '/missing/child',
+                'a missing tail stays attached to its deepest existing root ancestor',
+            );
+            $this->assertTrue(
+                XMLRPCPathResolver::deepestExistingAncestor($escapedTail)
+                    === realpath($outside) . '/missing/child',
+                'a missing tail below a symlink resolves below the symlink target',
+            );
 
-			$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
-				. '<param><value><string></string></value></param>'
-				. '<param><value><string>http://example.test/x.torrent</string></value></param>'
-				. '<param><value><string>d.directory.set=' . htmlspecialchars($escapedTail, ENT_NOQUOTES, 'UTF-8')
-				. '</string></value></param></params></methodCall>';
-			$decision = XMLRPCProxy::decide($xml, 'sanitize', ['d.directory.set'], false, [
-				'directory' => [
-					'root' => $root,
-					'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
-				],
-			]);
-			$this->assertTrue(strpos($decision['payload'], 'd.directory.set=') === false,
-				'a symlink escape is removed before the request reaches rTorrent');
-		}
-		finally
-		{
-			@unlink($link);
-			@rmdir($root);
-			@rmdir($outside);
-			@rmdir($base);
-		}
-	}
+            $xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+                . '<param><value><string></string></value></param>'
+                . '<param><value><string>http://example.test/x.torrent</string></value></param>'
+                . '<param><value><string>d.directory.set=' . htmlspecialchars($escapedTail, ENT_NOQUOTES, 'UTF-8')
+                . '</string></value></param></params></methodCall>';
+            $decision = XMLRPCProxy::decide($xml, 'sanitize', ['d.directory.set'], false, [
+                'directory' => [
+                    'root' => $root,
+                    'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
+                ],
+            ]);
+            $this->assertTrue(
+                strpos($decision['payload'], 'd.directory.set=') === false,
+                'a symlink escape is removed before the request reaches rTorrent',
+            );
+        } finally {
+            @unlink($link);
+            @rmdir($root);
+            @rmdir($outside);
+            @rmdir($base);
+        }
+    }
 
-	public function testProcessDoesExactlyWhatItDidBefore()
-	{
-		foreach($this->cases as $name => $case)
-		{
-			$actual = $this->callProcess($case);
+    public function testProcessDoesExactlyWhatItDidBefore()
+    {
+        foreach ($this->cases as $name => $case) {
+            $actual = $this->callProcess($case);
 
-			$this->assertTrue($actual['returned'] === $case['returned'],
-				$name.' — returns the same thing');
-			$this->assertTrue($actual['sends'] === $case['sends'],
-				$name.' — sends the same number of times');
-			$this->assertTrue($actual['trusted'] === $case['trusted'],
-				$name.' — sends on the same trust');
-			$this->assertTrue($actual['payload'] === $case['payload'],
-				$name.' — sends the same bytes');
-			$this->assertTrue($actual['log'] === $case['log'],
-				$name.' — logs the same lines, in the same order');
-		}
-	}
+            $this->assertTrue(
+                $actual['returned'] === $case['returned'],
+                $name . ' — returns the same thing',
+            );
+            $this->assertTrue(
+                $actual['sends'] === $case['sends'],
+                $name . ' — sends the same number of times',
+            );
+            $this->assertTrue(
+                $actual['trusted'] === $case['trusted'],
+                $name . ' — sends on the same trust',
+            );
+            $this->assertTrue(
+                $actual['payload'] === $case['payload'],
+                $name . ' — sends the same bytes',
+            );
+            $this->assertTrue(
+                $actual['log'] === $case['log'],
+                $name . ' — logs the same lines, in the same order',
+            );
+        }
+    }
 
-	public function testDecideReachesTheSameDecisionProcessActsOn()
-	{
-		foreach($this->cases as $name => $case)
-		{
-			$decision = XMLRPCProxy::decide($case['request'], $case['mode'],
-				$case['safeParams'], $case['allowLocalPaths'], self::DAEMON_OPTIONS);
+    public function testDecideReachesTheSameDecisionProcessActsOn()
+    {
+        foreach ($this->cases as $name => $case) {
+            $decision = XMLRPCProxy::decide(
+                $case['request'],
+                $case['mode'],
+                $case['safeParams'],
+                $case['allowLocalPaths'],
+                self::DAEMON_OPTIONS,
+            );
 
-			$this->assertTrue($decision['action'] === (($case['sends'] === 1) ? 'send' : 'reject'),
-				$name.' — decides to send exactly when process() sent');
+            $this->assertTrue(
+                $decision['action'] === (($case['sends'] === 1) ? 'send' : 'reject'),
+                $name . ' — decides to send exactly when process() sent',
+            );
 
-			if($case['sends'] === 1)
-			{
-				$this->assertTrue($decision['payload'] === $case['payload'],
-					$name.' — decides on the same bytes');
-				$this->assertTrue($decision['trusted'] === $case['trusted'],
-					$name.' — decides on the same trust');
-			}
-			else
-			{
-				$this->assertTrue($decision['payload'] === '',
-					$name.' — a rejection carries no payload');
-				$this->assertTrue($decision['trusted'] === false,
-					$name.' — a rejection is never trusted');
-			}
-		}
-	}
+            if ($case['sends'] === 1) {
+                $this->assertTrue(
+                    $decision['payload'] === $case['payload'],
+                    $name . ' — decides on the same bytes',
+                );
+                $this->assertTrue(
+                    $decision['trusted'] === $case['trusted'],
+                    $name . ' — decides on the same trust',
+                );
+            } else {
+                $this->assertTrue(
+                    $decision['payload'] === '',
+                    $name . ' — a rejection carries no payload',
+                );
+                $this->assertTrue(
+                    $decision['trusted'] === false,
+                    $name . ' — a rejection is never trusted',
+                );
+            }
+        }
+    }
 
-	public function testDecideSendsNothingItself()
-	{
-		foreach($this->cases as $name => $case)
-		{
-			rXMLRPCRequest::$sent = 0;
-			FileUtil::$log = [];
+    public function testDecideSendsNothingItself()
+    {
+        foreach ($this->cases as $name => $case) {
+            rXMLRPCRequest::$sent = 0;
+            FileUtil::$log = [];
 
-			XMLRPCProxy::decide($case['request'], $case['mode'], $case['safeParams'],
-				$case['allowLocalPaths'], self::DAEMON_OPTIONS);
+            XMLRPCProxy::decide(
+                $case['request'],
+                $case['mode'],
+                $case['safeParams'],
+                $case['allowLocalPaths'],
+                self::DAEMON_OPTIONS,
+            );
 
-			$this->assertTrue(rXMLRPCRequest::$sent === 0,
-				$name.' — decide() reaches no socket');
-			$this->assertTrue(FileUtil::$log === [],
-				$name.' — decide() writes no log of its own');
-		}
-	}
+            $this->assertTrue(
+                rXMLRPCRequest::$sent === 0,
+                $name . ' — decide() reaches no socket',
+            );
+            $this->assertTrue(
+                FileUtil::$log === [],
+                $name . ' — decide() writes no log of its own',
+            );
+        }
+    }
 
-	public function testDecideReportsItsReasoningWhateverLoggingIsSetTo()
-	{
-		foreach($this->cases as $name => $case)
-		{
-			$decision = XMLRPCProxy::decide($case['request'], $case['mode'],
-				$case['safeParams'], $case['allowLocalPaths'], self::DAEMON_OPTIONS);
+    public function testDecideReportsItsReasoningWhateverLoggingIsSetTo()
+    {
+        foreach ($this->cases as $name => $case) {
+            $decision = XMLRPCProxy::decide(
+                $case['request'],
+                $case['mode'],
+                $case['safeParams'],
+                $case['allowLocalPaths'],
+                self::DAEMON_OPTIONS,
+            );
 
-			// A decision always reports its outer reason; a system.multicall
-			// can also report classified decisions of its members. The caller
-			// chooses whether to write those lines.
-			$this->assertTrue(count($decision['log']) >= 1,
-				$name.' — reports at least its outer reason');
+            // A decision always reports its outer reason; a system.multicall
+            // can also report classified decisions of its members. The caller
+            // chooses whether to write those lines.
+            $this->assertTrue(
+                count($decision['log']) >= 1,
+                $name . ' — reports at least its outer reason',
+            );
 
-			if($case['enableLog'])
-			{
-				$expected = [];
-				foreach($case['log'] as $line) {
-					$expected[] = substr($line, strlen('xmlrpc-proxy: ')); }
-				$this->assertTrue($decision['log'] === $expected,
-					$name.' — reports what process() logged, without the prefix');
-			}
-		}
-	}
+            if ($case['enableLog']) {
+                $expected = [];
+                foreach ($case['log'] as $line) {
+                    $expected[] = substr($line, strlen('xmlrpc-proxy: '));
+                }
+                $this->assertTrue(
+                    $decision['log'] === $expected,
+                    $name . ' — reports what process() logged, without the prefix',
+                );
+            }
+        }
+    }
 
-	/**
-	 * The reason for the split: an endpoint that only needs to filter a request
-	 * should not have to load ruTorrent to do it. Checked in a fresh process,
-	 * because in this one the mocks above are already defined and would hide a
-	 * dependency rather than reveal it.
-	 */
-	public function testDecideRunsWithNothingElseLoaded()
-	{
-		$proxy = realpath(__DIR__ . '/../../php/xmlrpc_proxy.php');
-		$this->assertTrue($proxy !== false, 'the proxy file is where the test expects it');
+    /**
+     * The reason for the split: an endpoint that only needs to filter a request
+     * should not have to load ruTorrent to do it. Checked in a fresh process,
+     * because in this one the mocks above are already defined and would hide a
+     * dependency rather than reveal it.
+     */
+    public function testDecideRunsWithNothingElseLoaded()
+    {
+        $proxy = realpath(__DIR__ . '/../../php/xmlrpc_proxy.php');
+        $this->assertTrue($proxy !== false, 'the proxy file is where the test expects it');
 
-		$script = 'require ' . var_export($proxy, true) . ';'
-			. '$d = XMLRPCProxy::decide("not xml at all", "sanitize", array());'
-			. 'echo $d["action"], "|", $d["trusted"] ? "trusted" : "untrusted", "|", $d["payload"];';
+        $script = 'require ' . var_export($proxy, true) . ';'
+            . '$d = XMLRPCProxy::decide("not xml at all", "sanitize", array());'
+            . 'echo $d["action"], "|", $d["trusted"] ? "trusted" : "untrusted", "|", $d["payload"];';
 
-		$result = SCGITransportFixture::runPhpChild(['-d', 'error_reporting=E_ALL',
-			'-d', 'display_errors=1', '-r', $script]);
-		$this->assertTrue($result['exitCode'] === 0,
-			'decide() runs with neither FileUtil nor rXMLRPCRequest defined: '
-			. $result['stderr']);
-		$this->assertEquals('', $result['stderr'], 'the dependency check emits no PHP diagnostics');
-		$this->assertTrue($result['stdout'] === 'reject|untrusted|',
-			'and reaches the same decision there');
-	}
+        $result = SCGITransportFixture::runPhpChild(['-d', 'error_reporting=E_ALL',
+            '-d', 'display_errors=1', '-r', $script]);
+        $this->assertTrue(
+            $result['exitCode'] === 0,
+            'decide() runs with neither FileUtil nor rXMLRPCRequest defined: '
+            . $result['stderr'],
+        );
+        $this->assertEquals('', $result['stderr'], 'the dependency check emits no PHP diagnostics');
+        $this->assertTrue(
+            $result['stdout'] === 'reject|untrusted|',
+            'and reaches the same decision there',
+        );
+    }
 
-	private function callProcess($case)
-	{
-		FileUtil::$log = [];
-		rXMLRPCRequest::$lastPayload = null;
-		rXMLRPCRequest::$lastTrusted = null;
-		rXMLRPCRequest::$sent = 0;
+    private function callProcess($case)
+    {
+        FileUtil::$log = [];
+        rXMLRPCRequest::$lastPayload = null;
+        rXMLRPCRequest::$lastTrusted = null;
+        rXMLRPCRequest::$sent = 0;
 
-		$returned = XMLRPCProxy::process($case['request'], $case['mode'],
-			$case['enableLog'], $case['safeParams'], $case['allowLocalPaths'],
-			self::DAEMON_OPTIONS);
+        $returned = XMLRPCProxy::process(
+            $case['request'],
+            $case['mode'],
+            $case['enableLog'],
+            $case['safeParams'],
+            $case['allowLocalPaths'],
+            self::DAEMON_OPTIONS,
+        );
 
-		return [
-			'returned' => $returned,
-			'sends'    => rXMLRPCRequest::$sent,
-			'trusted'  => rXMLRPCRequest::$lastTrusted,
-			'payload'  => rXMLRPCRequest::$lastPayload,
-			'log'      => FileUtil::$log,
-		];
-	}
+        return [
+            'returned' => $returned,
+            'sends' => rXMLRPCRequest::$sent,
+            'trusted' => rXMLRPCRequest::$lastTrusted,
+            'payload' => rXMLRPCRequest::$lastPayload,
+            'log' => FileUtil::$log,
+        ];
+    }
 }

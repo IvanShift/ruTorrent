@@ -1,4 +1,5 @@
 <?php
+
 /**
  * A filtered XMLRPC endpoint for rtorrent.
  *
@@ -34,34 +35,31 @@
  */
 
 // Not reachable except from the location block the operator wrote for it.
-if(!isset($_SERVER['RUTORRENT_XMLRPC_ENDPOINT']) ||
-	($_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] !== 'on'))
-{
-	header('HTTP/1.1 404 Not Found');
-	exit;
+if (!isset($_SERVER['RUTORRENT_XMLRPC_ENDPOINT'])
+    || ($_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] !== 'on')) {
+    header('HTTP/1.1 404 Not Found');
+    exit;
 }
 
-require_once __DIR__.'/php/environment.php';
-require_once(dirname(__FILE__).'/conf/config.php');
-require_once(dirname(__FILE__).'/php/xmlrpc_path.php');
-require_once(dirname(__FILE__).'/php/xmlrpc_proxy.php');
+require_once __DIR__ . '/php/environment.php';
+require_once(dirname(__FILE__) . '/conf/config.php');
+require_once(dirname(__FILE__) . '/php/xmlrpc_path.php');
+require_once(dirname(__FILE__) . '/php/xmlrpc_proxy.php');
 
-if(!require(dirname(__FILE__).'/php/xmlrpc_proxy_policy.php'))
-{
-	// Configuration failure must remain visible even if logging is off.
-	$logging = true;
-	rpc2_log('conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
-	rpc2_fault('503 Service Unavailable', 'XMLRPC proxy policy is not readable.');
+if (!require(dirname(__FILE__) . '/php/xmlrpc_proxy_policy.php')) {
+    // Configuration failure must remain visible even if logging is off.
+    $logging = true;
+    rpc2_log('conf/xmlrpc_proxy.php exists but is not readable; proxy disabled');
+    rpc2_fault('503 Service Unavailable', 'XMLRPC proxy policy is not readable.');
 }
 $policy = XMLRPCProxy::policySettings(get_defined_vars());
 $mode = $policy['mode'];
 $logging = $policy['log'];
-if($policy['policyError'] !== null)
-{
-	// Configuration errors stay visible even when routine decision logging is off.
-	$logging = true;
-	rpc2_log($policy['policyError']);
-	rpc2_fault('503 Service Unavailable', $policy['policyError']);
+if ($policy['policyError'] !== null) {
+    // Configuration errors stay visible even when routine decision logging is off.
+    $logging = true;
+    rpc2_log($policy['policyError']);
+    rpc2_fault('503 Service Unavailable', $policy['policyError']);
 }
 // An explicit empty list stays an override. A tree with no policy file at
 // all gets the shipped list, so this door and httprpc decide the same request.
@@ -83,21 +81,23 @@ $allowRootDirectory = $policy['allowRootDirectory'];
  */
 function rpc2_log($message, $force = false)
 {
-	global $logging, $log_file;
-	if(!$logging && !$force) {
-		return; }
-	$line = date('d.m.Y H:i:s').' rpc2: '.str_replace(["\r", "\n"], ' ', $message)."\n";
-	if(!empty($log_file) && (@file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX) !== false)) {
-		return; }
-	error_log('rpc2: '.$line);
+    global $logging, $log_file;
+    if (!$logging && !$force) {
+        return;
+    }
+    $line = date('d.m.Y H:i:s') . ' rpc2: ' . str_replace(["\r", "\n"], ' ', $message) . "\n";
+    if (!empty($log_file) && (@file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX) !== false)) {
+        return;
+    }
+    error_log('rpc2: ' . $line);
 }
 
 function rpc2_fault($status, $message)
 {
-	header('HTTP/1.1 '.$status);
-	header('Content-Type: text/xml');
-	echo XMLRPCProxy::faultXml($message);
-	exit;
+    header('HTTP/1.1 ' . $status);
+    header('Content-Type: text/xml');
+    echo XMLRPCProxy::faultXml($message);
+    exit;
 }
 
 /**
@@ -107,40 +107,46 @@ function rpc2_fault($status, $message)
  */
 function rpc2_send($payload, $trusted)
 {
-	require_once(dirname(__FILE__).'/php/scgitransport.php');
-	global $scgi_host, $rpcLogCalls;
-	if(!empty($rpcLogCalls)) {
-		rpc2_log('rpc-call request base64='.base64_encode($payload), true); }
-	$failure = null;
-	$result = rSCGITransport::sendConfigured($payload, $trusted,
-		['responseMode' => rSCGITransport::RESPONSE_BODY], $failure, $error);
-	if(!empty($rpcLogCalls)) {
-		rpc2_log($result === null ? 'rpc-call response: transport-failed'
-			: 'rpc-call response base64='.base64_encode($result), true); }
-	if($result === null) {
-		rpc2_log(($failure === 'connect-failed') ? 'cannot reach rtorrent at '.$scgi_host.': '.$error
-			: rSCGITransport::describeFailure($failure)); }
-	return $result;
+    require_once(dirname(__FILE__) . '/php/scgitransport.php');
+    global $scgi_host, $rpcLogCalls;
+    if (!empty($rpcLogCalls)) {
+        rpc2_log('rpc-call request base64=' . base64_encode($payload), true);
+    }
+    $failure = null;
+    $result = rSCGITransport::sendConfigured(
+        $payload,
+        $trusted,
+        ['responseMode' => rSCGITransport::RESPONSE_BODY],
+        $failure,
+        $error,
+    );
+    if (!empty($rpcLogCalls)) {
+        rpc2_log($result === null ? 'rpc-call response: transport-failed'
+            : 'rpc-call response base64=' . base64_encode($result), true);
+    }
+    if ($result === null) {
+        rpc2_log(($failure === 'connect-failed') ? 'cannot reach rtorrent at ' . $scgi_host . ': ' . $error
+            : rSCGITransport::describeFailure($failure));
+    }
+    return $result;
 }
 
-if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST'))
-{
-	header('HTTP/1.1 405 Method Not Allowed');
-	header('Allow: POST');
-	exit;
+if (!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST')) {
+    header('HTTP/1.1 405 Method Not Allowed');
+    header('Allow: POST');
+    exit;
 }
 
 // Browser forms can encode valid XML using text/plain name=value. Requiring
 // an XML media type forces cross-origin browser requests through CORS preflight.
 $contentType = isset($_SERVER['CONTENT_TYPE'])
-	? strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'], 2)[0])) : '';
-if(!in_array($contentType, ['text/xml', 'application/xml'], true))
-{
-	rpc2_log('refused POST: XML Content-Type required', true);
-	rpc2_fault('415 Unsupported Media Type', 'XML Content-Type required.');
+    ? strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'], 2)[0])) : '';
+if (!in_array($contentType, ['text/xml', 'application/xml'], true)) {
+    rpc2_log('refused POST: XML Content-Type required', true);
+    rpc2_fault('415 Unsupported Media Type', 'XML Content-Type required.');
 }
 
-require_once(dirname(__FILE__).'/php/utility/requests.php');
+require_once(dirname(__FILE__) . '/php/utility/requests.php');
 // This dedicated door preserves headerless raw XMLRPC clients, while browser
 // requests must pass the same Origin/Referer check as other mutation doors.
 $enableCSRFCheck = true;
@@ -153,69 +159,67 @@ Requests::makeCSRFCheck();
 // apply a check that confines nothing, refuse to serve until somebody has said
 // which it is.
 $topDirectory = isset($topDirectory) ? trim($topDirectory) : '';
-if((($topDirectory === '') || ($topDirectory === '/')) && !$allowRootDirectory)
-{
-	rpc2_log('refusing to serve: $topDirectory is "'.$topDirectory.'"'
-		.' and $XMLRPCProxyAllowRootDirectory is false');
-	rpc2_fault('503 Service Unavailable',
-		'This XMLRPC endpoint is not configured: set $topDirectory in conf/config.php '
-		.'to the directory downloads may be written under, or set '
-		.'$XMLRPCProxyAllowRootDirectory = true in conf/xmlrpc_proxy.php to allow any path.');
+if ((($topDirectory === '') || ($topDirectory === '/')) && !$allowRootDirectory) {
+    rpc2_log('refusing to serve: $topDirectory is "' . $topDirectory . '"'
+        . ' and $XMLRPCProxyAllowRootDirectory is false');
+    rpc2_fault(
+        '503 Service Unavailable',
+        'This XMLRPC endpoint is not configured: set $topDirectory in conf/config.php '
+        . 'to the directory downloads may be written under, or set '
+        . '$XMLRPCProxyAllowRootDirectory = true in conf/xmlrpc_proxy.php to allow any path.',
+    );
 }
 
 $raw = file_get_contents('php://input');
-if($raw === false)
-{
-	rpc2_log('could not read request body');
-	rpc2_fault('400 Bad Request', 'Could not read XMLRPC request.');
+if ($raw === false) {
+    rpc2_log('could not read request body');
+    rpc2_fault('400 Bad Request', 'Could not read XMLRPC request.');
 }
-if($raw === '')
-{
-	rpc2_log('empty request body');
-	rpc2_fault('400 Bad Request', 'Empty XMLRPC request.');
+if ($raw === '') {
+    rpc2_log('empty request body');
+    rpc2_fault('400 Bad Request', 'Empty XMLRPC request.');
 }
 
 $proxyOptions = ['directory' => [
-	'root'    => ($topDirectory === '') ? '/' : $topDirectory,
-	'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
+    'root' => ($topDirectory === '') ? '/' : $topDirectory,
+    'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
 ]];
-if($mode === 'sanitize')
-{
-	// rpc2 does not load ruTorrent settings. Pin the native command ceiling
-	// from the daemon itself before any caller-selected command is classified.
-	$probe = XMLRPCProxy::daemonVersionProbe();
-	$reply = rpc2_send($probe, false);
-	$version = XMLRPCProxy::daemonVersionFromReply($reply);
-	if($version === null)
-	{
-		// Name a release this proxy has not reviewed, so the operator sees why.
-		$why = XMLRPCProxy::daemonVersionRefusal($reply);
-		rpc2_log('refusing request: rTorrent version unavailable or unsupported'
-			.(($why === null) ? '' : ': '.$why), true);
-		rpc2_fault('503 Service Unavailable', 'Could not verify the rTorrent version.'
-			.(($why === null) ? '' : ' '.$why.'.'));
-	}
-	$proxyOptions['rtorrentVersion'] = $version;
+if ($mode === 'sanitize') {
+    // rpc2 does not load ruTorrent settings. Pin the native command ceiling
+    // from the daemon itself before any caller-selected command is classified.
+    $probe = XMLRPCProxy::daemonVersionProbe();
+    $reply = rpc2_send($probe, false);
+    $version = XMLRPCProxy::daemonVersionFromReply($reply);
+    if ($version === null) {
+        // Name a release this proxy has not reviewed, so the operator sees why.
+        $why = XMLRPCProxy::daemonVersionRefusal($reply);
+        rpc2_log('refusing request: rTorrent version unavailable or unsupported'
+            . (($why === null) ? '' : ': ' . $why), true);
+        rpc2_fault('503 Service Unavailable', 'Could not verify the rTorrent version.'
+            . (($why === null) ? '' : ' ' . $why . '.'));
+    }
+    $proxyOptions['rtorrentVersion'] = $version;
 }
 $decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, $proxyOptions);
-foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line) {
-	rpc2_log($line); }
+foreach (XMLRPCProxy::decisionLogLines($decision, $policy) as $line) {
+    rpc2_log($line);
+}
 
-if($decision['action'] !== 'send')
-{
-	// The filter refused this call; rtorrent never saw it. Name the command so
-	// the caller is told what it may not do, in the same words the httprpc door
-	// renders from XMLRPCProxy::rejectionFault() for the same refusal -- one
-	// refusal must not read as two different answers depending on which door
-	// took it.
-	$refused = isset($decision['method']) ? $decision['method'] : null;
-	rpc2_fault('403 Forbidden', XMLRPCProxy::rejectionMessage($refused));
+if ($decision['action'] !== 'send') {
+    // The filter refused this call; rtorrent never saw it. Name the command so
+    // the caller is told what it may not do, in the same words the httprpc door
+    // renders from XMLRPCProxy::rejectionFault() for the same refusal -- one
+    // refusal must not read as two different answers depending on which door
+    // took it.
+    $refused = isset($decision['method']) ? $decision['method'] : null;
+    rpc2_fault('403 Forbidden', XMLRPCProxy::rejectionMessage($refused));
 }
 
 $result = rpc2_send($decision['payload'], $decision['trusted']);
-if($result === null) {
-	rpc2_fault('502 Bad Gateway', 'Could not complete the rTorrent XMLRPC request.'); }
+if ($result === null) {
+    rpc2_fault('502 Bad Gateway', 'Could not complete the rTorrent XMLRPC request.');
+}
 
 header('Content-Type: text/xml');
-header('Content-Length: '.strlen($result));
+header('Content-Length: ' . strlen($result));
 echo $result;

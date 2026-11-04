@@ -11,7 +11,9 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 
 function legacyNoticeSession($root, $owner = 'KinozalTV', $cookie = 'private-session', $loaded = false)
 {
-    if (!is_dir($root . '/settings/accounts')) { mkdir($root . '/settings/accounts', 0700, true); }
+    if (!is_dir($root . '/settings/accounts')) {
+        mkdir($root . '/settings/accounts', 0700, true);
+    }
     $session = new privateData($owner);
     $session->cookies = ['sid' => $cookie];
     $session->loaded = $loaded;
@@ -66,9 +68,12 @@ $client = new Snoopy();
 $session = privateData::load($argv[2], $client);
 echo json_encode(array($session->loaded, $client->cookies));
 PHP;
-    $process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r',
-        $script, $root, $owner, realpath(__DIR__ . '/../../../plugins/loginmgr/accounts.php'), $action],
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    $process = proc_open(
+        [PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r',
+            $script, $root, $owner, realpath(__DIR__ . '/../../../plugins/loginmgr/accounts.php'), $action],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+    );
     testAssertTrue(is_resource($process), 'independent request process started');
     return [$process, $pipes];
 }
@@ -81,12 +86,17 @@ function legacyNoticeRelease(&$child)
 
 function legacyNoticeFinish($child, $expected = null)
 {
-    $stdout = stream_get_contents($child[1][1]); fclose($child[1][1]);
-    $stderr = stream_get_contents($child[1][2]); fclose($child[1][2]);
+    $stdout = stream_get_contents($child[1][1]);
+    fclose($child[1][1]);
+    $stderr = stream_get_contents($child[1][2]);
+    fclose($child[1][2]);
     testAssertSame(0, proc_close($child[0]), 'independent request completed: ' . $stdout . $stderr);
     testAssertSame('', $stderr, 'request has no PHP diagnostics');
-    testAssertSame($expected === null ? [false, []] : $expected, json_decode($stdout, true),
-        'a refused legacy cache cannot act as an authenticated session');
+    testAssertSame(
+        $expected === null ? [false, []] : $expected,
+        json_decode($stdout, true),
+        'a refused legacy cache cannot act as an authenticated session',
+    );
 }
 
 function legacyNoticeRequest($root, $owner = 'KinozalTV', $action = 'load')
@@ -120,22 +130,37 @@ $tests = [
         list($path, $bytes) = legacyNoticeSession($root);
         legacyNoticeRequest($root);
         legacyNoticeRequest($root);
-        testAssertSame(1, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'separate PHP requests share the warning throttle');
+        testAssertSame(
+            1,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'separate PHP requests share the warning throttle',
+        );
         testAssertSame($bytes, file_get_contents($path), 'warning never rewrites legacy session data');
-        testAssertSame(false, strpos(legacyNoticeLog($root), 'private-session') !== false,
-            'warning never logs a cookie value');
+        testAssertSame(
+            false,
+            strpos(legacyNoticeLog($root), 'private-session') !== false,
+            'warning never logs a cookie value',
+        );
     },
     'concurrent requests claim one legacy session explanation' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/concurrent';
         legacyNoticeSession($root);
         $children = [];
-        for ($i = 0; $i < 4; $i++) { $children[] = legacyNoticeStart($root); }
-        foreach ($children as &$child) { legacyNoticeRelease($child); }
+        for ($i = 0; $i < 4; $i++) {
+            $children[] = legacyNoticeStart($root);
+        }
+        foreach ($children as &$child) {
+            legacyNoticeRelease($child);
+        }
         unset($child);
-        foreach ($children as $child) { legacyNoticeFinish($child); }
-        testAssertSame(1, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'racing PHP requests leave one explanation');
+        foreach ($children as $child) {
+            legacyNoticeFinish($child);
+        }
+        testAssertSame(
+            1,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'racing PHP requests leave one explanation',
+        );
     },
     'changed sessions and different accounts or profiles keep their own guidance' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/generation';
@@ -145,26 +170,41 @@ $tests = [
         legacyNoticeRequest($root);
         legacyNoticeSession($root, 'RUTracker');
         legacyNoticeRequest($root, 'RUTracker');
-        testAssertSame(2, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'a different legacy session is explained immediately');
-        testAssertSame(1, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: RUTracker'),
-            'another account is not silenced');
+        testAssertSame(
+            2,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'a different legacy session is explained immediately',
+        );
+        testAssertSame(
+            1,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: RUTracker'),
+            'another account is not silenced',
+        );
         $otherRoot = $legacyNoticeRoot . '/other-profile';
         legacyNoticeSession($otherRoot);
         legacyNoticeRequest($otherRoot);
-        testAssertSame(1, substr_count(legacyNoticeLog($otherRoot), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'another profile is not silenced');
+        testAssertSame(
+            1,
+            substr_count(legacyNoticeLog($otherRoot), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'another profile is not silenced',
+        );
     },
     'an unresolved legacy session is explained again after the notice expires' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/expiry';
         legacyNoticeSession($root);
         legacyNoticeRequest($root);
         legacyNoticeRequest($root, 'KinozalTV', 'expire');
-        testAssertSame(2, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'persistent deduplication cannot hide repair guidance forever');
+        testAssertSame(
+            2,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'persistent deduplication cannot hide repair guidance forever',
+        );
         $noticeBytes = file_get_contents($root . '/settings/accounts/legacy-cookie-notices.dat');
-        testAssertSame(false, strpos($noticeBytes, 'private-session') !== false,
-            'the notice cache contains no cookie value');
+        testAssertSame(
+            false,
+            strpos($noticeBytes, 'private-session') !== false,
+            'the notice cache contains no cookie value',
+        );
     },
     'an older session request cannot make an already explained session noisy again' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/overlap';
@@ -174,8 +214,11 @@ $tests = [
         legacyNoticeRequest($root);
         file_put_contents($path, $firstBytes);
         legacyNoticeRequest($root);
-        testAssertSame(2, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
-            'overlapping legacy generations each retain their own warning interval');
+        testAssertSame(
+            2,
+            substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
+            'overlapping legacy generations each retain their own warning interval',
+        );
     },
     'a delayed cache claim cannot replace a newer notice from the next second' => function () {
         $cache = new rCache('/accounts');
@@ -186,7 +229,9 @@ $tests = [
         $older->notices[$key] = $newerAt - 1;
         foreach (['claimKey' => $key, 'claimed' => true] as $name => $value) {
             $property = new ReflectionProperty(legacyCookieNotices::class, $name);
-            if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
+            if (PHP_VERSION_ID < 80100) {
+                $property->setAccessible(true);
+            }
             $property->setValue($older, $value);
         }
         $newer = new legacyCookieNotices();
@@ -194,7 +239,9 @@ $tests = [
         testAssertSame(true, $cache->set($newer), 'next-second winner published');
         testAssertSame(true, $cache->set($older), 'older contender reconciled under the real cache lock');
         $claimed = new ReflectionProperty(legacyCookieNotices::class, 'claimed');
-        if (PHP_VERSION_ID < 80100) { $claimed->setAccessible(true); }
+        if (PHP_VERSION_ID < 80100) {
+            $claimed->setAccessible(true);
+        }
         testAssertSame(false, $claimed->getValue($older), 'older contender does not own another explanation');
         $saved = new legacyCookieNotices();
         testAssertSame(true, $cache->get($saved), 'winning notice remains readable');
@@ -206,10 +253,16 @@ $tests = [
         mkdir($root . '/settings/accounts/legacy-cookie-notices.dat.lock', 0700);
         legacyNoticeRequest($root);
         $log = legacyNoticeLog($root);
-        testAssertSame(true, strpos($log, 'legacy-cookie-notice-cache-unavailable: KinozalTV') !== false,
-            'a failed warning cache cannot silently suppress legacy-session repair guidance');
-        testAssertSame(true, strpos($log, 'Settings -> Accounts -> Save') !== false,
-            'the fallback retains the repair action');
+        testAssertSame(
+            true,
+            strpos($log, 'legacy-cookie-notice-cache-unavailable: KinozalTV') !== false,
+            'a failed warning cache cannot silently suppress legacy-session repair guidance',
+        );
+        testAssertSame(
+            true,
+            strpos($log, 'Settings -> Accounts -> Save') !== false,
+            'the fallback retains the repair action',
+        );
         testAssertSame($bytes, file_get_contents($path), 'failed notice write never rewrites session data');
     },
 ];
@@ -217,11 +270,16 @@ $tests = [
 try {
     $status = testRunCases($tests);
 } finally {
-    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($legacyNoticeRoot,
-        FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+        $legacyNoticeRoot,
+        FilesystemIterator::SKIP_DOTS,
+    ), RecursiveIteratorIterator::CHILD_FIRST);
     foreach ($files as $file) {
-        if ($file->isDir()) { rmdir($file->getPathname()); }
-        else { unlink($file->getPathname()); }
+        if ($file->isDir()) {
+            rmdir($file->getPathname());
+        } else {
+            unlink($file->getPathname());
+        }
     }
     rmdir($legacyNoticeRoot);
 }

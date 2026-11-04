@@ -81,7 +81,9 @@ class RuTrackerDetector
     public static function isTrackerRow($url, $hosts = null)
     {
         $host = UrlHost::of($url);
-        if ($host === null) { return false; }
+        if ($host === null) {
+            return false;
+        }
         return self::isTrackerHost($host, $hosts);
     }
 
@@ -116,7 +118,9 @@ class RuTrackerDetector
             $complete = false;
         }
         foreach (explode('#', $blob) as $chunk) {
-            if ($chunk === '') { continue; }
+            if ($chunk === '') {
+                continue;
+            }
             $fields = explode('|', $chunk);
             if (count($fields) !== 4 || !is_numeric($fields[1]) || !is_numeric($fields[2]) || !is_numeric($fields[3])) {
                 $complete = false;
@@ -160,9 +164,15 @@ class RuTrackerDetector
     public static function announceVerdict($rows, $jurisdiction, $authority)
     {
         $signal = self::announceSignal($rows, $jurisdiction, $authority);
-        if ($signal['enabled'] === 0) { return 'none'; }
-        if ($signal['alive']) { return 'alive'; }
-        if (!$signal['counted']) { return 'cold'; }
+        if ($signal['enabled'] === 0) {
+            return 'none';
+        }
+        if ($signal['alive']) {
+            return 'alive';
+        }
+        if (!$signal['counted']) {
+            return 'cold';
+        }
         return 'candidate';
     }
 
@@ -195,7 +205,9 @@ class RuTrackerDetector
         // announceSignal(). Both outgoing layers already gate on that same
         // test.
         $verdict = self::announceVerdict($rows, self::TRACKER_PATTERN, self::TRACKER_HOSTS);
-        if ($verdict !== 'candidate') { return $verdict; }
+        if ($verdict !== 'candidate') {
+            return $verdict;
+        }
 
         // Attribution, asked of every enabled row: could it have written
         // $dMessage on its own? isForeignRow() is the canonical answer, shared
@@ -206,7 +218,9 @@ class RuTrackerDetector
         $foreign = 0;
         foreach ((array) $rows as $row) {
             if (is_array($row) && !empty($row['enabled']) && self::isForeignRow($row)) {
-                $foreign++; } }
+                $foreign++;
+            }
+        }
         // d.message is download-global: it holds the most recent tracker event
         // of ANY row. Reading it as the RuTracker row's excuse is only sound
         // when no other enabled tracker could have written it -- otherwise a
@@ -218,7 +232,8 @@ class RuTrackerDetector
         if ($trackersComplete
             && self::messageSpeaksForTracker($foreign, $dMessage)
             && self::isTransportFailure($dMessage)) {
-            return 'transport'; }
+            return 'transport';
+        }
         return 'candidate';
     }
 
@@ -238,13 +253,21 @@ class RuTrackerDetector
      */
     public static function isTransportFailure($message)
     {
-        if (!is_string($message) || trim($message) === '') { return false; }
+        if (!is_string($message) || trim($message) === '') {
+            return false;
+        }
         $body = trim($message);
         // The wrapper is written once around the whole join, not per part.
-        if (preg_match('/^Tracker:\s*\[(.*)\]$/is', $body, $m)) { $body = $m[1]; }
+        if (preg_match('/^Tracker:\s*\[(.*)\]$/is', $body, $m)) {
+            $body = $m[1];
+        }
         foreach (preg_split('~\s*///\s*~', $body) as $part) {
-            if (trim($part) === '') { continue; }
-            if (!preg_match(self::TRANSPORT_PATTERN, $part)) { return false; }
+            if (trim($part) === '') {
+                continue;
+            }
+            if (!preg_match(self::TRANSPORT_PATTERN, $part)) {
+                return false;
+            }
         }
         return true;
     }
@@ -308,8 +331,12 @@ class RuTrackerDetector
      */
     public static function isForeignRow($row)
     {
-        if (!is_array($row)) { return true; }
-        if (empty($row['enabled'])) { return false; }
+        if (!is_array($row)) {
+            return true;
+        }
+        if (empty($row['enabled'])) {
+            return false;
+        }
         return !self::isTrackerRow($row['url'] ?? '');
     }
 
@@ -324,7 +351,8 @@ class RuTrackerDetector
             $total = (int) ($stat['total'] ?? 0);
             $candidates = (int) ($stat['candidates'] ?? 0);
             if ($total > 0 && $candidates >= max((int) $floor, (int) ceil($share * $total))) {
-                $tripped[] = $host; }
+                $tripped[] = $host;
+            }
         }
         return $tripped;
     }
@@ -356,16 +384,24 @@ class RuTrackerDetector
         $alive = false;
         $counted = false;
         foreach ((array) $rows as $row) {
-            if (!is_array($row) || empty($row['enabled'])) { continue; }
+            if (!is_array($row) || empty($row['enabled'])) {
+                continue;
+            }
             $url = (string) ($row['url'] ?? '');
-            if (!preg_match($jurisdiction, $url)) { continue; }
+            if (!preg_match($jurisdiction, $url)) {
+                continue;
+            }
             $enabled++;
 
             $failed = (int) ($row['failed'] ?? 0);
             $success = (int) ($row['success'] ?? 0);
-            if ($failed === 0 && $success === 0) { continue; }   // no signal from this row yet
+            if ($failed === 0 && $success === 0) {
+                continue;
+            }   // no signal from this row yet
             $counted = true;
-            if ($failed === 0 && self::isTrackerRow($url, $authority)) { $alive = true; }
+            if ($failed === 0 && self::isTrackerRow($url, $authority)) {
+                $alive = true;
+            }
         }
         return ['enabled' => $enabled, 'alive' => $alive, 'counted' => $counted];
     }

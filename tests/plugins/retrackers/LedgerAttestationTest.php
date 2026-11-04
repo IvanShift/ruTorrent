@@ -1,4 +1,5 @@
 <?php
+
 require_once(__DIR__ . '/RetrackersTestStubs.php');
 define('RETRACKERS_IMPORT_ONLY', true);
 define('RETRACKERS_PREFLIGHT_TIMEOUT', 0.02);
@@ -12,10 +13,14 @@ class LedgerAttestationTest extends TestCase
         $adapter = new LedgerAttestationAdapter();
         $failure = null;
         $result = $adapter->attestLedger($failure);
-        $this->assertTrue($result instanceof RetrackersHistoricalLedgerAttestation && $failure === null,
-            'a private writable ledger completes both probe reuse cycles');
-        $this->assertTrue($adapter->observerStatuses === ['valid', 'valid', 'valid'] && $adapter->mutationCalls === 1,
-            'a concurrent initializer never observes a temporary probe without an epoch between daemon calls');
+        $this->assertTrue(
+            $result instanceof RetrackersHistoricalLedgerAttestation && $failure === null,
+            'a private writable ledger completes both probe reuse cycles',
+        );
+        $this->assertTrue(
+            $adapter->observerStatuses === ['valid', 'valid', 'valid'] && $adapter->mutationCalls === 1,
+            'a concurrent initializer never observes a temporary probe without an epoch between daemon calls',
+        );
     }
 
     public function testUncertainProbeReplyNeverReplaysOrClaimsCorruption()
@@ -24,9 +29,11 @@ class LedgerAttestationTest extends TestCase
             $adapter = new LedgerAttestationAdapter();
             $adapter->reply = $reply;
             $failure = null;
-            $this->assertTrue($adapter->attestLedger($failure) === false &&
-                $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->mutationCalls === 1,
-                'lost, opaque and fault replies refuse attestation without mutation replay or an invented corruption verdict');
+            $this->assertTrue(
+                $adapter->attestLedger($failure) === false
+                && $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->mutationCalls === 1,
+                'lost, opaque and fault replies refuse attestation without mutation replay or an invented corruption verdict',
+            );
         }
     }
 
@@ -36,9 +43,11 @@ class LedgerAttestationTest extends TestCase
             $adapter = new LedgerAttestationAdapter();
             $adapter->reply = $reply;
             $failure = null;
-            $this->assertTrue($adapter->attestLedger($failure) === false &&
-                $failure === 'receipt-ledger-corrupt' && $adapter->mutationCalls === 1,
-                'an existing nonce or failed insert/delete proof refuses writer trust without another attempt');
+            $this->assertTrue(
+                $adapter->attestLedger($failure) === false
+                && $failure === 'receipt-ledger-corrupt' && $adapter->mutationCalls === 1,
+                'an existing nonce or failed insert/delete proof refuses writer trust without another attempt',
+            );
         }
     }
 
@@ -47,9 +56,11 @@ class LedgerAttestationTest extends TestCase
         $adapter = new LedgerAttestationAdapter();
         $adapter->safe = false;
         $failure = null;
-        $this->assertTrue($adapter->attestLedger($failure) === false &&
-            $failure === 'receipt-ledger-corrupt' && $adapter->privacyCalls === 0 && $adapter->mutationCalls === 0,
-            'coherent key/value validation remains ahead of private-method invocation and all probe writes');
+        $this->assertTrue(
+            $adapter->attestLedger($failure) === false
+            && $failure === 'receipt-ledger-corrupt' && $adapter->privacyCalls === 0 && $adapter->mutationCalls === 0,
+            'coherent key/value validation remains ahead of private-method invocation and all probe writes',
+        );
     }
 
     public function testLedgerReadOutageIsUnconfirmedNotCorrupt()
@@ -57,19 +68,25 @@ class LedgerAttestationTest extends TestCase
         $adapter = new LedgerAttestationAdapter();
         $adapter->ledgerFailures = 2;
         $failure = null;
-        $this->assertTrue($adapter->attestLedger($failure) instanceof RetrackersHistoricalLedgerAttestation &&
-            $adapter->ledgerReads === 3 && $adapter->mutationCalls === 1,
-            'a transient ledger read outage is retried before the single probe');
+        $this->assertTrue(
+            $adapter->attestLedger($failure) instanceof RetrackersHistoricalLedgerAttestation
+            && $adapter->ledgerReads === 3 && $adapter->mutationCalls === 1,
+            'a transient ledger read outage is retried before the single probe',
+        );
         $adapter = new LedgerAttestationAdapter();
         $adapter->ledgerFailures = PHP_INT_MAX;
-        $this->assertTrue($adapter->attestLedger($failure) === false &&
-            $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->privacyCalls === 0 &&
-            $adapter->mutationCalls === 0,
-            'an unanswered ledger read refuses without a corruption verdict, privacy call or probe');
+        $this->assertTrue(
+            $adapter->attestLedger($failure) === false
+            && $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->privacyCalls === 0
+            && $adapter->mutationCalls === 0,
+            'an unanswered ledger read refuses without a corruption verdict, privacy call or probe',
+        );
         $message = retrackersLifecycleDiagnosticMessage('init', $failure);
-        $this->assertTrue(strpos($message, 'recheck after SCGI recovers') !== false &&
-            strpos($message, 'retrackers is disabled') === false,
-            'the init log names an SCGI outage instead of a disabled plugin');
+        $this->assertTrue(
+            strpos($message, 'recheck after SCGI recovers') !== false
+            && strpos($message, 'retrackers is disabled') === false,
+            'the init log names an SCGI outage instead of a disabled plugin',
+        );
     }
 
     public function testPrivacyProbeOutageIsUnconfirmedButAPublicLedgerIsCorrupt()
@@ -77,15 +94,19 @@ class LedgerAttestationTest extends TestCase
         $adapter = new LedgerAttestationAdapter();
         $adapter->privacyFailures = PHP_INT_MAX;
         $failure = null;
-        $this->assertTrue($adapter->attestLedger($failure) === false &&
-            $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->privacyCalls > 1 &&
-            $adapter->mutationCalls === 0,
-            'an unanswered privacy probe is retried and then refused as unconfirmed, without the probe');
+        $this->assertTrue(
+            $adapter->attestLedger($failure) === false
+            && $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->privacyCalls > 1
+            && $adapter->mutationCalls === 0,
+            'an unanswered privacy probe is retried and then refused as unconfirmed, without the probe',
+        );
         $adapter = new LedgerAttestationAdapter();
         $adapter->publicLedger = true;
-        $this->assertTrue($adapter->attestLedger($failure) === false &&
-            $failure === 'receipt-ledger-corrupt' && $adapter->privacyCalls === 1 && $adapter->mutationCalls === 0,
-            'a ledger whose value answers a direct call is a wrong answer and keeps its corruption verdict');
+        $this->assertTrue(
+            $adapter->attestLedger($failure) === false
+            && $failure === 'receipt-ledger-corrupt' && $adapter->privacyCalls === 1 && $adapter->mutationCalls === 0,
+            'a ledger whose value answers a direct call is a wrong answer and keeps its corruption verdict',
+        );
     }
 
     public function testV1CleanTransactionReadOutageIsUnconfirmedNotCorrupt()
@@ -94,17 +115,21 @@ class LedgerAttestationTest extends TestCase
         $adapter = new LedgerAttestationAdapter();
         $adapter->ledgerFailures = 1;
         $failure = null;
-        $this->assertTrue(RetrackersRecoveryCoordinator::generateCleanTx($adapter, $failure) === false &&
-            $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->ledgerReads === 1,
-            'an unanswered ledger read is unconfirmed, not a corrupt ledger, and is read once');
+        $this->assertTrue(
+            RetrackersRecoveryCoordinator::generateCleanTx($adapter, $failure) === false
+            && $failure === 'receipt-ledger-attestation-unconfirmed' && $adapter->ledgerReads === 1,
+            'an unanswered ledger read is unconfirmed, not a corrupt ledger, and is read once',
+        );
         $adapter = new LedgerAttestationAdapter();
         $adapter->safe = false;
-        $this->assertTrue(RetrackersRecoveryCoordinator::generateCleanTx($adapter, $failure) === false &&
-            $failure === 'receipt-ledger-corrupt', 'a wrong ledger answer keeps its corruption verdict');
+        $this->assertTrue(RetrackersRecoveryCoordinator::generateCleanTx($adapter, $failure) === false
+            && $failure === 'receipt-ledger-corrupt', 'a wrong ledger answer keeps its corruption verdict');
         $adapter = new LedgerAttestationAdapter();
         $tx = RetrackersRecoveryCoordinator::generateCleanTx($adapter, $failure);
-        $this->assertTrue(is_string($tx) && preg_match('/^[0-9a-f]{32}$/D', $tx) === 1 && $failure === null,
-            'a readable ledger yields a fresh transaction');
+        $this->assertTrue(
+            is_string($tx) && preg_match('/^[0-9a-f]{32}$/D', $tx) === 1 && $failure === null,
+            'a readable ledger yields a fresh transaction',
+        );
     }
 
     public function testNakedEraseBeginReceiptStillRequiresAnEpoch()
@@ -112,9 +137,11 @@ class LedgerAttestationTest extends TestCase
         // Minimized from the synthetic 405-torrent capture in local scale-init03-diagnostic:
         // PID198 sampled PID232's eb nonce before bootstrap pv, then sampled an empty ledger.
         $classifier = new RetrackersHistoricalBindingClassifier();
-        $this->assertTrue($classifier->classify(LedgerAttestationAdapter::sample(true), '')['status'] === 'ledger-corrupt' &&
-            $classifier->classify(LedgerAttestationAdapter::sample(false), '')['status'] === 'valid',
-            'atomic attestation does not whitelist a real erase-begin receipt in a ledger with no epoch');
+        $this->assertTrue(
+            $classifier->classify(LedgerAttestationAdapter::sample(true), '')['status'] === 'ledger-corrupt'
+            && $classifier->classify(LedgerAttestationAdapter::sample(false), '')['status'] === 'valid',
+            'atomic attestation does not whitelist a real erase-begin receipt in a ledger with no epoch',
+        );
     }
 }
 
@@ -130,7 +157,10 @@ class LedgerAttestationAdapter extends RetrackersLifecycleRpcAdapter
     public $publicLedger = false;
     public $reply = '1010ACQUIRED';
     private $published = false;
-    public function __construct() { $this->family = 2; }
+    public function __construct()
+    {
+        $this->family = 2;
+    }
     public static function sample($published)
     {
         $value = array_fill_keys(['digest', 'event_key_digest', 'event_map_digest',
@@ -147,23 +177,37 @@ class LedgerAttestationAdapter extends RetrackersLifecycleRpcAdapter
         $failure = null;
         if (strpos($payload, '<methodName>system.multicall</methodName>') !== false) {
             $this->ledgerReads++;
-            if ($this->ledgerFailures-- > 0) { $failure = 'connect-failed'; return false; }
+            if ($this->ledgerFailures-- > 0) {
+                $failure = 'connect-failed';
+                return false;
+            }
             // The real decoder rejects an unsafe ledger value as a malformed answer.
-            if (!$this->safe) { $failure = 'malformed-response'; return false; }
+            if (!$this->safe) {
+                $failure = 'malformed-response';
+                return false;
+            }
             $value = ['ok' => true, 'family' => 2, 'value' => [['value' => []], ['value' => []]]];
         } elseif (strpos($payload, '<methodName>rr.receipts.v1</methodName>') !== false) {
             $this->privacyCalls++;
-            if ($this->privacyFailures-- > 0) { $failure = 'read-timeout'; return false; }
-            $value = $this->publicLedger ? ['ok' => true, 'family' => 2, 'value' => '0'] :
-                ['ok' => false, 'family' => 2, 'fault' => ['code' => '-506', 'code_type' => 'i8', 'message' => 'Method is private.']];
+            if ($this->privacyFailures-- > 0) {
+                $failure = 'read-timeout';
+                return false;
+            }
+            $value = $this->publicLedger ? ['ok' => true, 'family' => 2, 'value' => '0']
+                : ['ok' => false, 'family' => 2, 'fault' => ['code' => '-506', 'code_type' => 'i8', 'message' => 'Method is private.']];
         } elseif (strpos($payload, '<methodName>branch</methodName>') !== false) {
             // One synchronous daemon callback is one observer boundary. Its command
             // grammar and nonce collision are also exercised against the real daemon.
             $this->mutationCalls++;
             $value = $this->reply;
-        } else { throw new RuntimeException('unexpected ledger attestation RPC'); }
+        } else {
+            throw new RuntimeException('unexpected ledger attestation RPC');
+        }
         $this->observerStatuses[] = (new RetrackersHistoricalBindingClassifier())->classify(self::sample($this->published), '')['status'];
-        if ($value === false) { $failure = 'closed-before-headers'; return false; }
+        if ($value === false) {
+            $failure = 'closed-before-headers';
+            return false;
+        }
         return is_array($value) ? $value : ['ok' => true, 'family' => 2, 'value' => $value];
     }
 }

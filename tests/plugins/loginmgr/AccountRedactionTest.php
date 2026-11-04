@@ -9,11 +9,16 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 
 register_shutdown_function(function () use ($redactionTestRoot) {
-    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($redactionTestRoot,
-        FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+        $redactionTestRoot,
+        FilesystemIterator::SKIP_DOTS,
+    ), RecursiveIteratorIterator::CHILD_FIRST);
     foreach ($files as $file) {
-        if ($file->isDir()) { rmdir($file->getPathname()); }
-        else { unlink($file->getPathname()); }
+        if ($file->isDir()) {
+            rmdir($file->getPathname());
+        } else {
+            unlink($file->getPathname());
+        }
     }
     rmdir($redactionTestRoot);
 });
@@ -22,8 +27,14 @@ class RedactionAccountManager extends accountManager
 {
     public $storeResult = true;
     public $handlerCalls = 0;
-    public function store() { return $this->storeResult; }
-    public function setHandlers() { $this->handlerCalls++; }
+    public function store()
+    {
+        return $this->storeResult;
+    }
+    public function setHandlers()
+    {
+        $this->handlerCalls++;
+    }
 }
 
 function redactionManager($password = 'saved-private-password')
@@ -77,8 +88,10 @@ PHP;
             2 => ['pipe', 'w']], $pipes, dirname($action));
         testAssertTrue(is_resource($process), 'action child started');
         fclose($pipes[0]);
-        $body = stream_get_contents($pipes[1]); fclose($pipes[1]);
-        $diagnostics = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $body = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $diagnostics = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
         testAssertSame(0, proc_close($process), 'action child completed');
         testAssertSame('500', file_get_contents($root . '/status'), 'failed save returns HTTP 500');
         testAssertSame(false, strpos($body, 'saved-private-password') !== false, 'response hides saved password');

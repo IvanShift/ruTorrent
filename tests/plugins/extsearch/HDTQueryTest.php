@@ -41,8 +41,11 @@ $suite->test('HDTorrents movie and TV categories remain separate query values', 
     foreach ($cases as $case) {
         $parameters = hdtRequest(new HDTorrentsEngine(), $case[0], $case[1]);
         strictAssertSame('1', $parameters['active'] ?? null, $case[0] . ' changes active');
-        strictAssertSame($case[2], $parameters['category'] ?? null,
-            $case[0] . ' does not send each selected category');
+        strictAssertSame(
+            $case[2],
+            $parameters['category'] ?? null,
+            $case[0] . ' does not send each selected category',
+        );
     }
 });
 
@@ -55,8 +58,11 @@ $suite->test('HDTorrents global all does not change the active filter', function
 $suite->test('HDTs XXX 1080p category has a query separator', function () {
     $parameters = hdtRequest(new HDTsEngine(), 'XXX/1080p/i', false);
     strictAssertSame('1', $parameters['active'] ?? null, 'category appended to active=1');
-    strictAssertSame(['48'], $parameters['category'] ?? null,
-        'XXX/1080p/i does not send category 48');
+    strictAssertSame(
+        ['48'],
+        $parameters['category'] ?? null,
+        'XXX/1080p/i does not send category 48',
+    );
 });
 
 $suite->test('every HDT category choice keeps a well-formed query', function () {
@@ -70,11 +76,16 @@ $suite->test('every HDT category choice keeps a well-formed query', function () 
         foreach ($choices as $choice) {
             foreach ($choice[0] as $label) {
                 $parameters = hdtRequest(new $type(), $label, $choice[1]);
-                strictAssertSame('1', $parameters['active'] ?? null,
-                    $type . ' ' . $label . ' changes active');
+                strictAssertSame(
+                    '1',
+                    $parameters['active'] ?? null,
+                    $type . ' ' . $label . ' changes active',
+                );
                 foreach ($parameters['category'] ?? [] as $value) {
-                    strictAssertTrue(ctype_digit($value),
-                        $type . ' ' . $label . ' sends a malformed category: ' . $value);
+                    strictAssertTrue(
+                        ctype_digit($value),
+                        $type . ' ' . $label . ' sends a malformed category: ' . $value,
+                    );
                 }
             }
         }

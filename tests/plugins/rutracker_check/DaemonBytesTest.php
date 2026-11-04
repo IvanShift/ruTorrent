@@ -23,16 +23,24 @@ const DB_SPECIAL = 'aud "q" \\b \'a\' &c';
 
 function dbBencode($value)
 {
-    if (is_int($value)) { return 'i' . $value . 'e'; }
-    if (is_string($value)) { return strlen($value) . ':' . $value; }
+    if (is_int($value)) {
+        return 'i' . $value . 'e';
+    }
+    if (is_string($value)) {
+        return strlen($value) . ':' . $value;
+    }
     if (count($value) && array_keys($value) === range(0, count($value) - 1)) {
         $out = 'l';
-        foreach ($value as $item) { $out .= dbBencode($item); }
+        foreach ($value as $item) {
+            $out .= dbBencode($item);
+        }
         return $out . 'e';
     }
     ksort($value, SORT_STRING);
     $out = 'd';
-    foreach ($value as $key => $item) { $out .= dbBencode((string) $key) . dbBencode($item); }
+    foreach ($value as $key => $item) {
+        $out .= dbBencode((string) $key) . dbBencode($item);
+    }
     return $out . 'e';
 }
 
@@ -40,7 +48,9 @@ function dbBencode($value)
 function dbMultiTorrent($name, $files)
 {
     $list = [];
-    foreach ($files as $file) { $list[] = ['length' => 1, 'path' => [$file]]; }
+    foreach ($files as $file) {
+        $list[] = ['length' => 1, 'path' => [$file]];
+    }
     $info = ['files' => $list, 'name' => $name, 'piece length' => 16384,
         'pieces' => str_repeat("\0", 20)];
     return ['bytes' => dbBencode(['announce' => 'https://bt.t-ru.org/ann', 'info' => $info]),
@@ -61,14 +71,20 @@ final class DaemonBytesScene
     {
         $this->base = sys_get_temp_dir() . '/rut-bytes-' . bin2hex(random_bytes(4));
         if (!mkdir($this->base, 0700, true)) {
-            throw new RuntimeException('cannot create ' . $this->base); }
+            throw new RuntimeException('cannot create ' . $this->base);
+        }
         $this->downloads = $this->base . '/dl ' . DB_SPECIAL;
         $this->root = $this->downloads . '/' . DB_SPECIAL;
         $this->session = $this->base . '/' . $sessionName . '/';
         mkdir($this->root, 0777, true);
         mkdir($this->session, 0777, true);
-        $this->mini = new MiniRtorrent($this->base . '/daemon-state.json', $this->base,
-            $this->session, $this->downloads, $legacy);
+        $this->mini = new MiniRtorrent(
+            $this->base . '/daemon-state.json',
+            $this->base,
+            $this->session,
+            $this->downloads,
+            $legacy,
+        );
         $this->driver = new RutrackerRealStackDriver($this->base);
     }
 
@@ -132,7 +148,10 @@ function dbWithScene($callback, $sessionName = 'session')
 function dbLoadFor($state, $hash)
 {
     foreach ($state['loads'] as $load) {
-        if ($load['hash'] === $hash) { return $load; } }
+        if ($load['hash'] === $hash) {
+            return $load;
+        }
+    }
     throw new RuntimeException('no load of ' . $hash);
 }
 
@@ -159,20 +178,27 @@ function dbJsLiterals($fragment)
         $value = '';
         for ($i++; ; $i++) {
             if ($i >= $n || $fragment[$i] === "\n" || $fragment[$i] === "\r") {
-                return 'unterminated string literal'; }
+                return 'unterminated string literal';
+            }
             $c = $fragment[$i];
-            if ($c === $quote) { break; }
+            if ($c === $quote) {
+                break;
+            }
             if ($c !== '\\') {
                 $value .= $c;
                 continue;
             }
             $e = $fragment[++$i] ?? '';
             if ($e === 'x') {
-                if (!preg_match('/\G[0-9A-Fa-f]{2}/', $fragment, $m, 0, $i + 1)) { return 'invalid hexadecimal escape'; }
+                if (!preg_match('/\G[0-9A-Fa-f]{2}/', $fragment, $m, 0, $i + 1)) {
+                    return 'invalid hexadecimal escape';
+                }
                 $value .= json_decode('"\\u00' . $m[0] . '"');
                 $i += 2;
             } elseif ($e === 'u') {
-                if (!preg_match('/\G[0-9A-Fa-f]{4}/', $fragment, $m, 0, $i + 1)) { return 'invalid Unicode escape'; }
+                if (!preg_match('/\G[0-9A-Fa-f]{4}/', $fragment, $m, 0, $i + 1)) {
+                    return 'invalid Unicode escape';
+                }
                 $value .= json_decode('"\\u' . $m[0] . '"');
                 $i += 4;
             } elseif (isset($simple[$e])) {
@@ -197,7 +223,8 @@ function dbCrossSeedReplacement($shared)
         $new = dbMultiTorrent(DB_SPECIAL, ['a.mkv', 'gen1.nfo']);
         $cross = dbMultiTorrent(DB_SPECIAL, ['a.mkv', $shared]);
         foreach (['a.mkv', $shared, 'old.nfo'] as $file) {
-            file_put_contents($scene->root . '/' . $file, $file); }
+            file_put_contents($scene->root . '/' . $file, $file);
+        }
         $scene->seedPredecessor($old);
         file_put_contents($scene->session . $cross['hash'] . '.torrent', $cross['bytes']);
         $scene->mini->addDownload($cross['hash'], ['name' => DB_SPECIAL,
@@ -210,9 +237,13 @@ function dbCrossSeedReplacement($shared)
             return $call['name'] === 'erasedataPrepareObsoleteCleanup';
         }));
         strictAssertSame(1, count($prepared), 'one cleanup job is prepared');
-        strictAssertSame([realpath($scene->root) . '/old.nfo'],
-            array_map(function ($entry) { return $entry['path']; }, $prepared[0]['arguments'][5]),
-            'the cross-seed\'s file ' . $shared . ' is claimed and stays out of the job');
+        strictAssertSame(
+            [realpath($scene->root) . '/old.nfo'],
+            array_map(function ($entry) {
+                return $entry['path'];
+            }, $prepared[0]['arguments'][5]),
+            'the cross-seed\'s file ' . $shared . ' is claimed and stays out of the job',
+        );
     });
 }
 
@@ -236,14 +267,26 @@ $suite->test('aud "q" \\b \'a\' &c: the successor is loaded into the predecessor
         strictAssertSame(['result' => null], $answer, 'the replacement commits');
         $state = $scene->state();
         strictAssertTrue(!isset($state['downloads'][$old['hash']]), 'the predecessor is erased');
-        strictAssertSame($scene->root, $state['downloads'][$new['hash']]['directory_base'],
-            'the daemon stores the predecessor\'s own directory bytes for the successor');
-        strictAssertSame([['mkdir', '-p', $scene->root]], $state['executed'],
-            'mkdir -p is handed the same directory, not an escaped spelling of it');
-        strictAssertSame(null, dbLoadFor($state, $new['hash'])['aborted'],
-            'no load command was refused');
-        strictAssertSame([DB_SPECIAL], array_values(array_diff(scandir($scene->downloads), ['.', '..'])),
-            'no second directory was created beside the payload');
+        strictAssertSame(
+            $scene->root,
+            $state['downloads'][$new['hash']]['directory_base'],
+            'the daemon stores the predecessor\'s own directory bytes for the successor',
+        );
+        strictAssertSame(
+            [['mkdir', '-p', $scene->root]],
+            $state['executed'],
+            'mkdir -p is handed the same directory, not an escaped spelling of it',
+        );
+        strictAssertSame(
+            null,
+            dbLoadFor($state, $new['hash'])['aborted'],
+            'no load command was refused',
+        );
+        strictAssertSame(
+            [DB_SPECIAL],
+            array_values(array_diff(scandir($scene->downloads), ['.', '..'])),
+            'no second directory was created beside the payload',
+        );
     });
 });
 
@@ -266,11 +309,18 @@ $suite->test('aud "q" \\b \'a\' &c: the obsolete-file job is built in the predec
             return $call['name'] === 'erasedataPrepareObsoleteCleanup';
         }));
         strictAssertSame(1, count($prepared), 'one cleanup job is prepared');
-        strictAssertSame(realpath($scene->root), $prepared[0]['arguments'][4],
-            'the job base is the real directory the payload is in');
-        strictAssertSame([realpath($scene->root) . '/old.nfo'],
-            array_map(function ($entry) { return $entry['path']; }, $prepared[0]['arguments'][5]),
-            'exactly the obsolete file is owned, by its real path');
+        strictAssertSame(
+            realpath($scene->root),
+            $prepared[0]['arguments'][4],
+            'the job base is the real directory the payload is in',
+        );
+        strictAssertSame(
+            [realpath($scene->root) . '/old.nfo'],
+            array_map(function ($entry) {
+                return $entry['path'];
+            }, $prepared[0]['arguments'][5]),
+            'exactly the obsolete file is owned, by its real path',
+        );
         strictAssertTrue(is_file($scene->root . '/a.mkv'), 'the shared file is untouched');
     });
 });
@@ -282,7 +332,8 @@ $suite->test('aud "q" \\b \'a\' &c: three successive replacements keep one direc
     dbWithScene(function ($scene) {
         $generations = [dbMultiTorrent(DB_SPECIAL, ['a.mkv', 'gen0.nfo'])];
         for ($i = 1; $i <= 3; $i++) {
-            $generations[] = dbMultiTorrent(DB_SPECIAL, ['a.mkv', 'gen' . $i . '.nfo']); }
+            $generations[] = dbMultiTorrent(DB_SPECIAL, ['a.mkv', 'gen' . $i . '.nfo']);
+        }
         file_put_contents($scene->root . '/a.mkv', 'a');
         file_put_contents($scene->root . '/gen0.nfo', '0');
         $scene->seedPredecessor($generations[0]);
@@ -290,19 +341,32 @@ $suite->test('aud "q" \\b \'a\' &c: three successive replacements keep one direc
 
         for ($i = 1; $i <= 3; $i++) {
             file_put_contents($scene->root . '/gen' . $i . '.nfo', (string) $i);
-            strictAssertSame(['result' => null],
+            strictAssertSame(
+                ['result' => null],
                 $scene->replace($generations[$i], $generations[$i - 1]['hash']),
-                'generation ' . $i . ' commits');
+                'generation ' . $i . ' commits',
+            );
             $state = $scene->state();
-            strictAssertSame([$generations[$i]['hash']], array_keys($state['downloads']),
-                'only generation ' . $i . ' is left in the session');
-            strictAssertSame($scene->root, $state['downloads'][$generations[$i]['hash']]['directory_base'],
-                'generation ' . $i . ' keeps the original directory bytes');
+            strictAssertSame(
+                [$generations[$i]['hash']],
+                array_keys($state['downloads']),
+                'only generation ' . $i . ' is left in the session',
+            );
+            strictAssertSame(
+                $scene->root,
+                $state['downloads'][$generations[$i]['hash']]['directory_base'],
+                'generation ' . $i . ' keeps the original directory bytes',
+            );
         }
-        $mkdirs = array_unique(array_map(function ($call) { return $call[2]; }, $scene->state()['executed']));
+        $mkdirs = array_unique(array_map(function ($call) {
+            return $call[2];
+        }, $scene->state()['executed']));
         strictAssertSame([$scene->root], array_values($mkdirs), 'every generation named one directory');
-        strictAssertSame([DB_SPECIAL], array_values(array_diff(scandir($scene->downloads), ['.', '..'])),
-            'no generation created a directory of its own');
+        strictAssertSame(
+            [DB_SPECIAL],
+            array_values(array_diff(scandir($scene->downloads), ['.', '..'])),
+            'no generation created a directory of its own',
+        );
     });
 });
 
@@ -324,9 +388,13 @@ $suite->test('aud "q" \\b \'a\' &c: a torrent whose files hold a backslash is re
             return $call['name'] === 'erasedataPrepareObsoleteCleanup';
         }));
         strictAssertSame(1, count($prepared), 'one cleanup job is prepared');
-        strictAssertSame([realpath($scene->root) . '/' . $obsolete],
-            array_map(function ($entry) { return $entry['path']; }, $prepared[0]['arguments'][5]),
-            'the obsolete file is owned under its own name');
+        strictAssertSame(
+            [realpath($scene->root) . '/' . $obsolete],
+            array_map(function ($entry) {
+                return $entry['path'];
+            }, $prepared[0]['arguments'][5]),
+            'the obsolete file is owned under its own name',
+        );
     });
 });
 
@@ -363,13 +431,21 @@ $suite->test('aud "q" \\b \'a\' &c: throttle name and a third-party label reach 
 
         strictAssertSame(['result' => null], $scene->replace($new, $old['hash']), 'the replacement commits');
         $successor = $scene->state()['downloads'][$new['hash']];
-        strictAssertSame('slow ' . DB_SPECIAL, $successor['throttle_name'],
-            'd.set_throttle_name receives the predecessor\'s throttle bytes, quoted once');
-        strictAssertSame(rawurlencode('label ' . DB_SPECIAL), $successor['custom1'],
-            'the successor label is ruTorrent\'s encoding of the predecessor\'s label bytes');
-        strictAssertSame(['chk-topic' => '6879823', 'chk-forum' => '1106'],
+        strictAssertSame(
+            'slow ' . DB_SPECIAL,
+            $successor['throttle_name'],
+            'd.set_throttle_name receives the predecessor\'s throttle bytes, quoted once',
+        );
+        strictAssertSame(
+            rawurlencode('label ' . DB_SPECIAL),
+            $successor['custom1'],
+            'the successor label is ruTorrent\'s encoding of the predecessor\'s label bytes',
+        );
+        strictAssertSame(
+            ['chk-topic' => '6879823', 'chk-forum' => '1106'],
             array_intersect_key($successor['customs'], ['chk-topic' => 1, 'chk-forum' => 1]),
-            'the topic and forum travel with it');
+            'the topic and forum travel with it',
+        );
     });
 });
 
@@ -390,8 +466,11 @@ $suite->test('aud "q" \\b \'a\' &c: a third-party label in $ignoreLabels is hono
             . ' $read = $m->invokeArgs(null, $refs);'
             . ' rsDone(array("read" => $read, "label" => $args[3],'
             . ' "ignored" => ruTrackerChecker::isIgnoredLabel($args[3])));');
-        strictAssertSame(['read' => true, 'label' => DB_SPECIAL, 'ignored' => true], $answer,
-            'the label arrives in its own bytes and the ignore list matches it');
+        strictAssertSame(
+            ['read' => true, 'label' => DB_SPECIAL, 'ignored' => true],
+            $answer,
+            'the label arrives in its own bytes and the ignore list matches it',
+        );
     });
 });
 
@@ -410,10 +489,16 @@ $suite->test('aud "q" \\b \'a\' &c: a session directory with these bytes still y
         $answer = $scene->driver->run('$path = null;'
             . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', null, $path);'
             . ' rsDone(array("path" => $path, "hash" => is_object($t) ? $t->hash_info() : null));');
-        strictAssertSame(['path' => $scene->session . $old['hash'] . '.torrent', 'hash' => $old['hash']],
-            $answer, 'getSource() reads the session copy by its real path');
-        strictAssertSame(['result' => null], $scene->replace($new, $old['hash']),
-            'the replacement, which reads the predecessor through getSource(), commits');
+        strictAssertSame(
+            ['path' => $scene->session . $old['hash'] . '.torrent', 'hash' => $old['hash']],
+            $answer,
+            'getSource() reads the session copy by its real path',
+        );
+        strictAssertSame(
+            ['result' => null],
+            $scene->replace($new, $old['hash']),
+            'the replacement, which reads the predecessor through getSource(), commits',
+        );
     }, 'session ' . DB_SPECIAL);
 });
 
@@ -428,8 +513,11 @@ $suite->test('aud "q" \\b \'a\' &c: the tied .torrent fallback is opened by its 
         $answer = $scene->driver->run('$path = null;'
             . ' $t = rTorrent::getSource(' . var_export($old['hash'], true) . ', null, $path);'
             . ' rsDone(array("path" => $path, "hash" => is_object($t) ? $t->hash_info() : null));');
-        strictAssertSame(['path' => $tied, 'hash' => $old['hash']], $answer,
-            'without a session copy the tied file is found by its own bytes');
+        strictAssertSame(
+            ['path' => $tied, 'hash' => $old['hash']],
+            $answer,
+            'without a session copy the tied file is found by its own bytes',
+        );
     });
 });
 
@@ -448,8 +536,11 @@ $suite->test('aud "q" \\b \'a\' &c: layer 1 reports the tracker URL in its own b
             . ' $args = array(' . var_export($old['hash'], true) . ', null);'
             . ' $verdict = $m->invokeArgs(null, array(&$args[0], &$args[1]));'
             . ' rsDone(array("verdict" => $verdict, "url" => $args[1]));');
-        strictAssertSame(['verdict' => 'alive', 'url' => $url], $answer,
-            'the row URL is the daemon\'s t.url');
+        strictAssertSame(
+            ['verdict' => 'alive', 'url' => $url],
+            $answer,
+            'the row URL is the daemon\'s t.url',
+        );
     });
 });
 
@@ -471,9 +562,11 @@ $suite->test('aud "q" \\b \'a\' &c: a projection whose reply was lost is proved 
             . ' rsDone(array("proved" => RuTrackerCustomProjection::write($hash, array($command),'
             . ' "test", $id->val[0])));');
         strictAssertSame(['proved' => true], $answer, 'the readback proves the write');
-        strictAssertSame('topic-status|' . DB_SPECIAL,
+        strictAssertSame(
+            'topic-status|' . DB_SPECIAL,
             $scene->state()['downloads'][$old['hash']]['customs']['chk-msg'],
-            'the daemon holds the message bytes the checker meant');
+            'the daemon holds the message bytes the checker meant',
+        );
     });
 });
 
@@ -493,10 +586,16 @@ $suite->test('aud "q" \\b \'a\' &c: an unreadable session path is shown as text 
         $parsed = dbJsLiterals($fragment);
         strictAssertTrue(is_array($parsed), 'the fragment is valid JavaScript: ' . var_export($parsed, true)
             . ' in ' . $fragment);
-        strictAssertSame('plugin.disable(); noty(S+theUILang.webBadSessionError+S,S);', $parsed['code'],
-            'the path never leaves its string literal');
-        strictAssertSame(['rutracker_check: ', ' (' . $session . ').', 'error'], $parsed['strings'],
-            'the message shows the session path byte for byte');
+        strictAssertSame(
+            'plugin.disable(); noty(S+theUILang.webBadSessionError+S,S);',
+            $parsed['code'],
+            'the path never leaves its string literal',
+        );
+        strictAssertSame(
+            ['rutracker_check: ', ' (' . $session . ').', 'error'],
+            $parsed['strings'],
+            'the message shows the session path byte for byte',
+        );
     });
 });
 
@@ -518,9 +617,12 @@ $suite->test('aud "q" \\b \'a\' &c: the sweep quotes a stranded successor\'s mes
         $lines = array_values(array_filter($scene->driver->appLogLines(), function ($line) {
             return strpos($line, 'will not be started blind') !== false;
         }));
-        strictAssertSame(['rutracker_check: sweepReplacements: ' . $new
-            . ' will not be started blind, the daemon already reports: ' . $message], $lines,
-            'the log line carries the message bytes the daemon holds');
+        strictAssertSame(
+            ['rutracker_check: sweepReplacements: ' . $new
+            . ' will not be started blind, the daemon already reports: ' . $message],
+            $lines,
+            'the log line carries the message bytes the daemon holds',
+        );
         strictAssertSame(0, $scene->state()['downloads'][$new]['state'], 'the successor is left stopped');
     });
 });

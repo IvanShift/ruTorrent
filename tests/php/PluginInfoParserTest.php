@@ -4,12 +4,13 @@ require_once(__DIR__ . '/TestCase.php');
 
 class PluginInfoParserTest extends TestCase
 {
-
     public function testCommonFieldsAndLegacyAliasesUseOneParser()
     {
         $helper = dirname(__DIR__, 2) . '/php/plugininfo.php';
         $this->assertTrue(is_file($helper), 'both loaders need one plugin.info parser');
-        if (!is_file($helper)) { return; }
+        if (!is_file($helper)) {
+            return;
+        }
         require_once($helper);
         $defaults = ['plugin.runlevel' => 10.0,
             'rtorrent.version' => 0x802, 'php.version' => 0x50000,
@@ -32,11 +33,11 @@ class PluginInfoParserTest extends TestCase
 
     public function testBothEntrypointsKeepCommonFieldsAndDifferentDefaults()
     {
-        $root = $this->fixture("version: 1.25\nrunlevel: 13.5\n" .
-            "rtorrent.version: 0.16.24\nphp.version: 8.1.2\n" .
-            "plugin.dependencies: alpha,beta\nplugin.may_be_launched: 0\n" .
-            "author: Legacy Author\ndescription: Legacy Description\n" .
-            "remote: remote-alias\nneed_rtorrent: 0\n");
+        $root = $this->fixture("version: 1.25\nrunlevel: 13.5\n"
+            . "rtorrent.version: 0.16.24\nphp.version: 8.1.2\n"
+            . "plugin.dependencies: alpha,beta\nplugin.may_be_launched: 0\n"
+            . "author: Legacy Author\ndescription: Legacy Description\n"
+            . "remote: remote-alias\nneed_rtorrent: 0\n");
         try {
             $web = $this->entrypointInfo('getplugins.php', $root, []);
             $cli = $this->entrypointInfo('initplugins.php', $root, []);
@@ -50,19 +51,29 @@ class PluginInfoParserTest extends TestCase
             $this->assertSame('remote-alias', $web['rtorrent.remote']);
             $this->assertSame(0, $web['rtorrent.need']);
             $this->assertSame('', $web['plugin.help']);
-            $this->assertTrue(!array_key_exists('rtorrent.remote', $cli) &&
-                !array_key_exists('rtorrent.need', $cli) &&
-                !array_key_exists('plugin.help', $cli),
-                'CLI keeps web-only aliases and defaults out of its record');
-            $this->assertTrue(!array_key_exists('plugin.author', $cli) &&
-                !array_key_exists('plugin.description', $cli),
-                'CLI keeps its smaller metadata/default surface');
+            $this->assertTrue(
+                !array_key_exists('rtorrent.remote', $cli)
+                && !array_key_exists('rtorrent.need', $cli)
+                && !array_key_exists('plugin.help', $cli),
+                'CLI keeps web-only aliases and defaults out of its record',
+            );
+            $this->assertTrue(
+                !array_key_exists('plugin.author', $cli)
+                && !array_key_exists('plugin.description', $cli),
+                'CLI keeps its smaller metadata/default surface',
+            );
             $this->assertSame(0, $web['perms']);
             $this->assertTrue(!array_key_exists('perms', $cli), 'CLI does not compute web permissions');
-            $this->assertSame(false, $this->entrypointInfo('getplugins.php', $root,
-                ['enabled' => false]));
-            $this->assertSame(false, $this->entrypointInfo('initplugins.php', $root,
-                ['enabled' => false]));
+            $this->assertSame(false, $this->entrypointInfo(
+                'getplugins.php',
+                $root,
+                ['enabled' => false],
+            ));
+            $this->assertSame(false, $this->entrypointInfo(
+                'initplugins.php',
+                $root,
+                ['enabled' => false],
+            ));
         } finally {
             $this->removeFixture($root);
         }
@@ -91,21 +102,34 @@ class PluginInfoParserTest extends TestCase
     {
         $tokens = token_get_all(file_get_contents($path));
         foreach ($tokens as $index => $token) {
-            if (!is_array($token) || $token[0] !== T_FUNCTION) { continue; }
+            if (!is_array($token) || $token[0] !== T_FUNCTION) {
+                continue;
+            }
             $next = $index + 1;
-            while (isset($tokens[$next]) && is_array($tokens[$next]) &&
-                $tokens[$next][0] === T_WHITESPACE) { $next++; }
-            if (!isset($tokens[$next]) || !is_array($tokens[$next]) ||
-                $tokens[$next][1] !== $name) { continue; }
+            while (isset($tokens[$next]) && is_array($tokens[$next])
+                && $tokens[$next][0] === T_WHITESPACE) {
+                $next++;
+            }
+            if (!isset($tokens[$next]) || !is_array($tokens[$next])
+                || $tokens[$next][1] !== $name) {
+                continue;
+            }
             $source = '';
             $depth = 0;
             $opened = false;
             for ($i = $index; isset($tokens[$i]); $i++) {
                 $part = is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i];
                 $source .= $part;
-                if ($part === '{') { $depth++; $opened = true; }
-                if ($part === '}') { $depth--; }
-                if ($opened && $depth === 0) { return($source); }
+                if ($part === '{') {
+                    $depth++;
+                    $opened = true;
+                }
+                if ($part === '}') {
+                    $depth--;
+                }
+                if ($opened && $depth === 0) {
+                    return($source);
+                }
             }
         }
         throw new RuntimeException('Missing function ' . $name . ' in ' . $path);
@@ -115,22 +139,29 @@ class PluginInfoParserTest extends TestCase
     {
         $php = dirname(__DIR__, 2) . '/php';
         $helper = $php . '/plugininfo.php';
-        $code = 'function getFlag($permissions,$name,$flag) {' .
-            'return array_key_exists($flag,$permissions) ? $permissions[$flag] : true; }' .
-            (is_file($helper) ? 'require_once ' . var_export($helper, true) . ';' : '') .
-            $this->functionSource($php . '/' . $loader, 'getPluginInfo') .
-            'echo json_encode(getPluginInfo("sample", ' .
-            var_export($permissions, true) . '));';
-        $process = proc_open([PHP_BINARY, '-d', 'display_errors=0', '-r', $code],
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes,
-            $root . '/php');
-        if (!is_resource($process)) { throw new RuntimeException('Could not run plugin loader'); }
+        $code = 'function getFlag($permissions,$name,$flag) {'
+            . 'return array_key_exists($flag,$permissions) ? $permissions[$flag] : true; }'
+            . (is_file($helper) ? 'require_once ' . var_export($helper, true) . ';' : '')
+            . $this->functionSource($php . '/' . $loader, 'getPluginInfo')
+            . 'echo json_encode(getPluginInfo("sample", '
+            . var_export($permissions, true) . '));';
+        $process = proc_open(
+            [PHP_BINARY, '-d', 'display_errors=0', '-r', $code],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $root . '/php',
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not run plugin loader');
+        }
         $out = stream_get_contents($pipes[1]);
         $err = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $status = proc_close($process);
-        if ($status !== 0) { throw new RuntimeException($loader . ': ' . $err); }
+        if ($status !== 0) {
+            throw new RuntimeException($loader . ': ' . $err);
+        }
         return(json_decode($out, true));
     }
 }

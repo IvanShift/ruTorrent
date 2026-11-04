@@ -1,9 +1,9 @@
 <?php
 
-require_once( __DIR__ . '/../detector.php' );
-require_once( __DIR__ . '/../announce.php' );
-require_once( __DIR__ . '/../forumindex.php' );
-require_once( __DIR__ . '/../metafetch.php' );
+require_once(__DIR__ . '/../detector.php');
+require_once(__DIR__ . '/../announce.php');
+require_once(__DIR__ . '/../forumindex.php');
+require_once(__DIR__ . '/../metafetch.php');
 
 class RuTrackerCheckImpl
 {
@@ -23,10 +23,16 @@ class RuTrackerCheckImpl
 
     public static function extractTopicId($url)
     {
-        if (!is_string($url) || $url === '') { return null; }
+        if (!is_string($url) || $url === '') {
+            return null;
+        }
         $parts = @parse_url(trim($url));
-        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) { return null; }
-        if (!preg_match('/^https?$/i', $parts['scheme'])) { return null; }
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) {
+            return null;
+        }
+        if (!preg_match('/^https?$/i', $parts['scheme'])) {
+            return null;
+        }
         // The detector's list, not a fifth hand-written copy of it: this one
         // was anchored at the START of the host and knew nothing of
         // rutracker.cc, so 'https://www.rutracker.org/forum/viewtopic.php?t=N'
@@ -37,12 +43,18 @@ class RuTrackerCheckImpl
         // anywhere. Every URL built from the result uses the constant domain
         // (see $topicUrl below and metafetch's comment write), so this decides
         // recognition only, never where a request goes.
-        if (!RuTrackerDetector::isTrackerHost($parts['host'])) { return null; }
-        if (strcasecmp($parts['path'], '/forum/viewtopic.php') !== 0) { return null; }
+        if (!RuTrackerDetector::isTrackerHost($parts['host'])) {
+            return null;
+        }
+        if (strcasecmp($parts['path'], '/forum/viewtopic.php') !== 0) {
+            return null;
+        }
 
         $query = [];
         parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
-        if (!isset($query['t'])) { return null; }
+        if (!isset($query['t'])) {
+            return null;
+        }
         return RuTrackerRpcValue::canonicalPositiveInt32($query['t']);
     }
 
@@ -52,11 +64,16 @@ class RuTrackerCheckImpl
 
         $topicId = self::extractTopicId($url);
         if ($topicId === null && is_object($oldTorrent)) {
-            $topicId = self::extractTopicId($oldTorrent->comment()); }
-        if ($topicId === null) { return ruTrackerChecker::STE_DECLINED; }
+            $topicId = self::extractTopicId($oldTorrent->comment());
+        }
+        if ($topicId === null) {
+            return ruTrackerChecker::STE_DECLINED;
+        }
 
         $localHash = self::normalizeHash($hash);
-        if ($localHash === null) { return ruTrackerChecker::STE_NOT_NEED; }
+        if ($localHash === null) {
+            return ruTrackerChecker::STE_NOT_NEED;
+        }
 
         // Layer 0: a settled successor needs one existence probe. A missing successor
         // already carries a durable retry marker and needs no second probe;
@@ -65,13 +82,16 @@ class RuTrackerCheckImpl
         if ($successor !== null) {
             if ($successor['missing']) {
                 if (!ruTrackerChecker::retainMissingSuccessor($hash, $successor['hash'])) {
-                    return ruTrackerChecker::STE_ERROR; }
+                    return ruTrackerChecker::STE_ERROR;
+                }
             } else {
                 // Unknown presence is not evidence of removal.
                 if (ruTrackerChecker::torrentExists($successor['hash']) !== false) {
-                    return ruTrackerChecker::STE_NOT_NEED; }
+                    return ruTrackerChecker::STE_NOT_NEED;
+                }
                 if (!ruTrackerChecker::recordMissingSuccessor($hash, $successor['hash'])) {
-                    return ruTrackerChecker::STE_ERROR; }
+                    return ruTrackerChecker::STE_ERROR;
+                }
             }
         }
 
@@ -93,7 +113,9 @@ class RuTrackerCheckImpl
         // row without writing state. Reporting "cannot reach the tracker" here
         // used to overwrite a perfectly good verdict, and a stopped torrent is
         // outside the seeding view the hourly cycle walks, so it never recovered.
-        if ($verdict === 'cold') { return ruTrackerChecker::STE_UNCHANGED; }
+        if ($verdict === 'cold') {
+            return ruTrackerChecker::STE_UNCHANGED;
+        }
         if ($verdict === 'none') {
             // A parsed reply with no enabled RuTracker row says nothing about
             // the owned topic. Keep the prior verdict and its explanation.
@@ -155,8 +177,11 @@ class RuTrackerCheckImpl
         // down after a 403 -- the three are indistinguishable from the verdict
         // alone, and guessing between them is exactly what this log removes.
         $probeDecision = 'skipped';
-        if (empty($rutrackerLayer2Enabled)) { $skip = 'disabled in the configuration'; }
-        elseif ($host === '') { $skip = 'the torrent carries no announce host'; }
+        if (empty($rutrackerLayer2Enabled)) {
+            $skip = 'disabled in the configuration';
+        } elseif ($host === '') {
+            $skip = 'the torrent carries no announce host';
+        }
         // The handler is dispatched by the topic COMMENT, and layer 1's verdict
         // comes from the t-ru tracker ROW -- neither guarantees the torrent's
         // primary announce is RuTracker's. An answer from some other tracker
@@ -167,8 +192,8 @@ class RuTrackerCheckImpl
         // SEND a request, so it must match whole domain labels rather than a
         // substring -- 'rutracker.evil.example' satisfies the latter.
         elseif (!RuTrackerDetector::isTrackerHost($host)) {
-            $skip = 'the announce host ' . $host . ' is not RuTracker\'s'; }
-        else {
+            $skip = 'the announce host ' . $host . ' is not RuTracker\'s';
+        } else {
             // reserveProbe(), not probeDecision(): the slot must be taken in
             // the same locked write that judges the budget, or two concurrent
             // checks both spend the last one.
@@ -177,24 +202,40 @@ class RuTrackerCheckImpl
             // the one the slot was taken from, and a fresh time() at release
             // cannot say -- the paced sleep below can straddle the boundary.
             $probeAt = time();
-            $probeDecision = RuTrackerAnnounce::reserveProbe($host, $probeAt,
-                RuTrackerAnnounce::probeCap($rutrackerAnnounceCap), $announceWindow);
-            if ($probeDecision === 'cap') { $skip = 'the per-host announce cap for ' . $host . ' is exhausted'; }
-            elseif ($probeDecision === 'cooldown') { $skip = 'the 403 cooldown for ' . $host . ' is still active'; }
+            $probeDecision = RuTrackerAnnounce::reserveProbe(
+                $host,
+                $probeAt,
+                RuTrackerAnnounce::probeCap($rutrackerAnnounceCap),
+                $announceWindow,
+            );
+            if ($probeDecision === 'cap') {
+                $skip = 'the per-host announce cap for ' . $host . ' is exhausted';
+            } elseif ($probeDecision === 'cooldown') {
+                $skip = 'the 403 cooldown for ' . $host . ' is still active';
+            }
             // Anything that is not an explicit 'allow' skips, rather than the
             // other way round: a reservation that could not be recorded (see
             // reserveProbe()) must not buy a request, and neither must any
             // answer added later that this branch has not been taught yet.
-            elseif ($probeDecision !== 'allow') { $skip = 'the announce budget for ' . $host . ' could not be reserved'; }
-            else { $skip = null; }
+            elseif ($probeDecision !== 'allow') {
+                $skip = 'the announce budget for ' . $host . ' could not be reserved';
+            } else {
+                $skip = null;
+            }
         }
         if ($skip !== null) {
-            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 skipped: ' . $skip); }
+            ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer2 skipped: ' . $skip);
+        }
 
         if ($probeDecision === 'allow') {
             sleep(self::probeSleepSeconds($rutrackerAnnouncePause));
-            $probeUrl = RuTrackerAnnounce::buildUrl($announceUrl, $localHash,
-                RuTrackerAnnounce::makePeerId(), 63981, bin2hex(random_bytes(4)));
+            $probeUrl = RuTrackerAnnounce::buildUrl(
+                $announceUrl,
+                $localHash,
+                RuTrackerAnnounce::makePeerId(),
+                63981,
+                bin2hex(random_bytes(4)),
+            );
             if ($probeUrl === null) {
                 // The slot was reserved for a request that will not happen.
                 // Leaving it spent would shrink the budget for no traffic.
@@ -212,8 +253,13 @@ class RuTrackerCheckImpl
                 ruTrackerChecker::logDebug('download_torrent: ' . $hash
                     . ' layer2 skipped: the announce URL cannot be turned into a probe URL');
             } else {
-                $client = ruTrackerChecker::makeClient($probeUrl, "GET", "", "",
-                    RuTrackerAnnounce::PROBE_USER_AGENT);
+                $client = ruTrackerChecker::makeClient(
+                    $probeUrl,
+                    "GET",
+                    "",
+                    "",
+                    RuTrackerAnnounce::PROBE_USER_AGENT,
+                );
                 RuTrackerAnnounce::recordOutcome($host, time(), $client->status);
                 $answer = RuTrackerAnnounce::classify($client->status, $client->results);
                 // The probe URL itself is never logged: buildUrl() strips the
@@ -253,8 +299,11 @@ class RuTrackerCheckImpl
                 // "did a probe that could confirm anything run", and this one
                 // could not, while the reasons the probe never ran stay
                 // separately named ('cap', 'cooldown', 'unbuildable', ...).
-                if ($answer === 'uncertain') { $probeDecision = 'inconclusive'; }
-                else { $trackerConfirmed = true; }
+                if ($answer === 'uncertain') {
+                    $probeDecision = 'inconclusive';
+                } else {
+                    $trackerConfirmed = true;
+                }
             }
         }
 
@@ -299,7 +348,9 @@ class RuTrackerCheckImpl
         // topic even though chk-forum is filled; a transient refusal proves
         // nothing and must not launch a tracker-wide crawl.
         if ($dump === null) {
-            if ($dumpAbsent) { RuTrackerForumIndex::queueTopic($topicId); }
+            if ($dumpAbsent) {
+                RuTrackerForumIndex::queueTopic($topicId);
+            }
             ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer3 dump forum=' . $forumId
                 . ' unavailable'
                 . (($dumpReason === null || $dumpReason === '') ? '' : ': ' . $dumpReason)
@@ -424,12 +475,16 @@ class RuTrackerCheckImpl
                 // The bare topic id: the status label already says "absorbed,
                 // resolve manually", so init.js only has to turn this into the
                 // topic URL -- no sentence to translate at all.
-                ruTrackerChecker::setMessage($hash,
-                    ruTrackerChecker::CHKMSG_ABSORBED . '|' . $topicId);
+                ruTrackerChecker::setMessage(
+                    $hash,
+                    ruTrackerChecker::CHKMSG_ABSORBED . '|' . $topicId,
+                );
                 return ruTrackerChecker::STE_ABSORBED;
             case 'closed':
-                ruTrackerChecker::setMessage($hash,
-                    ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|' . $decision['status']);
+                ruTrackerChecker::setMessage(
+                    $hash,
+                    ruTrackerChecker::CHKMSG_TOPIC_STATUS . '|' . $decision['status'],
+                );
                 return ruTrackerChecker::STE_NOT_NEED;
             case 'uptodate':
                 return ruTrackerChecker::STE_UPTODATE;
@@ -442,7 +497,9 @@ class RuTrackerCheckImpl
 
     private static function normalizeHash($value)
     {
-        if (!is_string($value)) { return null; }
+        if (!is_string($value)) {
+            return null;
+        }
         $value = strtoupper(trim($value));
         return preg_match('/^[0-9A-F]{40}$/', $value) ? $value : null;
     }
@@ -467,7 +524,9 @@ class RuTrackerCheckImpl
         $readable = false;
         $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, $field]));
         $req->important = false;
-        if (!$req->success() || !isset($req->val[0])) { return null; }
+        if (!$req->success() || !isset($req->val[0])) {
+            return null;
+        }
         $readable = true;
         return (string) $req->val[0];
     }
@@ -484,7 +543,9 @@ class RuTrackerCheckImpl
     // write) -- a later move/resolve must not clobber an already-known id.
     private static function rememberTopic($hash, $topicId)
     {
-        if (self::readCustom($hash, "chk-topic") !== '') { return; }
+        if (self::readCustom($hash, "chk-topic") !== '') {
+            return;
+        }
         self::writeCustom($hash, "chk-topic", (string) $topicId);
     }
 
@@ -502,7 +563,9 @@ class RuTrackerCheckImpl
     private static function ruTrackerRowUrl($rows)
     {
         foreach ($rows as $row) {
-            if (empty($row['enabled'])) { continue; }
+            if (empty($row['enabled'])) {
+                continue;
+            }
             if (RuTrackerDetector::isTrackerRow((string) ($row['url'] ?? ''))) {
                 return (string) $row['url'];
             }
@@ -524,7 +587,9 @@ class RuTrackerCheckImpl
         // A local RPC failure carries no tracker signal at all -- treat it
         // the same as a transport failure (retryable), never as "none"
         // (which would wrongly stop future checks of this torrent).
-        if (!$req->success()) { return 'transport'; }
+        if (!$req->success()) {
+            return 'transport';
+        }
 
         // The transport (php/xmlrpc.php rXMLRPCRequest::run()) never nests --
         // this one request's answer is a single FLAT list: the authoritative
@@ -532,7 +597,9 @@ class RuTrackerCheckImpl
         // success), then d.get_message. The count makes a positively parsed
         // but truncated XMLRPC prefix distinguishable from a complete answer.
         $values = $req->val;
-        if (count($values) < 2) { return 'transport'; }
+        if (count($values) < 2) {
+            return 'transport';
+        }
 
         $trackerCount = RuTrackerRpcValue::canonicalNonnegativeInteger($values[0]);
         if ($trackerCount === null || $trackerCount > intdiv(PHP_INT_MAX - 2, 4)) {
@@ -540,14 +607,20 @@ class RuTrackerCheckImpl
         }
 
         $expectedValues = 2 + 4 * $trackerCount;
-        if (count($values) !== $expectedValues) { return 'transport'; }
+        if (count($values) !== $expectedValues) {
+            return 'transport';
+        }
         $messageIndex = $expectedValues - 1;
-        if (!is_string($values[$messageIndex])) { return 'transport'; }
+        if (!is_string($values[$messageIndex])) {
+            return 'transport';
+        }
         $message = $values[$messageIndex];
 
         $rows = [];
         for ($i = 1; $i + 4 <= $messageIndex; $i += 4) {
-            if (!is_string($values[$i])) { return 'transport'; }
+            if (!is_string($values[$i])) {
+                return 'transport';
+            }
             $enabled = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 1]);
             $failed = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 2]);
             $success = RuTrackerRpcValue::canonicalNonnegativeInteger($values[$i + 3]);
@@ -566,7 +639,8 @@ class RuTrackerCheckImpl
         // of lines an hour into the log and bury everything that matters.
         if ($verdict === 'candidate') {
             ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' layer1 verdict=candidate from '
-                . self::describeCounters($rows)); }
+                . self::describeCounters($rows));
+        }
         return $verdict;
     }
 
@@ -577,7 +651,9 @@ class RuTrackerCheckImpl
     {
         $described = [];
         foreach ($rows as $row) {
-            if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) $row['url'])) { continue; }
+            if (!preg_match(RuTrackerDetector::TRACKER_PATTERN, (string) $row['url'])) {
+                continue;
+            }
             $host = (string) @parse_url($row['url'], PHP_URL_HOST);
             $described[] = ($host !== '' ? $host : 'unknown host')
                 // Already canonical ints: layer1Verdict() rejects the whole
@@ -601,7 +677,9 @@ class RuTrackerCheckImpl
     {
         $forum = self::readCustom($hash, "chk-forum");
         $known = ($forum !== null);
-        if ($forum === null) { return null; }
+        if ($forum === null) {
+            return null;
+        }
         // One spelling, shared with the two other readers of this custom as a
         // forum id: RuTrackerMetaFetch::registrationTime() and
         // ruTrackerChecker::createTorrent(). See
@@ -625,23 +703,33 @@ class RuTrackerCheckImpl
     // function is given, so that case is left for the caller to resolve.
     private static function classifyDump($rows, $topicId, $localHash)
     {
-        if (!isset($rows[$topicId])) { return null; }
+        if (!isset($rows[$topicId])) {
+            return null;
+        }
 
         $row = $rows[$topicId];
         $status = $row['tor_status'];
 
-        if ($status === 7) { return ['verdict' => 'absorbed', 'status' => $status]; }
-        if (in_array($status, [1, 4, 5], true)) { return ['verdict' => 'closed', 'status' => $status]; }
+        if ($status === 7) {
+            return ['verdict' => 'absorbed', 'status' => $status];
+        }
+        if (in_array($status, [1, 4, 5], true)) {
+            return ['verdict' => 'closed', 'status' => $status];
+        }
         if (!in_array($status, RuTrackerForumIndex::$VALID_STATUSES, true)) {
-            return ['verdict' => 'unknown', 'status' => $status]; }
-        if ($row['info_hash'] === $localHash) { return ['verdict' => 'uptodate', 'status' => $status]; }
+            return ['verdict' => 'unknown', 'status' => $status];
+        }
+        if ($row['info_hash'] === $localHash) {
+            return ['verdict' => 'uptodate', 'status' => $status];
+        }
         // The successor hash arrives from the forum dump, i.e. off the
         // network, and from here it becomes a magnet target and a torrent
         // the client is asked to load. Anything that is not a hash is not a
         // verdict: say "unknown" and let a later cycle try again rather than
         // chase it.
         if (self::normalizeHash($row['info_hash']) === null) {
-            return ['verdict' => 'unknown', 'status' => $status]; }
+            return ['verdict' => 'unknown', 'status' => $status];
+        }
         return ['verdict' => 'updated', 'status' => $status, 'newHash' => $row['info_hash']];
     }
 
@@ -679,8 +767,10 @@ class RuTrackerCheckImpl
     // the deliberate cost of not losing a scheduled cycle to jitter.
     private static function deletionGate($interval)
     {
-        return max(self::MIN_DELETE_INTERVAL,
-            $interval - intdiv($interval, self::DELETE_INTERVAL_TOLERANCE_DIVISOR));
+        return max(
+            self::MIN_DELETE_INTERVAL,
+            $interval - intdiv($interval, self::DELETE_INTERVAL_TOLERANCE_DIVISOR),
+        );
     }
 
     // Is a deletion count whose last increment is $lastIncrement still part of
@@ -762,10 +852,14 @@ class RuTrackerCheckImpl
         // checked for freshness at all. "03" is likewise not the count 3 --
         // it is a spelling confirmDeletion() cannot have written, so it is no
         // record of a completed confirmation run.
-        if ($stored === null || !preg_match('/^([0-9]+):([0-9]+)$/D', (string) $stored, $m)) { return false; }
+        if ($stored === null || !preg_match('/^([0-9]+):([0-9]+)$/D', (string) $stored, $m)) {
+            return false;
+        }
         $count = RuTrackerRpcValue::canonicalNonnegativeInteger($m[1]);
         $lastIncrement = RuTrackerRpcValue::canonicalNonnegativeInteger($m[2]);
-        if ($count === null || $lastIncrement === null || $count < $cycles) { return false; }
+        if ($count === null || $lastIncrement === null || $count < $cycles) {
+            return false;
+        }
 
         $runDetail = null;
         $run = self::deletionRunStatus($hash, $lastIncrement, $runDetail);
@@ -908,8 +1002,10 @@ class RuTrackerCheckImpl
     // that used to spell this out belongs in the log, not in chk-msg.
     private static function reportDeletionProgress($hash, $count, $cycles)
     {
-        ruTrackerChecker::setMessage($hash,
-            ruTrackerChecker::CHKMSG_DELETING . '|' . $count . '/' . $cycles);
+        ruTrackerChecker::setMessage(
+            $hash,
+            ruTrackerChecker::CHKMSG_DELETING . '|' . $count . '/' . $cycles,
+        );
         ruTrackerChecker::logDebug('download_torrent: ' . $hash . ' row missing from the dump for '
             . $count . ' of ' . $cycles . ' consecutive cycles, with the tracker confirming the deletion');
     }
@@ -927,18 +1023,27 @@ class RuTrackerCheckImpl
             new rXMLRPCCommand(getCmd("d.get_custom"), [$hash, "chk-msg"]),
         ]);
         $req->important = false;
-        if (!$req->success() || !isset($req->val[0], $req->val[1])) { return null; }
+        if (!$req->success() || !isset($req->val[0], $req->val[1])) {
+            return null;
+        }
 
         $state = RuTrackerRpcValue::canonicalNonnegativeInteger($req->val[0]);
         $parts = explode('|', (string) $req->val[1], 2);
-        if (count($parts) !== 2) { return null; }
+        if (count($parts) !== 2) {
+            return null;
+        }
         $successor = self::normalizeHash($parts[1]);
-        if ($successor === null) { return null; }
+        if ($successor === null) {
+            return null;
+        }
         if ($parts[0] === ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING) {
-            return ['hash' => $successor, 'missing' => true]; }
+            return ['hash' => $successor, 'missing' => true];
+        }
         if ($parts[0] !== ruTrackerChecker::CHKMSG_SUPERSEDED
             || ($state !== ruTrackerChecker::STE_NOT_NEED
-                && $state !== ruTrackerChecker::STE_INPROGRESS)) { return null; }
+                && $state !== ruTrackerChecker::STE_INPROGRESS)) {
+            return null;
+        }
         return ['hash' => $successor, 'missing' => false];
     }
 

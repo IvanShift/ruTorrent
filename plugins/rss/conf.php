@@ -6,10 +6,10 @@
 
 $minInterval = 2;	// in minutes
 
-$feedsWithIncorrectTimes = 
-[
-	"iptorrents.",	// tracker label before any public suffix
-	"torrentday.",
+$feedsWithIncorrectTimes
+= [
+    "iptorrents.",	// tracker label before any public suffix
+    "torrentday.",
 ];
 
 $rss_debug_enabled = false;		// true, false or 'dry-run'

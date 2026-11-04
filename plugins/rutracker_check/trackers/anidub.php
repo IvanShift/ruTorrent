@@ -1,15 +1,17 @@
 <?php
 
 
-class AniDUBCheckImpl{
+class AniDUBCheckImpl
+{
     // The site is read over https, which is the scheme the loginmgr AniDUB
     // account names. commonAccount::test() refuses a url weaker than its
     // site's, so a cleartext request selects no account and reads the page a
     // guest is shown.
     public const SITE = "https://tr.anidub.com";
 
-    public static function download_torrent($url, $hash, $old_torrent){
-        if( preg_match( '`^https?://tr\.anidub\.com/\?newsid=(?P<id>\d+)$`',$url, $matches ) ) {
+    public static function download_torrent($url, $hash, $old_torrent)
+    {
+        if (preg_match('`^https?://tr\.anidub\.com/\?newsid=(?P<id>\d+)$`', $url, $matches)) {
             $topic_id = $matches["id"];
             $torrent_name = $old_torrent->name();
             $torrent_quality = null;
@@ -31,8 +33,11 @@ class AniDUBCheckImpl{
             // which is the commonest tag AniDUB publishes, so those releases
             // fell out at the "no quality tag" exit below and were never
             // checked at all.
-            if (preg_match('/\_\[(?:(?<vq>\d{1,4})p|(?<vq1>PSP)|(?<vq2>HWP)|bdrip(?<vq3>\d{1,4})p)\]\_/i',
-                $torrent_name, $qmatches)){
+            if (preg_match(
+                '/\_\[(?:(?<vq>\d{1,4})p|(?<vq1>PSP)|(?<vq2>HWP)|bdrip(?<vq3>\d{1,4})p)\]\_/i',
+                $torrent_name,
+                $qmatches,
+            )) {
 
                 if (($qmatches["vq3"] ?? '') !== '') {
                     $torrent_quality = strtolower($qmatches["vq3"]); # bd quality
@@ -57,24 +62,33 @@ class AniDUBCheckImpl{
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
 
-            $client = ruTrackerChecker::makeClient(self::SITE."/?newsid=" . $topic_id);
-            if($client->status!=200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            $client = ruTrackerChecker::makeClient(self::SITE . "/?newsid=" . $topic_id);
+            if ($client->status != 200) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
 
-            $resp = preg_replace( "/\r|\n/", "", $client->results);
-            $q =$torrent_quality_type.$torrent_quality;  // e.g. tv.720
+            $resp = preg_replace("/\r|\n/", "", $client->results);
+            $q = $torrent_quality_type . $torrent_quality;  // e.g. tv.720
             $pattern = sprintf('/\<div\sid\=\"%s\"\>\<div\sid=\'[\d\w\_]+\'\>\s+\<div\sclass=\"torrent\_h\"\>\s+\<a\shref=\"(?P<url>[\w\d\_\/\.\=\?]+)\"\s/i', $q);
             // These two guards computed a verdict and threw it away -- no
             // return -- so a page that matched neither pattern fell through to
             // $url_matches["url"] on an array that has no such key, and the
             // fetch below went out against the bare host.
-            if (!preg_match($pattern, $resp, $url_matches)) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            if (!preg_match($pattern, $resp, $url_matches)) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
 
             // Accept only the download id, then build the URL under our own host.
             // A suffix such as .evil.test/engine/download.php?id=1 would
             // otherwise turn host concatenation into a cookie-bearing request
             // to tr.anidub.com.evil.test.
-            if (!preg_match('/^\/engine\/download\.php\?id=(\d{1,10})$/i',
-                $url_matches["url"], $m)) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            if (!preg_match(
+                '/^\/engine\/download\.php\?id=(\d{1,10})$/i',
+                $url_matches["url"],
+                $m,
+            )) {
+                return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            }
 
             $client->setcookies();
             if (!$client->fetchComplex(self::SITE . "/engine/download.php?id=" . $m[1])) {

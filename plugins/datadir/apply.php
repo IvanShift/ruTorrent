@@ -10,10 +10,12 @@
 function rtDataDirRequestRefusal($hash, &$destPath)
 {
     if (!is_string($hash) || preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1) {
-        return 'invalid-arguments'; }
+        return 'invalid-arguments';
+    }
     if (!is_string($destPath) || $destPath === ''
         || !rTorrentSettings::get()->correctDirectory($destPath, true)) {
-        return 'destination-invalid'; }
+        return 'destination-invalid';
+    }
     return DataDirMoveIntent::destinationReason($destPath);
 }
 
@@ -29,13 +31,23 @@ function rtDataDirClaimRefusal()
 // the claimed change. At most 0755, since the umask only removes bits: never
 // group/other-writable, which the shared payload trust rule refuses above the
 // configured top.
-function rtDataDirApply($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false,
-    &$failure = null, &$warning = null)
-{
+function rtDataDirApply(
+    $hash,
+    $destPath,
+    $addPath,
+    $moveFiles,
+    $fastResume,
+    $dbg = false,
+    &$failure = null,
+    &$warning = null
+) {
     $failure = null;
     $warning = '';
-    if (!rtMkDir($destPath, 0755)) { $failure = 'destination-create-failed'; }
-    elseif (!rTorrentSettings::get()->correctDirectory($destPath, true)) { $failure = 'destination-invalid'; }
+    if (!rtMkDir($destPath, 0755)) {
+        $failure = 'destination-create-failed';
+    } elseif (!rTorrentSettings::get()->correctDirectory($destPath, true)) {
+        $failure = 'destination-invalid';
+    }
     if ($failure !== null) {
         FileUtil::toLog('datadir: change refused hash=' . strtoupper($hash) . ' reason=' . $failure);
         return false;
@@ -48,15 +60,24 @@ function rtDataDirApply($hash, $destPath, $addPath, $moveFiles, $fastResume, $db
 // jobs: a running or interrupted payload move belongs to its CLI worker or to
 // the scheduled recovery, and the dialog sees datadir-busy instead of an FPM
 // worker blocked behind it. The CLI worker waits for its turn.
-function rtDataDirApplyLocked($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg, $web,
-    &$failure = null, &$warning = null)
-{
+function rtDataDirApplyLocked(
+    $hash,
+    $destPath,
+    $addPath,
+    $moveFiles,
+    $fastResume,
+    $dbg,
+    $web,
+    &$failure = null,
+    &$warning = null
+) {
     $failure = null;
     $warning = '';
     try {
         $lock = rtDataDirLock($web);
         if ($lock === false) {
-            $failure = 'datadir-busy'; }
+            $failure = 'datadir-busy';
+        }
     } catch (RuntimeException $e) {
         $failure = $e->getMessage();
     }
@@ -66,8 +87,16 @@ function rtDataDirApplyLocked($hash, $destPath, $addPath, $moveFiles, $fastResum
     }
     try {
         rtDataDirRecover(!$web);
-        return rtDataDirApply($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg,
-            $failure, $warning);
+        return rtDataDirApply(
+            $hash,
+            $destPath,
+            $addPath,
+            $moveFiles,
+            $fastResume,
+            $dbg,
+            $failure,
+            $warning,
+        );
     } finally {
         rtDataDirUnlock($lock);
     }

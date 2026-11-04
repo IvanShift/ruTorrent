@@ -13,11 +13,13 @@ require_once(__DIR__ . '/../../../php/Snoopy.class.inc');
 // The executable stands in for the optional Python cloudscraper dependency.
 // It records invocation and returns tokens without opening any connection.
 $cloudflareHookMock = $cloudflareHookScratch . '/python-mock';
-file_put_contents($cloudflareHookMock, <<<'SH'
+file_put_contents(
+    $cloudflareHookMock,
+    <<<'SH'
 #!/bin/sh
 printf '%s' "$2" > "$CLOUDFLARE_HOOK_CAPTURE"
 printf '%s\n' '[{"clearance":"synthetic"},"synthetic-agent"]'
-SH
+SH,
 );
 chmod($cloudflareHookMock, 0700);
 $pathToExternals['python'] = $cloudflareHookMock;
@@ -29,8 +31,11 @@ register_shutdown_function(function () use ($cloudflareHookScratch) {
         RecursiveIteratorIterator::CHILD_FIRST,
     );
     foreach ($entries as $entry) {
-        if ($entry->isDir()) { rmdir($entry->getPathname()); }
-        else { unlink($entry->getPathname()); }
+        if ($entry->isDir()) {
+            rmdir($entry->getPathname());
+        } else {
+            unlink($entry->getPathname());
+        }
     }
     rmdir($cloudflareHookScratch);
 });
@@ -69,10 +74,16 @@ class CloudflareHookGuardTest extends TestCase
         global $cloudflareHookScratch;
         foreach ([503, 429] as $status) {
             $client = $this->dispatchChallenge(true, $status);
-            $this->assertSame(false, file_exists($cloudflareHookScratch . '/capture'),
-                'Guarded client started the unpinned cloudscraper process for ' . $status);
-            $this->assertSame([], $client->retries,
-                'Guarded client retried the URL after Cloudflare response ' . $status);
+            $this->assertSame(
+                false,
+                file_exists($cloudflareHookScratch . '/capture'),
+                'Guarded client started the unpinned cloudscraper process for ' . $status,
+            );
+            $this->assertSame(
+                [],
+                $client->retries,
+                'Guarded client retried the URL after Cloudflare response ' . $status,
+            );
         }
     }
 
@@ -80,12 +91,21 @@ class CloudflareHookGuardTest extends TestCase
     {
         global $cloudflareHookScratch;
         $client = $this->dispatchChallenge(false);
-        $this->assertSame(true, file_exists($cloudflareHookScratch . '/capture'),
-            'Unguarded client did not start cloudscraper');
-        $this->assertSame([$this->url], $client->retries,
-            'Unguarded client did not retry the challenged URL');
-        $this->assertSame('synthetic', $client->cookies['clearance'] ?? null,
-            'Unguarded client did not use cloudscraper tokens');
+        $this->assertSame(
+            true,
+            file_exists($cloudflareHookScratch . '/capture'),
+            'Unguarded client did not start cloudscraper',
+        );
+        $this->assertSame(
+            [$this->url],
+            $client->retries,
+            'Unguarded client did not retry the challenged URL',
+        );
+        $this->assertSame(
+            'synthetic',
+            $client->cookies['clearance'] ?? null,
+            'Unguarded client did not use cloudscraper tokens',
+        );
     }
 
     private function dispatchChallenge($guarded, $status = 503)

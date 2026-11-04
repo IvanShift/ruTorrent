@@ -1,13 +1,16 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
 if (PHP_SAPI !== 'cli' || !isset($_SERVER['SCRIPT_FILENAME'])
     || realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__) {
-    exit(1); }
+    exit(1);
+}
 if (!chdir(__DIR__)) {
-    exit(1); }
+    exit(1);
+}
 if (isset($argv[1]) && $argv[1] === '--retry') {
     if (count($argv) !== 4 || preg_match('/^[0-9A-Fa-f]{40}$/D', $argv[2]) !== 1
         || preg_match('/^[a-z0-9_-]*$/D', $argv[3]) !== 1) {
@@ -16,7 +19,8 @@ if (isset($argv[1]) && $argv[1] === '--retry') {
     }
     $_SERVER['REMOTE_USER'] = $argv[3];
 } elseif (isset($argv[1]) && $argv[1] !== '--all') {
-    $_SERVER['REMOTE_USER'] = $argv[1]; }
+    $_SERVER['REMOTE_USER'] = $argv[1];
+}
 
 require_once '../../php/xmlrpc.php';
 require_once './util_setdir.php';
@@ -64,8 +68,12 @@ if (isset($argv[1]) && $argv[1] === '--retry') {
     $hash = strtoupper($argv[2]);
     $path = rtDataDirJournal() . '/' . $hash . '.json';
     try {
-        $job = DataDirMoveJob::load($path, 'rtDataDirClaimRpc',
-            'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
+        $job = DataDirMoveJob::load(
+            $path,
+            'rtDataDirClaimRpc',
+            'rtDataDirMoveNoReplace',
+            'rtDataDirTorrentPresence',
+        );
         $job->run();
         FileOperationOutcome::clear('datadir', $hash);
         fwrite(STDOUT, "datadir: exact job recovered hash=" . $hash . "\n");
@@ -82,6 +90,7 @@ if (isset($argv[1]) && $argv[1] === '--retry') {
         $ok = false;
     }
 } else {
-    $ok = rtDataDirRecover(); }
+    $ok = rtDataDirRecover();
+}
 rtDataDirUnlock($lock);
 exit($ok ? 0 : 1);

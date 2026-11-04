@@ -45,13 +45,22 @@ final class AutoToolsFinishedHook
     {
         $result = self::perform($args, $dbg);
         if ($result['status'] === 'busy' || $result['status'] === 'copy-missing') {
-            self::defer($args, $result['status'] === 'busy' ? 'journal-busy' : 'session-copy-unreadable',
-                $result['op']); }
-        elseif ($result['status'] === 'daemon-paths-needed') {
-            self::defer($args, 'daemon-paths-needed', $result['op']); }
-        elseif ($result['status'] === 'refused' && in_array($result['op'], self::NON_MOVE, true)) {
-            self::notifyLater((string) $args[0], $result['op'], $result['reason'], self::user($args),
-                $result['detail']); }
+            self::defer(
+                $args,
+                $result['status'] === 'busy' ? 'journal-busy' : 'session-copy-unreadable',
+                $result['op'],
+            );
+        } elseif ($result['status'] === 'daemon-paths-needed') {
+            self::defer($args, 'daemon-paths-needed', $result['op']);
+        } elseif ($result['status'] === 'refused' && in_array($result['op'], self::NON_MOVE, true)) {
+            self::notifyLater(
+                (string) $args[0],
+                $result['op'],
+                $result['reason'],
+                self::user($args),
+                $result['detail'],
+            );
+        }
         return $result['status'] === 'published' ? $result['destination'] : '';
     }
 
@@ -81,21 +90,27 @@ final class AutoToolsFinishedHook
         $token = isset($args[7]) ? (string) $args[7] : '';
         $at = rAutoTools::load();
         if (!$at->enable_move || @preg_match($at->automove_filter . (UTF::isValid($label) ? 'u' : ''), $label) != 1) {
-            return $none; }
+            return $none;
+        }
         $finished = $at->path_to_finished;
         $op = $at->fileop_type;
-        if (!in_array($op, self::NON_MOVE, true)) { return $none; }
+        if (!in_array($op, self::NON_MOVE, true)) {
+            return $none;
+        }
         $session = rTorrentSettings::get()->session;
         if ($finished === '' || empty($session)) {
-            return $none; }
+            return $none;
+        }
         $finished = rtAddTailSlash($finished);
         $copy = rtAddTailSlash($session) . $hash . '.torrent';
         clearstatcache(true, $copy);
         if (!is_readable($copy)) {
-            return ['status' => 'copy-missing', 'op' => $op]; }
+            return ['status' => 'copy-missing', 'op' => $op];
+        }
         $directory = rTorrentSettings::get()->directory;
         if (empty($directory)) {
-            return $none; }
+            return $none;
+        }
         $torrent = new Torrent($copy);
         if ($torrent->errors()) {
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': session-copy-invalid');
@@ -107,26 +122,33 @@ final class AutoToolsFinishedHook
         // A download saved outside the default directory is never moved: an
         // empty relative path skips it, by design.
         if ($relative === '') {
-            return $none; }
-        if ($relative === './') { $relative = ''; }
+            return $none;
+        }
+        if ($relative === './') {
+            $relative = '';
+        }
         $destination = rtAddTailSlash($finished . $relative);
         // The label is not appended twice when the folder already is the label.
         if ($at->addLabel && $label !== '' && $label !== trim($relative, '/')) {
-            $destination .= FileUtil::addslash($label); }
+            $destination .= FileUtil::addslash($label);
+        }
         if ($at->addName && $name !== '') {
-            $destination .= FileUtil::addslash($name); }
+            $destination .= FileUtil::addslash($name);
+        }
         $multi = $isMulti === '1';
         $sub = $multi ? rtAddTailSlash($baseName) : '';
         $source = $base . $sub;
         $target = $destination . $sub;
         if ($multi && !$daemonReady) {
-            return ['status' => 'daemon-paths-needed', 'op' => $op]; }
+            return ['status' => 'daemon-paths-needed', 'op' => $op];
+        }
         try {
             $files = $daemonReady ? self::backgroundFiles($hash, $torrent->info, $multi, $basePath, $baseName, $token)
                 : AutoToolsFilePaths::read($hash, $torrent->info, false, $baseName);
         } catch (RuntimeException $error) {
             if (in_array($error->getMessage(), ['file-list-unconfirmed', 'source-context-unconfirmed'], true)) {
-                return ['status' => 'paths-unavailable', 'op' => $op, 'reason' => $error->getMessage()]; }
+                return ['status' => 'paths-unavailable', 'op' => $op, 'reason' => $error->getMessage()];
+            }
             if ($error->getMessage() === 'source-context-changed') {
                 FileUtil::toLog('autotools: nonmove ' . $hash . ' refused: source-context-changed');
                 return self::refused($op, 'source-context-changed');
@@ -135,7 +157,8 @@ final class AutoToolsFinishedHook
             return self::refused($op, 'file-list-invalid', $error->getMessage());
         }
         if (self::skipped($at->skip_move_for_files, $files, $dbg) || $source === $target || !is_dir($source)) {
-            return $none; }
+            return $none;
+        }
         // The copy and the links are made through any link on the way, so the
         // target has to stay inside the top directory once links are followed;
         // checked before the finished root is created through it.
@@ -151,13 +174,16 @@ final class AutoToolsFinishedHook
             FileUtil::toLog('autotools: file operation refused hash=' . $hash . ': destination-outside-finished-root');
             return self::refused($op, 'destination-outside-finished-root');
         }
-        if ($dbg) { rtDbg('AutoMove', 'Operation ' . $op . ' from ' . $source . ' to ' . $target); }
+        if ($dbg) {
+            rtDbg('AutoMove', 'Operation ' . $op . ' from ' . $source . ' to ' . $target);
+        }
         $context = ['hash' => $hash, 'token' => $token, 'sourceBase' => $basePath, 'destination' => $target];
         $context['notice'] = ['noticeDestination' => $destination, 'finishedRoot' => $finished,
-                'torrentName' => $torrent->name()];
+            'torrentName' => $torrent->name()];
         $result = rtOpFiles($files, $source, $target, $op, $dbg, $context);
         if ($result === null) {
-            return ['status' => 'busy', 'op' => $op]; }
+            return ['status' => 'busy', 'op' => $op];
+        }
         if (!$result) {
             // run() resets its refusal on entry and keeps one only for the
             // refusals named on the download.
@@ -176,9 +202,11 @@ final class AutoToolsFinishedHook
         $message = preg_match('/^[0-9A-F]{40}$/D', (string) $hash) === 1 && in_array($op, self::NON_MOVE, true)
             && is_string($reason) && is_string($detail) ? self::refusalMessage($op, $reason, $detail) : null;
         if ($message === null) {
-            return false; }
+            return false;
+        }
         if (FileOperationOutcome::record('autotools', $hash, $reason, $message)) {
-            return true; }
+            return true;
+        }
         FileUtil::toLog('autotools: nonmove ' . $hash . ' hold: refusal not shown on the torrent');
         return false;
     }
@@ -189,13 +217,19 @@ final class AutoToolsFinishedHook
     public static function performDeferred()
     {
         $root = AutoToolsFileTransaction::journalRoot(false);
-        if ($root === false) { return; }
+        if ($root === false) {
+            return;
+        }
         // The journal is under the session path: list it, never glob() it.
         $paths = erasedataDirectoryMatches($root, '', self::REQUEST_SUFFIX);
-        if (!$paths) { return; }
+        if (!$paths) {
+            return;
+        }
         $lock = @fopen($root . '/.requests.lock', 'c');
         if (!$lock || !@flock($lock, LOCK_EX | LOCK_NB)) {
-            if ($lock) { fclose($lock); }
+            if ($lock) {
+                fclose($lock);
+            }
             return;
         }
         try {
@@ -223,25 +257,27 @@ final class AutoToolsFinishedHook
                 });
                 $result = self::perform($args, false, true);
                 if ($result['status'] === 'busy') {
-                    break; }
+                    break;
+                }
                 if ($result['status'] === 'copy-missing') {
                     // rTorrent may still publish the copy: a download that
                     // retrackers re-adds is briefly without one. Only a copy
                     // missing past the retry window is a refusal (ACC-OWNB-02).
                     if (time() - $request['at'] < rtFileJobRetryWindow()) {
-                        continue; }
+                        continue;
+                    }
                     self::refuseMissingCopy($args[0], $result['op']);
-                }
-                elseif ($result['status'] === 'paths-unavailable') {
+                } elseif ($result['status'] === 'paths-unavailable') {
                     if (time() - $request['at'] < rtFileJobRetryWindow()) {
-                        continue; }
+                        continue;
+                    }
                     FileUtil::toLog('autotools: nonmove ' . $args[0] . ' refused: ' . $result['reason']);
                     self::notifyRefusal($args[0], $result['op'], $result['reason']);
+                } elseif ($result['status'] === 'refused') {
+                    self::notifyRefusal($args[0], $result['op'], $result['reason'], $result['detail']);
+                } elseif ($result['status'] === 'published') {
+                    FileOperationOutcome::clear('autotools', $args[0]);
                 }
-                elseif ($result['status'] === 'refused') {
-                    self::notifyRefusal($args[0], $result['op'], $result['reason'], $result['detail']); }
-                elseif ($result['status'] === 'published') {
-                    FileOperationOutcome::clear('autotools', $args[0]); }
                 @unlink($path);
             }
         } finally {
@@ -262,10 +298,17 @@ final class AutoToolsFinishedHook
 
     private static function directoryIdentity($directory)
     {
-        if (!is_string($directory)) { throw new RuntimeException('source-context-unconfirmed'); }
-        try { $withoutTail = @rtrim($directory, '/'); }
-        catch (Throwable $error) { throw new RuntimeException('source-context-unconfirmed', 0, $error); }
-        if (!is_string($withoutTail)) { throw new RuntimeException('source-context-unconfirmed'); }
+        if (!is_string($directory)) {
+            throw new RuntimeException('source-context-unconfirmed');
+        }
+        try {
+            $withoutTail = @rtrim($directory, '/');
+        } catch (Throwable $error) {
+            throw new RuntimeException('source-context-unconfirmed', 0, $error);
+        }
+        if (!is_string($withoutTail)) {
+            throw new RuntimeException('source-context-unconfirmed');
+        }
         return $directory !== '' && $withoutTail === '' ? '/' : $withoutTail;
     }
 
@@ -285,43 +328,62 @@ final class AutoToolsFinishedHook
         if (!$request->success() || $request->fault
             || count($request->responseCommandValues) !== 6
             || count($request->responseCommandTypes) !== 6) {
-            throw new RuntimeException('source-context-unconfirmed'); }
+            throw new RuntimeException('source-context-unconfirmed');
+        }
         $values = $request->responseCommandValues;
         $types = $request->responseCommandTypes;
         foreach ([0, 2, 3, 4] as $index) {
             if (!in_array($types[$index], ['string', 'base64'], true) || !is_string($values[$index])) {
-                throw new RuntimeException('source-context-unconfirmed'); } }
+                throw new RuntimeException('source-context-unconfirmed');
+            }
+        }
         if (!in_array($types[1], ['int', 'i4', 'i8', 'boolean'], true)
             || !in_array($values[1], ['0', '1'], true)) {
-            throw new RuntimeException('source-context-unconfirmed'); }
-        try { $directory = $multi ? $basePath : @dirname($basePath); }
-        catch (Throwable $error) { throw new RuntimeException('source-context-unconfirmed', 0, $error); }
+            throw new RuntimeException('source-context-unconfirmed');
+        }
+        try {
+            $directory = $multi ? $basePath : @dirname($basePath);
+        } catch (Throwable $error) {
+            throw new RuntimeException('source-context-unconfirmed', 0, $error);
+        }
         if (self::directoryIdentity($values[4]) !== self::directoryIdentity($directory)
             || $values[1] !== ($multi ? '1' : '0') || $values[3] !== $token
             || ($values[0] !== '' && $values[0] !== $basePath)
             || ($values[2] !== '' && $values[2] !== $baseName)) {
-            throw new RuntimeException('source-context-changed'); }
+            throw new RuntimeException('source-context-changed');
+        }
         // The later x-dest acknowledgement binds the captured frozen path.
         // Keep a cold object's request until it can prove that same path.
         if ($values[0] === '' || $values[2] === '') {
-            throw new RuntimeException('source-context-unconfirmed'); }
+            throw new RuntimeException('source-context-unconfirmed');
+        }
         $rows = $request->stringTable(1, 5);
-        if ($multi) { return AutoToolsFilePaths::fromTable($rows, $info); }
-        if ($rows === null || count($rows) !== 1) { throw new RuntimeException('file-list-malformed'); }
+        if ($multi) {
+            return AutoToolsFilePaths::fromTable($rows, $info);
+        }
+        if ($rows === null || count($rows) !== 1) {
+            throw new RuntimeException('file-list-malformed');
+        }
         $paths = AutoToolsFilePaths::read($hash, $info, false, $rows[0][0]);
-        if ($paths[0] !== $baseName) { throw new RuntimeException('source-context-changed'); }
+        if ($paths[0] !== $baseName) {
+            throw new RuntimeException('source-context-changed');
+        }
         return $paths;
     }
 
     private static function skipped($filter, array $files, $dbg)
     {
         if (strlen($filter) === 0) {
-            return false; }
+            return false;
+        }
         foreach ($files as $file) {
             if (preg_match($filter . (UTF::isValid($file) ? 'u' : ''), $file) === 1) {
-                if ($dbg) { rtDbg('AutoMove', 'skip filter ' . $filter . ' matched ' . $file); }
+                if ($dbg) {
+                    rtDbg('AutoMove', 'skip filter ' . $filter . ' matched ' . $file);
+                }
                 return true;
-            } }
+            }
+        }
         return false;
     }
 
@@ -330,7 +392,9 @@ final class AutoToolsFinishedHook
     private static function defer(array $args, $reason, $op)
     {
         $hash = (string) $args[0];
-        if (!in_array($op, self::NON_MOVE, true)) { return; }
+        if (!in_array($op, self::NON_MOVE, true)) {
+            return;
+        }
         $root = AutoToolsFileTransaction::journalRoot();
         $id = bin2hex(random_bytes(12));
         $body = JSON::encodeBytes(['version' => 1, 'id' => $id, 'reason' => $reason, 'at' => time(),
@@ -340,7 +404,9 @@ final class AutoToolsFinishedHook
             && @file_put_contents($staging, $body) === strlen($body)
             && @rename($staging, $root . '/' . $id . self::REQUEST_SUFFIX);
         if (!$published) {
-            if ($staging !== false) { @unlink($staging); }
+            if ($staging !== false) {
+                @unlink($staging);
+            }
             FileUtil::toLog('autotools: nonmove ' . $hash . ' refused: ' . $reason
                 . '; the deferred request could not be recorded');
             self::notifyLater($hash, $op, $reason, self::user($args));
@@ -361,7 +427,8 @@ final class AutoToolsFinishedHook
         }
         $command = Utility::escapeShellArg(Utility::getPHP());
         foreach ($arguments as $argument) {
-            $command .= ' ' . Utility::escapeShellArg($argument); }
+            $command .= ' ' . Utility::escapeShellArg($argument);
+        }
         @exec($command . ' < /dev/null > /dev/null 2>&1 &');
     }
 
@@ -401,7 +468,8 @@ final class AutoToolsFinishedHook
         if (in_array($reason, ['session-copy-invalid', 'file-list-unconfirmed', 'file-list-invalid', 'finished-root-unavailable',
             'destination-outside-finished-root', 'journal-write-failed', 'file-operation-refused'], true)) {
             return 'autotools: ' . $op . ' refused: ' . $reason
-                . '; inspect the file-job journal and errors.log; source data is retained'; }
+                . '; inspect the file-job journal and errors.log; source data is retained';
+        }
         return null;
     }
 
@@ -416,9 +484,13 @@ final class AutoToolsFinishedHook
             || !in_array($request['reason'], ['journal-busy', 'session-copy-unreadable', 'daemon-paths-needed'], true)
             || !is_array($request['args']) || count($request['args']) < 7 || count($request['args']) > 8
             || array_values($request['args']) !== $request['args']) {
-            return null; }
+            return null;
+        }
         foreach ($request['args'] as $arg) {
-            if (!is_string($arg)) { return null; } }
+            if (!is_string($arg)) {
+                return null;
+            }
+        }
         return preg_match('/^[0-9A-F]{40}$/D', $request['args'][0]) === 1 ? $request : null;
     }
 
@@ -434,6 +506,7 @@ final class AutoToolsFinishedHook
             . ' session copy of this download within ' . (int) ceil(rtFileJobRetryWindow() / 60) . ' min,'
             . ' so nothing was copied or linked; check the session directory';
         if (!FileOperationOutcome::record('autotools', $hash, 'session-copy-unreadable', $message)) {
-            FileUtil::toLog('autotools: nonmove ' . $hash . ' hold: refusal not shown on the torrent'); }
+            FileUtil::toLog('autotools: nonmove ' . $hash . ' hold: refusal not shown on the torrent');
+        }
     }
 }

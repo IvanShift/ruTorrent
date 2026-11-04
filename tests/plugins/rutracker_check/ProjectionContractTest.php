@@ -13,9 +13,7 @@ class ruTrackerChecker
         return true;
     }
 
-    public static function logDebug($message)
-    {
-    }
+    public static function logDebug($message) {}
 }
 
 // The real php/xmlrpc.php wraps every command argument in rXMLRPCParam and
@@ -62,18 +60,30 @@ $suite->test('projection proof decodes production-shaped XMLRPC parameters befor
     // Positive but short: the projection helper must inspect the desired
     // fields and values, not accept the aggregate response on faith.
     rXMLRPCRequest::queue(['d.set_custom', 'd.set_custom'], true, false, [0]);
-    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false,
-        [$message, '123']);
+    rXMLRPCRequest::queue(
+        ['d.get_custom', 'd.get_custom'],
+        true,
+        false,
+        [$message, '123'],
+    );
 
-    strictAssertSame(true,
+    strictAssertSame(
+        true,
         RuTrackerCustomProjection::write($hash, $commands, 'production parameter contract'),
-        'an exact decoded readback proves the write without casting parameter objects');
+        'an exact decoded readback proves the write without casting parameter objects',
+    );
     $reads = rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom');
     strictAssertSame(1, count($reads), 'a short positive response triggers one complete readback');
-    strictAssertSame([$hash, 'chk-msg'], $reads[0]['commands'][0]->params,
-        'the first field name is extracted from the wrapped parameter');
-    strictAssertSame([$hash, 'chk-time'], $reads[0]['commands'][1]->params,
-        'the second field name is extracted from the wrapped parameter');
+    strictAssertSame(
+        [$hash, 'chk-msg'],
+        $reads[0]['commands'][0]->params,
+        'the first field name is extracted from the wrapped parameter',
+    );
+    strictAssertSame(
+        [$hash, 'chk-time'],
+        $reads[0]['commands'][1]->params,
+        'the second field name is extracted from the wrapped parameter',
+    );
 });
 
 $suite->test('extra write or readback scalars never prove a custom projection', function () {
@@ -84,24 +94,43 @@ $suite->test('extra write or readback scalars never prove a custom projection', 
     ];
 
     rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(['d.set_custom', 'd.set_custom'], true, false,
-        [0, 0, 'unexpected-extra']);
-    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false,
-        ['ready', '123']);
-    strictAssertSame(true,
+    rXMLRPCRequest::queue(
+        ['d.set_custom', 'd.set_custom'],
+        true,
+        false,
+        [0, 0, 'unexpected-extra'],
+    );
+    rXMLRPCRequest::queue(
+        ['d.get_custom', 'd.get_custom'],
+        true,
+        false,
+        ['ready', '123'],
+    );
+    strictAssertSame(
+        true,
         RuTrackerCustomProjection::write($hash, $commands, 'extra write response'),
-        'an overlong positive write response requires exact readback');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
-        'the extra write scalar prevents direct success');
+        'an overlong positive write response requires exact readback',
+    );
+    strictAssertSame(
+        1,
+        count(rXMLRPCRequest::requestsFor('d.get_custom|d.get_custom')),
+        'the extra write scalar prevents direct success',
+    );
 
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue(['d.set_custom', 'd.set_custom'], true, false, [0]);
-    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false,
-        ['ready', '123', 'unexpected-extra']);
+    rXMLRPCRequest::queue(
+        ['d.get_custom', 'd.get_custom'],
+        true,
+        false,
+        ['ready', '123', 'unexpected-extra'],
+    );
     rXMLRPCRequest::queue('d.hash', true, false, [$hash]);
-    strictAssertSame(false,
+    strictAssertSame(
+        false,
         RuTrackerCustomProjection::write($hash, $commands, 'extra readback response'),
-        'an overlong readback is untrustworthy even when its prefix matches');
+        'an overlong readback is untrustworthy even when its prefix matches',
+    );
 });
 
 $suite->test('canonicalNonnegativeInteger accepts canonical nonnegative integers and strings, rejects malformed', function () {
@@ -112,8 +141,11 @@ $suite->test('canonicalNonnegativeInteger accepts canonical nonnegative integers
         PHP_INT_MAX => PHP_INT_MAX,
     ];
     foreach ($valid as $input => $expected) {
-        strictAssertSame($expected, RuTrackerRpcValue::canonicalNonnegativeInteger($input),
-            "valid int {$input} returns {$expected}");
+        strictAssertSame(
+            $expected,
+            RuTrackerRpcValue::canonicalNonnegativeInteger($input),
+            "valid int {$input} returns {$expected}",
+        );
     }
 
     // Numeric-looking array keys are coerced to integers by PHP, so keep the
@@ -126,8 +158,11 @@ $suite->test('canonicalNonnegativeInteger accepts canonical nonnegative integers
     ];
     foreach ($validStrings as $case) {
         list($input, $expected) = $case;
-        strictAssertSame($expected, RuTrackerRpcValue::canonicalNonnegativeInteger($input),
-            "valid string {$input} returns {$expected}");
+        strictAssertSame(
+            $expected,
+            RuTrackerRpcValue::canonicalNonnegativeInteger($input),
+            "valid string {$input} returns {$expected}",
+        );
     }
 
     $invalid = [
@@ -154,8 +189,11 @@ $suite->test('canonicalNonnegativeInteger accepts canonical nonnegative integers
         '',
     ];
     foreach ($invalid as $bad) {
-        strictAssertSame(null, RuTrackerRpcValue::canonicalNonnegativeInteger($bad),
-            'invalid input is rejected');
+        strictAssertSame(
+            null,
+            RuTrackerRpcValue::canonicalNonnegativeInteger($bad),
+            'invalid input is rejected',
+        );
     }
 });
 
@@ -246,10 +284,15 @@ $suite->test('the four canonical RPC integer parsers answer int|null over the ex
         foreach ($helpers as $helper => $column) {
             $expected = $row[$column] === RPC_REJECT ? null : $row[$column];
             $actual = call_user_func(['RuTrackerRpcValue', $helper], $value);
-            strictAssertSame($expected, $actual,
-                $helper . ' on ' . $label);
-            strictAssertTrue($actual === null || is_int($actual),
-                $helper . ' on ' . $label . ' answers int|null and nothing else');
+            strictAssertSame(
+                $expected,
+                $actual,
+                $helper . ' on ' . $label,
+            );
+            strictAssertTrue(
+                $actual === null || is_int($actual),
+                $helper . ' on ' . $label . ' answers int|null and nothing else',
+            );
         }
     }
 });
@@ -265,40 +308,66 @@ $suite->test('a replacement record whose persisted epoch is "03" authorises no a
     $noncanonical = $predecessor . '-started-03';
     $canonical = $predecessor . '-started-3';
 
-    strictAssertSame(null, RuTrackerReplacementRecord::decode($noncanonical),
-        'a leading-zero epoch is not decoded into the epoch it resembles');
-    strictAssertSame(3, RuTrackerReplacementRecord::decode($canonical)['staged'],
-        'the canonical spelling of the same epoch still decodes');
+    strictAssertSame(
+        null,
+        RuTrackerReplacementRecord::decode($noncanonical),
+        'a leading-zero epoch is not decoded into the epoch it resembles',
+    );
+    strictAssertSame(
+        3,
+        RuTrackerReplacementRecord::decode($canonical)['staged'],
+        'the canonical spelling of the same epoch still decodes',
+    );
     $shaped = false;
     RuTrackerReplacementRecord::decode($noncanonical, $shaped);
-    strictAssertSame(true, $shaped,
-        'it is still recognisably a record, so it is corruption rather than absence');
+    strictAssertSame(
+        true,
+        $shaped,
+        'it is still recognisably a record, so it is corruption rather than absence',
+    );
     RuTrackerReplacementRecord::decode('not-a-record-at-all', $shaped);
     strictAssertSame(false, $shaped, 'while bytes that are not a record at all say so');
 
     rXMLRPCRequest::reset();
-    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+    strictAssertSame(
+        RuTrackerAtomicOwnership::UNKNOWN,
         RuTrackerAtomicOwnership::erase($hash, ['chk-replaces' => $noncanonical]),
-        'no erase condition may be built from a non-canonical epoch');
-    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-        RuTrackerAtomicOwnership::clearCustoms($hash, ['chk-replaces' => $noncanonical],
-            ['chk-replaces']),
-        'and no clear condition either');
-    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+        'no erase condition may be built from a non-canonical epoch',
+    );
+    strictAssertSame(
+        RuTrackerAtomicOwnership::UNKNOWN,
+        RuTrackerAtomicOwnership::clearCustoms(
+            $hash,
+            ['chk-replaces' => $noncanonical],
+            ['chk-replaces'],
+        ),
+        'and no clear condition either',
+    );
+    strictAssertSame(
+        RuTrackerAtomicOwnership::UNKNOWN,
         RuTrackerAtomicOwnership::runState($hash, ['chk-replacing' => $noncanonical], true),
-        'and no run-state condition either');
-    strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
-        'a malformed epoch reaches no branch command at all');
+        'and no run-state condition either',
+    );
+    strictAssertSame(
+        0,
+        count(rXMLRPCRequest::requestsFor('branch')),
+        'a malformed epoch reaches no branch command at all',
+    );
 
     // The canonical spelling of the very same transaction still works, so this
     // is a rejection of the bytes and not of the code path.
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
-    strictAssertSame(RuTrackerAtomicOwnership::ACTED,
+    strictAssertSame(
+        RuTrackerAtomicOwnership::ACTED,
         RuTrackerAtomicOwnership::erase($hash, ['chk-replaces' => $canonical]),
-        'the canonical record still authorises the exact same action');
-    strictAssertSame(1, count(rXMLRPCRequest::requestsFor('branch')),
-        'exactly one atomic attempt for the canonical record');
+        'the canonical record still authorises the exact same action',
+    );
+    strictAssertSame(
+        1,
+        count(rXMLRPCRequest::requestsFor('branch')),
+        'exactly one atomic attempt for the canonical record',
+    );
 });
 
 // buildCondition()'s state/is_open projection reads through the same canonical
@@ -307,23 +376,36 @@ $suite->test('the projection state/is_open cast is a canonical 0/1 read, not a c
     $hash = str_repeat('A', 40);
     $marker = str_repeat('b', 32);
     foreach (['leading zero' => '01', 'plus one' => '+1', 'float' => 1.0,
-                   'bool' => true, 'two' => 2, 'string two' => '2', 'null' => null] as $label => $bad) {
+        'bool' => true, 'two' => 2, 'string two' => '2', 'null' => null] as $label => $bad) {
         rXMLRPCRequest::reset();
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-            RuTrackerAtomicOwnership::erase($hash, ['chk-replacement' => $marker],
-                ['state' => $bad]),
-            $label . ': a non-canonical run-state expectation builds no condition');
-        strictAssertSame(0, count(rXMLRPCRequest::requestsFor('branch')),
-            $label . ': and reaches no branch command');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::erase(
+                $hash,
+                ['chk-replacement' => $marker],
+                ['state' => $bad],
+            ),
+            $label . ': a non-canonical run-state expectation builds no condition',
+        );
+        strictAssertSame(
+            0,
+            count(rXMLRPCRequest::requestsFor('branch')),
+            $label . ': and reaches no branch command',
+        );
     }
 
     foreach ([0, 1, '0', '1'] as $good) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
-        strictAssertSame(RuTrackerAtomicOwnership::ACTED,
-            RuTrackerAtomicOwnership::erase($hash, ['chk-replacement' => $marker],
-                ['state' => $good]),
-            'the four canonical spellings of 0/1 still build the condition');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::ACTED,
+            RuTrackerAtomicOwnership::erase(
+                $hash,
+                ['chk-replacement' => $marker],
+                ['state' => $good],
+            ),
+            'the four canonical spellings of 0/1 still build the condition',
+        );
     }
 });
 
@@ -350,8 +432,11 @@ $suite->test('canonicalForumId is canonicalPositiveInt32 over a trimmed value, a
         } else {
             $expected = null;
         }
-        strictAssertSame($expected, RuTrackerRpcValue::canonicalForumId($value),
-            'canonicalForumId on ' . $label);
+        strictAssertSame(
+            $expected,
+            RuTrackerRpcValue::canonicalForumId($value),
+            'canonicalForumId on ' . $label,
+        );
     }
 });
 
@@ -359,14 +444,20 @@ $suite->test('canonicalForumId accepts transport whitespace and still refuses a 
     // Whitespace is the one thing it forgives, because that is transport and
     // not the spelling of the id.
     foreach ([' 22', '22 ', "\n22", "22\n", "\t22\t", "  22  "] as $padded) {
-        strictAssertSame(22, RuTrackerRpcValue::canonicalForumId($padded),
-            'a forum id padded by transport still reads as 22: ' . var_export($padded, true));
+        strictAssertSame(
+            22,
+            RuTrackerRpcValue::canonicalForumId($padded),
+            'a forum id padded by transport still reads as 22: ' . var_export($padded, true),
+        );
     }
     // And everything canonicalPositiveInt32 refuses stays refused once trimmed,
     // which is the half that keeps '007' from being fetched as forum 7.
     foreach ([' 007 ', ' 0 ', ' -1 ', ' 1.0 ', '  ', ' 2147483648 '] as $bad) {
-        strictAssertSame(null, RuTrackerRpcValue::canonicalForumId($bad),
-            'trimming does not rescue a non-canonical id: ' . var_export($bad, true));
+        strictAssertSame(
+            null,
+            RuTrackerRpcValue::canonicalForumId($bad),
+            'trimming does not rescue a non-canonical id: ' . var_export($bad, true),
+        );
     }
 });
 
@@ -387,7 +478,9 @@ function pcCodeWithoutComments($source)
         $c = $source[$i];
         $next = $i + 1 < $length ? $source[$i + 1] : '';
         if (($c === '/' && $next === '/') || $c === '#') {
-            while ($i < $length && $source[$i] !== "\n") { $i++; }
+            while ($i < $length && $source[$i] !== "\n") {
+                $i++;
+            }
             $out .= "\n";
             continue;
         }
@@ -406,10 +499,14 @@ function pcCodeWithoutComments($source)
                 $out .= $source[$i];
                 if ($source[$i] === '\\') {
                     $i++;
-                    if ($i < $length) { $out .= $source[$i]; }
+                    if ($i < $length) {
+                        $out .= $source[$i];
+                    }
                     continue;
                 }
-                if ($source[$i] === $c) { break; }
+                if ($source[$i] === $c) {
+                    break;
+                }
             }
             continue;
         }
@@ -445,23 +542,36 @@ $suite->test('every reader of chk-forum canonicalises it through the shared pred
             $sources[substr($path, strlen($root) + 1)] = pcCodeWithoutComments(file_get_contents($path));
         }
     }
-    strictAssertSame(true, count($sources) > 20,
-        'the plugin source must be listable for this guard to mean anything');
+    strictAssertSame(
+        true,
+        count($sources) > 20,
+        'the plugin source must be listable for this guard to mean anything',
+    );
     $readers = [];
     foreach ($sources as $relative => $code) {
-        if (preg_match('/([\'"])chk-forum\\1/', $code) !== 1) { continue; }
-        if (in_array($relative, $notForumIdReaders, true)) { continue; }
+        if (preg_match('/([\'"])chk-forum\\1/', $code) !== 1) {
+            continue;
+        }
+        if (in_array($relative, $notForumIdReaders, true)) {
+            continue;
+        }
         $readers[] = $relative;
     }
     sort($readers);
     // Names the file, which is what makes a new reader visible here rather
     // than in production.
-    strictAssertSame(['check.php', 'metafetch.php', 'trackers/rutracker.php'], $readers,
-        'these are the files that read chk-forum as a forum id; a new one must be held to the same rule');
+    strictAssertSame(
+        ['check.php', 'metafetch.php', 'trackers/rutracker.php'],
+        $readers,
+        'these are the files that read chk-forum as a forum id; a new one must be held to the same rule',
+    );
     foreach ($readers as $relative) {
         $code = $sources[$relative];
-        strictAssertSame(true, strpos($code, 'RuTrackerRpcValue::canonicalForumId(') !== false,
-            $relative . ' must call the shared predicate in code, not name it in a comment');
+        strictAssertSame(
+            true,
+            strpos($code, 'RuTrackerRpcValue::canonicalForumId(') !== false,
+            $relative . ' must call the shared predicate in code, not name it in a comment',
+        );
         // The negative half, per line rather than per file: check.php reads
         // chk-topic with canonicalPositiveInt32(trim(...)) on the line directly
         // above its forum read, so a file-wide ban on the substring cannot be
@@ -480,10 +590,15 @@ $suite->test('every reader of chk-forum canonicalises it through the shared pred
         // no topic there. One predicate cannot hold both, and the difference is
         // the point rather than an oversight.
         foreach (explode("\n", $code) as $index => $line) {
-            if (stripos($line, 'forum') === false) { continue; }
-            strictAssertSame(false, strpos($line, 'RuTrackerRpcValue::canonicalPositiveInt32(') !== false,
+            if (stripos($line, 'forum') === false) {
+                continue;
+            }
+            strictAssertSame(
+                false,
+                strpos($line, 'RuTrackerRpcValue::canonicalPositiveInt32(') !== false,
                 $relative . ':' . ($index + 1)
-                    . ' names a forum and spells the chk-forum rule by hand beside the shared one');
+                    . ' names a forum and spells the chk-forum rule by hand beside the shared one',
+            );
         }
     }
 });

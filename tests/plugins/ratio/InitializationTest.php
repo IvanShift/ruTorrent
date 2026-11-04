@@ -1,9 +1,9 @@
 <?php
 
-require_once(__DIR__.'/../../php/TestCase.php');
-require_once(__DIR__.'/../../php/FakeRtorrentDaemon.php');
-require_once(__DIR__.'/../../../php/rtorrent.php');
-require_once(__DIR__.'/../../../plugins/ratio/ratio.php');
+require_once(__DIR__ . '/../../php/TestCase.php');
+require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/../../../php/rtorrent.php');
+require_once(__DIR__ . '/../../../plugins/ratio/ratio.php');
 
 class RatioInitializationTest extends TestCase
 {
@@ -15,7 +15,7 @@ class RatioInitializationTest extends TestCase
 
     public function setUp()
     {
-        $this->base = sys_get_temp_dir().'/ratio-init-'.bin2hex(random_bytes(4));
+        $this->base = sys_get_temp_dir() . '/ratio-init-' . bin2hex(random_bytes(4));
         mkdir($this->base, 0700);
         $this->property = self::makeAccessible(new ReflectionProperty('rTorrentSettings', 'theSettings'));
         $this->previousSettings = $this->property->getValue();
@@ -23,33 +23,40 @@ class RatioInitializationTest extends TestCase
         $settings->iVersion = 0x1019;
         $settings->aliases = [];
         $this->property->setValue(null, $settings);
-        foreach(['scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file'] as $name) {
-            $this->globalsBefore[$name] = $GLOBALS[$name] ?? null; }
+        foreach (['scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file'] as $name) {
+            $this->globalsBefore[$name] = $GLOBALS[$name] ?? null;
+        }
         $GLOBALS['scgi_host'] = '127.0.0.1';
         $GLOBALS['rpcTimeOut'] = 2;
         $GLOBALS['rpcLogCalls'] = false;
         $GLOBALS['rpcLogFaults'] = true;
-        $GLOBALS['log_file'] = $this->base.'/errors.log';
+        $GLOBALS['log_file'] = $this->base . '/errors.log';
     }
 
     public function tearDown()
     {
-        if($this->daemon !== null) { $this->daemon->stop(); }
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+        }
         $this->daemon = null;
         $this->property->setValue(null, $this->previousSettings);
-        foreach($this->globalsBefore as $name => $value)
-        {
-            if($value === null) { unset($GLOBALS[$name]); }
-            else { $GLOBALS[$name] = $value; }
+        foreach ($this->globalsBefore as $name => $value) {
+            if ($value === null) {
+                unset($GLOBALS[$name]);
+            } else {
+                $GLOBALS[$name] = $value;
+            }
         }
-        foreach(glob($this->base.'/*') ?: [] as $file) { unlink($file); }
+        foreach (glob($this->base . '/*') ?: [] as $file) {
+            unlink($file);
+        }
         rmdir($this->base);
     }
 
     public function testConcurrentViewInsertIsExpectedAndKeepsTheRatioCallback()
     {
         $this->daemon = new FakeRtorrentDaemon([[],
-            FakeRtorrentDaemon::fault('View with same name already inserted.', -501), [0]], $this->base.'/calls');
+            FakeRtorrentDaemon::fault('View with same name already inserted.', -501), [0]], $this->base . '/calls');
         $GLOBALS['scgi_port'] = $this->daemon->port();
         $ratio = new rRatio();
         $ratio->fillArray();
@@ -67,15 +74,19 @@ class RatioInitializationTest extends TestCase
     public function testThrottleRuleUsesOneQuotedAdditionArgument()
     {
         $views = [];
-        for($i = 0; $i < MAX_RATIO; $i++) { $views[] = 'rat_'.$i; }
-        $this->daemon = new FakeRtorrentDaemon([$views, [0]], $this->base.'/calls');
+        for ($i = 0; $i < MAX_RATIO; $i++) {
+            $views[] = 'rat_' . $i;
+        }
+        $this->daemon = new FakeRtorrentDaemon([$views, [0]], $this->base . '/calls');
         $GLOBALS['scgi_port'] = $this->daemon->port();
         $ratio = new rRatio();
         $ratio->fillArray();
         $ratio->rat[0]['action'] = RAT_FIRSTTHROTTLE + 1;
         $this->assertTrue($ratio->flush(), 'the throttle ratio rule is registered');
         $body = implode("\n", $this->daemon->bodies());
-        $this->assertTrue(strpos($body, '$d.set_throttle_name="thr_1"') !== false,
-            'the throttle value uses the shared quoted addition contract');
+        $this->assertTrue(
+            strpos($body, '$d.set_throttle_name="thr_1"') !== false,
+            'the throttle value uses the shared quoted addition contract',
+        );
     }
 }

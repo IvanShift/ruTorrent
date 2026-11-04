@@ -5,11 +5,11 @@
 // file used to pick that up by accident -- its bencode decoder inherited from
 // php/Torrent.php, which requires util.php -- and the decoder is gone, so the
 // dependency is stated instead of inherited.
-require_once( __DIR__ . '/../../php/util.php' );
-require_once( __DIR__ . '/../../php/urlhost.php' );
-require_once( __DIR__ . '/bencode.php' );
-require_once( __DIR__ . '/state.php' );
-require_once( __DIR__ . '/runstate.php' );
+require_once(__DIR__ . '/../../php/util.php');
+require_once(__DIR__ . '/../../php/urlhost.php');
+require_once(__DIR__ . '/bencode.php');
+require_once(__DIR__ . '/state.php');
+require_once(__DIR__ . '/runstate.php');
 
 // Layer 2 of the post-API design: passkey-less announce confirmation.
 // The probe identity MUST differ from rTorrent's own peer_id/port/key —
@@ -190,7 +190,9 @@ class RuTrackerAnnounce
         $readable = true;
         $state = RuTrackerState::load('announce', $readable);
         $judged = self::judge($readable ? self::entryFor($state, $host) : null, $now, $cap, $window);
-        if ($judged[0] === 'unstorable') { self::logCorruptBudget($host, 'no probe is authorised'); }
+        if ($judged[0] === 'unstorable') {
+            self::logCorruptBudget($host, 'no probe is authorised');
+        }
         return $judged[0];
     }
 
@@ -212,7 +214,9 @@ class RuTrackerAnnounce
         $stored = RuTrackerState::update('announce', function ($state) use ($host, $now, $cap, $window, &$decision) {
             $entry = self::entryFor($state, $host);
             list($decision, $windowStart, $count) = self::judge($entry, $now, $cap, $window);
-            if ($decision !== 'allow') { return $state; }
+            if ($decision !== 'allow') {
+                return $state;
+            }
 
             $entry['window_start'] = $windowStart;
             $entry['window_count'] = $count + 1;
@@ -251,13 +255,15 @@ class RuTrackerAnnounce
             if (class_exists('ruTrackerChecker')) {
                 ruTrackerChecker::logDebug('announce: the budget for ' . $host . ' could not be '
                     . ($failure === 'unreadable' ? 'read' : 'written')
-                    . ', so the slot is refused rather than spent unrecorded'); }
+                    . ', so the slot is refused rather than spent unrecorded');
+            }
             return 'unstorable';
         }
         // judge() refused an unreadable entry and the closure returned $state
         // untouched, so the corrupted record is still on disk as it was.
         if ($decision === 'unstorable') {
-            self::logCorruptBudget($host, 'the slot is refused rather than taken against it'); }
+            self::logCorruptBudget($host, 'the slot is refused rather than taken against it');
+        }
         return $decision;
     }
 
@@ -274,13 +280,21 @@ class RuTrackerAnnounce
     {
         $host = UrlHost::normalize($host);
         RuTrackerState::update('announce', function ($state) use ($host, $reservedAt) {
-            if (!isset($state[$host]) || !is_array($state[$host])) { return $state; }
+            if (!isset($state[$host]) || !is_array($state[$host])) {
+                return $state;
+            }
             // Refunding into an entry nobody can read would overwrite the
             // corruption with a smaller number invented here, so it is not.
             $read = self::entryFor($state, $host);
-            if ($read === null) { return $state; }
-            if ($read['window_start'] > (int) $reservedAt) { return $state; }
-            if ($read['window_count'] > 0) { $state[$host]['window_count'] = $read['window_count'] - 1; }
+            if ($read === null) {
+                return $state;
+            }
+            if ($read['window_start'] > (int) $reservedAt) {
+                return $state;
+            }
+            if ($read['window_count'] > 0) {
+                $state[$host]['window_count'] = $read['window_count'] - 1;
+            }
             return $state;
         });
     }
@@ -301,13 +315,17 @@ class RuTrackerAnnounce
         $status = (int) $status;
         // Anything that is neither a refusal nor a served answer leaves the
         // host's record exactly as it was -- including untouched on disk.
-        if ($status !== 403 && $status !== 200) { return; }
+        if ($status !== 403 && $status !== 200) {
+            return;
+        }
         RuTrackerState::update('announce', function ($state) use ($host, $now, $status) {
             // The 403 branch DOUBLES the stored backoff and the 200 branch
             // CLEARS it; both need the current one to be true. An entry that
             // will not read is left as it is, not restarted at one hour.
             $entry = self::entryFor($state, $host);
-            if ($entry === null) { return $state; }
+            if ($entry === null) {
+                return $state;
+            }
             $read = $entry;
 
             if ($status === 403) {
@@ -335,15 +353,20 @@ class RuTrackerAnnounce
         $alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
         $tail = '';
         for ($i = 0; $i < 12; $i++) {
-            $tail .= $alphabet[random_int(0, strlen($alphabet) - 1)]; }
+            $tail .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
         return self::PEER_PREFIX . $tail;
     }
 
     public static function buildUrl($announceUrl, $hash, $peerId, $port, $key)
     {
-        if (!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) { return null; }
+        if (!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) {
+            return null;
+        }
         $parts = @parse_url((string) $announceUrl);
-        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) { return null; }
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) {
+            return null;
+        }
         // Having a scheme is not the same as having one this probe can be
         // spoken over. Snoopy's scheme switch (php/Snoopy.class.inc:283-318)
         // sends a request for the byte-exact literals 'http' and 'https' and
@@ -353,7 +376,9 @@ class RuTrackerAnnounce
         // while its caller spent a budget slot and then read the reply it
         // never got as an inconclusive answer about the topic. Answering null
         // puts such a row on the same never-ran path as a pathless one.
-        if ($parts['scheme'] !== 'http' && $parts['scheme'] !== 'https') { return null; }
+        if ($parts['scheme'] !== 'http' && $parts['scheme'] !== 'https') {
+            return null;
+        }
 
         // Rebuild scheme+host+path only: an existing query string (RuTracker
         // announce URLs carry ?pk=<passkey>) must never reach the probe.
@@ -368,14 +393,18 @@ class RuTrackerAnnounce
 
     public static function classify($status, $body)
     {
-        if ((int) $status !== 200 || !is_string($body) || $body === '') { return 'uncertain'; }
+        if ((int) $status !== 200 || !is_string($body) || $body === '') {
+            return 'uncertain';
+        }
 
         // Bencode dictionaries start with 'd'. Reject any other top-level
         // type (lists, ints, raw strings) before decoding: an empty list
         // ('le') and an empty dictionary ('de') both mean "nothing here" to a
         // reader that has thrown the types away, and only the raw bytes -- or
         // the typed tree below -- can tell them apart.
-        if ($body[0] !== 'd') { return 'uncertain'; }
+        if ($body[0] !== 'd') {
+            return 'uncertain';
+        }
         // A legitimate announce reply to THIS probe is a few hundred bytes:
         // numwant=0 and compact=1 mean no peer list, so the answer is a
         // handful of integers or a failure reason. The cap is a bound on the
@@ -386,18 +415,24 @@ class RuTrackerAnnounce
         // previous 64 KiB allowed ~32k levels and did not. It is checked here
         // as well as inside the grammar so an oversized answer is refused
         // without being read at all.
-        if (strlen($body) > self::MAX_ANNOUNCE_BODY) { return 'uncertain'; }
+        if (strlen($body) > self::MAX_ANNOUNCE_BODY) {
+            return 'uncertain';
+        }
 
         $root = RuTrackerBencode::decode($body, self::BENCODE_LIMITS);
         // One decode, one tree. This used to be two passes over the same
         // bytes -- a schema scanner and an inherited Torrent::decode() -- and
         // the pair had to agree about what "valid" meant to be worth anything.
-        if ($root === false || $root['type'] !== 'dictionary' || empty($root['value'])) { return 'uncertain'; }
+        if ($root === false || $root['type'] !== 'dictionary' || empty($root['value'])) {
+            return 'uncertain';
+        }
 
         $reason = RuTrackerBencode::entry($root, 'failure reason');
         if ($reason !== null) {
             if ($reason['type'] !== 'string'
-                || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) { return 'uncertain'; }
+                || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) {
+                return 'uncertain';
+            }
             return 'unregistered';
         }
 
@@ -417,12 +452,15 @@ class RuTrackerAnnounce
         // the reservation overwrote the bytes nobody could read.
         // array_key_exists(), because a stored null is present too.
         if (!is_array($state) || (array_key_exists($host, $state) && !is_array($state[$host]))) {
-            return null; }
+            return null;
+        }
         $entry = isset($state[$host]) ? $state[$host] : [];
         $read = [];
         foreach (['cooldown_until', 'window_start', 'window_count', 'cooldown_length'] as $f) {
             $v = array_key_exists($f, $entry) ? RuTrackerRpcValue::canonicalNonnegativeInteger($entry[$f]) : 0;
-            if ($v === null) { return null; }
+            if ($v === null) {
+                return null;
+            }
             $read[$f] = $v;
         }
         return $read;
@@ -448,7 +486,8 @@ class RuTrackerAnnounce
         if (class_exists('ruTrackerChecker')) {
             ruTrackerChecker::logUnrepairable('announce: the stored budget for ' . $host
                 . ' in announce.json is not readable, so ' . $what
-                . ', and nothing will rewrite it'); }
+                . ', and nothing will rewrite it');
+        }
     }
 
     // Takes entryFor()'s already-canonical reading, and answers 'unstorable'
@@ -456,8 +495,12 @@ class RuTrackerAnnounce
     // zero, exactly as one that cannot be WRITTEN is.
     private static function judge($read, $now, $cap, $window)
     {
-        if ($read === null) { return ['unstorable', 0, 0]; }
-        if ($now <= $read['cooldown_until']) { return ['cooldown', 0, 0]; }
+        if ($read === null) {
+            return ['unstorable', 0, 0];
+        }
+        if ($now <= $read['cooldown_until']) {
+            return ['cooldown', 0, 0];
+        }
 
         $windowStart = $read['window_start'];
         $count = $read['window_count'];
@@ -494,20 +537,32 @@ class RuTrackerAnnounce
 
     private static function hasValidPeers($node)
     {
-        if (!is_array($node)) { return false; }
+        if (!is_array($node)) {
+            return false;
+        }
         // compact=1 asks for the packed form -- six bytes per peer -- but the
         // tracker is free to answer with the dictionary list instead, and an
         // EMPTY list is a valid answer to numwant=0. An empty dictionary is
         // not: that is a different type, which is why the grammar has to keep
         // 'le' and 'de' apart.
-        if ($node['type'] === 'string') { return strlen($node['value']) % 6 === 0; }
-        if ($node['type'] !== 'list') { return false; }
+        if ($node['type'] === 'string') {
+            return strlen($node['value']) % 6 === 0;
+        }
+        if ($node['type'] !== 'list') {
+            return false;
+        }
 
         foreach ($node['value'] as $peer) {
-            if ($peer['type'] !== 'dictionary') { return false; }
+            if ($peer['type'] !== 'dictionary') {
+                return false;
+            }
             $ip = RuTrackerBencode::entry($peer, 'ip');
-            if (!is_array($ip) || $ip['type'] !== 'string') { return false; }
-            if (!self::isValidPeerPort(RuTrackerBencode::entry($peer, 'port'))) { return false; }
+            if (!is_array($ip) || $ip['type'] !== 'string') {
+                return false;
+            }
+            if (!self::isValidPeerPort(RuTrackerBencode::entry($peer, 'port'))) {
+                return false;
+            }
         }
         return true;
     }
@@ -521,7 +576,9 @@ class RuTrackerAnnounce
 
         foreach (['complete', 'incomplete', 'min interval'] as $counter) {
             $node = RuTrackerBencode::entry($root, $counter);
-            if ($node !== null && !self::isCanonicalNonnegativeInteger($node)) { return false; }
+            if ($node !== null && !self::isCanonicalNonnegativeInteger($node)) {
+                return false;
+            }
         }
         return true;
     }

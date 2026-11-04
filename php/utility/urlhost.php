@@ -34,123 +34,130 @@
  */
 class UrlHost
 {
-	/**
-	 * A host name folded to the one spelling the tests below compare: lower
-	 * case, without the root dot. Anything that is not a string folds to ''.
-	 */
-	public static function normalize($host)
-	{
-		if(!is_string($host)) {
-			return ''; }
-		return strtolower(rtrim($host, '.'));
-	}
+    /**
+     * A host name folded to the one spelling the tests below compare: lower
+     * case, without the root dot. Anything that is not a string folds to ''.
+     */
+    public static function normalize($host)
+    {
+        if (!is_string($host)) {
+            return '';
+        }
+        return strtolower(rtrim($host, '.'));
+    }
 
-	/**
-	 * The host of a URL, normalized, or null when the URL has none that
-	 * parse_url() can find -- which is the answer for a URL that only
-	 * mentions a host somewhere in its path or query. A scheme-relative
-	 * reference (//host/path) has a host; callers needing HTTPS must also
-	 * check the scheme. An IPv6 literal keeps its brackets, and IDN
-	 * spellings are compared as supplied, without Unicode/punycode
-	 * conversion.
-	 */
-	public static function of($url)
-	{
-		$host = @parse_url((string) $url, PHP_URL_HOST);
-		if(!is_string($host) || $host === '') {
-			return null; }
-		$host = self::normalize($host);
-		return $host === '' ? null : $host;
-	}
+    /**
+     * The host of a URL, normalized, or null when the URL has none that
+     * parse_url() can find -- which is the answer for a URL that only
+     * mentions a host somewhere in its path or query. A scheme-relative
+     * reference (//host/path) has a host; callers needing HTTPS must also
+     * check the scheme. An IPv6 literal keeps its brackets, and IDN
+     * spellings are compared as supplied, without Unicode/punycode
+     * conversion.
+     */
+    public static function of($url)
+    {
+        $host = @parse_url((string) $url, PHP_URL_HOST);
+        if (!is_string($host) || $host === '') {
+            return null;
+        }
+        $host = self::normalize($host);
+        return $host === '' ? null : $host;
+    }
 
-	/** Allow only the default-port HTTP to HTTPS upgrade on the same host. */
-	public static function isHttpsUpgrade($source, $target)
-	{
-		$a = @parse_url((string) $source);
-		$b = @parse_url((string) $target);
-		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
-			return false; }
-		$host = self::of($source);
-		return strtolower($a['scheme']) === 'http' && strtolower($b['scheme']) === 'https'
-			&& $host !== null && $host === self::of($target)
-			&& (!isset($a['port']) || $a['port'] === 80)
-			&& (!isset($b['port']) || $b['port'] === 443);
-	}
+    /** Allow only the default-port HTTP to HTTPS upgrade on the same host. */
+    public static function isHttpsUpgrade($source, $target)
+    {
+        $a = @parse_url((string) $source);
+        $b = @parse_url((string) $target);
+        if (!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
+            return false;
+        }
+        $host = self::of($source);
+        return strtolower($a['scheme']) === 'http' && strtolower($b['scheme']) === 'https'
+            && $host !== null && $host === self::of($target)
+            && (!isset($a['port']) || $a['port'] === 80)
+            && (!isset($b['port']) || $b['port'] === 443);
+    }
 
-	/** Compare normalized HTTP(S) scheme, host and effective port. */
-	public static function sameOrigin($left, $right)
-	{
-		$a = @parse_url((string) $left);
-		$b = @parse_url((string) $right);
-		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
-			return false; }
-		$scheme = strtolower($a['scheme']);
-		if(!in_array($scheme, ['http', 'https'], true) || $scheme !== strtolower($b['scheme'])) {
-			return false; }
-		$host = self::of($left);
-		$port = $scheme === 'https' ? 443 : 80;
-		return $host !== null && $host === self::of($right)
-			&& (isset($a['port']) ? $a['port'] : $port) === (isset($b['port']) ? $b['port'] : $port);
-	}
+    /** Compare normalized HTTP(S) scheme, host and effective port. */
+    public static function sameOrigin($left, $right)
+    {
+        $a = @parse_url((string) $left);
+        $b = @parse_url((string) $right);
+        if (!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
+            return false;
+        }
+        $scheme = strtolower($a['scheme']);
+        if (!in_array($scheme, ['http', 'https'], true) || $scheme !== strtolower($b['scheme'])) {
+            return false;
+        }
+        $host = self::of($left);
+        $port = $scheme === 'https' ? 443 : 80;
+        return $host !== null && $host === self::of($right)
+            && (isset($a['port']) ? $a['port'] : $port) === (isset($b['port']) ? $b['port'] : $port);
+    }
 
-	/**
-	 * True when $host is one of $hosts or a subdomain of one. Both sides are
-	 * normalized; an empty host or an empty candidate matches nothing.
-	 */
-	public static function isOneOf($host, $hosts)
-	{
-		$host = self::normalize($host);
-		if($host === '') {
-			return false; }
-		foreach((array) $hosts as $candidate)
-		{
-			$candidate = self::normalize($candidate);
-			if($candidate !== '' && (($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate))) {
-				return true; }
-		}
-		return false;
-	}
+    /**
+     * True when $host is one of $hosts or a subdomain of one. Both sides are
+     * normalized; an empty host or an empty candidate matches nothing.
+     */
+    public static function isOneOf($host, $hosts)
+    {
+        $host = self::normalize($host);
+        if ($host === '') {
+            return false;
+        }
+        foreach ((array) $hosts as $candidate) {
+            $candidate = self::normalize($candidate);
+            if ($candidate !== '' && (($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate))) {
+                return true;
+            }
+        }
+        return false;
+    }
 
-	/**
-	 * True when $host is exactly one of $hosts, subdomains excluded: for a
-	 * list that names every host it admits. Both sides are normalized.
-	 */
-	public static function isExactlyOneOf($host, $hosts)
-	{
-		$host = self::normalize($host);
-		return $host !== '' && in_array($host, array_map([__CLASS__, 'normalize'], (array) $hosts), true);
-	}
+    /**
+     * True when $host is exactly one of $hosts, subdomains excluded: for a
+     * list that names every host it admits. Both sides are normalized.
+     */
+    public static function isExactlyOneOf($host, $hosts)
+    {
+        $host = self::normalize($host);
+        return $host !== '' && in_array($host, array_map([__CLASS__, 'normalize'], (array) $hosts), true);
+    }
 
-	/**
-	 * True when $url's host is one of $hosts (or a subdomain of one), its
-	 * scheme is $scheme when one is named, and its path starts with
-	 * $pathPrefix when one is named. Port is not part of this host predicate;
-	 * use sameOrigin() when it matters. Loginmgr account test() methods that
-	 * call this select accounts and bound Snoopy's cross-origin session trust.
-	 *
-	 * The scheme may not be weakened: an https site matched over http would
-	 * have the cookies put on the wire in clear by the very first request,
-	 * before any redirect could upgrade it, and a feed link is not written
-	 * by the user. The other direction is allowed -- an https URL to a site
-	 * still configured http simply fails to connect, and costs nothing.
-	 */
-	public static function urlIsOneOf($url, $hosts, $scheme = null, $pathPrefix = null)
-	{
-		$parts = @parse_url((string) $url);
-		if(!is_array($parts) || empty($parts['host'])) {
-			return false; }
-		if($scheme !== null)
-		{
-			$urlScheme = strtolower(isset($parts['scheme']) ? $parts['scheme'] : '');
-			if(($urlScheme !== strtolower($scheme)) && ($urlScheme !== 'https')) {
-				return false; }
-		}
-		if($pathPrefix !== null)
-		{
-			$path = isset($parts['path']) ? $parts['path'] : '/';
-			if(strncasecmp($path, $pathPrefix, strlen($pathPrefix)) !== 0) {
-				return false; }
-		}
-		return self::isOneOf($parts['host'], $hosts);
-	}
+    /**
+     * True when $url's host is one of $hosts (or a subdomain of one), its
+     * scheme is $scheme when one is named, and its path starts with
+     * $pathPrefix when one is named. Port is not part of this host predicate;
+     * use sameOrigin() when it matters. Loginmgr account test() methods that
+     * call this select accounts and bound Snoopy's cross-origin session trust.
+     *
+     * The scheme may not be weakened: an https site matched over http would
+     * have the cookies put on the wire in clear by the very first request,
+     * before any redirect could upgrade it, and a feed link is not written
+     * by the user. The other direction is allowed -- an https URL to a site
+     * still configured http simply fails to connect, and costs nothing.
+     */
+    public static function urlIsOneOf($url, $hosts, $scheme = null, $pathPrefix = null)
+    {
+        $parts = @parse_url((string) $url);
+        if (!is_array($parts) || empty($parts['host'])) {
+            return false;
+        }
+        if ($scheme !== null) {
+            $urlScheme = strtolower(isset($parts['scheme']) ? $parts['scheme'] : '');
+            if (($urlScheme !== strtolower($scheme)) && ($urlScheme !== 'https')) {
+                return false;
+            }
+        }
+        if ($pathPrefix !== null) {
+            $path = isset($parts['path']) ? $parts['path'] : '/';
+            if (strncasecmp($path, $pathPrefix, strlen($pathPrefix)) !== 0) {
+                return false;
+            }
+        }
+        return self::isOneOf($parts['host'], $hosts);
+    }
 }

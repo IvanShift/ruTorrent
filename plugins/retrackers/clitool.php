@@ -6,12 +6,16 @@ require_once(__DIR__ . '/../../php/cli-only.php');
 rutorrent_require_cli(__FILE__);
 $args = array_slice(isset($argv) && is_array($argv) ? $argv : [], 1);
 $user = '';
-foreach ($args as $arg) { if (strncmp($arg, '--user=', 7) === 0) { $user = substr($arg, 7); } }
+foreach ($args as $arg) {
+    if (strncmp($arg, '--user=', 7) === 0) {
+        $user = substr($arg, 7);
+    }
+}
 // REMOTE_USER must be validated before cache.php loads the profile; this is
 // the same grammar as RetrackersProfileName::valid(), loaded below.
 if (preg_match('/^[a-z0-9_-]*$/D', $user) !== 1) {
-	fwrite(STDERR, "invalid --user: expected lowercase profile name\n");
-	exit(2);
+    fwrite(STDERR, "invalid --user: expected lowercase profile name\n");
+    exit(2);
 }
 $_SERVER['REMOTE_USER'] = $user;
 // Settings reads must not create profiles or send bootstrap mutations.
@@ -24,4 +28,4 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
 require_once(__DIR__ . '/dispatch.php');
 require_once(__DIR__ . '/retryreset.php');
 $retrackersToolContext = ['shared_profile' => !empty($forbidUserSettings),
-	'scgi' => ['host' => $scgi_host, 'port' => $scgi_port]];
+    'scgi' => ['host' => $scgi_host, 'port' => $scgi_port]];

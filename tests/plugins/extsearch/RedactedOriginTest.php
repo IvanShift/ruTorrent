@@ -49,8 +49,12 @@ final class RedactedOriginTest extends TestCase
         $this->assertEquals(1, count($results), 'synthetic row exercises the parser');
         $link = 'https://redacted.sh/torrents.php?action=download&id=7';
         $this->assertTrue(isset($results[$link]), 'parsed download link uses current website origin');
-        if(isset($results[$link])) {
-            $this->assertEquals('https://redacted.sh/torrents.php?id=42', $results[$link]['desc'],
-                'parsed description link uses current website origin'); }
+        if (isset($results[$link])) {
+            $this->assertEquals(
+                'https://redacted.sh/torrents.php?id=42',
+                $results[$link]['desc'],
+                'parsed description link uses current website origin',
+            );
+        }
     }
 }

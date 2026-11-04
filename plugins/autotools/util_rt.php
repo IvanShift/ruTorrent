@@ -1,104 +1,118 @@
 <?php
+
 require_once dirname(__DIR__, 2) . '/php/rtorrent.php';
 
-require_once( "../../php/xmlrpc.php" );
-require_once( "../../php/Torrent.php" );
-require_once( dirname(__FILE__)."/../../php/utility/rtpluginutil.php" );
+require_once("../../php/xmlrpc.php");
+require_once("../../php/Torrent.php");
+require_once(dirname(__FILE__) . "/../../php/utility/rtpluginutil.php");
 require_once(__DIR__ . '/file_paths.php');
 
 //------------------------------------------------------------------------------
 // Check if script was launched in background (with --daemon switch)
 //------------------------------------------------------------------------------
-function rtIsDaemon( $args )
+function rtIsDaemon($args)
 {
-	foreach( $args as $arg ) {
-		if( $arg == '--daemon' ) {
-			return true; } }
-	return false;
+    foreach ($args as $arg) {
+        if ($arg == '--daemon') {
+            return true;
+        }
+    }
+    return false;
 }
 
 //------------------------------------------------------------------------------
 // Making current process a daemon (run in background)
 //------------------------------------------------------------------------------
-function rtDaemon( $php, $script, $args )
+function rtDaemon($php, $script, $args)
 {
-	if( !$php || $php == '' ) { $php = 'php'; }
-	$params = Utility::escapeShellArg( $script ).' --daemon';
-	foreach( $args as $arg ) {
-		$params .= ' '.Utility::escapeShellArg( $arg ); }
-	exec( Utility::escapeShellArg($php).' '.$params.' > /dev/null 2>/dev/null &', $out, $ret );
-	exit( (int)$ret );
+    if (!$php || $php == '') {
+        $php = 'php';
+    }
+    $params = Utility::escapeShellArg($script) . ' --daemon';
+    foreach ($args as $arg) {
+        $params .= ' ' . Utility::escapeShellArg($arg);
+    }
+    exec(Utility::escapeShellArg($php) . ' ' . $params . ' > /dev/null 2>/dev/null &', $out, $ret);
+    exit((int) $ret);
 }
 
 
 //------------------------------------------------------------------------------
 // Operations with semaphores
 //------------------------------------------------------------------------------
-function rtSemGet( $id )
+function rtSemGet($id)
 {
-	//$available = in_array( "sysvsem", get_loaded_extensions() );
-	$available = function_exists( "sem_get" );
-	return $available ? sem_get( $id, 1 ) : false;
+    //$available = in_array( "sysvsem", get_loaded_extensions() );
+    $available = function_exists("sem_get");
+    return $available ? sem_get($id, 1) : false;
 }
 
 //------------------------------------------------------------------------------
-function rtSemLock( $sem_key )
+function rtSemLock($sem_key)
 {
-	if( $sem_key ) { sem_acquire( $sem_key ); }
+    if ($sem_key) {
+        sem_acquire($sem_key);
+    }
 }
 
 //------------------------------------------------------------------------------
-function rtSemUnlock( $sem_key )
+function rtSemUnlock($sem_key)
 {
-	if( $sem_key ) { sem_release( $sem_key ); }
+    if ($sem_key) {
+        sem_release($sem_key);
+    }
 }
 
 
 //------------------------------------------------------------------------------
 // Operations with slashes in paths
 //------------------------------------------------------------------------------
-function rtRemoveTailSlash( $str )
+function rtRemoveTailSlash($str)
 {
-	$len = strlen( $str );
-	if( $len == 0 || $str[$len-1] != '/' ) {
-		return $str; }
-	return substr( $str, 0, -1 );
+    $len = strlen($str);
+    if ($len == 0 || $str[$len - 1] != '/') {
+        return $str;
+    }
+    return substr($str, 0, -1);
 }
 
 //------------------------------------------------------------------------------
 // Remove last token from $str string, using $sep as separator
 //------------------------------------------------------------------------------
-function rtRemoveLastToken( $str, $sep )
+function rtRemoveLastToken($str, $sep)
 {
-	$pos = strrpos( $str, $sep );
-	if( $pos === false ) {
-		return $str; }
-	return substr( $str, 0, $pos );
+    $pos = strrpos($str, $sep);
+    if ($pos === false) {
+        return $str;
+    }
+    return substr($str, 0, $pos);
 }
 
 //------------------------------------------------------------------------------
 // Return a part of $real_dir path, relative to $base_dir
 //------------------------------------------------------------------------------
-function rtGetRelativePath( $base_dir, $real_dir )
+function rtGetRelativePath($base_dir, $real_dir)
 {
-	$base_dir = rtAddTailSlash( $base_dir );
-	$len = strlen( $base_dir );
-	$str = substr( $real_dir, 0, $len );
-	if( $str != $base_dir ) {
-		return ''; }			// $real_dir is NOT SUBDIR of $base_dir
-	$str = substr( $real_dir, $len );
-	if( $str != '' ) {
-		return $str; }			// $read_dir is SUBDIR of $base_dir
-	return './';				// $real_dir is EQUAL to $base_dir
+    $base_dir = rtAddTailSlash($base_dir);
+    $len = strlen($base_dir);
+    $str = substr($real_dir, 0, $len);
+    if ($str != $base_dir) {
+        return '';
+    }			// $real_dir is NOT SUBDIR of $base_dir
+    $str = substr($real_dir, $len);
+    if ($str != '') {
+        return $str;
+    }			// $read_dir is SUBDIR of $base_dir
+    return './';				// $real_dir is EQUAL to $base_dir
 }
 
 //------------------------------------------------------------------------------
 // Check if path is a file (without 2 Gb limit)
 //------------------------------------------------------------------------------
-function rtIsFile( $path )
+function rtIsFile($path)
 {
-	// use Novik's implementation
-	return LFS::is_file( $path );
+    // use Novik's implementation
+    return LFS::is_file($path);
 }
 
 
@@ -106,10 +120,11 @@ function rtIsFile( $path )
 // Preserve the file operation entry point for non-Move modes. Move uses the
 // native queue worker; unsupported operation names refuse visibly.
 //------------------------------------------------------------------------------
-function rtOpFiles( $files, $src, $dst, $op, $dbg = false, $context = null )
+function rtOpFiles($files, $src, $dst, $op, $dbg = false, $context = null)
 {
-    if( in_array( $op, [ 'Copy', 'HardLink', 'SoftLink' ], true ) ) {
-        return AutoToolsFileTransaction::run( $files, $src, $dst, $op, $dbg, $context ); }
+    if (in_array($op, [ 'Copy', 'HardLink', 'SoftLink' ], true)) {
+        return AutoToolsFileTransaction::run($files, $src, $dst, $op, $dbg, $context);
+    }
 
     FileUtil::toLog('autotools: unsupported file operation refused');
     return false;
@@ -118,36 +133,36 @@ function rtOpFiles( $files, $src, $dst, $op, $dbg = false, $context = null )
 //------------------------------------------------------------------------------
 // Recursively scan files at $path directory
 //------------------------------------------------------------------------------
-function rtScanFiles( $path, $mask, $subdir = '' )
+function rtScanFiles($path, $mask, $subdir = '')
 {
-	$path = rtAddTailSlash( $path );
-	if( $subdir != '' ) {
-		$subdir = rtAddTailSlash( $subdir ); }
-	$ret = [];
-	if( is_dir( $path.$subdir ) )
-	{
-		$handle = @opendir( $path.$subdir );
-		if( $handle === false ) {
-			return $ret; }
-		while( false !== ( $item = readdir( $handle ) ) )
-		{
-			if( $item == '.' || $item == '..' ) {
-				continue; }
-			$path_to_item = $path.$subdir.$item;
-			if( !is_link( $path_to_item ) && is_dir( $path_to_item ) )
-			{
-				$ret = array_merge( $ret,
-					rtScanFiles( $path, $mask, $subdir.$item ) );
-			}
-			elseif( rtIsFile( $path_to_item ) &&
-				preg_match( $mask, $item ) )
-			{
-				$ret[] = $subdir.$item;
-			}
-		}
-		closedir( $handle );
-	}
-	return ( $ret );
+    $path = rtAddTailSlash($path);
+    if ($subdir != '') {
+        $subdir = rtAddTailSlash($subdir);
+    }
+    $ret = [];
+    if (is_dir($path . $subdir)) {
+        $handle = @opendir($path . $subdir);
+        if ($handle === false) {
+            return $ret;
+        }
+        while (false !== ($item = readdir($handle))) {
+            if ($item == '.' || $item == '..') {
+                continue;
+            }
+            $path_to_item = $path . $subdir . $item;
+            if (!is_link($path_to_item) && is_dir($path_to_item)) {
+                $ret = array_merge(
+                    $ret,
+                    rtScanFiles($path, $mask, $subdir . $item),
+                );
+            } elseif (rtIsFile($path_to_item)
+                && preg_match($mask, $item)) {
+                $ret[] = $subdir . $item;
+            }
+        }
+        closedir($handle);
+    }
+    return ($ret);
 }
 
 
@@ -160,7 +175,8 @@ function rtScanFiles( $path, $mask, $subdir = '' )
 // may declare it shorter. AutoTools Move and the non-Move x-dest recovery
 // both wait through this one helper.
 if (!defined('AUTOTOOLS_SESSION_SAVE_WAIT')) {
-    define('AUTOTOOLS_SESSION_SAVE_WAIT', 10.0); }
+    define('AUTOTOOLS_SESSION_SAVE_WAIT', 10.0);
+}
 
 // How long the recovery pass plans again a file operation that met a
 // transient state -- a session copy rTorrent has not published yet, a
@@ -173,7 +189,9 @@ function rtFileJobRetryWindow()
 
 function rtAwaitSessionSave($hash, $ready)
 {
-    if (call_user_func($ready)) { return true; }
+    if (call_user_func($ready)) {
+        return true;
+    }
     $save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'), [$hash]));
     $save->important = false;
     $save->success();
@@ -181,7 +199,9 @@ function rtAwaitSessionSave($hash, $ready)
     $deadline = hrtime(true) / 1e9 + AUTOTOOLS_SESSION_SAVE_WAIT;
     do {
         usleep(100000);
-        if (call_user_func($ready)) { return true; }
+        if (call_user_func($ready)) {
+            return true;
+        }
     } while (hrtime(true) / 1e9 < $deadline);
     return false;
 }
@@ -218,21 +238,28 @@ class AutoToolsFileTransaction
     public static function journalRoot($create = true)
     {
         $session = rTorrentSettings::get()->session;
-        if (!is_string($session) || $session === '') { return false; }
+        if (!is_string($session) || $session === '') {
+            return false;
+        }
         $root = rtrim($session, '/') . '/.autotools-file-jobs';
         if (!is_dir($root) && (!$create || !self::safeDirectory(rtrim($session, '/'))
             || (!@mkdir($root, 0700) && !is_dir($root)))) {
-            return false; }
+            return false;
+        }
         return self::safeDirectory($root) ? $root : false;
     }
 
     public static function recoverAll($root)
     {
-        if (!file_exists($root) && !is_link($root)) { return true; }
+        if (!file_exists($root) && !is_link($root)) {
+            return true;
+        }
         // Without a receipt there is nothing to recover; a hook arriving now
         // then finds the journal free. An unreadable journal is still refused.
         $entries = is_dir($root) && !is_link($root) ? @scandir($root) : false;
-        if (is_array($entries) && !preg_grep('/\.nonmove\.json$/D', $entries)) { return true; }
+        if (is_array($entries) && !preg_grep('/\.nonmove\.json$/D', $entries)) {
+            return true;
+        }
         if (!self::safeDirectory($root)) {
             self::logHold('journal', 'unsafe or absent journal directory');
             return false;
@@ -240,11 +267,17 @@ class AutoToolsFileTransaction
         $handle = @fopen($root . '/.lock', 'c');
         if (!$handle || !@flock($handle, LOCK_EX)) {
             self::logHold('journal', 'cannot lock recovery');
-            if ($handle) { fclose($handle); }
+            if ($handle) {
+                fclose($handle);
+            }
             return false;
         }
-        try { return static::recoverLocked($root); }
-        finally { flock($handle, LOCK_UN); fclose($handle); }
+        try {
+            return static::recoverLocked($root);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     // Returns true when the job is published (or already was), false when it
@@ -254,103 +287,139 @@ class AutoToolsFileTransaction
     public static function run($files, $src, $dst, $op, $dbg = false, $context = null)
     {
         self::$refusal = null;
-        self::$subject = is_array($context) && isset($context['hash']) && is_string($context['hash']) &&
-            preg_match('/^[0-9A-F]{40}$/D', $context['hash']) ? $context['hash'] : 'new';
-        if (!self::validFiles($files) || !in_array($op, ['Copy', 'HardLink', 'SoftLink'], true) ||
-            !is_dir($src) || !is_string($dst) || $dst === '') {
-            return self::refuse('invalid file-operation request'); }
+        self::$subject = is_array($context) && isset($context['hash']) && is_string($context['hash'])
+            && preg_match('/^[0-9A-F]{40}$/D', $context['hash']) ? $context['hash'] : 'new';
+        if (!self::validFiles($files) || !in_array($op, ['Copy', 'HardLink', 'SoftLink'], true)
+            || !is_dir($src) || !is_string($dst) || $dst === '') {
+            return self::refuse('invalid file-operation request');
+        }
         // Both spellings are checked before anything is created through them,
         // and the destination again once it exists (R4-FS-03). The refusal
         // names the download and the path that failed: it once said only
         // 'nonmove new held: source or destination has an unsafe writable
         // ancestor' and nothing on the torrent.
-        if (!self::payloadDirectory($src)) { return self::refusePath('untrusted-directory', $src); }
-        if (!self::payloadDirectory($dst, true)) { return self::refusePath('untrusted-directory', $dst); }
+        if (!self::payloadDirectory($src)) {
+            return self::refusePath('untrusted-directory', $src);
+        }
+        if (!self::payloadDirectory($dst, true)) {
+            return self::refusePath('untrusted-directory', $dst);
+        }
         $created = [];
         try {
-        if (!self::makeDestination($dst, $created)) { return self::refusePath('destination-unavailable', $dst); }
-        if (!self::payloadDirectory($dst)) { return self::refusePath('untrusted-directory', $dst); }
-        if (($resolvedDst = realpath($dst)) === false) { return self::refusePath('destination-unavailable', $dst); }
-        $src = realpath($src);
-        $dst = $resolvedDst;
-        if (!self::validContext($context, $dst)) { return self::refuse('invalid torrent caller context'); }
-        if ($src === $dst) { return self::refuse('source equals destination'); }
-        if (!$files) { return true; }
-        $root = self::journalRoot();
-        if ($root === false) {
-            return self::refuseVisibly('journal-unavailable: the file-job journal directory is unavailable or'
-                . ' unsafe', 'journal-unavailable', ''); }
-        $handle = @fopen($root . '/.lock', 'c');
-        if (!$handle) { return self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', ''); }
-        if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
-            fclose($handle);
-            return $wouldBlock ? null
-                : self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', '');
-        }
-        try {
-            $old = [];
-            foreach ($files as $file) {
-                $dest = $dst . '/' . $file;
-                $dir = dirname($dest);
-                if (!self::makeDestination($dir, $created) || !self::payloadDirectory($dir)) {
-                    return self::refuse('destination parent unavailable or unsafe'); }
-                $identity = self::identity($dest);
-                if ($identity !== null && !in_array($identity[2], [0100000, 0120000], true)) {
-                    return self::refuse('listed destination is not a file or symlink'); }
-                $old[] = null;
+            if (!self::makeDestination($dst, $created)) {
+                return self::refusePath('destination-unavailable', $dst);
             }
-            $matched = false;
-            $deferOn = [];
-            $retry = ['src' => $src, 'dst' => $dst,
-                'op' => $op, 'files' => array_values($files), 'context' => $context];
-            if (!static::recoverLocked($root, $dst, false, $retry, $matched, $deferOn)) {
-                return self::refuse('pending file job blocks hash=' .
-                    ($context === null ? 'unknown' : $context['hash'])); }
-            if ($matched === 'queued') {
-                FileUtil::toLog('autotools: nonmove ' . self::$subject . ' waiting: predecessor pending');
-                return false;
+            if (!self::payloadDirectory($dst)) {
+                return self::refusePath('untrusted-directory', $dst);
             }
-            if ($matched) { return true; }
-            // Once the sidecar owns this token and x-dest, a repeated hook is
-            // the same completed job even after its journal has retired.
-            if ($context !== null && self::savedXdest($context)) { return true; }
-            $planned = self::plannedPredecessors($deferOn, $retry);
-            if ($planned === false) {
-                return self::refuse('pending file job has an ambiguous final-name overlap'); }
-            $waitFor = [];
-            foreach ($planned as $prior) {
-                $id = $prior['record']['id'];
-                $waitFor[$id] = ['id' => $id, 'context' => $prior['record']['context']];
+            if (($resolvedDst = realpath($dst)) === false) {
+                return self::refusePath('destination-unavailable', $dst);
             }
-            $record = ['id' => bin2hex(random_bytes(12)), 'phase' => 'staging',
-                'src' => $src, 'dst' => $dst, 'op' => $op,
-                'files' => array_values($files), 'old' => $old, 'new' => [],
-                'context' => $context, 'waitFor' => array_values($waitFor)];
-            if (!self::journal($root, $record)) { return self::refuse('cannot persist intent'); }
-            static::checkpoint('after-journal');
-            self::$failureReason = null;
-            // The job's own run never calls the daemon: recovery replays x-dest.
-            $ok = static::finish($root, $record, true, false, $planned);
-            if (!$ok) {
-                $reason = self::$failureReason ?: 'publication or rollback incomplete; retry pending';
-                if (self::$failureReason !== 'predecessor x-dest acknowledgement pending') {
-                    self::$refusal = ['reason'=>'file-operation-refused', 'detail'=>'']; }
-                if ($record['phase'] === 'staging' && self::clearStages($record) &&
-                    @unlink($root . '/' . $record['id'] . '.nonmove.json')) {
-                    FileUtil::toLog('autotools: nonmove ' . $record['id'] . ' refused: ' . $reason); }
-                else { self::logHold($record['id'], $reason .
-                    ($record['phase'] === 'prepared' && $waitFor
-                        ? '; queued hash=' . $context['hash'] : '')); }
+            $src = realpath($src);
+            $dst = $resolvedDst;
+            if (!self::validContext($context, $dst)) {
+                return self::refuse('invalid torrent caller context');
             }
-            return $ok;
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+            if ($src === $dst) {
+                return self::refuse('source equals destination');
+            }
+            if (!$files) {
+                return true;
+            }
+            $root = self::journalRoot();
+            if ($root === false) {
+                return self::refuseVisibly('journal-unavailable: the file-job journal directory is unavailable or'
+                    . ' unsafe', 'journal-unavailable', '');
+            }
+            $handle = @fopen($root . '/.lock', 'c');
+            if (!$handle) {
+                return self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', '');
+            }
+            if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
+                fclose($handle);
+                return $wouldBlock ? null
+                    : self::refuseVisibly('journal-unavailable: cannot lock journal', 'journal-unavailable', '');
+            }
+            try {
+                $old = [];
+                foreach ($files as $file) {
+                    $dest = $dst . '/' . $file;
+                    $dir = dirname($dest);
+                    if (!self::makeDestination($dir, $created) || !self::payloadDirectory($dir)) {
+                        return self::refuse('destination parent unavailable or unsafe');
+                    }
+                    $identity = self::identity($dest);
+                    if ($identity !== null && !in_array($identity[2], [0100000, 0120000], true)) {
+                        return self::refuse('listed destination is not a file or symlink');
+                    }
+                    $old[] = null;
+                }
+                $matched = false;
+                $deferOn = [];
+                $retry = ['src' => $src, 'dst' => $dst,
+                    'op' => $op, 'files' => array_values($files), 'context' => $context];
+                if (!static::recoverLocked($root, $dst, false, $retry, $matched, $deferOn)) {
+                    return self::refuse('pending file job blocks hash='
+                        . ($context === null ? 'unknown' : $context['hash']));
+                }
+                if ($matched === 'queued') {
+                    FileUtil::toLog('autotools: nonmove ' . self::$subject . ' waiting: predecessor pending');
+                    return false;
+                }
+                if ($matched) {
+                    return true;
+                }
+                // Once the sidecar owns this token and x-dest, a repeated hook is
+                // the same completed job even after its journal has retired.
+                if ($context !== null && self::savedXdest($context)) {
+                    return true;
+                }
+                $planned = self::plannedPredecessors($deferOn, $retry);
+                if ($planned === false) {
+                    return self::refuse('pending file job has an ambiguous final-name overlap');
+                }
+                $waitFor = [];
+                foreach ($planned as $prior) {
+                    $id = $prior['record']['id'];
+                    $waitFor[$id] = ['id' => $id, 'context' => $prior['record']['context']];
+                }
+                $record = ['id' => bin2hex(random_bytes(12)), 'phase' => 'staging',
+                    'src' => $src, 'dst' => $dst, 'op' => $op,
+                    'files' => array_values($files), 'old' => $old, 'new' => [],
+                    'context' => $context, 'waitFor' => array_values($waitFor)];
+                if (!self::journal($root, $record)) {
+                    return self::refuse('cannot persist intent');
+                }
+                static::checkpoint('after-journal');
+                self::$failureReason = null;
+                // The job's own run never calls the daemon: recovery replays x-dest.
+                $ok = static::finish($root, $record, true, false, $planned);
+                if (!$ok) {
+                    $reason = self::$failureReason ?: 'publication or rollback incomplete; retry pending';
+                    if (self::$failureReason !== 'predecessor x-dest acknowledgement pending') {
+                        self::$refusal = ['reason' => 'file-operation-refused', 'detail' => ''];
+                    }
+                    if ($record['phase'] === 'staging' && self::clearStages($record)
+                        && @unlink($root . '/' . $record['id'] . '.nonmove.json')) {
+                        FileUtil::toLog('autotools: nonmove ' . $record['id'] . ' refused: ' . $reason);
+                    } else {
+                        self::logHold($record['id'], $reason
+                        . ($record['phase'] === 'prepared' && $waitFor
+                            ? '; queued hash=' . $context['hash'] : ''));
+                    }
+                }
+                return $ok;
+            } finally {
+                flock($handle, LOCK_UN);
+                fclose($handle);
+            }
         } finally {
             // Remove only directories this invocation made and only while empty.
             foreach (array_reverse($created, true) as $directory => $identity) {
-                if (self::same(self::identity($directory), $identity)) { @rmdir($directory); } }
+                if (self::same(self::identity($directory), $identity)) {
+                    @rmdir($directory);
+                }
+            }
         }
     }
 
@@ -359,8 +428,11 @@ class AutoToolsFileTransaction
     protected static function filesystem()
     {
         if (!class_exists('ErasedataFilesystemOps', false)) {
-            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php'); }
-        if (self::$files === null) { self::$files = new ErasedataFilesystemOps(); }
+            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
+        }
+        if (self::$files === null) {
+            self::$files = new ErasedataFilesystemOps();
+        }
         return self::$files;
     }
 
@@ -393,31 +465,46 @@ class AutoToolsFileTransaction
     // link in a sticky shared directory refuse.
     private static function safeDirectory($path)
     {
-        if (!is_string($path) || $path === '' || $path[0] !== '/') { return false; }
+        if (!is_string($path) || $path === '' || $path[0] !== '/') {
+            return false;
+        }
         $part = '';
         foreach (explode('/', $path) as $component) {
-            if ($component === '') { continue; }
-            if ($component === '.' || $component === '..') { return false; }
+            if ($component === '') {
+                continue;
+            }
+            if ($component === '.' || $component === '..') {
+                return false;
+            }
             $parent = $part === '' ? '/' : $part;
             $part .= '/' . $component;
             $stat = @lstat($part);
-            if ($stat === false) { return false; }
+            if ($stat === false) {
+                return false;
+            }
             if (($stat['mode'] & 0170000) === 0120000) {
                 $parentStat = @stat($parent);
-                if ($parentStat === false ||
-                    (($parentStat['mode'] & 01000) !== 0 && ($parentStat['mode'] & 0022) !== 0 &&
-                    $stat['uid'] !== 0 &&
-                    $stat['uid'] !== (function_exists('posix_geteuid') ? posix_geteuid() : getmyuid()))) {
-                    return false; }
+                if ($parentStat === false
+                    || (($parentStat['mode'] & 01000) !== 0 && ($parentStat['mode'] & 0022) !== 0
+                    && $stat['uid'] !== 0
+                    && $stat['uid'] !== (function_exists('posix_geteuid') ? posix_geteuid() : getmyuid()))) {
+                    return false;
+                }
                 $resolved = @realpath($part);
-                if ($resolved === false || !self::safeDirectory($resolved)) { return false; }
+                if ($resolved === false || !self::safeDirectory($resolved)) {
+                    return false;
+                }
                 continue;
             }
-            if (($stat['mode'] & 0170000) !== 0040000) { return false; }
+            if (($stat['mode'] & 0170000) !== 0040000) {
+                return false;
+            }
             $foreignWritable = ($stat['mode'] & 0022) !== 0;
-            $stickyProtected = ($stat['mode'] & 01000) !== 0 &&
-                ($stat['uid'] === 0 || $stat['uid'] === (function_exists('posix_geteuid') ? posix_geteuid() : getmyuid()));
-            if ($foreignWritable && !$stickyProtected) { return false; }
+            $stickyProtected = ($stat['mode'] & 01000) !== 0
+                && ($stat['uid'] === 0 || $stat['uid'] === (function_exists('posix_geteuid') ? posix_geteuid() : getmyuid()));
+            if ($foreignWritable && !$stickyProtected) {
+                return false;
+            }
         }
         return true;
     }
@@ -434,18 +521,25 @@ class AutoToolsFileTransaction
     private static function payloadDirectory($path, $missingTail = false)
     {
         if (!class_exists('ErasedataFilesystemOps', false)) {
-            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php'); }
+            require_once(dirname(__FILE__) . '/../erasedata/filesystem.php');
+        }
         return ErasedataFilesystemOps::payloadPathTrusted($path, null, $missingTail);
     }
 
     private static function validFiles($files)
     {
-        if (!is_array($files)) { return false; }
+        if (!is_array($files)) {
+            return false;
+        }
         $seen = [];
         foreach ($files as $file) {
-            if (!is_string($file) || $file === '' || strpos($file, "\0") !== false ||
-                $file[0] === '/' || preg_match('~(^|/)(\\.{1,2}|)(/|$)~', $file)) { return false; }
-            if (isset($seen[$file])) { return false; }
+            if (!is_string($file) || $file === '' || strpos($file, "\0") !== false
+                || $file[0] === '/' || preg_match('~(^|/)(\\.{1,2}|)(/|$)~', $file)) {
+                return false;
+            }
+            if (isset($seen[$file])) {
+                return false;
+            }
             $seen[$file] = true;
         }
         return true;
@@ -475,7 +569,8 @@ class AutoToolsFileTransaction
     private static function refusePath($classified, $path)
     {
         if ($classified === 'untrusted-directory' && ErasedataFilesystemOps::lastPayloadRefusalPath() !== '') {
-            $path = ErasedataFilesystemOps::lastPayloadRefusalPath(); }
+            $path = ErasedataFilesystemOps::lastPayloadRefusalPath();
+        }
         $logged = function_exists('erasedataLogPath') ? erasedataLogPath($path)
             : json_encode($path, JSON_UNESCAPED_SLASHES);
         return self::refuseVisibly($classified . ' path=' . $logged, $classified, $path);
@@ -486,48 +581,59 @@ class AutoToolsFileTransaction
         $path = $root . '/' . $record['id'] . '.nonmove.json';
         $temp = $path . '.tmp';
         $body = JSON::encodeBytes($record);
-        if ($body === false || @file_put_contents($temp, $body, LOCK_EX) === false ||
-            !@rename($temp, $path)) { return false; }
+        if ($body === false || @file_put_contents($temp, $body, LOCK_EX) === false
+            || !@rename($temp, $path)) {
+            return false;
+        }
         return true;
     }
 
     private static function treeRemove($path)
     {
-        if (!is_dir($path) || is_link($path)) { return @lstat($path) === false || @unlink($path); }
+        if (!is_dir($path) || is_link($path)) {
+            return @lstat($path) === false || @unlink($path);
+        }
         foreach (scandir($path) as $name) {
             if ($name !== '.' && $name !== '..' && !self::treeRemove($path . '/' . $name)) {
-                return false; }
+                return false;
+            }
         }
         return @rmdir($path);
     }
 
     private static function entryStage($record, $index)
     {
-        return dirname($record['dst'] . '/' . $record['files'][$index]) .
-            '/.autotools-stage-' . $record['id'] . '-' . $index;
+        return dirname($record['dst'] . '/' . $record['files'][$index])
+            . '/.autotools-stage-' . $record['id'] . '-' . $index;
     }
 
     private static function clearStages($record)
     {
         foreach ($record['files'] as $index => $file) {
             $stage = self::entryStage($record, $index);
-            if (self::identity($stage) !== null && !self::treeRemove($stage)) { return false; }
+            if (self::identity($stage) !== null && !self::treeRemove($stage)) {
+                return false;
+            }
         }
         return true;
     }
 
     private static function prepare($root, &$record, $predecessors = [])
     {
-        if (!self::payloadDirectory($record['src']) || !self::payloadDirectory($record['dst']) ||
-            !self::clearStages($record)) { return false; }
+        if (!self::payloadDirectory($record['src']) || !self::payloadDirectory($record['dst'])
+            || !self::clearStages($record)) {
+            return false;
+        }
         $sourceProofs = [];
         foreach ($record['files'] as $index => $file) {
             $source = $record['src'] . '/' . $file;
             $stage = self::entryStage($record, $index);
-            if (!self::payloadDirectory(dirname($stage)) || !@mkdir($stage, 0700)) { return false; }
+            if (!self::payloadDirectory(dirname($stage)) || !@mkdir($stage, 0700)) {
+                return false;
+            }
             static::checkpoint('after-stage-' . $index);
-            if (($record['op'] === 'Copy' && !is_file($source)) ||
-                ($record['op'] === 'HardLink' && !is_file($source) && !is_link($source))) {
+            if (($record['op'] === 'Copy' && !is_file($source))
+                || ($record['op'] === 'HardLink' && !is_file($source) && !is_link($source))) {
                 self::$failureReason = 'source unavailable for ' . $record['op'];
                 return false;
             }
@@ -537,17 +643,24 @@ class AutoToolsFileTransaction
                 $held = $sourceHandle ? @fstat($sourceHandle) : false;
                 $sourceIdentity = $held === false ? null : [$held['dev'], $held['ino'], $held['mode'] & 0170000];
                 if (!self::same(self::identity($source, true), $sourceIdentity)) {
-                    if ($sourceHandle) { fclose($sourceHandle); }
+                    if ($sourceHandle) {
+                        fclose($sourceHandle);
+                    }
                     return false;
                 }
             }
             switch ($record['op']) {
-                case 'Copy': $ok = @copy($source, $stage . '/new'); break;
-                case 'HardLink': $ok = @link($source, $stage . '/new'); break;
-                default: $ok = @symlink($source, $stage . '/new'); break;
+                case 'Copy': $ok = @copy($source, $stage . '/new');
+                    break;
+                case 'HardLink': $ok = @link($source, $stage . '/new');
+                    break;
+                default: $ok = @symlink($source, $stage . '/new');
+                    break;
             }
             if (!$ok) {
-                if ($sourceHandle) { fclose($sourceHandle); }
+                if ($sourceHandle) {
+                    fclose($sourceHandle);
+                }
                 self::$failureReason = 'cannot stage ' . $record['op'] . ' source';
                 return false;
             }
@@ -557,8 +670,8 @@ class AutoToolsFileTransaction
                 $hash = hash_init('sha256');
                 $read = @hash_update_stream($hash, $sourceHandle);
                 $sourceHash = hash_final($hash);
-                $stable = $read !== false && self::same(self::identity($source, true), $sourceIdentity) &&
-                    @hash_file('sha256', $stage . '/new') === $sourceHash;
+                $stable = $read !== false && self::same(self::identity($source, true), $sourceIdentity)
+                    && @hash_file('sha256', $stage . '/new') === $sourceHash;
                 fclose($sourceHandle);
                 if (!$stable) {
                     self::$failureReason = 'source changed or unreadable during Copy';
@@ -570,9 +683,9 @@ class AutoToolsFileTransaction
         // Earlier files can change while later files are staged. Recheck the set
         // before claiming any occupied destination.
         foreach ($sourceProofs as $proof) {
-            if (!self::same(self::identity($proof[0], true), $proof[1]) ||
-                @hash_file('sha256', $proof[0]) !== $proof[2] ||
-                !self::same(self::identity($proof[0], true), $proof[1])) {
+            if (!self::same(self::identity($proof[0], true), $proof[1])
+                || @hash_file('sha256', $proof[0]) !== $proof[2]
+                || !self::same(self::identity($proof[0], true), $proof[1])) {
                 self::$failureReason = 'source changed or unreadable during Copy';
                 return false;
             }
@@ -590,13 +703,16 @@ class AutoToolsFileTransaction
                 $record['old'][$index] = null;
                 continue;
             }
-            if (!self::same(self::identity($oldSource), $expected) ||
-                !@link($oldSource, $witness)) { return false; }
+            if (!self::same(self::identity($oldSource), $expected)
+                || !@link($oldSource, $witness)) {
+                return false;
+            }
             $record['old'][$index] = self::identity($witness);
             static::checkpoint('after-witness-' . $index);
-            if (!self::same(self::identity($oldSource), $record['old'][$index]) ||
-                !in_array($record['old'][$index][2], [0100000, 0120000], true)) {
-                return false; }
+            if (!self::same(self::identity($oldSource), $record['old'][$index])
+                || !in_array($record['old'][$index][2], [0100000, 0120000], true)) {
+                return false;
+            }
         }
         $record['phase'] = 'prepared';
         return self::journal($root, $record);
@@ -613,24 +729,42 @@ class AutoToolsFileTransaction
             $current = self::identity($dest);
             $saved = self::identity($witness);
             $moved = self::identity($removed);
-            if ($old !== null && !self::same($saved, $old)) { return false; }
-            if ($moved !== null && !self::same($moved, $old)) { return false; }
-            if (self::same($current, $record['new'][$index])) { continue; }
+            if ($old !== null && !self::same($saved, $old)) {
+                return false;
+            }
+            if ($moved !== null && !self::same($moved, $old)) {
+                return false;
+            }
+            if (self::same($current, $record['new'][$index])) {
+                continue;
+            }
             if ($current !== null) {
-                if (!self::same($current, $old)) { return false; }
-                if ($moved !== null && !@unlink($removed)) { return false; }
+                if (!self::same($current, $old)) {
+                    return false;
+                }
+                if ($moved !== null && !@unlink($removed)) {
+                    return false;
+                }
                 static::checkpoint('before-backup-' . $index);
-                if (!@rename($dest, $removed)) { return false; }
+                if (!@rename($dest, $removed)) {
+                    return false;
+                }
                 static::checkpoint('after-backup-unverified-' . $index);
                 // Read as missing, this backup would fail the publication, and
                 // the rollback, which cannot see it either, would leave the
                 // public name empty until recovery.
-                if (!self::same(self::renamedIdentity($removed), $old)) { return false; }
+                if (!self::same(self::renamedIdentity($removed), $old)) {
+                    return false;
+                }
                 static::checkpoint('after-backup-' . $index);
-            } elseif ($old !== null && $moved === null) { return false; }
-            if (!self::payloadDirectory(dirname($dest)) ||
-                !self::same(self::identity($stage . '/new'), $record['new'][$index]) ||
-                !@link($stage . '/new', $dest)) { return false; }
+            } elseif ($old !== null && $moved === null) {
+                return false;
+            }
+            if (!self::payloadDirectory(dirname($dest))
+                || !self::same(self::identity($stage . '/new'), $record['new'][$index])
+                || !@link($stage . '/new', $dest)) {
+                return false;
+            }
             static::checkpoint('after-publish-' . $index);
         }
         $record['phase'] = 'committed';
@@ -648,7 +782,10 @@ class AutoToolsFileTransaction
             $old = $record['old'][$index];
             $current = self::identity($dest);
             if (self::same($current, $record['new'][$index])) {
-                if (!@unlink($dest)) { $complete = false; continue; }
+                if (!@unlink($dest)) {
+                    $complete = false;
+                    continue;
+                }
                 $current = null;
             }
             if ($current !== null && !self::same($current, $old)) {
@@ -657,7 +794,9 @@ class AutoToolsFileTransaction
             }
             $moved = self::identity($removed);
             if ($moved !== null && !self::same($moved, $old)) {
-                if ($current === null) { @link($removed, $dest); }
+                if ($current === null) {
+                    @link($removed, $dest);
+                }
                 $complete = false;
                 continue;
             }
@@ -670,7 +809,9 @@ class AutoToolsFileTransaction
                     $complete = false;
                     continue;
                 }
-                if (!@unlink($removed)) { $complete = false; }
+                if (!@unlink($removed)) {
+                    $complete = false;
+                }
             } elseif ($old !== null && $current === null) {
                 // Another actor removed the old name before our commit.
                 $complete = false;
@@ -681,33 +822,42 @@ class AutoToolsFileTransaction
 
     private static function validContext($context, $dst = null)
     {
-        if ($context === null) { return true; }
-        if (!is_array($context)) { return false; }
+        if ($context === null) {
+            return true;
+        }
+        if (!is_array($context)) {
+            return false;
+        }
         $keys = array_keys($context);
-        if (($keys !== ['hash', 'token', 'sourceBase', 'destination'] &&
-            $keys !== ['hash', 'token', 'sourceBase', 'destination', 'notice']) ||
-            !is_string($context['hash']) ||
-            !preg_match('/^[0-9A-F]{40}$/D', $context['hash']) ||
-            !is_string($context['token']) ||
-            !preg_match('/^[0-9a-f]{32}$/D', $context['token'])) { return false; }
+        if (($keys !== ['hash', 'token', 'sourceBase', 'destination']
+            && $keys !== ['hash', 'token', 'sourceBase', 'destination', 'notice'])
+            || !is_string($context['hash'])
+            || !preg_match('/^[0-9A-F]{40}$/D', $context['hash'])
+            || !is_string($context['token'])
+            || !preg_match('/^[0-9a-f]{32}$/D', $context['token'])) {
+            return false;
+        }
         foreach (['sourceBase', 'destination'] as $key) {
-            if (!is_string($context[$key]) || $context[$key] === '' ||
-                $context[$key][0] !== '/' || strpos($context[$key], "\0") !== false) {
-                return false; } }
+            if (!is_string($context[$key]) || $context[$key] === ''
+                || $context[$key][0] !== '/' || strpos($context[$key], "\0") !== false) {
+                return false;
+            }
+        }
         if (array_key_exists('notice', $context)) {
             $notice = $context['notice'];
-            if (!is_array($notice) || array_keys($notice) !==
-                ['noticeDestination', 'finishedRoot', 'torrentName'] ||
-                !is_string($notice['noticeDestination']) ||
-                $notice['noticeDestination'] === '' ||
-                $notice['noticeDestination'][0] !== '/' ||
-                strpos($notice['noticeDestination'], "\0") !== false ||
-                !is_string($notice['finishedRoot']) || $notice['finishedRoot'] === '' ||
-                $notice['finishedRoot'][0] !== '/' ||
-                strpos($notice['finishedRoot'], "\0") !== false ||
-                !is_string($notice['torrentName']) ||
-                strpos($notice['torrentName'], "\0") !== false) {
-                return false; }
+            if (!is_array($notice) || array_keys($notice)
+                !== ['noticeDestination', 'finishedRoot', 'torrentName']
+                || !is_string($notice['noticeDestination'])
+                || $notice['noticeDestination'] === ''
+                || $notice['noticeDestination'][0] !== '/'
+                || strpos($notice['noticeDestination'], "\0") !== false
+                || !is_string($notice['finishedRoot']) || $notice['finishedRoot'] === ''
+                || $notice['finishedRoot'][0] !== '/'
+                || strpos($notice['finishedRoot'], "\0") !== false
+                || !is_string($notice['torrentName'])
+                || strpos($notice['torrentName'], "\0") !== false) {
+                return false;
+            }
         }
         return $dst === null || realpath($context['destination']) === $dst;
     }
@@ -724,8 +874,8 @@ class AutoToolsFileTransaction
         ];
         $request = new rXMLRPCRequest($commands);
         $request->important = false;
-        return $request->success() && !$request->fault && is_array($request->val) &&
-            count($request->val) === count($commands);
+        return $request->success() && !$request->fault && is_array($request->val)
+            && count($request->val) === count($commands);
     }
 
     // The daemon evaluates this branch as one command; a separate read then
@@ -735,20 +885,22 @@ class AutoToolsFileTransaction
         $q = ['rTorrent', 'quoteCommandArg'];
         $conditions = [
             'equal=' . getCmd('d.get_custom=') . 'x-autotools-nonmove-job,cat=' . $context['token'],
-            'equal=' . getCmd('d.get_base_path=') . ',' . getCmd('d.get_custom=') .
-                'x-autotools-nonmove-source',
-            'equal=' . getCmd('d.get_custom=') . 'x-dest,' .
-                ($expected === '' ? 'cat=' : getCmd('d.get_custom=') . 'x-autotools-nonmove-target'),
+            'equal=' . getCmd('d.get_base_path=') . ',' . getCmd('d.get_custom=')
+                . 'x-autotools-nonmove-source',
+            'equal=' . getCmd('d.get_custom=') . 'x-dest,'
+                . ($expected === '' ? 'cat=' : getCmd('d.get_custom=') . 'x-autotools-nonmove-target'),
         ];
         $condition = 'and=' . implode(',', array_map($q, $conditions));
         $sentinel = $set ? 'AUTOTOOLS_XDEST_SET' : 'AUTOTOOLS_XDEST_ALREADY';
         $body = $set
-            ? 'cat=' . call_user_func($q, '$' . getCmd('d.set_custom=') .
-                'x-dest,$' . getCmd('d.get_custom=') . 'x-autotools-nonmove-target') .
-                ',' . $sentinel
+            ? 'cat=' . call_user_func($q, '$' . getCmd('d.set_custom=')
+                . 'x-dest,$' . getCmd('d.get_custom=') . 'x-autotools-nonmove-target')
+                . ',' . $sentinel
             : 'cat=' . $sentinel;
-        $request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('branch'),
-            [$context['hash'], $condition, $body, 'cat=AUTOTOOLS_XDEST_SKIP']));
+        $request = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd('branch'),
+            [$context['hash'], $condition, $body, 'cat=AUTOTOOLS_XDEST_SKIP'],
+        ));
         $request->important = false;
         return $request->success() && !$request->fault && count($request->val) === 1
             ? $request->val[0] : null;
@@ -757,22 +909,28 @@ class AutoToolsFileTransaction
     private static function savedXdest($context, $requireDestination = true)
     {
         $session = rTorrentSettings::get()->session;
-        if (!is_string($session) || $session === '') { return false; }
+        if (!is_string($session) || $session === '') {
+            return false;
+        }
         // Current rTorrent stores each download's custom fields in this sidecar.
         $path = rtrim($session, '/') . '/' . $context['hash'] . '.torrent.rtorrent';
         $bytes = @file_get_contents($path);
-        if ($bytes === false) { return false; }
+        if ($bytes === false) {
+            return false;
+        }
         $torrent = Torrent::fromRawBytes($bytes);
         $custom = $torrent->meta('custom');
-        if ($torrent->errors() !== false || !is_array($custom) ||
-            !isset($custom['x-autotools-nonmove-job']) ||
-            $custom['x-autotools-nonmove-job'] !== $context['token']) { return false; }
-        return !$requireDestination ||
-            (isset($custom['x-autotools-nonmove-source'],
-                $custom['x-autotools-nonmove-target'], $custom['x-dest']) &&
-            $custom['x-autotools-nonmove-source'] === $context['sourceBase'] &&
-            $custom['x-autotools-nonmove-target'] === $context['destination'] &&
-            $custom['x-dest'] === $context['destination']);
+        if ($torrent->errors() !== false || !is_array($custom)
+            || !isset($custom['x-autotools-nonmove-job'])
+            || $custom['x-autotools-nonmove-job'] !== $context['token']) {
+            return false;
+        }
+        return !$requireDestination
+            || (isset($custom['x-autotools-nonmove-source'],
+                $custom['x-autotools-nonmove-target'], $custom['x-dest'])
+            && $custom['x-autotools-nonmove-source'] === $context['sourceBase']
+            && $custom['x-autotools-nonmove-target'] === $context['destination']
+            && $custom['x-dest'] === $context['destination']);
     }
 
     private static function replayXdest($context)
@@ -781,8 +939,8 @@ class AutoToolsFileTransaction
             self::$failureReason = 'cannot stage source and x-dest daemon values';
             return false;
         }
-        if (self::xdestBranch($context, '', true) !== 'AUTOTOOLS_XDEST_SET' &&
-            self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY') {
+        if (self::xdestBranch($context, '', true) !== 'AUTOTOOLS_XDEST_SET'
+            && self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY') {
             self::$failureReason = 'torrent generation, source path or x-dest changed';
             return false;
         }
@@ -793,14 +951,15 @@ class AutoToolsFileTransaction
         $persisted = rtAwaitSessionSave($context['hash'], function () use ($context) {
             return self::savedXdest($context);
         });
-        if (!$persisted ||
-            self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY') {
+        if (!$persisted
+            || self::xdestBranch($context, $context['destination'], false) !== 'AUTOTOOLS_XDEST_ALREADY') {
             self::$failureReason = 'x-dest session sidecar not persisted';
             return false;
         }
         // A confirmed operation retires the outcome of an earlier refusal.
         if (!class_exists('FileOperationOutcome', false)) {
-            require_once(dirname(__FILE__) . '/../erasedata/outcome.php'); }
+            require_once(dirname(__FILE__) . '/../erasedata/outcome.php');
+        }
         FileOperationOutcome::clear('autotools', $context['hash']);
         return true;
     }
@@ -809,7 +968,9 @@ class AutoToolsFileTransaction
     {
         foreach ($record['files'] as $index => $file) {
             if (!self::same(self::identity($record['dst'] . '/' . $file), $record['new'][$index])) {
-                return false; } }
+                return false;
+            }
+        }
         return true;
     }
 
@@ -819,8 +980,8 @@ class AutoToolsFileTransaction
             self::$failureReason = 'completion mail outcome uncertain; receipt retained';
             return false;
         }
-        if (!$allowRpc || !self::published($record) ||
-            !self::savedXdest($record['context'])) {
+        if (!$allowRpc || !self::published($record)
+            || !self::savedXdest($record['context'])) {
             self::$failureReason = 'completion notice awaits durable x-dest';
             return false;
         }
@@ -829,31 +990,46 @@ class AutoToolsFileTransaction
             self::$failureReason = 'completion mail helper unavailable';
             return false;
         }
-        if (rAutoTools::completionMailFile($notice['noticeDestination'],
-            $notice['finishedRoot']) !== null) {
+        if (rAutoTools::completionMailFile(
+            $notice['noticeDestination'],
+            $notice['finishedRoot'],
+        ) !== null) {
             $record['phase'] = 'notice-attempted';
-            if (!self::journal($root, $record)) { return false; }
+            if (!self::journal($root, $record)) {
+                return false;
+            }
             static::checkpoint('after-notice-attempt');
-            $sent = rAutoTools::notifyCompletedFileTransfer($notice['noticeDestination'],
-                $notice['finishedRoot'], $notice['torrentName']);
-            FileUtil::toLog('autotools: nonmove ' . $record['id'] .
-                ($sent ? ' completion mail sent' : ' completion mail refused'));
+            $sent = rAutoTools::notifyCompletedFileTransfer(
+                $notice['noticeDestination'],
+                $notice['finishedRoot'],
+                $notice['torrentName'],
+            );
+            FileUtil::toLog('autotools: nonmove ' . $record['id']
+                . ($sent ? ' completion mail sent' : ' completion mail refused'));
         }
-        if (!self::clearStages($record)) { return false; }
+        if (!self::clearStages($record)) {
+            return false;
+        }
         return @unlink($root . '/' . $record['id'] . '.nonmove.json');
     }
 
-    private static function finish($root, &$record, $newJob = false, $allowRpc = true,
-        $predecessors = [])
-    {
+    private static function finish(
+        $root,
+        &$record,
+        $newJob = false,
+        $allowRpc = true,
+        $predecessors = []
+    ) {
         if ($record['phase'] === 'notice-pending' || $record['phase'] === 'notice-attempted') {
-            return static::finishNotice($root, $record, $allowRpc); }
+            return static::finishNotice($root, $record, $allowRpc);
+        }
         if ($record['phase'] === 'staging' && (!$newJob || !self::prepare($root, $record, $predecessors))) {
-            return false; }
+            return false;
+        }
         if ($record['phase'] === 'prepared' && !empty($record['waitFor'])) {
             foreach ($record['waitFor'] as $prior) {
-                if (is_file($root . '/' . $prior['id'] . '.nonmove.json') ||
-                    !self::savedXdest($prior['context'])) {
+                if (is_file($root . '/' . $prior['id'] . '.nonmove.json')
+                    || !self::savedXdest($prior['context'])) {
                     self::$failureReason = 'predecessor x-dest acknowledgement pending';
                     return false;
                 }
@@ -862,17 +1038,19 @@ class AutoToolsFileTransaction
             // live source before allowing delayed publication.
             if ($record['op'] === 'HardLink') {
                 foreach ($record['files'] as $index => $file) {
-                    if (!self::same(self::identity($record['src'] . '/' . $file),
-                        $record['new'][$index])) {
+                    if (!self::same(
+                        self::identity($record['src'] . '/' . $file),
+                        $record['new'][$index],
+                    )) {
                         self::$failureReason = 'queued HardLink source changed';
                         return false;
                     }
                 }
             }
-            if (!$allowRpc || !isset($record['context']) || $record['context'] === null ||
-                !self::savedXdest($record['context'], false) ||
-                !self::stageXdestPaths($record['context']) ||
-                self::xdestBranch($record['context'], '', false) !== 'AUTOTOOLS_XDEST_ALREADY') {
+            if (!$allowRpc || !isset($record['context']) || $record['context'] === null
+                || !self::savedXdest($record['context'], false)
+                || !self::stageXdestPaths($record['context'])
+                || self::xdestBranch($record['context'], '', false) !== 'AUTOTOOLS_XDEST_ALREADY') {
                 self::$failureReason = 'queued torrent generation or source changed';
                 return false;
             }
@@ -881,23 +1059,35 @@ class AutoToolsFileTransaction
             self::rollback($record);
             return false;
         }
-        if ($record['phase'] !== 'committed') { return false; }
+        if ($record['phase'] !== 'committed') {
+            return false;
+        }
         static::checkpoint('after-committed');
-        if (!self::published($record)) { return false; }
+        if (!self::published($record)) {
+            return false;
+        }
         if (isset($record['context']) && $record['context'] !== null) {
-            if ($newJob) { return true; } // execute.capture sets x-dest after this worker returns.
+            if ($newJob) {
+                return true;
+            } // execute.capture sets x-dest after this worker returns.
             if (!$allowRpc) {
                 self::$failureReason = 'x-dest acknowledgement pending scheduled recovery';
                 return false;
             }
-            if (!self::replayXdest($record['context'])) { return false; }
+            if (!self::replayXdest($record['context'])) {
+                return false;
+            }
             if (isset($record['context']['notice'])) {
                 $record['phase'] = 'notice-pending';
-                if (!self::journal($root, $record)) { return false; }
+                if (!self::journal($root, $record)) {
+                    return false;
+                }
                 return static::finishNotice($root, $record, $allowRpc);
             }
         }
-        if (!self::clearStages($record)) { return false; }
+        if (!self::clearStages($record)) {
+            return false;
+        }
         static::checkpoint('after-stage-cleanup');
         return @unlink($root . '/' . $record['id'] . '.nonmove.json');
     }
@@ -905,41 +1095,55 @@ class AutoToolsFileTransaction
     private static function validRecord($record)
     {
         if (!is_array($record) || !isset($record['id'], $record['phase'], $record['src'],
-                $record['dst'], $record['op'], $record['files'], $record['old'], $record['new']) ||
-            !is_string($record['id']) ||
-            !in_array($record['phase'], ['staging', 'prepared', 'committed',
-                'notice-pending', 'notice-attempted'], true) ||
-            !in_array($record['op'], ['Copy', 'HardLink', 'SoftLink'], true) ||
-            !is_string($record['src']) || !is_string($record['dst']) ||
-            realpath($record['dst']) !== $record['dst'] ||
-            ($record['phase'] === 'staging' && realpath($record['src']) !== $record['src']) ||
-            !self::validFiles($record['files']) ||
-            !self::validContext(isset($record['context']) ? $record['context'] : null, $record['dst']) ||
-            array_values($record['files']) !== $record['files'] || !is_array($record['old']) ||
-            !is_array($record['new']) || array_values($record['old']) !== $record['old'] ||
-            array_values($record['new']) !== $record['new'] ||
-            count($record['old']) !== count($record['files']) ||
-            !preg_match('/^[a-f0-9]{24}$/D', $record['id'])) { return false; }
+            $record['dst'], $record['op'], $record['files'], $record['old'], $record['new'])
+            || !is_string($record['id'])
+            || !in_array($record['phase'], ['staging', 'prepared', 'committed',
+                'notice-pending', 'notice-attempted'], true)
+            || !in_array($record['op'], ['Copy', 'HardLink', 'SoftLink'], true)
+            || !is_string($record['src']) || !is_string($record['dst'])
+            || realpath($record['dst']) !== $record['dst']
+            || ($record['phase'] === 'staging' && realpath($record['src']) !== $record['src'])
+            || !self::validFiles($record['files'])
+            || !self::validContext(isset($record['context']) ? $record['context'] : null, $record['dst'])
+            || array_values($record['files']) !== $record['files'] || !is_array($record['old'])
+            || !is_array($record['new']) || array_values($record['old']) !== $record['old']
+            || array_values($record['new']) !== $record['new']
+            || count($record['old']) !== count($record['files'])
+            || !preg_match('/^[a-f0-9]{24}$/D', $record['id'])) {
+            return false;
+        }
         foreach ($record['old'] as $identity) {
-            if ($identity !== null && (!is_array($identity) || count($identity) !== 3 ||
-                array_values($identity) !== $identity || !is_int($identity[0]) ||
-                !is_int($identity[1]) || !is_int($identity[2]))) { return false; } }
-        if ($record['phase'] === 'staging' && $record['new']) { return false; }
+            if ($identity !== null && (!is_array($identity) || count($identity) !== 3
+                || array_values($identity) !== $identity || !is_int($identity[0])
+                || !is_int($identity[1]) || !is_int($identity[2]))) {
+                return false;
+            }
+        }
+        if ($record['phase'] === 'staging' && $record['new']) {
+            return false;
+        }
         if ($record['phase'] !== 'staging' && count($record['new']) !== count($record['files'])) {
-            return false; }
+            return false;
+        }
         foreach ($record['new'] as $identity) {
-            if (!is_array($identity) || count($identity) !== 3 ||
-                array_values($identity) !== $identity || !is_int($identity[0]) ||
-                !is_int($identity[1]) || !is_int($identity[2])) { return false; } }
+            if (!is_array($identity) || count($identity) !== 3
+                || array_values($identity) !== $identity || !is_int($identity[0])
+                || !is_int($identity[1]) || !is_int($identity[2])) {
+                return false;
+            }
+        }
         if (isset($record['waitFor'])) {
             if (!is_array($record['waitFor']) || array_values($record['waitFor']) !== $record['waitFor']) {
-                return false; }
+                return false;
+            }
             $seen = [];
             foreach ($record['waitFor'] as $prior) {
-                if (!is_array($prior) || array_keys($prior) !== ['id', 'context'] ||
-                    !is_string($prior['id']) || !preg_match('/^[a-f0-9]{24}$/D', $prior['id']) ||
-                    $prior['id'] === $record['id'] || isset($seen[$prior['id']]) ||
-                    !self::validContext($prior['context'])) { return false; }
+                if (!is_array($prior) || array_keys($prior) !== ['id', 'context']
+                    || !is_string($prior['id']) || !preg_match('/^[a-f0-9]{24}$/D', $prior['id'])
+                    || $prior['id'] === $record['id'] || isset($seen[$prior['id']])
+                    || !self::validContext($prior['context'])) {
+                    return false;
+                }
                 $seen[$prior['id']] = true;
             }
         }
@@ -948,8 +1152,8 @@ class AutoToolsFileTransaction
 
     private static function overlaps($left, $right)
     {
-        return $left === $right || strpos($left, rtrim($right, '/') . '/') === 0 ||
-            strpos($right, rtrim($left, '/') . '/') === 0;
+        return $left === $right || strpos($left, rtrim($right, '/') . '/') === 0
+            || strpos($right, rtrim($left, '/') . '/') === 0;
     }
 
     private static function finalEntry($directory, $file)
@@ -963,10 +1167,14 @@ class AutoToolsFileTransaction
     {
         foreach ($record['files'] as $old) {
             $oldName = self::finalEntry($record['dst'], $old);
-            if ($oldName === null) { return true; }
+            if ($oldName === null) {
+                return true;
+            }
             foreach ($retry['files'] as $new) {
                 $newName = self::finalEntry($retry['dst'], $new);
-                if ($newName === null || self::overlaps($oldName, $newName)) { return true; }
+                if ($newName === null || self::overlaps($oldName, $newName)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -977,32 +1185,51 @@ class AutoToolsFileTransaction
         $planned = [];
         foreach ($retry['files'] as $index => $file) {
             $name = self::finalEntry($retry['dst'], $file);
-            if ($name === null) { return false; }
+            if ($name === null) {
+                return false;
+            }
             $candidates = [];
             foreach ($records as $record) {
                 foreach ($record['files'] as $priorIndex => $priorFile) {
                     $priorName = self::finalEntry($record['dst'], $priorFile);
-                    if ($priorName === null) { return false; }
+                    if ($priorName === null) {
+                        return false;
+                    }
                     if ($priorName === $name) {
-                        $candidates[$record['id']] = ['record' => $record, 'index' => $priorIndex]; }
-                    elseif (self::overlaps($priorName, $name)) { return false; }
+                        $candidates[$record['id']] = ['record' => $record, 'index' => $priorIndex];
+                    } elseif (self::overlaps($priorName, $name)) {
+                        return false;
+                    }
                 }
             }
-            if (!$candidates) { continue; }
+            if (!$candidates) {
+                continue;
+            }
             $referenced = [];
             foreach ($candidates as $candidate) {
                 foreach (isset($candidate['record']['waitFor']) ? $candidate['record']['waitFor'] : [] as $prior) {
-                    $referenced[$prior['id']] = true; } }
-            foreach ($referenced as $id => $_) { unset($candidates[$id]); }
-            if (count($candidates) !== 1) { return false; }
+                    $referenced[$prior['id']] = true;
+                }
+            }
+            foreach ($referenced as $id => $_) {
+                unset($candidates[$id]);
+            }
+            if (count($candidates) !== 1) {
+                return false;
+            }
             $planned[$index] = reset($candidates);
         }
         return $planned;
     }
 
-    private static function recoverLocked($root, $forDestination = null, $allowRpc = true,
-        $retry = null, &$matched = false, &$deferOn = [])
-    {
+    private static function recoverLocked(
+        $root,
+        $forDestination = null,
+        $allowRpc = true,
+        $retry = null,
+        &$matched = false,
+        &$deferOn = []
+    ) {
         $entries = @scandir($root);
         if ($entries === false) {
             self::logHold('journal', 'cannot scan pending records');
@@ -1010,24 +1237,27 @@ class AutoToolsFileTransaction
         }
         $paths = [];
         foreach ($entries as $entry) {
-            if (substr($entry, -13) === '.nonmove.json') { $paths[] = $root . '/' . $entry; } }
+            if (substr($entry, -13) === '.nonmove.json') {
+                $paths[] = $root . '/' . $entry;
+            }
+        }
         $usable = true;
         foreach ($paths as $path) {
             $record = JSON::decodeBytes(@file_get_contents($path));
-            if (!self::validRecord($record) ||
-                $path !== $root . '/' . $record['id'] . '.nonmove.json' ||
-                !self::payloadDirectory($record['dst'])) {
+            if (!self::validRecord($record)
+                || $path !== $root . '/' . $record['id'] . '.nonmove.json'
+                || !self::payloadDirectory($record['dst'])) {
                 self::logHold(basename($path), 'invalid recovery record');
                 return false;
             }
             self::$failureReason = null;
             if (!static::finish($root, $record, false, $allowRpc)) {
-                $sameJob = $retry !== null && $record['src'] === $retry['src'] &&
-                    $record['dst'] === $retry['dst'] && $record['op'] === $retry['op'] &&
-                    $record['files'] === $retry['files'] && isset($record['context']) &&
-                    $record['context'] === $retry['context'];
-                if ($sameJob && in_array($record['phase'], ['committed', 'notice-pending', 'notice-attempted'], true) &&
-                    self::published($record)) {
+                $sameJob = $retry !== null && $record['src'] === $retry['src']
+                    && $record['dst'] === $retry['dst'] && $record['op'] === $retry['op']
+                    && $record['files'] === $retry['files'] && isset($record['context'])
+                    && $record['context'] === $retry['context'];
+                if ($sameJob && in_array($record['phase'], ['committed', 'notice-pending', 'notice-attempted'], true)
+                    && self::published($record)) {
                     $matched = true;
                     continue; // The same hook can return its original x-dest again.
                 }
@@ -1037,26 +1267,31 @@ class AutoToolsFileTransaction
                 }
                 // A verified committed payload can coexist with disjoint final
                 // names. A colliding one must wait for this receipt's disk ACK.
-                $pendingAck = $retry !== null && $retry['context'] !== null && !$allowRpc &&
-                    in_array($record['phase'], ['committed', 'notice-pending', 'notice-attempted'], true) &&
-                    isset($record['context']) &&
-                    $record['context'] !== null && self::published($record);
+                $pendingAck = $retry !== null && $retry['context'] !== null && !$allowRpc
+                    && in_array($record['phase'], ['committed', 'notice-pending', 'notice-attempted'], true)
+                    && isset($record['context'])
+                    && $record['context'] !== null && self::published($record);
                 if ($pendingAck) {
-                    if (self::overlapsFiles($record, $retry)) { $deferOn[] = $record; }
+                    if (self::overlapsFiles($record, $retry)) {
+                        $deferOn[] = $record;
+                    }
                     continue;
                 }
-                $queued = $retry !== null && $retry['context'] !== null && !$allowRpc &&
-                    $record['phase'] === 'prepared' && !empty($record['waitFor']) &&
-                    self::$failureReason === 'predecessor x-dest acknowledgement pending';
+                $queued = $retry !== null && $retry['context'] !== null && !$allowRpc
+                    && $record['phase'] === 'prepared' && !empty($record['waitFor'])
+                    && self::$failureReason === 'predecessor x-dest acknowledgement pending';
                 if ($queued) {
-                    if (self::overlapsFiles($record, $retry)) { $deferOn[] = $record; }
+                    if (self::overlapsFiles($record, $retry)) {
+                        $deferOn[] = $record;
+                    }
                     continue;
                 }
                 self::logHold(basename($path), $record['phase'] === 'staging'
                         ? 'unclaimed intent requires explicit retry'
                         : (self::$failureReason ?: 'recovery could not prove destination identities'));
                 if ($forDestination === null || self::overlaps($record['dst'], $forDestination)) {
-                    $usable = false; }
+                    $usable = false;
+                }
             }
         }
         return $usable;
@@ -1064,10 +1299,17 @@ class AutoToolsFileTransaction
 
     private static function makeDestination($path, &$created)
     {
-        if (is_dir($path)) { return true; }
+        if (is_dir($path)) {
+            return true;
+        }
         $parent = dirname($path);
-        if ($parent === $path || !self::makeDestination($parent, $created)) { return false; }
-        if (@mkdir($path, 0755)) { $created[$path] = self::identity($path); return true; }
+        if ($parent === $path || !self::makeDestination($parent, $created)) {
+            return false;
+        }
+        if (@mkdir($path, 0755)) {
+            $created[$path] = self::identity($path);
+            return true;
+        }
         return is_dir($path);
     }
 }

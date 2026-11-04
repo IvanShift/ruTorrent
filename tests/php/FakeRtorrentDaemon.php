@@ -1,17 +1,17 @@
 <?php
 
-require_once(__DIR__.'/SCGIRequest.php');
+require_once(__DIR__ . '/SCGIRequest.php');
 
 
 /** One scalar XMLRPC string reply, for read-only daemon version probes. */
 class FakeRtorrentDirectStringReply
 {
-	public $value;
+    public $value;
 
-	public function __construct($value)
-	{
-		$this->value = $value;
-	}
+    public function __construct($value)
+    {
+        $this->value = $value;
+    }
 }
 
 /**
@@ -21,12 +21,12 @@ class FakeRtorrentDirectStringReply
  */
 class FakeRtorrentRawReply
 {
-	public $body;
+    public $body;
 
-	public function __construct($body)
-	{
-		$this->body = $body;
-	}
+    public function __construct($body)
+    {
+        $this->body = $body;
+    }
 }
 
 /**
@@ -38,25 +38,25 @@ class FakeRtorrentRawReply
  */
 class FakeRtorrentWireReply
 {
-	public $bytes;
+    public $bytes;
 
-	public function __construct($bytes)
-	{
-		$this->bytes = $bytes;
-	}
+    public function __construct($bytes)
+    {
+        $this->bytes = $bytes;
+    }
 }
 
 /** Serializable wire pieces with a delay between writes; build with paced(). */
 class FakeRtorrentPacedReply
 {
-	public $pieces;
-	public $pause;
+    public $pieces;
+    public $pause;
 
-	public function __construct($pieces, $pause)
-	{
-		$this->pieces = $pieces;
-		$this->pause = $pause;
-	}
+    public function __construct($pieces, $pause)
+    {
+        $this->pieces = $pieces;
+        $this->pause = $pause;
+    }
 }
 
 /**
@@ -66,130 +66,144 @@ class FakeRtorrentPacedReply
  */
 class FakeRtorrentFault
 {
-	public $code;
-	public $message;
+    public $code;
+    public $message;
 
-	public function __construct($code, $message)
-	{
-		$this->code = $code;
-		$this->message = $message;
-	}
+    public function __construct($code, $message)
+    {
+        $this->code = $code;
+        $this->message = $message;
+    }
 }
 
 /** Serializable replies for addtorrent's pre-load snapshot and deferred load proof. */
 class FakeRtorrentAddTorrentReplies
 {
-	/**
-	 * rTorrentSettings reads seven values in one multicall at startup
-	 * (php/settings.php): directory, session, library version, name, port
-	 * range, bind and local address. Each is answered under every spelling
-	 * the alias tables give it; one value for all seven left six undefined.
-	 */
-	public const STARTUP = [
-		'get_directory' => '/downloads', 'directory.default' => '/downloads',
-		'get_session' => '', 'session.path' => '',
-		'system.library_version' => '0.16.24',
-		'get_name' => 'fake-rtorrent', 'session.name' => 'fake-rtorrent',
-		'get_port_range' => '6881-6881', 'network.port_range' => '6881-6881',
-		'network.listen.port.range' => '6881-6881',
-		'get_bind' => '0.0.0.0', 'network.bind_address' => '0.0.0.0',
-		'get_ip' => '0.0.0.0', 'network.local_address' => '0.0.0.0',
-	];
+    /**
+     * rTorrentSettings reads seven values in one multicall at startup
+     * (php/settings.php): directory, session, library version, name, port
+     * range, bind and local address. Each is answered under every spelling
+     * the alias tables give it; one value for all seven left six undefined.
+     */
+    public const STARTUP = [
+        'get_directory' => '/downloads', 'directory.default' => '/downloads',
+        'get_session' => '', 'session.path' => '',
+        'system.library_version' => '0.16.24',
+        'get_name' => 'fake-rtorrent', 'session.name' => 'fake-rtorrent',
+        'get_port_range' => '6881-6881', 'network.port_range' => '6881-6881',
+        'network.listen.port.range' => '6881-6881',
+        'get_bind' => '0.0.0.0', 'network.bind_address' => '0.0.0.0',
+        'get_ip' => '0.0.0.0', 'network.local_address' => '0.0.0.0',
+    ];
 
-	private $loaded;
-	private $proofs;
-	private $snapshotFails;
-	private $loadIndex = -1;
-	private $proofKey = null;
-	/** Hash => d.hash reads still answered "missing" before the torrent shows. */
-	private $present = [];
-	private $unknown;
-	private $dropMagnets;
-	private $stubAfter;
-	private $loadFault;
+    private $loaded;
+    private $proofs;
+    private $snapshotFails;
+    private $loadIndex = -1;
+    private $proofKey = null;
+    /** Hash => d.hash reads still answered "missing" before the torrent shows. */
+    private $present = [];
+    private $unknown;
+    private $dropMagnets;
+    private $stubAfter;
+    private $loadFault;
 
-	/**
-	 * $daemon describes what d.hash sees, beyond the download_list snapshot:
-	 *  - 'absent':      snapshot hashes that have left the session since;
-	 *  - 'unknown':     hashes whose d.hash answers an unclassified fault;
-	 *  - 'dropMagnets': magnet hashes rTorrent drops without a stub;
-	 *  - 'stubAfter':   d.hash reads that miss a magnet's stub before it shows.
-	 *  - 'loadFault':   a fault returned before any load changes the session.
-	 * A .torrent load whose proof is confirmed is present at once.
-	 */
-	public function __construct($loaded, $proofs, $snapshotFails, $daemon = [])
-	{
-		$this->loaded = $loaded;
-		$this->proofs = $proofs;
-		$this->snapshotFails = $snapshotFails;
-		foreach($loaded as $hash) {
-			if(!in_array($hash, $daemon['absent'] ?? [], true)) {
-				$this->present[strtoupper($hash)] = 0; } }
-		$this->unknown = $daemon['unknown'] ?? [];
-		$this->dropMagnets = $daemon['dropMagnets'] ?? [];
-		$this->stubAfter = $daemon['stubAfter'] ?? 0;
-		$this->loadFault = $daemon['loadFault'] ?? null;
-	}
+    /**
+     * $daemon describes what d.hash sees, beyond the download_list snapshot:
+     *  - 'absent':      snapshot hashes that have left the session since;
+     *  - 'unknown':     hashes whose d.hash answers an unclassified fault;
+     *  - 'dropMagnets': magnet hashes rTorrent drops without a stub;
+     *  - 'stubAfter':   d.hash reads that miss a magnet's stub before it shows.
+     *  - 'loadFault':   a fault returned before any load changes the session.
+     * A .torrent load whose proof is confirmed is present at once.
+     */
+    public function __construct($loaded, $proofs, $snapshotFails, $daemon = [])
+    {
+        $this->loaded = $loaded;
+        $this->proofs = $proofs;
+        $this->snapshotFails = $snapshotFails;
+        foreach ($loaded as $hash) {
+            if (!in_array($hash, $daemon['absent'] ?? [], true)) {
+                $this->present[strtoupper($hash)] = 0;
+            }
+        }
+        $this->unknown = $daemon['unknown'] ?? [];
+        $this->dropMagnets = $daemon['dropMagnets'] ?? [];
+        $this->stubAfter = $daemon['stubAfter'] ?? 0;
+        $this->loadFault = $daemon['loadFault'] ?? null;
+    }
 
-	public function __invoke($request, $methods)
-	{
-		if(in_array('system.client_version', $methods, true)) { return ['0.16.24']; }
-		if(in_array('system.api_version', $methods, true)) { return [11]; }
-		if(in_array('system.sockets.available_alloc', $methods, true)) {
-			return [4096, 128, 128, 1024, 2048, 128]; }
-		if(in_array('system.library_version', $methods, true)) {
-			return array_map(function($method) {
-				return isset(self::STARTUP[$method]) ? self::STARTUP[$method] : 0;
-			}, $methods); }
-		if(in_array('download_list', $methods, true)) {
-			return $this->snapshotFails ? false : $this->loaded; }
-		foreach($methods as $method) {
-			if(strpos($method, 'load_') === 0 || strpos($method, 'load.') === 0)
-			{
-				if($this->loadFault !== null) { return $this->loadFault; }
-				$this->loadIndex++;
-				$this->proofKey = preg_match('/ru-load-proof-[a-f0-9]{32}/', $request, $match)
-					? $match[0] : null;
-				$this->load($request);
-				return [0];
-			} }
-		if(in_array('d.hash', $methods, true)
-			&& preg_match('`<string>([0-9A-Fa-f]{40})</string>`', $request, $match)) {
-			return $this->presence(strtoupper($match[1])); }
-		if(in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true)) {
-			return [$this->proofKey !== null && strpos($request, $this->proofKey) !== false
-				&& !empty($this->proofs[$this->loadIndex]) ? '1' : 'other']; }
-		return [0];
-	}
+    public function __invoke($request, $methods)
+    {
+        if (in_array('system.client_version', $methods, true)) {
+            return ['0.16.24'];
+        }
+        if (in_array('system.api_version', $methods, true)) {
+            return [11];
+        }
+        if (in_array('system.sockets.available_alloc', $methods, true)) {
+            return [4096, 128, 128, 1024, 2048, 128];
+        }
+        if (in_array('system.library_version', $methods, true)) {
+            return array_map(function ($method) {
+                return isset(self::STARTUP[$method]) ? self::STARTUP[$method] : 0;
+            }, $methods);
+        }
+        if (in_array('download_list', $methods, true)) {
+            return $this->snapshotFails ? false : $this->loaded;
+        }
+        foreach ($methods as $method) {
+            if (strpos($method, 'load_') === 0 || strpos($method, 'load.') === 0) {
+                if ($this->loadFault !== null) {
+                    return $this->loadFault;
+                }
+                $this->loadIndex++;
+                $this->proofKey = preg_match('/ru-load-proof-[a-f0-9]{32}/', $request, $match)
+                    ? $match[0] : null;
+                $this->load($request);
+                return [0];
+            }
+        }
+        if (in_array('d.hash', $methods, true)
+            && preg_match('`<string>([0-9A-Fa-f]{40})</string>`', $request, $match)) {
+            return $this->presence(strtoupper($match[1]));
+        }
+        if (in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true)) {
+            return [$this->proofKey !== null && strpos($request, $this->proofKey) !== false
+                && !empty($this->proofs[$this->loadIndex]) ? '1' : 'other'];
+        }
+        return [0];
+    }
 
-	/** Note what a load adds to the session, as rTorrent would. */
-	private function load($request)
-	{
-		if(preg_match('`<base64>([^<]*)</base64>`', $request, $match))
-		{
-			// The test torrents end with their info dictionary.
-			$raw = (string)base64_decode($match[1]);
-			$at = strpos($raw, '4:info');
-			if(($at !== false) && !empty($this->proofs[$this->loadIndex])) {
-				$this->present[strtoupper(sha1(substr($raw, $at + 6, -1)))] = 0; }
-		}
-		elseif(preg_match('`xt=urn:btih:([0-9A-Fa-f]{40})`', $request, $match))
-		{
-			$hash = strtoupper($match[1]);
-			if(!in_array($hash, $this->dropMagnets, true) && !isset($this->present[$hash])) {
-				$this->present[$hash] = $this->stubAfter; }
-		}
-	}
+    /** Note what a load adds to the session, as rTorrent would. */
+    private function load($request)
+    {
+        if (preg_match('`<base64>([^<]*)</base64>`', $request, $match)) {
+            // The test torrents end with their info dictionary.
+            $raw = (string) base64_decode($match[1]);
+            $at = strpos($raw, '4:info');
+            if (($at !== false) && !empty($this->proofs[$this->loadIndex])) {
+                $this->present[strtoupper(sha1(substr($raw, $at + 6, -1)))] = 0;
+            }
+        } elseif (preg_match('`xt=urn:btih:([0-9A-Fa-f]{40})`', $request, $match)) {
+            $hash = strtoupper($match[1]);
+            if (!in_array($hash, $this->dropMagnets, true) && !isset($this->present[$hash])) {
+                $this->present[$hash] = $this->stubAfter;
+            }
+        }
+    }
 
-	/** d.hash: the hash while the torrent is there, rTorrent's missing-hash fault otherwise. */
-	private function presence($hash)
-	{
-		if(in_array($hash, $this->unknown, true)) {
-			return false; }
-		if(isset($this->present[$hash]) && ($this->present[$hash]-- <= 0)) {
-			return [$hash]; }
-		return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
-	}
+    /** d.hash: the hash while the torrent is there, rTorrent's missing-hash fault otherwise. */
+    private function presence($hash)
+    {
+        if (in_array($hash, $this->unknown, true)) {
+            return false;
+        }
+        if (isset($this->present[$hash]) && ($this->present[$hash]-- <= 0)) {
+            return [$hash];
+        }
+        return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
+    }
 }
 
 /**
@@ -199,84 +213,99 @@ class FakeRtorrentAddTorrentReplies
  */
 class FakeRtorrentMethodReplies
 {
-	private $values;
+    private $values;
 
-	public function __construct($values)
-	{
-		$this->values = $values;
-	}
+    public function __construct($values)
+    {
+        $this->values = $values;
+    }
 
-	public function __invoke($request, $methods)
-	{
-		$reply = [];
-		foreach($methods as $method)
-		{
-			$values = array_key_exists($method, $this->values) ? $this->values[$method] : [0];
-			if($values instanceof FakeRtorrentPerCall) {
-				$values = $values->next(); }
-			$reply = array_merge($reply, $values);
-		}
-		return $reply;
-	}
+    public function __invoke($request, $methods)
+    {
+        $reply = [];
+        foreach ($methods as $method) {
+            $values = array_key_exists($method, $this->values) ? $this->values[$method] : [0];
+            if ($values instanceof FakeRtorrentPerCall) {
+                $values = $values->next();
+            }
+            $reply = array_merge($reply, $values);
+        }
+        return $reply;
+    }
 }
 
 /** The values one method answers on its first call, its second, and so on. */
 class FakeRtorrentPerCall
 {
-	private $calls;
+    private $calls;
 
-	public function __construct($calls)
-	{
-		$this->calls = $calls;
-	}
+    public function __construct($calls)
+    {
+        $this->calls = $calls;
+    }
 
-	public function next()
-	{
-		return count($this->calls) > 1 ? array_shift($this->calls) : $this->calls[0];
-	}
+    public function next()
+    {
+        return count($this->calls) > 1 ? array_shift($this->calls) : $this->calls[0];
+    }
 }
 
 /** Serializable edit failure replies that remove the session copy only after erase. */
 class FakeRtorrentEditReloadReplies
 {
-	private $source;
-	private $snapshot;
-	private $options;
+    private $source;
+    private $snapshot;
+    private $options;
 
-	public function __construct($source, $snapshot, $options = [])
-	{
-		$this->source = $source;
-		$this->snapshot = $snapshot;
-		$this->options = $options;
-	}
+    public function __construct($source, $snapshot, $options = [])
+    {
+        $this->source = $source;
+        $this->snapshot = $snapshot;
+        $this->options = $options;
+    }
 
-	public function __invoke($request, $methods)
-	{
-		if(in_array('system.listMethods', $methods, true)) {
-			return array_merge(['system.listMethods'], !empty($this->options['unsupported'])
-				? [] : ['d.erase_preserving_tied', 'd.stop_generation']); }
-		if(in_array('get_session', $methods, true)) { return $this->snapshot; }
-		$guarded = in_array('d.erase_preserving_tied', $methods, true);
-		if($guarded || in_array('d.erase', $methods, true))
-		{
-			if(($this->options['erase'] ?? '') === 'fault') { return false; }
-			unlink($this->source);
-			if(!$guarded && !empty($this->options['tied'])) { @unlink($this->options['tied']); }
-			if(!empty($this->options['readOnlyRecovery'])) {
-				foreach(glob($this->options['uploads'].'/edited-*.torrent') as $path) {
-					chmod($path, 0440); } }
-			if(($this->options['erase'] ?? '') === 'lost') { return null; }
-			return [0];
-		}
-		if(!empty($this->options['guarded']))
-		{
-			if(!empty($this->options['pending'])) { return ['foreign']; }
-			return [(in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true)) ? '1' : 0];
-		}
-		if(!empty($this->options['pending'])) { return ['foreign']; }
-		if(!empty($this->options['readOnlyRecovery'])) { return ['1']; }
-		return false;
-	}
+    public function __invoke($request, $methods)
+    {
+        if (in_array('system.listMethods', $methods, true)) {
+            return array_merge(['system.listMethods'], !empty($this->options['unsupported'])
+                ? [] : ['d.erase_preserving_tied', 'd.stop_generation']);
+        }
+        if (in_array('get_session', $methods, true)) {
+            return $this->snapshot;
+        }
+        $guarded = in_array('d.erase_preserving_tied', $methods, true);
+        if ($guarded || in_array('d.erase', $methods, true)) {
+            if (($this->options['erase'] ?? '') === 'fault') {
+                return false;
+            }
+            unlink($this->source);
+            if (!$guarded && !empty($this->options['tied'])) {
+                @unlink($this->options['tied']);
+            }
+            if (!empty($this->options['readOnlyRecovery'])) {
+                foreach (glob($this->options['uploads'] . '/edited-*.torrent') as $path) {
+                    chmod($path, 0440);
+                }
+            }
+            if (($this->options['erase'] ?? '') === 'lost') {
+                return null;
+            }
+            return [0];
+        }
+        if (!empty($this->options['guarded'])) {
+            if (!empty($this->options['pending'])) {
+                return ['foreign'];
+            }
+            return [(in_array('d.custom', $methods, true) || in_array('d.get_custom', $methods, true)) ? '1' : 0];
+        }
+        if (!empty($this->options['pending'])) {
+            return ['foreign'];
+        }
+        if (!empty($this->options['readOnlyRecovery'])) {
+            return ['1'];
+        }
+        return false;
+    }
 }
 
 /**
@@ -297,314 +326,331 @@ class FakeRtorrentEditReloadReplies
  */
 class FakeRtorrentDaemon
 {
-	private $socket;
-	private $pid = 0;
-	private $process;
-	private $port;
-	private $logFile;
-	private $bodyLogFile;
+    private $socket;
+    private $pid = 0;
+    private $process;
+    private $port;
+    private $logFile;
+    private $bodyLogFile;
 
-	/**
-	 * $replies is a list, one per request: each entry is the list of values
-	 * the daemon answers that request with, self::fault(...) or
-	 * self::raw(...), self::paced(...), or null to close without a reply.
-	 *
-	 * It may instead be a Closure taking the request body and returning one of
-	 * those, for a caller whose own next request depends on the answer to
-	 * this one -- rTorrentSettings::obtain() is seven round trips and chooses
-	 * several of them from what it has been told so far. Such a daemon
-	 * answers for as long as it is asked rather than for a fixed count.
-	 * Serializable plans run through proc_open(); a Closure retains the optional
-	 * pcntl path. A serializable responder object instead receives the body and
-	 * method names. $replyClassFiles must define its test-owned class before the
-	 * worker unserializes it.
-	 */
-	public function __construct($replies, $logFile, $worker = false, $replyClassFiles = [])
-	{
-		$this->logFile = $logFile;
-		// Keep bodies separate so calls() remains a plain method-name list.
-		$this->bodyLogFile = $logFile . '.bodies';
-		if($worker)
-		{
-			$this->listen();
-			fwrite(STDOUT, $this->port . "\n");
-			fflush(STDOUT);
-			$this->serve($replies);
-			return;
-		}
-		@unlink($this->logFile);
-		@unlink($this->bodyLogFile);
-		@unlink($this->logFile . '.server.err');
-		if($replies instanceof Closure)
-		{
-			if(!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')
-				|| !function_exists('posix_kill')) {
-				throw new RuntimeException('a closure reply requires pcntl and posix; use a serializable reply plan'); }
-			$this->listen();
-			$this->pid = pcntl_fork();
-			if($this->pid === -1)
-			{
-				fclose($this->socket);
-				throw new RuntimeException('cannot fork a daemon');
-			}
-			if($this->pid === 0)
-			{
-				$code = 0;
-				try { $this->serve($replies); }
-				catch(Throwable $error)
-				{
-					@file_put_contents($this->logFile . '.server.err',
-						get_class($error) . ': ' . $error->getMessage() . "\n", FILE_APPEND);
-					$code = 1;
-				}
-				exit($code);
-			}
-			return;
-		}
-		$this->startProcess($replies, $replyClassFiles);
-	}
+    /**
+     * $replies is a list, one per request: each entry is the list of values
+     * the daemon answers that request with, self::fault(...) or
+     * self::raw(...), self::paced(...), or null to close without a reply.
+     *
+     * It may instead be a Closure taking the request body and returning one of
+     * those, for a caller whose own next request depends on the answer to
+     * this one -- rTorrentSettings::obtain() is seven round trips and chooses
+     * several of them from what it has been told so far. Such a daemon
+     * answers for as long as it is asked rather than for a fixed count.
+     * Serializable plans run through proc_open(); a Closure retains the optional
+     * pcntl path. A serializable responder object instead receives the body and
+     * method names. $replyClassFiles must define its test-owned class before the
+     * worker unserializes it.
+     */
+    public function __construct($replies, $logFile, $worker = false, $replyClassFiles = [])
+    {
+        $this->logFile = $logFile;
+        // Keep bodies separate so calls() remains a plain method-name list.
+        $this->bodyLogFile = $logFile . '.bodies';
+        if ($worker) {
+            $this->listen();
+            fwrite(STDOUT, $this->port . "\n");
+            fflush(STDOUT);
+            $this->serve($replies);
+            return;
+        }
+        @unlink($this->logFile);
+        @unlink($this->bodyLogFile);
+        @unlink($this->logFile . '.server.err');
+        if ($replies instanceof Closure) {
+            if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')
+                || !function_exists('posix_kill')) {
+                throw new RuntimeException('a closure reply requires pcntl and posix; use a serializable reply plan');
+            }
+            $this->listen();
+            $this->pid = pcntl_fork();
+            if ($this->pid === -1) {
+                fclose($this->socket);
+                throw new RuntimeException('cannot fork a daemon');
+            }
+            if ($this->pid === 0) {
+                $code = 0;
+                try {
+                    $this->serve($replies);
+                } catch (Throwable $error) {
+                    @file_put_contents(
+                        $this->logFile . '.server.err',
+                        get_class($error) . ': ' . $error->getMessage() . "\n",
+                        FILE_APPEND,
+                    );
+                    $code = 1;
+                }
+                exit($code);
+            }
+            return;
+        }
+        $this->startProcess($replies, $replyClassFiles);
+    }
 
-	/**
-	 * A reply entry that makes the daemon answer with a fault instead of
-	 * values, for a test that needs the caller's request to fail. The one way
-	 * to ask for a fault; a bare false reply is shorthand for
-	 * fault('fixture failure').
-	 */
-	public static function fault($message, $code = -501)
-	{
-		return new FakeRtorrentFault($code, $message);
-	}
+    /**
+     * A reply entry that makes the daemon answer with a fault instead of
+     * values, for a test that needs the caller's request to fail. The one way
+     * to ask for a fault; a bare false reply is shorthand for
+     * fault('fixture failure').
+     */
+    public static function fault($message, $code = -501)
+    {
+        return new FakeRtorrentFault($code, $message);
+    }
 
-	/** A reply entry sent byte for byte, without headers of the daemon's own. */
-	public static function raw($bytes)
-	{
-		return new FakeRtorrentWireReply($bytes);
-	}
+    /** A reply entry sent byte for byte, without headers of the daemon's own. */
+    public static function raw($bytes)
+    {
+        return new FakeRtorrentWireReply($bytes);
+    }
 
-	/**
-	 * A reply entry that makes the daemon write these pieces in order, waiting
-	 * $pause microseconds between them, and close. The wait is what makes each
-	 * piece a read of its own on the other end: a reader blocked in fread()
-	 * gets the piece that woke it, not the whole reply. An answer written in
-	 * one call cannot show where a reader's reads fall, because the kernel is
-	 * free to hand it over in any division at all -- including, under TCP, one
-	 * that puts a single byte in a read by itself.
-	 */
-	public static function paced($pieces, $pause = 300000)
-	{
-		return new FakeRtorrentPacedReply($pieces, $pause);
-	}
+    /**
+     * A reply entry that makes the daemon write these pieces in order, waiting
+     * $pause microseconds between them, and close. The wait is what makes each
+     * piece a read of its own on the other end: a reader blocked in fread()
+     * gets the piece that woke it, not the whole reply. An answer written in
+     * one call cannot show where a reader's reads fall, because the kernel is
+     * free to hand it over in any division at all -- including, under TCP, one
+     * that puts a single byte in a read by itself.
+     */
+    public static function paced($pieces, $pause = 300000)
+    {
+        return new FakeRtorrentPacedReply($pieces, $pause);
+    }
 
-	public static function runWorker()
-	{
-		$plan = @unserialize(stream_get_contents(STDIN));
-		if(!is_array($plan) || !array_key_exists('replies', $plan) || !isset($plan['logFile'])) {
-			throw new RuntimeException('invalid fake daemon reply plan'); }
-		new self($plan['replies'], $plan['logFile'], true);
-	}
+    public static function runWorker()
+    {
+        $plan = @unserialize(stream_get_contents(STDIN));
+        if (!is_array($plan) || !array_key_exists('replies', $plan) || !isset($plan['logFile'])) {
+            throw new RuntimeException('invalid fake daemon reply plan');
+        }
+        new self($plan['replies'], $plan['logFile'], true);
+    }
 
-	public function port()
-	{
-		return $this->port;
-	}
+    public function port()
+    {
+        return $this->port;
+    }
 
-	/** The method names the daemon was asked for, in order. */
-	public function calls()
-	{
-		$log = file_exists($this->logFile) ? trim(file_get_contents($this->logFile)) : '';
-		return $log === '' ? [] : explode("\n", $log);
-	}
+    /** The method names the daemon was asked for, in order. */
+    public function calls()
+    {
+        $log = file_exists($this->logFile) ? trim(file_get_contents($this->logFile)) : '';
+        return $log === '' ? [] : explode("\n", $log);
+    }
 
-	/**
-	 * The full XMLRPC request bodies the daemon was sent, in order. Separated
-	 * by a record marker rather than a newline because a body may contain one.
-	 */
-	public function bodies()
-	{
-		if(!file_exists($this->bodyLogFile)) {
-			return []; }
-		$log = file_get_contents($this->bodyLogFile);
-		if($log === '' || $log === false) {
-			return []; }
-		$records = explode("\x00--REQ--\x00", $log);
-		array_pop($records);
-		return $records;
-	}
+    /**
+     * The full XMLRPC request bodies the daemon was sent, in order. Separated
+     * by a record marker rather than a newline because a body may contain one.
+     */
+    public function bodies()
+    {
+        if (!file_exists($this->bodyLogFile)) {
+            return [];
+        }
+        $log = file_get_contents($this->bodyLogFile);
+        if ($log === '' || $log === false) {
+            return [];
+        }
+        $records = explode("\x00--REQ--\x00", $log);
+        array_pop($records);
+        return $records;
+    }
 
-	public function received($method)
-	{
-		return in_array($method, $this->calls(), true);
-	}
+    public function received($method)
+    {
+        return in_array($method, $this->calls(), true);
+    }
 
-	public function stop()
-	{
-		if ($this->pid > 0) {
-			posix_kill($this->pid, SIGTERM);
-			pcntl_waitpid($this->pid, $status);
-			$this->pid = 0;
-		}
-		if (is_resource($this->process)) {
-			$status = proc_get_status($this->process);
-			if($status['running']) { @proc_terminate($this->process); }
-			@proc_close($this->process);
-			$this->process = null;
-		}
-		if (is_resource($this->socket)) { @fclose($this->socket); }
-	}
+    public function stop()
+    {
+        if ($this->pid > 0) {
+            posix_kill($this->pid, SIGTERM);
+            pcntl_waitpid($this->pid, $status);
+            $this->pid = 0;
+        }
+        if (is_resource($this->process)) {
+            $status = proc_get_status($this->process);
+            if ($status['running']) {
+                @proc_terminate($this->process);
+            }
+            @proc_close($this->process);
+            $this->process = null;
+        }
+        if (is_resource($this->socket)) {
+            @fclose($this->socket);
+        }
+    }
 
-	private function listen()
-	{
-		$this->socket = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-		if($this->socket === false) {
-			throw new RuntimeException('cannot listen: ' . $errstr); }
-		$name = stream_socket_get_name($this->socket, false);
-		$this->port = (int)substr($name, strrpos($name, ':') + 1);
-	}
+    private function listen()
+    {
+        $this->socket = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($this->socket === false) {
+            throw new RuntimeException('cannot listen: ' . $errstr);
+        }
+        $name = stream_socket_get_name($this->socket, false);
+        $this->port = (int) substr($name, strrpos($name, ':') + 1);
+    }
 
-	private function startProcess($replies, $replyClassFiles)
-	{
-		$source = 'require ' . var_export(__FILE__, true) . ';';
-		// Test-owned serializable responders must be defined before the
-		// worker unserializes its plan, also when pcntl is unavailable.
-		foreach($replyClassFiles as $file) {
-			$source .= 'require_once '.var_export($file, true).';'; }
-		$source .= 'FakeRtorrentDaemon::runWorker();';
-		// An argv command owns the PHP process directly, without a shell to orphan it.
-		$command = [PHP_BINARY, '-d', 'display_errors=stderr', '-r', $source];
-		$plan = serialize(['replies' => $replies, 'logFile' => $this->logFile]);
-		$this->process = proc_open($command, [
-			0 => ['pipe', 'r'],
-			1 => ['pipe', 'w'],
-			2 => ['file', $this->logFile . '.server.err', 'a'],
-		], $pipes, dirname($this->logFile));
-		if(!is_resource($this->process)) {
-			throw new RuntimeException('cannot start a daemon process'); }
-		$sent = 0;
-		while($sent < strlen($plan))
-		{
-			$written = @fwrite($pipes[0], substr($plan, $sent));
-			if($written === false || $written === 0) { break; }
-			$sent += $written;
-		}
-		fclose($pipes[0]);
-		stream_set_timeout($pipes[1], 10);
-		$ready = ($sent === strlen($plan)) ? fgets($pipes[1]) : false;
-		fclose($pipes[1]);
-		if(!is_string($ready) || !preg_match('/^[1-9][0-9]*\n$/D', $ready))
-		{
-			$this->stop();
-			throw new RuntimeException('fake daemon process did not announce a port: '
-				. @file_get_contents($this->logFile . '.server.err'));
-		}
-		$this->port = (int)$ready;
-	}
+    private function startProcess($replies, $replyClassFiles)
+    {
+        $source = 'require ' . var_export(__FILE__, true) . ';';
+        // Test-owned serializable responders must be defined before the
+        // worker unserializes its plan, also when pcntl is unavailable.
+        foreach ($replyClassFiles as $file) {
+            $source .= 'require_once ' . var_export($file, true) . ';';
+        }
+        $source .= 'FakeRtorrentDaemon::runWorker();';
+        // An argv command owns the PHP process directly, without a shell to orphan it.
+        $command = [PHP_BINARY, '-d', 'display_errors=stderr', '-r', $source];
+        $plan = serialize(['replies' => $replies, 'logFile' => $this->logFile]);
+        $this->process = proc_open($command, [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['file', $this->logFile . '.server.err', 'a'],
+        ], $pipes, dirname($this->logFile));
+        if (!is_resource($this->process)) {
+            throw new RuntimeException('cannot start a daemon process');
+        }
+        $sent = 0;
+        while ($sent < strlen($plan)) {
+            $written = @fwrite($pipes[0], substr($plan, $sent));
+            if ($written === false || $written === 0) {
+                break;
+            }
+            $sent += $written;
+        }
+        fclose($pipes[0]);
+        stream_set_timeout($pipes[1], 10);
+        $ready = ($sent === strlen($plan)) ? fgets($pipes[1]) : false;
+        fclose($pipes[1]);
+        if (!is_string($ready) || !preg_match('/^[1-9][0-9]*\n$/D', $ready)) {
+            $this->stop();
+            throw new RuntimeException('fake daemon process did not announce a port: '
+                . @file_get_contents($this->logFile . '.server.err'));
+        }
+        $this->port = (int) $ready;
+    }
 
-	private function serve($replies)
-	{
-		@fclose(STDOUT);
-		$dynamic = is_callable($replies);
-		$index = 0;
-		while ($dynamic || $index < count($replies)) {
-			$client = @stream_socket_accept($this->socket, 10);
-			if ($client === false) {
-				break;
-			}
-			try { $body = SCGIRequest::read($client)['payload']; }
-			catch(RuntimeException $error)
-			{
-				// An abandoned or incomplete connection consumes no scripted reply.
-				@fclose($client);
-				continue;
-			}
-			file_put_contents($this->bodyLogFile, $body . "\x00--REQ--\x00", FILE_APPEND);
-			$methods = $this->methodNames($body);
-			foreach ($methods as $method) {
-				file_put_contents($this->logFile, $method . "\n", FILE_APPEND);
-			}
-			$values = $dynamic ? $replies($body, $methods) : $replies[$index];
-			$index++;
-			if($values instanceof FakeRtorrentPacedReply) {
-				$this->writePaced($client, $values); }
-			// A null plan deliberately drops the reply after recording the call.
-			elseif($values !== null) {
-				@fwrite($client, $this->reply($values)); }
-			@fclose($client);
-		}
-		@fclose($this->socket);
-	}
+    private function serve($replies)
+    {
+        @fclose(STDOUT);
+        $dynamic = is_callable($replies);
+        $index = 0;
+        while ($dynamic || $index < count($replies)) {
+            $client = @stream_socket_accept($this->socket, 10);
+            if ($client === false) {
+                break;
+            }
+            try {
+                $body = SCGIRequest::read($client)['payload'];
+            } catch (RuntimeException $error) {
+                // An abandoned or incomplete connection consumes no scripted reply.
+                @fclose($client);
+                continue;
+            }
+            file_put_contents($this->bodyLogFile, $body . "\x00--REQ--\x00", FILE_APPEND);
+            $methods = $this->methodNames($body);
+            foreach ($methods as $method) {
+                file_put_contents($this->logFile, $method . "\n", FILE_APPEND);
+            }
+            $values = $dynamic ? $replies($body, $methods) : $replies[$index];
+            $index++;
+            if ($values instanceof FakeRtorrentPacedReply) {
+                $this->writePaced($client, $values);
+            }
+            // A null plan deliberately drops the reply after recording the call.
+            elseif ($values !== null) {
+                @fwrite($client, $this->reply($values));
+            }
+            @fclose($client);
+        }
+        @fclose($this->socket);
+    }
 
-	private function writePaced($client, $paced)
-	{
-		$first = true;
-		foreach ($paced->pieces as $piece) {
-			if (!$first) {
-				usleep($paced->pause);
-			}
-			$first = false;
-			// The reader may have stopped and closed before the last piece;
-			// that is the failure such a test is looking for, not an error here.
-			@fwrite($client, $piece);
-			@fflush($client);
-		}
-	}
+    private function writePaced($client, $paced)
+    {
+        $first = true;
+        foreach ($paced->pieces as $piece) {
+            if (!$first) {
+                usleep($paced->pause);
+            }
+            $first = false;
+            // The reader may have stopped and closed before the last piece;
+            // that is the failure such a test is looking for, not an error here.
+            @fwrite($client, $piece);
+            @fflush($client);
+        }
+    }
 
-	private function methodNames($body)
-	{
-		$names = [];
-		if (preg_match('|<methodName>(.*)</methodName>|Us', $body, $outer)) {
-			if ($outer[1] !== 'system.multicall') {
-				return [$outer[1]];
-			}
-		}
-		if (preg_match_all(
-			'|<name>methodName</name><value><string>(.*)</string></value>|Us', $body, $inner)) {
-			$names = $inner[1];
-		}
-		return $names;
-	}
+    private function methodNames($body)
+    {
+        $names = [];
+        if (preg_match('|<methodName>(.*)</methodName>|Us', $body, $outer)) {
+            if ($outer[1] !== 'system.multicall') {
+                return [$outer[1]];
+            }
+        }
+        if (preg_match_all(
+            '|<name>methodName</name><value><string>(.*)</string></value>|Us',
+            $body,
+            $inner,
+        )) {
+            $names = $inner[1];
+        }
+        return $names;
+    }
 
-	/**
-	 * Escape a value for XML text content the way rtorrent's XMLRPC layer does:
-	 * '&', '<' and '>' and nothing else. It is byte-wise on purpose -- rtorrent
-	 * answers with whatever bytes the filesystem gave it, including a path that
-	 * is not valid UTF-8, and a quote or a backslash arrives literally rather
-	 * than as an entity. htmlspecialchars() here would escape the quote and
-	 * drop a non-UTF-8 value, and the reading side treats both of those
-	 * differently from the bytes themselves.
-	 */
-	private static function escapeText($value)
-	{
-		return strtr($value, ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;']);
-	}
+    /**
+     * Escape a value for XML text content the way rtorrent's XMLRPC layer does:
+     * '&', '<' and '>' and nothing else. It is byte-wise on purpose -- rtorrent
+     * answers with whatever bytes the filesystem gave it, including a path that
+     * is not valid UTF-8, and a quote or a backslash arrives literally rather
+     * than as an entity. htmlspecialchars() here would escape the quote and
+     * drop a non-UTF-8 value, and the reading side treats both of those
+     * differently from the bytes themselves.
+     */
+    private static function escapeText($value)
+    {
+        return strtr($value, ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;']);
+    }
 
-	private function reply($values)
-	{
-		if($values === false) {
-			$values = self::fault('fixture failure'); }
-		if($values instanceof FakeRtorrentWireReply) {
-			return $values->bytes; }
-		if($values instanceof FakeRtorrentRawReply) {
-			$body = $values->body;
-		} elseif($values instanceof FakeRtorrentFault) {
-			$body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
-				. '<member><name>faultCode</name><value><i4>' . (int)$values->code . '</i4></value></member>'
-				. '<member><name>faultString</name><value><string>' . self::escapeText((string)$values->message)
-				. '</string></value></member></struct></value></fault></methodResponse>';
-		} elseif($values instanceof FakeRtorrentDirectStringReply) {
-			$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>'
-				. self::escapeText((string)$values->value)
-				. '</string></value></param></params></methodResponse>';
-		} else {
-			$xml = '<?xml version="1.0" encoding="UTF-8"?><methodResponse><params><param>'
-				. '<value><array><data>';
-			foreach ($values as $value) {
-				$xml .= is_int($value)
-					? '<value><i8>' . $value . '</i8></value>'
-					: '<value><string>' . self::escapeText((string)$value) . '</string></value>';
-			}
-			$body = $xml . '</data></array></value></param></params></methodResponse>';
-		}
-		return "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
-			. strlen($body) . "\r\n\r\n" . $body;
-	}
+    private function reply($values)
+    {
+        if ($values === false) {
+            $values = self::fault('fixture failure');
+        }
+        if ($values instanceof FakeRtorrentWireReply) {
+            return $values->bytes;
+        }
+        if ($values instanceof FakeRtorrentRawReply) {
+            $body = $values->body;
+        } elseif ($values instanceof FakeRtorrentFault) {
+            $body = '<?xml version="1.0"?><methodResponse><fault><value><struct>'
+                . '<member><name>faultCode</name><value><i4>' . (int) $values->code . '</i4></value></member>'
+                . '<member><name>faultString</name><value><string>' . self::escapeText((string) $values->message)
+                . '</string></value></member></struct></value></fault></methodResponse>';
+        } elseif ($values instanceof FakeRtorrentDirectStringReply) {
+            $body = '<?xml version="1.0"?><methodResponse><params><param><value><string>'
+                . self::escapeText((string) $values->value)
+                . '</string></value></param></params></methodResponse>';
+        } else {
+            $xml = '<?xml version="1.0" encoding="UTF-8"?><methodResponse><params><param>'
+                . '<value><array><data>';
+            foreach ($values as $value) {
+                $xml .= is_int($value)
+                    ? '<value><i8>' . $value . '</i8></value>'
+                    : '<value><string>' . self::escapeText((string) $value) . '</string></value>';
+            }
+            $body = $xml . '</data></array></value></param></params></methodResponse>';
+        }
+        return "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
+            . strlen($body) . "\r\n\r\n" . $body;
+    }
 }

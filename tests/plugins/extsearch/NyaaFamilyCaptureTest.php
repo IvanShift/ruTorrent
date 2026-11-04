@@ -22,15 +22,23 @@ trait NyaaCapturedFetch
     }
 }
 
-class CapturedNyaaEngine extends NyaaEngine { use NyaaCapturedFetch; }
-class CapturedSukebeiEngine extends NyaaSukebeEngine { use NyaaCapturedFetch; }
+class CapturedNyaaEngine extends NyaaEngine
+{
+    use NyaaCapturedFetch;
+}
+class CapturedSukebeiEngine extends NyaaSukebeEngine
+{
+    use NyaaCapturedFetch;
+}
 
 class NyaaFamilyCaptureTest extends TestCase
 {
     public function setUp()
     {
         set_error_handler(function ($errno, $message) {
-            if (error_reporting() & $errno) { throw new ErrorException($message, 0, $errno); }
+            if (error_reporting() & $errno) {
+                throw new ErrorException($message, 0, $errno);
+            }
             return false;
         });
     }
@@ -69,7 +77,9 @@ class NyaaFamilyCaptureTest extends TestCase
                 $url . '/?c=0_0&q=linux&s=seeders&o=desc&p=1',
                 $url . '/?c=0_0&q=linux&s=seeders&o=desc&p=2',
             ], $engine->requests, $name . ' must stop after its first failed page');
-            if (count($results) !== 2) { continue; }
+            if (count($results) !== 2) {
+                continue;
+            }
             $links = array_keys($results);
             $items = array_values($results);
             foreach ($expected[$name] as $i => $row) {
@@ -97,8 +107,11 @@ class NyaaFamilyCaptureTest extends TestCase
             $results = [];
             $engine->action('linux', 'all', $results, 1, true);
             $this->assertSame(1, count($results), 'fallback row must still parse');
-            $this->assertSame(1742014020, array_values($results)[0]['time'],
-                'missing or invalid exact timestamp must use the visible UTC date');
+            $this->assertSame(
+                1742014020,
+                array_values($results)[0]['time'],
+                'missing or invalid exact timestamp must use the visible UTC date',
+            );
         }
     }
 
@@ -108,8 +121,11 @@ class NyaaFamilyCaptureTest extends TestCase
             $engine->bodies = [$this->capture($name)];
             $results = [];
             $engine->action('linux', 'unknown-category', $results, 1, false);
-            $this->assertSame($url . '/?c=0_0&q=linux&s=seeders&o=desc&p=1', $engine->requests[0],
-                $name . ' unknown category must not omit c=0_0');
+            $this->assertSame(
+                $url . '/?c=0_0&q=linux&s=seeders&o=desc&p=1',
+                $engine->requests[0],
+                $name . ' unknown category must not omit c=0_0',
+            );
             $this->assertSame(1, count($results), $name . ' limit one');
         }
     }
@@ -124,8 +140,10 @@ class NyaaFamilyCaptureTest extends TestCase
             $results = [];
             $engine->action('linux', $category, $results, 100, true);
             $this->assertSame(10, count($engine->requests), $name . ' page ceiling');
-            $this->assertTrue(strpos($engine->requests[0], '?c=' . $value . '&') !== false,
-                $name . ' global category');
+            $this->assertTrue(
+                strpos($engine->requests[0], '?c=' . $value . '&') !== false,
+                $name . ' global category',
+            );
             $this->assertSame(2, count($results), $name . ' duplicate links across pages');
         }
     }

@@ -1,23 +1,31 @@
 <?php
-require_once( 'retrackers.php' );
+
+require_once('retrackers.php');
 Requests::requirePost();
 
 $trks = rRetrackers::load(false);
 $failure = null;
 if (!$trks->set(null, $failure)) {
-	// Refusal is visible without generating cache files or touching lifecycle.
-	header('Content-Type: application/javascript');
-	header('Cache-Control: no-store');
-	echo $trks->get().'noty('.JSON::safeEncode('Retrackers settings unchanged: '.$failure).', "error");';
-	exit;
+    // Refusal is visible without generating cache files or touching lifecycle.
+    header('Content-Type: application/javascript');
+    header('Cache-Control: no-store');
+    echo $trks->get() . 'noty(' . JSON::safeEncode('Retrackers settings unchanged: ' . $failure) . ', "error");';
+    exit;
 }
-require_once(__DIR__.'/../../php/rtorrent.php');
+require_once(__DIR__ . '/../../php/rtorrent.php');
 define('RETRACKERS_IMPORT_ONLY', true);
-require_once(__DIR__.'/update.php');
+require_once(__DIR__ . '/update.php');
 $jResult = '';
 $failure = null;
 // Eligibility is part of the installed functional action. Refresh it when
 // settings change, so an empty list or an excluded private torrent gets no claim.
-retrackersRunLifecycleInit(User::getUser(), $rootPath.'/plugins/retrackers/run.sh',
-    Utility::getPHP(), $jResult, $failure, null, $trks);
-CachedEcho::send($trks->get().$jResult,"application/javascript");
+retrackersRunLifecycleInit(
+    User::getUser(),
+    $rootPath . '/plugins/retrackers/run.sh',
+    Utility::getPHP(),
+    $jResult,
+    $failure,
+    null,
+    $trks,
+);
+CachedEcho::send($trks->get() . $jResult, "application/javascript");

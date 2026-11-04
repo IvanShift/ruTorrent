@@ -27,16 +27,17 @@
  */
 
 if (!class_exists('Torrent', false)) {
-    throw new RuntimeException('UpstreamStampingTorrentFixture.php needs php/Torrent.php loaded first'); }
+    throw new RuntimeException('UpstreamStampingTorrentFixture.php needs php/Torrent.php loaded first');
+}
 
 class UpstreamStampingTorrent extends Torrent
 {
-	/** What this stand-in writes instead of time(). */
-	public const STAMP_DATE = 1700000000;
+    /** What this stand-in writes instead of time(). */
+    public const STAMP_DATE = 1700000000;
 
-	protected function touch()
-	{
-		$this->setMeta('created by', 'ruTorrent (PHP Class - Adrien Gibrat)');
-		$this->setMeta('creation date', self::STAMP_DATE);
-	}
+    protected function touch()
+    {
+        $this->setMeta('created by', 'ruTorrent (PHP Class - Adrien Gibrat)');
+        $this->setMeta('creation date', self::STAMP_DATE);
+    }
 }

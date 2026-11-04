@@ -1,4 +1,5 @@
 <?php
+
 require_once(dirname(__DIR__) . '/php/cli-only.php');
 rutorrent_require_cli(__FILE__);
 

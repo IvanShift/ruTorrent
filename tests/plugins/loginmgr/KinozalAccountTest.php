@@ -87,9 +87,12 @@ function kinozalIsOK($body, $status = 200)
 
 // $url is the caller's request that loginmgr is logging in for: the login
 // door is the Kinozal site that URL addresses.
-function kinozalLogin($client, $user = 'user', $pass = 'pass',
-    $url = 'https://kinozal.guru/get_srv_details.php?action=2&id=1')
-{
+function kinozalLogin(
+    $client,
+    $user = 'user',
+    $pass = 'pass',
+    $url = 'https://kinozal.guru/get_srv_details.php?action=2&id=1'
+) {
     $account = new KinozalTVAccount();
     $method = new ReflectionMethod('KinozalTVAccount', 'login');
     if (PHP_VERSION_ID < 80100) {
@@ -135,7 +138,8 @@ function kinozalUnauthorizedAnswer()
 function kinozalCapturedLog(callable $body)
 {
     if (property_exists('KinozalResponse', 'failureLogged')) {
-        strictSetPrivateStatic('KinozalResponse', 'failureLogged', false); }
+        strictSetPrivateStatic('KinozalResponse', 'failureLogged', false);
+    }
     $file = tempnam(sys_get_temp_dir(), 'kinozal-log');
     $saved = array_key_exists('log_file', $GLOBALS) ? $GLOBALS['log_file'] : null;
     $GLOBALS['log_file'] = $file;
@@ -144,8 +148,11 @@ function kinozalCapturedLog(callable $body)
         return array_values(array_filter(explode("\n", (string) file_get_contents($file)), 'strlen'));
     } finally {
         @unlink($file);
-        if ($saved === null) { unset($GLOBALS['log_file']); }
-        else { $GLOBALS['log_file'] = $saved; }
+        if ($saved === null) {
+            unset($GLOBALS['log_file']);
+        } else {
+            $GLOBALS['log_file'] = $saved;
+        }
     }
 }
 
@@ -166,21 +173,30 @@ function kinozalUnterminatedOpeners($count = 1400000)
 $suite = new StrictTestSuite();
 
 $suite->test('the captured 2026-08-07 login form is recognised as a dead session', function () {
-    strictAssertSame(false, kinozalIsOK(kinozalLoginPage()),
-        'the unquoted type= / reordered attribute form must not read as logged in');
+    strictAssertSame(
+        false,
+        kinozalIsOK(kinozalLoginPage()),
+        'the unquoted type= / reordered attribute form must not read as logged in',
+    );
 });
 
 $suite->test('the older quoted login form is still recognised', function () {
-    strictAssertSame(false, kinozalIsOK(kinozalLegacyLoginPage()),
-        'the markup the original detector targeted must keep failing the check');
+    strictAssertSame(
+        false,
+        kinozalIsOK(kinozalLegacyLoginPage()),
+        'the markup the original detector targeted must keep failing the check',
+    );
 });
 
 $suite->test('the not-authorized answer of get_srv_details is a dead session', function () {
     // This one never renders a login form, so the password-field marker alone
     // cannot see it -- yet it is the answer the checker actually receives, and
     // loginmgr must re-login on it rather than pass the text upstream.
-    strictAssertSame(false, kinozalIsOK(kinozalUnauthorizedAnswer()),
-        'the guest answer of get_srv_details.php must not read as logged in');
+    strictAssertSame(
+        false,
+        kinozalIsOK(kinozalUnauthorizedAnswer()),
+        'the guest answer of get_srv_details.php must not read as logged in',
+    );
 });
 
 $suite->test('a guest-page parser failure leaves authentication unproven', function () {
@@ -188,8 +204,11 @@ $suite->test('a guest-page parser failure leaves authentication unproven', funct
     $lines = kinozalCapturedLog(function () use ($limit) {
         try {
             ini_set('pcre.backtrack_limit', '1');
-            strictAssertSame(null, kinozalIsOK(kinozalUnauthorizedAnswer()),
-                'a failed marker parser cannot certify a live session or demand a login');
+            strictAssertSame(
+                null,
+                kinozalIsOK(kinozalUnauthorizedAnswer()),
+                'a failed marker parser cannot certify a live session or demand a login',
+            );
         } finally {
             ini_set('pcre.backtrack_limit', $limit);
         }
@@ -197,8 +216,10 @@ $suite->test('a guest-page parser failure leaves authentication unproven', funct
     // The log write runs PCRE itself, so its classified line, not
     // preg_last_error() afterwards, is the evidence of the failure.
     strictAssertSame(1, count($lines), 'the fixture really exhausts PCRE: ' . implode(' | ', $lines));
-    strictAssertTrue(strpos($lines[0], 'kinozal: guest-page check failed (pcre-') !== false,
-        'the refusal is classified: ' . $lines[0]);
+    strictAssertTrue(
+        strpos($lines[0], 'kinozal: guest-page check failed (pcre-') !== false,
+        'the refusal is classified: ' . $lines[0],
+    );
 });
 
 $suite->test('an unverified guest check is logged once with its classified PCRE reason', function () {
@@ -207,18 +228,28 @@ $suite->test('an unverified guest check is logged once with its classified PCRE 
         try {
             ini_set('pcre.backtrack_limit', '1000');
             for ($i = 0; $i < 3; $i++) {
-                strictAssertSame(null, kinozalIsOK(kinozalUnparseableGuestAnswer()),
-                    'every failed check stays unverified, not only the logged one'); }
+                strictAssertSame(
+                    null,
+                    kinozalIsOK(kinozalUnparseableGuestAnswer()),
+                    'every failed check stays unverified, not only the logged one',
+                );
+            }
         } finally {
             ini_set('pcre.backtrack_limit', $limit);
         }
-        strictAssertSame(false, kinozalIsOK(kinozalUnparseableGuestAnswer()),
-            'the same page is a guest page at the shipped limit');
+        strictAssertSame(
+            false,
+            kinozalIsOK(kinozalUnparseableGuestAnswer()),
+            'the same page is a guest page at the shipped limit',
+        );
     });
     strictAssertSame(1, count($lines), 'one line per process, not one per topic: ' . implode(' | ', $lines));
-    strictAssertSame(1, preg_match('~^\[[^\]]+\] kinozal: guest-page check failed \(pcre-backtrack-limit\);'
+    strictAssertSame(
+        1,
+        preg_match('~^\[[^\]]+\] kinozal: guest-page check failed \(pcre-backtrack-limit\);'
         . ' the answer is treated as unverified, not as a live session or a guest page$~', $lines[0]),
-        'the line names the classified PCRE reason and its consequence: ' . $lines[0]);
+        'the line names the classified PCRE reason and its consequence: ' . $lines[0],
+    );
     strictAssertSame(false, strpos($lines[0], 'signup') !== false, 'no page text reaches the log');
 });
 
@@ -238,8 +269,11 @@ $suite->test('long attribute runs keep the guest markers readable with and witho
         'whitespace before equals' => [true,
             str_replace('<a ', '<a' . str_repeat(' ', 262144) . '=y ', kinozalUnauthorizedAnswer())],
         'unterminated tag before the anchor' => [true, '<a ' . $long . kinozalUnauthorizedAnswer()],
-        'password input' => [true, str_replace('<input type="password"',
-            '<input ' . $long . ' type="password"', kinozalLegacyLoginPage())],
+        'password input' => [true, str_replace(
+            '<input type="password"',
+            '<input ' . $long . ' type="password"',
+            kinozalLegacyLoginPage(),
+        )],
         'quoted values' => [true,
             str_replace('<a ', '<a ' . str_repeat('t="1" ', 4000), kinozalUnauthorizedAnswer())],
         'long authorized tag' => [false, '<ul><li>Инфо хеш: ' . str_repeat('A', 40) . '</li></ul>'
@@ -266,7 +300,9 @@ $suite->test('long attribute runs keep the guest markers readable with and witho
         file_put_contents($dir . '/cases.json', json_encode(array_map(function ($case) {
             return $case[1];
         }, $expected)));
-        file_put_contents($dir . '/child.php', <<<'PHP'
+        file_put_contents(
+            $dir . '/child.php',
+            <<<'PHP'
 <?php
 // A quadratic regression dies here rather than stalling the suite.
 set_time_limit(60);
@@ -278,22 +314,27 @@ foreach (json_decode(file_get_contents($argv[2]), true) as $name => $body) {
     $answers[$name] = array($answer, (microtime(true) - $started) * 1000);
 }
 echo json_encode(array('jit' => ini_get('pcre.jit'), 'answers' => $answers)), "\n";
-PHP
+PHP,
         );
         foreach (['0', '1'] as $jit) {
             $output = [];
-            exec(escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
+            exec(
+                escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../../php-test.ini')
                 . ' -d pcre.jit=' . $jit . ' -d memory_limit=256M ' . escapeshellarg($dir . '/child.php')
                 . ' ' . escapeshellarg(testFindRepoRoot()) . ' ' . escapeshellarg($dir . '/cases.json') . ' 2>&1',
-                $output, $code);
+                $output,
+                $code,
+            );
             strictAssertSame(0, $code, 'jit=' . $jit . ': the child completed: ' . implode(' | ', $output));
             $result = json_decode(implode("\n", $output), true);
             strictAssertSame($jit, (string) $result['jit'], 'the child ran in the requested JIT mode');
             foreach ($expected as $name => $case) {
                 strictAssertSame($case[0], $result['answers'][$name][0], 'jit=' . $jit . ': ' . $name);
                 // Linear scans finish in milliseconds; the old constructs took seconds.
-                strictAssertTrue($result['answers'][$name][1] < 2000,
-                    'jit=' . $jit . ': ' . $name . ' is linear: ' . round($result['answers'][$name][1]) . ' ms');
+                strictAssertTrue(
+                    $result['answers'][$name][1] < 2000,
+                    'jit=' . $jit . ': ' . $name . ' is linear: ' . round($result['answers'][$name][1]) . ' ms',
+                );
             }
         }
     } finally {
@@ -304,12 +345,17 @@ PHP
 $suite->test('a page of unterminated openers is refused as unverified with a classified reason', function () {
     // 30 KB: exact rescans would cost ~150 MB of scanning, past the bound.
     $lines = kinozalCapturedLog(function () {
-        strictAssertSame(null, kinozalIsOK(kinozalUnterminatedOpeners(10000)),
-            'bounded rescans leave the page unverified rather than reading a verdict');
+        strictAssertSame(
+            null,
+            kinozalIsOK(kinozalUnterminatedOpeners(10000)),
+            'bounded rescans leave the page unverified rather than reading a verdict',
+        );
     });
     strictAssertSame(1, count($lines), 'the refusal is visible: ' . implode(' | ', $lines));
-    strictAssertTrue(strpos($lines[0], 'kinozal: guest-page check failed (rescan-limit);') !== false,
-        'the reason is the bound, not a PCRE error: ' . $lines[0]);
+    strictAssertTrue(
+        strpos($lines[0], 'kinozal: guest-page check failed (rescan-limit);') !== false,
+        'the reason is the bound, not a PCRE error: ' . $lines[0],
+    );
 });
 
 $suite->test('registration links retain query and trusted absolute URL compatibility', function () {
@@ -346,13 +392,20 @@ $suite->test('guest-looking text inside HTML containers does not invalidate the 
         '<title><a href=/signup.php>Example</a></title>'];
     foreach ($contexts as $page) {
         strictAssertSame(true, kinozalIsOK($page), 'text outside a live element is not a guest marker');
-        strictAssertSame(false, kinozalIsOK($page . kinozalUnauthorizedAnswer()),
-            'a captured live anchor after the container remains a guest marker');
+        strictAssertSame(
+            false,
+            kinozalIsOK($page . kinozalUnauthorizedAnswer()),
+            'a captured live anchor after the container remains a guest marker',
+        );
     }
     foreach (['<div data-note="' . kinozalUnauthorizedAnswer(),
         '<!-- ' . kinozalUnauthorizedAnswer(), '<script>' . kinozalUnauthorizedAnswer()] as $page) {
-        strictAssertSame(null, kinozalIsOK($page),
-            'an unfinished container cannot establish whether its marker is live'); }
+        strictAssertSame(
+            null,
+            kinozalIsOK($page),
+            'an unfinished container cannot establish whether its marker is live',
+        );
+    }
 });
 
 $suite->test('a logged-in page reads as a live session', function () {
@@ -369,23 +422,32 @@ $suite->test('authorized tracker answers read as a live session', function () {
         kinozalIsOK('<ul><li>Инфо хеш: ' . str_repeat('A', 40) . '</li><li>Размер части торрента: 2 МБ</li></ul>'),
         'the details answer must not be mistaken for a login wall',
     );
-    strictAssertSame(true, kinozalIsOK('Торрент файл не найден.'),
-        'a removed topic is an answer from the tracker, not a dead session');
+    strictAssertSame(
+        true,
+        kinozalIsOK('Торрент файл не найден.'),
+        'a removed topic is an answer from the tracker, not a dead session',
+    );
 });
 
 $suite->test('a signup filename inside an authorized details answer is not a guest link', function () {
     $page = '<ul><li>Инфо хеш: ' . str_repeat('A', 40) . '</li>'
         . '<li><div class="b ing">source/signup.php</div></li></ul>';
-    strictAssertSame(true, kinozalIsOK($page),
-        'a filename does not invalidate the session or spend another credential POST');
+    strictAssertSame(
+        true,
+        kinozalIsOK($page),
+        'a filename does not invalidate the session or spend another credential POST',
+    );
 });
 
 $suite->test('torrent bytes read as a live session', function () {
     $raw = 'd8:announce34:http://tr2.torrent4me.com/ann?uk=X4:infod6:lengthi1e'
         . '4:name9:movie.mkv12:piece lengthi16384e6:pieces20:' . str_repeat("\0", 20) . 'ee';
     strictAssertSame(false, Torrent::fromRawBytes($raw)->errors(), 'the fixture is valid bencode');
-    strictAssertSame(true, kinozalIsOK($raw),
-        'a downloaded torrent must never be mistaken for a login wall');
+    strictAssertSame(
+        true,
+        kinozalIsOK($raw),
+        'a downloaded torrent must never be mistaken for a login wall',
+    );
 });
 
 $suite->test('a torrent whose comment names the signup page is still a torrent', function () {
@@ -398,8 +460,11 @@ $suite->test('a torrent whose comment names the signup page is still a torrent',
         . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384e6:pieces20:'
         . str_repeat("\0", 20) . 'ee';
     strictAssertSame(false, Torrent::fromRawBytes($torrent)->errors(), 'the fixture is valid bencode');
-    strictAssertSame(true, kinozalIsOK($torrent),
-        'a torrent must not be read as a login wall because of its comment');
+    strictAssertSame(
+        true,
+        kinozalIsOK($torrent),
+        'a torrent must not be read as a login wall because of its comment',
+    );
 });
 
 $suite->test('a captured login form permits the exchange even when credentials are refused', function () {
@@ -411,10 +476,16 @@ $suite->test('a captured login form permits the exchange even when credentials a
         'https://kinozal.guru/login.php' => ['status' => 200, 'results' => kinozalLoginPage()],
         'https://kinozal.guru/takelogin.php' => ['status' => 200, 'results' => kinozalLoginPage()],
     ];
-    strictAssertSame(true, kinozalLogin($client, 'baduser', 'badpass'),
-        'the captured form permits the POST and its refusal is left for commonAccount');
-    strictAssertSame(false, kinozalIsOK($client->results),
-        'and the guest form it came back with is what the caller then refuses');
+    strictAssertSame(
+        true,
+        kinozalLogin($client, 'baduser', 'badpass'),
+        'the captured form permits the POST and its refusal is left for commonAccount',
+    );
+    strictAssertSame(
+        false,
+        kinozalIsOK($client->results),
+        'and the guest form it came back with is what the caller then refuses',
+    );
 });
 
 // A session cookie belongs to the host that set it, so the login has to happen
@@ -425,12 +496,19 @@ $suite->test('a request on a mirror logs in on that mirror', function () {
     foreach (['kinozal.jumpingcrab.com', 'kinozal.cloudns.nz'] as $host) {
         $client = new KinozalFakeClient();
         $client->responses['https://' . $host . '/login.php'] = ['status' => 200, 'results' => kinozalLoginPage()];
-        strictAssertSame(true, kinozalLogin($client, 'user+mirror', 'p&ss=word',
-            'https://' . $host . '/get_srv_details.php?action=2&id=1'), $host . ': the login exchange completes');
-        strictAssertSame([['GET', 'https://' . $host . '/login.php', '', ''],
-            ['POST', 'https://' . $host . '/takelogin.php', 'application/x-www-form-urlencoded',
-                'username=user%2Bmirror&password=p%26ss%3Dword']], $client->requests,
-            $host . ': the form and encoded credential POST stay on the requested mirror');
+        strictAssertSame(true, kinozalLogin(
+            $client,
+            'user+mirror',
+            'p&ss=word',
+            'https://' . $host . '/get_srv_details.php?action=2&id=1',
+        ), $host . ': the login exchange completes');
+        strictAssertSame(
+            [['GET', 'https://' . $host . '/login.php', '', ''],
+                ['POST', 'https://' . $host . '/takelogin.php', 'application/x-www-form-urlencoded',
+                    'username=user%2Bmirror&password=p%26ss%3Dword']],
+            $client->requests,
+            $host . ': the form and encoded credential POST stay on the requested mirror',
+        );
         strictAssertSame('https://' . $host, $client->referer, $host . ': the referer names the same door');
     }
 });
@@ -445,8 +523,12 @@ $suite->test('the live mirror login form admits the credential POST and reads as
     KinozalResponse::resetCycle();
     $client = new KinozalFakeClient();
     $client->responses['https://kinozal.jumpingcrab.com/login.php'] = ['status' => 200, 'results' => $page];
-    strictAssertSame(true, kinozalLogin($client, 'user', 'pass',
-        'https://kinozal.jumpingcrab.com/get_srv_details.php?action=2&id=1'), 'the login exchange completes');
+    strictAssertSame(true, kinozalLogin(
+        $client,
+        'user',
+        'pass',
+        'https://kinozal.jumpingcrab.com/get_srv_details.php?action=2&id=1',
+    ), 'the login exchange completes');
     strictAssertSame([['GET', 'https://kinozal.jumpingcrab.com/login.php', '', ''],
         ['POST', 'https://kinozal.jumpingcrab.com/takelogin.php', 'application/x-www-form-urlencoded',
             'username=user&password=pass']], $client->requests, 'the POST goes to the mirror that served the form');
@@ -455,30 +537,45 @@ $suite->test('the live mirror login form admits the credential POST and reads as
 $suite->test('a download subdomain logs in on its parent site', function () {
     $client = new KinozalFakeClient();
     $client->responses['https://kinozal.me/login.php'] = ['status' => 200, 'results' => kinozalLoginPage()];
-    strictAssertSame(true, kinozalLogin($client, 'user', 'pass', 'https://dl.kinozal.me/download.php?id=1'),
-        'the login exchange completes');
-    strictAssertSame([['GET', 'https://kinozal.me/login.php', '', ''],
-        ['POST', 'https://kinozal.me/takelogin.php', 'application/x-www-form-urlencoded', 'username=user&password=pass']],
-        $client->requests, 'dl.kinozal.me has no login door of its own; its parent site sets the cookies');
+    strictAssertSame(
+        true,
+        kinozalLogin($client, 'user', 'pass', 'https://dl.kinozal.me/download.php?id=1'),
+        'the login exchange completes',
+    );
+    strictAssertSame(
+        [['GET', 'https://kinozal.me/login.php', '', ''],
+            ['POST', 'https://kinozal.me/takelogin.php', 'application/x-www-form-urlencoded', 'username=user&password=pass']],
+        $client->requests,
+        'dl.kinozal.me has no login door of its own; its parent site sets the cookies',
+    );
 });
 
 $suite->test('the automatic refresh logs in at the first configured door', function () {
     // commonAccount::check() hands login() the account origin itself.
     KinozalResponse::resetCycle();
     $account = new KinozalTVAccount();
-    strictAssertSame('https://kinozal.jumpingcrab.com', $account->url,
-        'by default a mirror without the Cloudflare challenge that walls kinozal.me and kinozal.guru');
+    strictAssertSame(
+        'https://kinozal.jumpingcrab.com',
+        $account->url,
+        'by default a mirror without the Cloudflare challenge that walls kinozal.me and kinozal.guru',
+    );
     $client = new KinozalFakeClient();
     $client->responses[$account->url . '/login.php'] = ['status' => 200, 'results' => kinozalLoginPage()];
     strictAssertSame(true, kinozalLogin($client, 'user', 'pass', $account->url), 'the refresh login completes');
-    strictAssertSame([['GET', $account->url . '/login.php', '', ''],
-        ['POST', $account->url . '/takelogin.php', 'application/x-www-form-urlencoded', 'username=user&password=pass']],
-        $client->requests, 'the refresh logs in at the origin');
+    strictAssertSame(
+        [['GET', $account->url . '/login.php', '', ''],
+            ['POST', $account->url . '/takelogin.php', 'application/x-www-form-urlencoded', 'username=user&password=pass']],
+        $client->requests,
+        'the refresh logs in at the origin',
+    );
     $GLOBALS['kinozalHosts'] = ['kinozal.cloudns.nz', 'kinozal.me'];
     try {
         KinozalResponse::resetCycle();
-        strictAssertSame('https://kinozal.cloudns.nz', (new KinozalTVAccount())->url,
-            'the setting names the refresh origin');
+        strictAssertSame(
+            'https://kinozal.cloudns.nz',
+            (new KinozalTVAccount())->url,
+            'the setting names the refresh origin',
+        );
     } finally {
         unset($GLOBALS['kinozalHosts']);
         KinozalResponse::resetCycle();
@@ -489,8 +586,11 @@ $suite->test('a URL outside the account hosts is refused before any request', fu
     KinozalResponse::resetCycle();
     $client = new KinozalFakeClient();
     $lines = kinozalCapturedLog(function () use ($client) {
-        strictAssertSame(false, kinozalLogin($client, 'user', 'pass', 'https://evil.test/details.php?id=1'),
-            'no login door belongs to that host');
+        strictAssertSame(
+            false,
+            kinozalLogin($client, 'user', 'pass', 'https://evil.test/details.php?id=1'),
+            'no login door belongs to that host',
+        );
     });
     strictAssertSame([], $client->requests, 'neither the form nor the password goes anywhere');
     strictAssertSame(1, count($lines), 'the refusal is visible');
@@ -503,9 +603,12 @@ $suite->test('a login form the redirect already fetched is not fetched again', f
     $client = new KinozalFakeClient(kinozalLoginPage());
     $client->lastResponseURL = $followed;
     strictAssertSame(true, kinozalLogin($client, 'user', 'pass', $download), 'the login exchange completes');
-    strictAssertSame([['POST', 'https://kinozal.jumpingcrab.com/takelogin.php',
-        'application/x-www-form-urlencoded', 'username=user&password=pass']], $client->requests,
-        'the followed form is the GET a fresh request would repeat');
+    strictAssertSame(
+        [['POST', 'https://kinozal.jumpingcrab.com/takelogin.php',
+            'application/x-www-form-urlencoded', 'username=user&password=pass']],
+        $client->requests,
+        'the followed form is the GET a fresh request would repeat',
+    );
     foreach ([
         'another origin' => ['https://kinozal.cloudns.nz/login.php', 200, kinozalLoginPage()],
         'another path' => ['https://kinozal.jumpingcrab.com/details.php?id=1', 200, kinozalLoginPage()],
@@ -516,8 +619,11 @@ $suite->test('a login form the redirect already fetched is not fetched again', f
         $client->lastResponseURL = $held[0];
         $client->responses['https://kinozal.jumpingcrab.com/login.php'] = ['status' => 200, 'results' => kinozalLoginPage()];
         strictAssertSame(true, kinozalLogin($client, 'user', 'pass', $download), $label . ': the login completes');
-        strictAssertSame(['GET', 'https://kinozal.jumpingcrab.com/login.php', '', ''], $client->requests[0],
-            $label . ': the form is fetched from the trusted origin first');
+        strictAssertSame(
+            ['GET', 'https://kinozal.jumpingcrab.com/login.php', '', ''],
+            $client->requests[0],
+            $label . ': the form is fetched from the trusted origin first',
+        );
     }
 });
 
@@ -532,8 +638,11 @@ $suite->test('a refused credential POST is logged with its status and door', fun
     strictAssertSame(1, count($lines), 'the refusal is visible once');
     strictAssertTrue(strpos($lines[0], 'login on kinozal.guru refused (credential-post-http-403)') !== false
         && strpos($lines[0], 'no credential POST was sent') === false, 'it says the POST was sent and refused: ' . $lines[0]);
-    strictAssertSame(KinozalResponse::CREDENTIAL_POST_FAILED, $client->error,
-        'the client tells its caller that the POST failed, so no other door receives the password');
+    strictAssertSame(
+        KinozalResponse::CREDENTIAL_POST_FAILED,
+        $client->error,
+        'the client tells its caller that the POST failed, so no other door receives the password',
+    );
 });
 
 $suite->test('login fails when the tracker cannot be reached at all', function () {
@@ -542,14 +651,22 @@ $suite->test('login fails when the tracker cannot be reached at all', function (
     $client->responses = ['https://kinozal.guru/login.php' => ['status' => 200, 'results' => kinozalLoginPage()]];
     $client->unreachable = 'https://kinozal.guru/takelogin.php';
     $lines = kinozalCapturedLog(function () use ($client) {
-        strictAssertSame(false, kinozalLogin($client, 'user', 'pass'),
-            'a request that did not go through is a failed login');
+        strictAssertSame(
+            false,
+            kinozalLogin($client, 'user', 'pass'),
+            'a request that did not go through is a failed login',
+        );
     });
-    strictAssertSame(KinozalResponse::CREDENTIAL_POST_FAILED, $client->error,
-        'a POST that may have gone out is marked like a refused one');
+    strictAssertSame(
+        KinozalResponse::CREDENTIAL_POST_FAILED,
+        $client->error,
+        'a POST that may have gone out is marked like a refused one',
+    );
     strictAssertSame(1, count($lines), 'and is visible once: ' . implode(' | ', $lines));
-    strictAssertTrue(strpos($lines[0], 'login on kinozal.guru refused (credential-post-unanswered)') !== false,
-        'it names the missing answer: ' . $lines[0]);
+    strictAssertTrue(
+        strpos($lines[0], 'login on kinozal.guru refused (credential-post-unanswered)') !== false,
+        'it names the missing answer: ' . $lines[0],
+    );
 });
 
 // Production 2026-10-15: login.php answered 200 and every credential POST
@@ -564,32 +681,39 @@ $suite->test('a rate-limited credential POST is logged and left to the caller as
     });
     strictAssertSame('', $client->error, 'no account mark hides the 429 from the caller');
     strictAssertSame(1, count($lines), 'the POST that went out is visible once: ' . implode(' | ', $lines));
-    strictAssertTrue(strpos($lines[0], 'login on kinozal.guru refused (credential-post-http-429)') !== false,
-        'it names the answer: ' . $lines[0]);
+    strictAssertTrue(
+        strpos($lines[0], 'login on kinozal.guru refused (credential-post-http-429)') !== false,
+        'it names the answer: ' . $lines[0],
+    );
 });
 
 $suite->test('a refused or unrelated login form cannot spend a credential POST', function () {
     KinozalResponse::resetCycle();
     $lines = kinozalCapturedLog(function () {
-    foreach ([
-        'HTTP refusal' => [503, kinozalLoginPage()],
-        'no form' => [200, '<html>maintenance</html>'],
-        'password outside form' => [200, '<input name=username><input name=password>'],
-        'foreign action' => [200, str_replace('/takelogin.php', 'https://evil.test/takelogin.php', kinozalLoginPage())],
-        'other action' => [200, str_replace('/takelogin.php', '/other.php', kinozalLoginPage())],
-        'get form' => [200, str_replace('method=post', 'method=get', kinozalLoginPage())],
-        'quoted fake form' => [200, "<div data-note='" . kinozalLoginPage() . "'>text</div>"],
-    ] as $label => $answer) {
-        $client = new KinozalFakeClient();
-        $client->responses['https://kinozal.guru/login.php'] = ['status' => $answer[0], 'results' => $answer[1]];
-        strictAssertSame(false, kinozalLogin($client), $label . ': form admission refuses the login');
-        strictAssertSame([['GET', 'https://kinozal.guru/login.php', '', '']], $client->requests,
-            $label . ': no credential request follows the GET');
-    }
+        foreach ([
+            'HTTP refusal' => [503, kinozalLoginPage()],
+            'no form' => [200, '<html>maintenance</html>'],
+            'password outside form' => [200, '<input name=username><input name=password>'],
+            'foreign action' => [200, str_replace('/takelogin.php', 'https://evil.test/takelogin.php', kinozalLoginPage())],
+            'other action' => [200, str_replace('/takelogin.php', '/other.php', kinozalLoginPage())],
+            'get form' => [200, str_replace('method=post', 'method=get', kinozalLoginPage())],
+            'quoted fake form' => [200, "<div data-note='" . kinozalLoginPage() . "'>text</div>"],
+        ] as $label => $answer) {
+            $client = new KinozalFakeClient();
+            $client->responses['https://kinozal.guru/login.php'] = ['status' => $answer[0], 'results' => $answer[1]];
+            strictAssertSame(false, kinozalLogin($client), $label . ': form admission refuses the login');
+            strictAssertSame(
+                [['GET', 'https://kinozal.guru/login.php', '', '']],
+                $client->requests,
+                $label . ': no credential request follows the GET',
+            );
+        }
     });
     strictAssertSame(1, count($lines), 'repeated form refusals log once per cycle');
-    strictAssertTrue(strpos($lines[0], 'login on kinozal.guru refused (login-form-http-refusal)') !== false,
-        'the refusal names the door and a classification, never the page or credentials');
+    strictAssertTrue(
+        strpos($lines[0], 'login on kinozal.guru refused (login-form-http-refusal)') !== false,
+        'the refusal names the door and a classification, never the page or credentials',
+    );
 });
 
 exit($suite->run());

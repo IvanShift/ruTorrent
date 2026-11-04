@@ -13,9 +13,11 @@ $suite->test('fast projection refuses substituted and truncated values before an
     foreach (['$execute=touch,/tmp/forbidden', "\0hidden", "visible\0hidden"] as $value) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
             RuTrackerAtomicOwnership::setFastProjection($validHash, str_repeat('B', 40), ['chk-msg' => $value]),
-            'unrepresentable custom value is refused');
+            'unrepresentable custom value is refused',
+        );
         strictAssertSame([], rXMLRPCRequest::$requests, 'refusal sends no mutation');
     }
 });
@@ -24,19 +26,26 @@ $suite->test('fast projection preserves literal grammar bytes and its exact inca
     foreach (['', '0', 'fuse|a"b\\c,d;e' . "\n" . '$f{g}', "o'neil", ' leading $ literal'] as $value) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
-        strictAssertSame(RuTrackerAtomicOwnership::ACTED,
+        strictAssertSame(
+            RuTrackerAtomicOwnership::ACTED,
             RuTrackerAtomicOwnership::setFastProjection($validHash, str_repeat('B', 40), ['chk-msg' => $value]),
-            'representable custom value is accepted');
+            'representable custom value is accepted',
+        );
         $command = rXMLRPCRequest::$requests[0]['commands'][0];
         strictAssertSame($validHash, $command->params[0], 'the projection targets the exact hash');
-        strictAssertTrue(strpos($command->params[1], str_repeat('B', 40)) !== false,
-            'the projection checks the exact local incarnation');
+        strictAssertTrue(
+            strpos($command->params[1], str_repeat('B', 40)) !== false,
+            'the projection checks the exact local incarnation',
+        );
         $body = RtorrentCommandParser::commands($command->params[2]);
         strictAssertSame(1, count($body), 'one cat command encloses the guarded mutation');
         $setter = RtorrentCommandParser::commands(substr($body[0]['args'][0], 1));
         strictAssertSame(['chk-msg', $value], $setter[0]['args'], 'the daemon parser receives the original bytes');
-        strictAssertSame([], RtorrentCommandParser::substitutedArguments($setter[0]['args']),
-            'no custom value becomes a nested command');
+        strictAssertSame(
+            [],
+            RtorrentCommandParser::substitutedArguments($setter[0]['args']),
+            'no custom value becomes a nested command',
+        );
     }
 });
 
@@ -44,20 +53,33 @@ $suite->test('atomic predicates must be arrays and retain malformed values as re
     foreach ([null, false, '', 0, new stdClass()] as $invalid) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-            RuTrackerAtomicOwnership::setFastProjection($validHash, str_repeat('B', 40),
-                ['chk-msg' => 'expected'], $invalid),
-            'an invalid expected-custom projection cannot silently become an unguarded write');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::setFastProjection(
+                $validHash,
+                str_repeat('B', 40),
+                ['chk-msg' => 'expected'],
+                $invalid,
+            ),
+            'an invalid expected-custom projection cannot silently become an unguarded write',
+        );
         strictAssertSame([], rXMLRPCRequest::$requests, 'malformed projection predicates send no command');
     }
     foreach ([null, false, '', 0, new stdClass(), ['state' => 2],
         ['is_open' => null]] as $invalid) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_REVIVED]);
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-            RuTrackerAtomicOwnership::revivePredecessor($validHash, $validRecord,
-                ['started' => true, 'open' => true], 1234567890, $invalid),
-            'revival refuses invalid predicates before enforcing stopped and closed');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::revivePredecessor(
+                $validHash,
+                $validRecord,
+                ['started' => true, 'open' => true],
+                1234567890,
+                $invalid,
+            ),
+            'revival refuses invalid predicates before enforcing stopped and closed',
+        );
         strictAssertSame([], rXMLRPCRequest::$requests, 'invalid revival predicates send no command');
     }
 });
@@ -65,9 +87,11 @@ $suite->test('atomic predicates must be arrays and retain malformed values as re
 $suite->test('clear-only replacement release cannot acknowledge an erase reply', function () use ($validHash, $validMarker, $validRecord) {
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ERASED]);
-    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+    strictAssertSame(
+        RuTrackerAtomicOwnership::UNKNOWN,
         RuTrackerAtomicOwnership::closeReplacement($validHash, $validMarker, $validRecord),
-        'a clear-only command cannot emit the erase sentinel');
+        'a clear-only command cannot emit the erase sentinel',
+    );
     strictAssertSame(1, count(rXMLRPCRequest::$requests), 'an unexpected reply is not replayed');
 });
 
@@ -99,14 +123,22 @@ $suite->test('conditional erase builds exactly one top-level branch command with
 
     // Condition should test custom keys and state predicates
     $cond = $cmd->params[1];
-    strictAssertTrue(strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replacement,cat=' . $validMarker) !== false,
-        'condition contains exact chk-replacement equality');
-    strictAssertTrue(strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replaces,cat=' . $validRecord) !== false,
-        'condition contains exact chk-replaces equality');
-    strictAssertTrue(strpos($cond, 'equal=' . getCmd('d.get_state=') . ',value=0') !== false,
-        'condition contains state == 0');
-    strictAssertTrue(strpos($cond, 'equal=' . getCmd('d.is_open=') . ',value=0') !== false,
-        'condition contains is_open == 0');
+    strictAssertTrue(
+        strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replacement,cat=' . $validMarker) !== false,
+        'condition contains exact chk-replacement equality',
+    );
+    strictAssertTrue(
+        strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replaces,cat=' . $validRecord) !== false,
+        'condition contains exact chk-replaces equality',
+    );
+    strictAssertTrue(
+        strpos($cond, 'equal=' . getCmd('d.get_state=') . ',value=0') !== false,
+        'condition contains state == 0',
+    );
+    strictAssertTrue(
+        strpos($cond, 'equal=' . getCmd('d.is_open=') . ',value=0') !== false,
+        'condition contains is_open == 0',
+    );
 
     // True body should execute d.erase and return SENTINEL_ERASED
     $trueBody = $cmd->params[2];
@@ -136,8 +168,11 @@ $suite->test('compound ownership condition has the exact rTorrent 0.9.8 quoting 
         . '","equal=d.get_custom=chk-replaces,cat=' . $validRecord
         . '","equal=d.get_custom=chk-reuse,cat='
         . '","equal=d.get_state=,value=0","equal=d.is_open=,value=0"';
-    strictAssertSame($expected, $command->params[1],
-        'whole atoms are quoted once and validated values do not introduce nested raw quotes');
+    strictAssertSame(
+        $expected,
+        $command->params[1],
+        'whole atoms are quoted once and validated values do not introduce nested raw quotes',
+    );
 });
 
 $suite->test('empty expected custom is represented by an exact empty cat command', function () use ($validHash) {
@@ -196,8 +231,11 @@ $suite->test('setting a positive deadline has one quoted mutation argument and n
     );
 
     $command = rXMLRPCRequest::$requests[0]['commands'][0];
-    strictAssertSame('equal=d.get_custom=chk-meta-old,cat=' . $owner, $command->params[1],
-        'single exact ownership atom needs no extra quoting');
+    strictAssertSame(
+        'equal=d.get_custom=chk-meta-old,cat=' . $owner,
+        $command->params[1],
+        'single exact ownership atom needs no extra quoting',
+    );
     strictAssertSame(
         'cat="$d.set_custom=chk-meta-until,1234567890",RUT_ATOMIC_ACTED',
         $command->params[2],
@@ -213,7 +251,8 @@ $suite->test('reused successor claim writes protection then requests a session s
         $validHash,
         ['chk-reuse' => '', 'chk-replaces' => '', 'chk-replacement' => ''],
         ['chk-reuse' => $validMarker, 'chk-replaces' => $validRecord, 'chk-replacement' => $validMarker],
-        ['local_id' => $localId, 'is_meta' => 0], true,
+        ['local_id' => $localId, 'is_meta' => 0],
+        true,
     ), 'one guarded claim accepts the reuse marker');
     strictAssertSame(1, count(rXMLRPCRequest::$requests), 'claim sends one request');
     $command = rXMLRPCRequest::$requests[0]['commands'][0];
@@ -223,8 +262,10 @@ $suite->test('reused successor claim writes protection then requests a session s
     strictAssertSame('and', $condition[0]['name'], 'the claim combines ownership and incarnation predicates');
     strictAssertSame(5, count($condition[0]['args']), 'all three empty keys and both value predicates are guarded');
     foreach (['chk-reuse', 'chk-replaces', 'chk-replacement'] as $key) {
-        strictAssertTrue(in_array('equal=d.get_custom=' . $key . ',cat=', $condition[0]['args'], true),
-            'claim requires the ' . $key . ' key to be empty');
+        strictAssertTrue(
+            in_array('equal=d.get_custom=' . $key . ',cat=', $condition[0]['args'], true),
+            'claim requires the ' . $key . ' key to be empty',
+        );
     }
     $identity = RtorrentCommandParser::commands($condition[0]['args'][3]);
     strictAssertSame('d.get_local_id=', $identity[0]['args'][0], 'claim reads the daemon incarnation');
@@ -244,8 +285,13 @@ $suite->test('session save return values do not prefix the exact claim sentinel'
     foreach ([0, 1] as $saveResult) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
-        RuTrackerAtomicOwnership::setCustoms($validHash, ['chk-reuse' => ''],
-            ['chk-reuse' => $validMarker], [], true);
+        RuTrackerAtomicOwnership::setCustoms(
+            $validHash,
+            ['chk-reuse' => ''],
+            ['chk-reuse' => $validMarker],
+            [],
+            true,
+        );
         $effects = [];
         // Evaluate only the generated cat/branch sequence. The real legacy
         // daemon returns integer 1 from save_full_session.
@@ -256,7 +302,8 @@ $suite->test('session save return values do not prefix the exact claim sentinel'
             if ($command['name'] === 'cat') {
                 $result = '';
                 foreach ($command['args'] as $arg) {
-                    $result .= isset($arg[0]) && $arg[0] === '$' ? $evaluate(substr($arg, 1)) : $arg; }
+                    $result .= isset($arg[0]) && $arg[0] === '$' ? $evaluate(substr($arg, 1)) : $arg;
+                }
                 return $result;
             }
             if ($command['name'] === 'branch') {
@@ -272,34 +319,54 @@ $suite->test('session save return values do not prefix the exact claim sentinel'
             return $saveResult;
         };
         $reply = $evaluate(rXMLRPCRequest::$requests[0]['commands'][0]->params[2]);
-        strictAssertSame(RuTrackerAtomicOwnership::SENTINEL_ACTED, $reply,
-            'integer save result is consumed instead of concatenated into success');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::SENTINEL_ACTED,
+            $reply,
+            'integer save result is consumed instead of concatenated into success',
+        );
         strictAssertSame(['chk-reuse', 'save'], $effects, 'save executes exactly once after the setter');
 
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [$saveResult . RuTrackerAtomicOwnership::SENTINEL_ACTED]);
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-            RuTrackerAtomicOwnership::setCustoms($validHash, ['chk-reuse' => ''],
-                ['chk-reuse' => $validMarker], [], true),
-            'a prefixed success reply is still rejected rather than weakening sentinel validation');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::setCustoms(
+                $validHash,
+                ['chk-reuse' => ''],
+                ['chk-reuse' => $validMarker],
+                [],
+                true,
+            ),
+            'a prefixed success reply is still rejected rather than weakening sentinel validation',
+        );
     }
 });
 
 $suite->test('custom session saves are opt-in and reject non-boolean selectors', function () use ($validHash, $validMarker) {
     foreach ([null, 0, 1, 'true', []] as $invalid) {
         rXMLRPCRequest::reset();
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-            RuTrackerAtomicOwnership::setCustoms($validHash, ['chk-reuse' => ''],
-                ['chk-reuse' => $validMarker], [], $invalid),
-            'a non-boolean save selector refuses before RPC');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            RuTrackerAtomicOwnership::setCustoms(
+                $validHash,
+                ['chk-reuse' => ''],
+                ['chk-reuse' => $validMarker],
+                [],
+                $invalid,
+            ),
+            'a non-boolean save selector refuses before RPC',
+        );
         strictAssertSame([], rXMLRPCRequest::$requests, 'invalid save selection sends no mutation');
     }
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
     RuTrackerAtomicOwnership::setCustoms($validHash, ['chk-reuse' => ''], ['chk-reuse' => $validMarker]);
     $body = RtorrentCommandParser::commands(rXMLRPCRequest::$requests[0]['commands'][0]->params[2]);
-    strictAssertSame(['$d.set_custom=chk-reuse,' . $validMarker, RuTrackerAtomicOwnership::SENTINEL_ACTED],
-        $body[0]['args'], 'ordinary custom writes retain their existing command sequence');
+    strictAssertSame(
+        ['$d.set_custom=chk-reuse,' . $validMarker, RuTrackerAtomicOwnership::SENTINEL_ACTED],
+        $body[0]['args'],
+        'ordinary custom writes retain their existing command sequence',
+    );
 });
 
 $suite->test('replacement release clears reuse last and confines erase to the stopped ordinary branch', function () use ($validHash, $validMarker, $validRecord) {
@@ -307,10 +374,17 @@ $suite->test('replacement release clears reuse last and confines erase to the st
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_CLEARED]);
         $localId = str_repeat('D', 40);
-        strictAssertSame(RuTrackerAtomicOwnership::ACTED,
-            RuTrackerAtomicOwnership::closeReplacement($validHash, $validMarker, $validRecord,
-                ['local_id' => $localId, 'is_meta' => 0, 'state' => 1, 'is_open' => 1], $discard),
-            'reuse release is accepted for either cleanup policy');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::ACTED,
+            RuTrackerAtomicOwnership::closeReplacement(
+                $validHash,
+                $validMarker,
+                $validRecord,
+                ['local_id' => $localId, 'is_meta' => 0, 'state' => 1, 'is_open' => 1],
+                $discard,
+            ),
+            'reuse release is accepted for either cleanup policy',
+        );
         strictAssertSame(1, count(rXMLRPCRequest::$requests), 'both alternatives execute in one request');
         strictAssertSame(1, count(rXMLRPCRequest::$requests[0]['commands']), 'cleanup does not split its guards into a multicall');
         $command = rXMLRPCRequest::$requests[0]['commands'][0];
@@ -357,8 +431,11 @@ $suite->test('replacement release clears reuse last and confines erase to the st
         strictAssertSame($discard ? [['name' => 'cat', 'args' => [
             '$d.erase=', RuTrackerAtomicOwnership::SENTINEL_ERASED,
         ]]] : $clear, $ordinaryBody, 'only the stopped ordinary discard branch can erase');
-        strictAssertSame('cat=' . RuTrackerAtomicOwnership::SENTINEL_SKIPPED, $fallback[0]['args'][2],
-            'foreign or partial ownership is left untouched');
+        strictAssertSame(
+            'cat=' . RuTrackerAtomicOwnership::SENTINEL_SKIPPED,
+            $fallback[0]['args'][2],
+            'foreign or partial ownership is left untouched',
+        );
     }
 });
 
@@ -366,7 +443,9 @@ $suite->test('reuse values are validated and ordinary mutation refuses an explic
     foreach ([null, false, 0, [], str_repeat('B', 31), str_repeat('B', 33),
         str_repeat('G', 32), '$d.erase=', $validMarker] as $value) {
         foreach (['erase', 'runState', 'setCustoms'] as $operation) {
-            if ($operation === 'setCustoms' && $value === $validMarker) { continue; }
+            if ($operation === 'setCustoms' && $value === $validMarker) {
+                continue;
+            }
             rXMLRPCRequest::reset();
             if ($operation === 'erase') {
                 $status = RuTrackerAtomicOwnership::erase($validHash, ['chk-reuse' => $value]);
@@ -407,9 +486,11 @@ $suite->test('replacement release refuses invalid ownership and predicates befor
     ];
     foreach ($cases as $case) {
         rXMLRPCRequest::reset();
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
             call_user_func_array(['RuTrackerAtomicOwnership', 'closeReplacement'], $case),
-            'invalid release input cannot become a partial or weakened guard');
+            'invalid release input cannot become a partial or weakened guard',
+        );
         strictAssertSame([], rXMLRPCRequest::$requests, 'invalid release sends no command');
     }
 });
@@ -427,9 +508,17 @@ $suite->test('replacement release distinguishes confirmed actions from skipped a
     foreach ($cases as $case) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', $case[0], $case[1], $case[2]);
-        strictAssertSame($case[3], RuTrackerAtomicOwnership::closeReplacement(
-            $validHash, $validMarker, $validRecord, [], true),
-            'release acknowledges only its exact single terminal sentinel');
+        strictAssertSame(
+            $case[3],
+            RuTrackerAtomicOwnership::closeReplacement(
+                $validHash,
+                $validMarker,
+                $validRecord,
+                [],
+                true,
+            ),
+            'release acknowledges only its exact single terminal sentinel',
+        );
         strictAssertSame(1, count(rXMLRPCRequest::$requests), 'unknown replies do not replay cleanup');
     }
 });
@@ -477,8 +566,11 @@ $suite->test('conditional runState has exact recursively quoted nested branch gr
     $expected = <<<'RTORRENT'
 cat="$d.open=","$d.start=","$branch=d.get_state=,\"cat=\\\"$d.set_custom=chk-replaces,\\\",\\\"$d.set_custom=chk-replacement,\\\",RUT_ATOMIC_ACTED\",cat=RUT_ATOMIC_UNCONFIRMED"
 RTORRENT;
-    strictAssertSame($expected, $trueBody,
-        'open/start and nested verification are each one quoted cat argument');
+    strictAssertSame(
+        $expected,
+        $trueBody,
+        'open/start and nested verification are each one quoted cat argument',
+    );
 });
 
 $suite->test('conditional runState builds open only and verifies is_open for open policy', function () use ($validHash, $validMarker, $validRecord) {
@@ -524,47 +616,75 @@ $suite->test('conditional revival checks spent stamp and updates chk-revived on 
     $cmd = rXMLRPCRequest::$requests[0]['commands'][0];
 
     $cond = $cmd->params[1];
-    strictAssertTrue(strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replacing,cat=' . $expectedReplacing) !== false,
-        'predecessor condition contains exact chk-replacing');
+    strictAssertTrue(
+        strpos($cond, 'equal=' . getCmd('d.get_custom=') . 'chk-replacing,cat=' . $expectedReplacing) !== false,
+        'predecessor condition contains exact chk-replacing',
+    );
 
     $trueBody = $cmd->params[2];
-    strictAssertTrue(strpos($trueBody, 'equal=' . getCmd('d.get_custom=') . 'chk-revived,cat=' . $stamp) !== false,
-        'nested branch checks if chk-revived equals stamp');
-    strictAssertTrue(strpos($trueBody, RuTrackerAtomicOwnership::SENTINEL_SPENT) !== false,
-        'nested branch contains SPENT sentinel');
-    strictAssertTrue(strpos($trueBody, '$' . getCmd('d.set_custom=') . 'chk-revived,' . $stamp) !== false,
-        'success branch writes chk-revived');
-    strictAssertTrue(strpos($trueBody, '$' . getCmd('d.set_custom=') . 'chk-replacing,') !== false,
-        'success branch clears chk-replacing');
-    strictAssertTrue(strpos($trueBody, RuTrackerAtomicOwnership::SENTINEL_REVIVED) !== false,
-        'success branch returns REVIVED sentinel');
+    strictAssertTrue(
+        strpos($trueBody, 'equal=' . getCmd('d.get_custom=') . 'chk-revived,cat=' . $stamp) !== false,
+        'nested branch checks if chk-revived equals stamp',
+    );
+    strictAssertTrue(
+        strpos($trueBody, RuTrackerAtomicOwnership::SENTINEL_SPENT) !== false,
+        'nested branch contains SPENT sentinel',
+    );
+    strictAssertTrue(
+        strpos($trueBody, '$' . getCmd('d.set_custom=') . 'chk-revived,' . $stamp) !== false,
+        'success branch writes chk-revived',
+    );
+    strictAssertTrue(
+        strpos($trueBody, '$' . getCmd('d.set_custom=') . 'chk-replacing,') !== false,
+        'success branch clears chk-replacing',
+    );
+    strictAssertTrue(
+        strpos($trueBody, RuTrackerAtomicOwnership::SENTINEL_REVIVED) !== false,
+        'success branch returns REVIVED sentinel',
+    );
 });
 
 $suite->test('legacy revival binds the start branch to the observed local id', function () use ($validHash) {
     $localId = str_repeat('A', 40);
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_REVIVED]);
-    $result = RuTrackerAtomicOwnership::revivePredecessor($validHash, '',
-        ['started' => true, 'open' => true], 1234567890,
-        ['local_id' => $localId], ['chk-meta-new' => str_repeat('B', 40),
+    $result = RuTrackerAtomicOwnership::revivePredecessor(
+        $validHash,
+        '',
+        ['started' => true, 'open' => true],
+        1234567890,
+        ['local_id' => $localId],
+        ['chk-meta-new' => str_repeat('B', 40),
             'chk-state' => '1', 'chk-time' => '1234567890', 'chk-replacement' => '',
-            'chk-replaces' => '']);
+            'chk-replaces' => ''],
+    );
     strictAssertSame(RuTrackerAtomicOwnership::ACTED, $result, 'valid local id keeps revival eligible');
     $condition = rXMLRPCRequest::$requests[0]['commands'][0]->params[1];
-    strictAssertTrue(strpos($condition, getCmd('d.get_local_id=')) !== false
+    strictAssertTrue(
+        strpos($condition, getCmd('d.get_local_id=')) !== false
         && strpos($condition, $localId) !== false,
-        'the same branch checks the exact observed daemon object identity');
+        'the same branch checks the exact observed daemon object identity',
+    );
     $parsed = RtorrentCommandParser::commands($condition);
-    strictAssertTrue(in_array('equal=d.get_custom=chk-reuse,cat=', $parsed[0]['args'], true),
-        'legacy revival cannot start a successor with a partially written reuse claim');
+    strictAssertTrue(
+        in_array('equal=d.get_custom=chk-reuse,cat=', $parsed[0]['args'], true),
+        'legacy revival cannot start a successor with a partially written reuse claim',
+    );
     rXMLRPCRequest::reset();
-    strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN,
-        RuTrackerAtomicOwnership::revivePredecessor($validHash, '',
-            ['started' => true, 'open' => true], 1234567890,
-            ['local_id' => str_repeat('Z', 40)], [
+    strictAssertSame(
+        RuTrackerAtomicOwnership::UNKNOWN,
+        RuTrackerAtomicOwnership::revivePredecessor(
+            $validHash,
+            '',
+            ['started' => true, 'open' => true],
+            1234567890,
+            ['local_id' => str_repeat('Z', 40)],
+            [
                 'chk-meta-new' => str_repeat('B', 40), 'chk-state' => '1',
-                'chk-time' => '1234567890', 'chk-replacement' => '', 'chk-replaces' => '']),
-        'invalid local identity is rejected before a daemon command');
+                'chk-time' => '1234567890', 'chk-replacement' => '', 'chk-replaces' => ''],
+        ),
+        'invalid local identity is rejected before a daemon command',
+    );
     strictAssertSame(0, count(rXMLRPCRequest::$requests), 'invalid identity sends no branch');
 });
 
@@ -587,10 +707,16 @@ RTORRENT;
     $expectedTrueBody = <<<'RTORRENT'
 branch="equal=d.get_custom=chk-revived,cat=1234567890","cat=RUT_ATOMIC_SPENT","cat=\"$d.open=\",\"$d.start=\",\"$branch=d.get_state=,\\\"cat=\\\\\\\"$d.set_custom=chk-revived,1234567890\\\\\\\",\\\\\\\"$d.set_custom=chk-replacing,\\\\\\\",RUT_ATOMIC_REVIVED\\\",cat=RUT_ATOMIC_UNCONFIRMED\""
 RTORRENT;
-    strictAssertSame($expectedCondition, $command->params[1],
-        'revival always rechecks exact generation and stopped/closed predicates');
-    strictAssertSame($expectedTrueBody, $command->params[2],
-        'spent check, run, verification, stamp and clear form one exact nested command');
+    strictAssertSame(
+        $expectedCondition,
+        $command->params[1],
+        'revival always rechecks exact generation and stopped/closed predicates',
+    );
+    strictAssertSame(
+        $expectedTrueBody,
+        $command->params[2],
+        'spent check, run, verification, stamp and clear form one exact nested command',
+    );
 });
 
 $suite->test('revival cannot weaken mandatory stopped and closed predicates', function () use ($validHash) {
@@ -607,12 +733,18 @@ $suite->test('revival cannot weaken mandatory stopped and closed predicates', fu
     );
 
     $condition = rXMLRPCRequest::$requests[0]['commands'][0]->params[1];
-    strictAssertTrue(strpos($condition, 'equal=d.get_state=,value=0') !== false,
-        'caller cannot replace mandatory state=0');
-    strictAssertTrue(strpos($condition, 'equal=d.is_open=,value=0') !== false,
-        'caller cannot replace mandatory is_open=0');
-    strictAssertTrue(strpos($condition, 'value=1') === false,
-        'conflicting caller predicates never weaken revival ownership');
+    strictAssertTrue(
+        strpos($condition, 'equal=d.get_state=,value=0') !== false,
+        'caller cannot replace mandatory state=0',
+    );
+    strictAssertTrue(
+        strpos($condition, 'equal=d.is_open=,value=0') !== false,
+        'caller cannot replace mandatory is_open=0',
+    );
+    strictAssertTrue(
+        strpos($condition, 'value=1') === false,
+        'conflicting caller predicates never weaken revival ownership',
+    );
 });
 
 $suite->test('revival rejects stopped and incoherent run policies before issuing XMLRPC', function () use ($validHash) {
@@ -626,12 +758,21 @@ $suite->test('revival rejects stopped and incoherent run policies before issuing
     foreach ($badRuns as $run) {
         rXMLRPCRequest::reset();
         $status = RuTrackerAtomicOwnership::revivePredecessor(
-            $validHash, $expectedReplacing, $run, 1234567890,
+            $validHash,
+            $expectedReplacing,
+            $run,
+            1234567890,
         );
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN, $status,
-            'unsafe run policy fails closed');
-        strictAssertSame(0, count(rXMLRPCRequest::$requests),
-            'unsafe run policy sends zero open/start requests');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            $status,
+            'unsafe run policy fails closed',
+        );
+        strictAssertSame(
+            0,
+            count(rXMLRPCRequest::$requests),
+            'unsafe run policy sends zero open/start requests',
+        );
     }
 });
 
@@ -643,8 +784,12 @@ $suite->test('production-shaped rTorrent 0.9.8 aliases preserve nested ownership
     ];
     try {
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('branch', true, false,
-            [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
+        rXMLRPCRequest::queue(
+            'branch',
+            true,
+            false,
+            [RuTrackerAtomicOwnership::SENTINEL_ACTED],
+        );
 
         $status = RuTrackerAtomicOwnership::runState(
             $validHash,
@@ -654,8 +799,11 @@ $suite->test('production-shaped rTorrent 0.9.8 aliases preserve nested ownership
             ['chk-replacement' => ''],
         );
 
-        strictAssertSame(RuTrackerAtomicOwnership::ACTED, $status,
-            'aliased production command accepts the same strict sentinel contract');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::ACTED,
+            $status,
+            'aliased production command accepts the same strict sentinel contract',
+        );
         $params = rXMLRPCRequest::$requests[0]['commands'][0]->params;
         $expectedCondition = 'and="equal=d.custom=chk-replacement,cat=' . $validMarker
             . '","equal=d.custom=chk-reuse,cat='
@@ -663,12 +811,17 @@ $suite->test('production-shaped rTorrent 0.9.8 aliases preserve nested ownership
         $expectedTrueBody = <<<'RTORRENT'
 cat="$d.open=","$d.start=","$branch=d.state=,\"cat=\\\"$d.custom.set=chk-replacement,\\\",RUT_ATOMIC_ACTED\",cat=RUT_ATOMIC_UNCONFIRMED"
 RTORRENT;
-        strictAssertSame($expectedCondition, $params[1],
-            'the entire condition preserves 0.9.8 aliases and exact quoting');
-        strictAssertSame($expectedTrueBody, $params[2],
-            'the entire nested success body preserves 0.9.8 aliases and escaping');
-    }
-    finally {
+        strictAssertSame(
+            $expectedCondition,
+            $params[1],
+            'the entire condition preserves 0.9.8 aliases and exact quoting',
+        );
+        strictAssertSame(
+            $expectedTrueBody,
+            $params[2],
+            'the entire nested success body preserves 0.9.8 aliases and escaping',
+        );
+    } finally {
         unset($GLOBALS['testCommandAliases']);
     }
 });
@@ -699,23 +852,36 @@ $suite->test('sentinels from another atomic operation are rejected as UNKNOWN', 
     $cases = [
         'erase rejects CLEARED' => ['sentinel' => RuTrackerAtomicOwnership::SENTINEL_CLEARED,
             'call' => function () use ($validHash, $validMarker) {
-                return RuTrackerAtomicOwnership::erase($validHash,
-                    ['chk-replacement' => $validMarker], ['state' => 0]);
+                return RuTrackerAtomicOwnership::erase(
+                    $validHash,
+                    ['chk-replacement' => $validMarker],
+                    ['state' => 0],
+                );
             }],
         'clear rejects ERASED' => ['sentinel' => RuTrackerAtomicOwnership::SENTINEL_ERASED,
             'call' => function () use ($validHash, $validMarker) {
-                return RuTrackerAtomicOwnership::clearCustoms($validHash,
-                    ['chk-replacement' => $validMarker], ['chk-replacement']);
+                return RuTrackerAtomicOwnership::clearCustoms(
+                    $validHash,
+                    ['chk-replacement' => $validMarker],
+                    ['chk-replacement'],
+                );
             }],
         'set rejects REVIVED' => ['sentinel' => RuTrackerAtomicOwnership::SENTINEL_REVIVED,
             'call' => function () use ($validHash, $validMarker) {
-                return RuTrackerAtomicOwnership::setCustoms($validHash,
-                    ['chk-replacement' => $validMarker], ['chk-replacement' => '']);
+                return RuTrackerAtomicOwnership::setCustoms(
+                    $validHash,
+                    ['chk-replacement' => $validMarker],
+                    ['chk-replacement' => ''],
+                );
             }],
         'run rejects ERASED' => ['sentinel' => RuTrackerAtomicOwnership::SENTINEL_ERASED,
             'call' => function () use ($validHash, $validMarker) {
-                return RuTrackerAtomicOwnership::runState($validHash,
-                    ['chk-replacement' => $validMarker], true, ['state' => 0]);
+                return RuTrackerAtomicOwnership::runState(
+                    $validHash,
+                    ['chk-replacement' => $validMarker],
+                    true,
+                    ['state' => 0],
+                );
             }],
         'revive rejects ACTED' => ['sentinel' => RuTrackerAtomicOwnership::SENTINEL_ACTED,
             'call' => function () use ($validHash) {
@@ -731,8 +897,11 @@ $suite->test('sentinels from another atomic operation are rejected as UNKNOWN', 
     foreach ($cases as $label => $case) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('branch', true, false, [$case['sentinel']]);
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN, call_user_func($case['call']),
-            $label);
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            call_user_func($case['call']),
+            $label,
+        );
     }
 });
 
@@ -744,10 +913,15 @@ $suite->test('non-string branch scalars are never coerced into valid sentinels',
             return [$value];
         });
         $status = RuTrackerAtomicOwnership::erase(
-            $validHash, ['chk-replacement' => $validMarker], ['state' => 0],
+            $validHash,
+            ['chk-replacement' => $validMarker],
+            ['state' => 0],
         );
-        strictAssertSame(RuTrackerAtomicOwnership::UNKNOWN, $status,
-            'non-string scalar/object/array response maps to UNKNOWN');
+        strictAssertSame(
+            RuTrackerAtomicOwnership::UNKNOWN,
+            $status,
+            'non-string scalar/object/array response maps to UNKNOWN',
+        );
     }
 });
 
@@ -777,14 +951,20 @@ $suite->test('replacement record parser owns canonical hash and epoch spelling',
     $record = RuTrackerReplacementRecord::encode(strtolower($hash), true, true, 1234567890);
     $shaped = null;
     strictAssertSame($hash . '-started-1234567890', $record, 'encoding has one canonical uppercase hash');
-    strictAssertSame($hash, RuTrackerReplacementRecord::decode($record, $shaped)['old'],
-        'the emitted record is accepted by its shared parser');
+    strictAssertSame(
+        $hash,
+        RuTrackerReplacementRecord::decode($record, $shaped)['old'],
+        'the emitted record is accepted by its shared parser',
+    );
     strictAssertSame(true, $shaped, 'the emitted record has the replacement shape');
     foreach ([strtolower($hash) . '-started-1234567890',
         $hash . '-started-01234567890', $hash . '-started-0'] as $invalid) {
         $shaped = null;
-        strictAssertSame(null, RuTrackerReplacementRecord::decode($invalid, $shaped),
-            'noncanonical persisted records do not grant any caller ownership');
+        strictAssertSame(
+            null,
+            RuTrackerReplacementRecord::decode($invalid, $shaped),
+            'noncanonical persisted records do not grant any caller ownership',
+        );
         strictAssertSame(true, $shaped, 'corrupt shaped records remain distinguishable from absence');
     }
     strictAssertSame(null, RuTrackerReplacementRecord::decode('', $shaped), 'absence is not a record');

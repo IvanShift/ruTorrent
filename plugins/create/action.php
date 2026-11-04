@@ -1,257 +1,252 @@
 <?php
 
-require_once( dirname(__FILE__).'/../_task/task.php' );
-require_once( dirname(__FILE__).'/../../php/Torrent.php' );
-require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
-require_once( dirname(__FILE__).'/externals.php' );
-require_once( dirname(__FILE__).'/boundary.php' );
-eval( FileUtil::getPluginConf( 'create' ) );
-require_once(__DIR__.'/external.php');
+require_once(dirname(__FILE__) . '/../_task/task.php');
+require_once(dirname(__FILE__) . '/../../php/Torrent.php');
+require_once(dirname(__FILE__) . '/../../php/rtorrent.php');
+require_once(dirname(__FILE__) . '/externals.php');
+require_once(dirname(__FILE__) . '/boundary.php');
+eval(FileUtil::getPluginConf('create'));
+require_once(__DIR__ . '/external.php');
 $pathToCreatetorrent = CreateExternalConfiguration::path($useExternal, $pathToCreatetorrent);
 
 class recentTrackers
 {
-	public $hash = "rtrackers.dat";
-	public $modified = false;
-	public $list = [];
-	public $last_used = [];
-	public $piece_size = 1024;
-	public $start_seeding = false;
-	public $private_torrent = false;
-	public $hybrid_torrent = false;
+    public $hash = "rtrackers.dat";
+    public $modified = false;
+    public $list = [];
+    public $last_used = [];
+    public $piece_size = 1024;
+    public $start_seeding = false;
+    public $private_torrent = false;
+    public $hybrid_torrent = false;
 
-	public static function load()
-	{
-		$cache = new rCache();
-		$rt = new recentTrackers();
-		$cache->get($rt);
+    public static function load()
+    {
+        $cache = new rCache();
+        $rt = new recentTrackers();
+        $cache->get($rt);
 
-		// TODO: Temporary migration from string to array
-		// Can remove this after November 2026
-		if (is_string(($rt->last_used)))
-		{
-			$rt->last_used = [];
-		}
+        // TODO: Temporary migration from string to array
+        // Can remove this after November 2026
+        if (is_string(($rt->last_used))) {
+            $rt->last_used = [];
+        }
 
-		return($rt);
-	}
-	public function store()
-	{
-		$cache = new rCache();
-		$this->strip();
-		return($cache->set($this));
-	}
-	public function delete($trk)
-	{
-		$cache = new rCache();
-		$this->list = $trk;
-		return($cache->set($this));
-	}
-	public function get()
-	{
-		$ret = [];
-		foreach( $this->list as $ann ) {
-			$ret['recent_trackers'][self::getTrackerDomain($ann)] = $ann; }
-		$ret['last_used'] = $this->last_used;
-		$ret['piece_size'] = $this->piece_size;
-		$ret['start_seeding'] =  $this->start_seeding;
-		$ret['private_torrent'] = $this->private_torrent;
-		$ret['hybrid_torrent'] = $this->hybrid_torrent;
+        return($rt);
+    }
+    public function store()
+    {
+        $cache = new rCache();
+        $this->strip();
+        return($cache->set($this));
+    }
+    public function delete($trk)
+    {
+        $cache = new rCache();
+        $this->list = $trk;
+        return($cache->set($this));
+    }
+    public function get()
+    {
+        $ret = [];
+        foreach ($this->list as $ann) {
+            $ret['recent_trackers'][self::getTrackerDomain($ann)] = $ann;
+        }
+        $ret['last_used'] = $this->last_used;
+        $ret['piece_size'] = $this->piece_size;
+        $ret['start_seeding'] = $this->start_seeding;
+        $ret['private_torrent'] = $this->private_torrent;
+        $ret['hybrid_torrent'] = $this->hybrid_torrent;
 
-		return($ret);
-	}
-	public function strip()
-	{
-		global $recentTrackersMaxCount;
-		for ($i = count($this->last_used) - 1; $i >= 0; $i--)
-		# remove trailing white spaces and preserve those in between from last used array
-		{
-			if( strlen(trim($this->last_used[$i])) < 1 )
-			{
-				array_pop($this->last_used);
-			}
-			else
-			{
-				break;
-			}
-		}
-		$this->list = array_values( array_unique($this->list) );
-		$cnt = count($this->list);
-		$arr = array_values($this->list);
-		$lastAnn = self::getTrackerDomain(end($arr));
-		$i = 0;
-		foreach( $this->list as $ann )
-		{
-			if( ($i + 1) === $cnt ) {
-				break; }
-			if( self::getTrackerDomain($ann) === $lastAnn ) {
-				array_splice($this->list,$i,1); }
-			$i = $i + 1;
-		}
-		$cnt = $cnt-$recentTrackersMaxCount;
-		if($cnt>0) {
-			array_splice($this->list,0,$cnt); }
-	}
-	public static function getTrackerDomain($announce)
-	{
-		$domain = parse_url($announce,PHP_URL_HOST);
-		if($domain && (preg_match("/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/",$domain)!=1))
-		{
-			$parts = explode('.',$domain);
-			$cnt = count($parts);
-			if($cnt>2)
-			{
-				if(in_array( $parts[$cnt-2], [ "co", "com", "net", "org" ] ) ||
-					in_array( $parts[$cnt-1], [ "uk" ] )) {
-					$parts = array_slice($parts, $cnt-3); }
-				else {
-					$parts = array_slice($parts, $cnt-2); }
-				$domain = implode('.',$parts);
-			}
-		}
-		return(empty($domain) ? 'invalid domain' : $domain);
-	}
+        return($ret);
+    }
+    public function strip()
+    {
+        global $recentTrackersMaxCount;
+        for ($i = count($this->last_used) - 1; $i >= 0; $i--) {
+            # remove trailing white spaces and preserve those in between from last used array
+            if (strlen(trim($this->last_used[$i])) < 1) {
+                array_pop($this->last_used);
+            } else {
+                break;
+            }
+        }
+        $this->list = array_values(array_unique($this->list));
+        $cnt = count($this->list);
+        $arr = array_values($this->list);
+        $lastAnn = self::getTrackerDomain(end($arr));
+        $i = 0;
+        foreach ($this->list as $ann) {
+            if (($i + 1) === $cnt) {
+                break;
+            }
+            if (self::getTrackerDomain($ann) === $lastAnn) {
+                array_splice($this->list, $i, 1);
+            }
+            $i = $i + 1;
+        }
+        $cnt = $cnt - $recentTrackersMaxCount;
+        if ($cnt > 0) {
+            array_splice($this->list, 0, $cnt);
+        }
+    }
+    public static function getTrackerDomain($announce)
+    {
+        $domain = parse_url($announce, PHP_URL_HOST);
+        if ($domain && (preg_match("/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/", $domain) != 1)) {
+            $parts = explode('.', $domain);
+            $cnt = count($parts);
+            if ($cnt > 2) {
+                if (in_array($parts[$cnt - 2], [ "co", "com", "net", "org" ])
+                    || in_array($parts[$cnt - 1], [ "uk" ])) {
+                    $parts = array_slice($parts, $cnt - 3);
+                } else {
+                    $parts = array_slice($parts, $cnt - 2);
+                }
+                $domain = implode('.', $parts);
+            }
+        }
+        return(empty($domain) ? 'invalid domain' : $domain);
+    }
 }
 
 $ret = [];
 $cmd = $_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['cmd'] ?? null) : ($_GET['cmd'] ?? null);
-if($cmd !== null)
-{
-	switch($cmd)
-	{
-		case "rtget":
-		{
-			$rt = recentTrackers::load();
-			$ret = $rt->get();
-			break;
-		}
-		case "rtdelete":
-		{
-			Requests::requirePost();
-			if(isset($_POST['trackers']))
-			{
-				$rt = recentTrackers::load();
-				$trk = [];
-				$arr = explode("\r",$_POST['trackers']);
-				foreach( $arr as $key => $value )
-				{
-					$value = trim($value);
-					if(strlen($value)) {
-						$trk[] = $value; }
-				}
-				$newList = array_diff($rt->list,$trk);
-				if( $newList !== $rt->list ) {
-					$rt->delete($newList); }
-				$ret = $rt->get();
-			}
-			break;
-		}
-		case "create":
-		{
-			Requests::requirePost();
-			$error = "Invalid parameters";
-			$requestedPath = FileUtil::requestPath($_POST['path_edit'] ?? null);
-			if(is_string($requestedPath) && strlen($requestedPath))
-			{
-				$path_edit = trim($requestedPath);
-				if(is_dir($path_edit)) {
-					$path_edit = FileUtil::addslash($path_edit); }
-				$refusal = CreateBoundary::refusal($path_edit, $entry);
-				if($refusal === null)
-				{
-					$rt = recentTrackers::load();
-					$trackers = [];
-					if(isset($_POST['trackers']))
-					{
-						$trackers = explode("\r", $_POST['trackers']);
-						foreach( $trackers as $key => $value )
-						{
-							$value = trim($value);
-							if(strlen($value) === 0)
-							{
-								continue;
-							}
+if ($cmd !== null) {
+    switch ($cmd) {
+        case "rtget":
+            {
+                $rt = recentTrackers::load();
+                $ret = $rt->get();
+                break;
+            }
+        case "rtdelete":
+            {
+                Requests::requirePost();
+                if (isset($_POST['trackers'])) {
+                    $rt = recentTrackers::load();
+                    $trk = [];
+                    $arr = explode("\r", $_POST['trackers']);
+                    foreach ($arr as $key => $value) {
+                        $value = trim($value);
+                        if (strlen($value)) {
+                            $trk[] = $value;
+                        }
+                    }
+                    $newList = array_diff($rt->list, $trk);
+                    if ($newList !== $rt->list) {
+                        $rt->delete($newList);
+                    }
+                    $ret = $rt->get();
+                }
+                break;
+            }
+        case "create":
+            {
+                Requests::requirePost();
+                $error = "Invalid parameters";
+                $requestedPath = FileUtil::requestPath($_POST['path_edit'] ?? null);
+                if (is_string($requestedPath) && strlen($requestedPath)) {
+                    $path_edit = trim($requestedPath);
+                    if (is_dir($path_edit)) {
+                        $path_edit = FileUtil::addslash($path_edit);
+                    }
+                    $refusal = CreateBoundary::refusal($path_edit, $entry);
+                    if ($refusal === null) {
+                        $rt = recentTrackers::load();
+                        $trackers = [];
+                        if (isset($_POST['trackers'])) {
+                            $trackers = explode("\r", $_POST['trackers']);
+                            foreach ($trackers as $key => $value) {
+                                $value = trim($value);
+                                if (strlen($value) === 0) {
+                                    continue;
+                                }
 
-							$rt->list[] = $value;
-						}
-					}
-					// remember checkbox and dropdown options
-					$rt->last_used = $trackers;
-					$rt->piece_size = $_POST['piece_size'];
-					$rt->start_seeding = $_POST['start_seeding'];
-					$rt->private_torrent = $_POST['private'];
-					$rt->hybrid_torrent = $_POST['hybrid'];
-					$rt->store();
+                                $rt->list[] = $value;
+                            }
+                        }
+                        // remember checkbox and dropdown options
+                        $rt->last_used = $trackers;
+                        $rt->piece_size = $_POST['piece_size'];
+                        $rt->start_seeding = $_POST['start_seeding'];
+                        $rt->private_torrent = $_POST['private'];
+                        $rt->hybrid_torrent = $_POST['hybrid'];
+                        $rt->store();
 
-					$piece_size = 262144;
-					if(isset($_POST['piece_size'])) {
-						$piece_size = $_POST['piece_size']*1024; }
-					if(!$pathToCreatetorrent || ($pathToCreatetorrent=="")) {
-						$pathToCreatetorrent = createExternalEXE($useExternal); }
-					if($useExternal=="mktorrent") {
-						$piece_size = log($piece_size,2); }
-					if(isset($_POST['hybrid']))
-					{
-						$hybrid = true;
-						if ($useExternal!=="torrenttools" && $_POST['hybrid']==1) {
-							$useExternal = "inner"; }
-					}
-					if($useExternal===false) {
-						$useExternal = "inner"; }
-					$task = new rTask( 
-					[
-						'arg' => FileUtil::getFileName($path_edit),
-						'requester'=>'create',
-						'name'=>'create',
-						// The path that was checked: in the raw one a ".." after
-						// a link leads beside the link's target, not where it reads.
-						'path_edit'=>$path_edit,
-						'trackers'=>$_POST['trackers'],
-						'comment'=>$_POST['comment'],
-						'source'=>$_POST['source'],
-						'start_seeding'=>$_POST['start_seeding'],
-						'piece_size'=>$_POST['piece_size'],
-						'private'=>$_POST['private'],
-						'hybrid'=>$_POST['hybrid'],
-					] );
-					$commands = [];
+                        $piece_size = 262144;
+                        if (isset($_POST['piece_size'])) {
+                            $piece_size = $_POST['piece_size'] * 1024;
+                        }
+                        if (!$pathToCreatetorrent || ($pathToCreatetorrent == "")) {
+                            $pathToCreatetorrent = createExternalEXE($useExternal);
+                        }
+                        if ($useExternal == "mktorrent") {
+                            $piece_size = log($piece_size, 2);
+                        }
+                        if (isset($_POST['hybrid'])) {
+                            $hybrid = true;
+                            if ($useExternal !== "torrenttools" && $_POST['hybrid'] == 1) {
+                                $useExternal = "inner";
+                            }
+                        }
+                        if ($useExternal === false) {
+                            $useExternal = "inner";
+                        }
+                        $task = new rTask(
+                            [
+                                'arg' => FileUtil::getFileName($path_edit),
+                                'requester' => 'create',
+                                'name' => 'create',
+                                // The path that was checked: in the raw one a ".." after
+                                // a link leads beside the link's target, not where it reads.
+                                'path_edit' => $path_edit,
+                                'trackers' => $_POST['trackers'],
+                                'comment' => $_POST['comment'],
+                                'source' => $_POST['source'],
+                                'start_seeding' => $_POST['start_seeding'],
+                                'piece_size' => $_POST['piece_size'],
+                                'private' => $_POST['private'],
+                                'hybrid' => $_POST['hybrid'],
+                            ],
+                        );
+                        $commands = [];
 
-					$commands[] = Utility::escapeShellArg($rootPath.'/plugins/create/'.$useExternal.'.sh')." ".
-					$task->id." ".
-					Utility::escapeShellArg(Utility::getPHP())." ".
-					Utility::escapeShellArg($pathToCreatetorrent)." ".
-					Utility::escapeShellArg($path_edit)." ".
-					$piece_size." ".
-					Utility::escapeShellArg(User::getUser())." ".
-					Utility::escapeShellArg(rTask::formatPath($task->id))." ".
-					Utility::escapeShellArg($hybrid);
+                        $commands[] = Utility::escapeShellArg($rootPath . '/plugins/create/' . $useExternal . '.sh') . " "
+                        . $task->id . " "
+                        . Utility::escapeShellArg(Utility::getPHP()) . " "
+                        . Utility::escapeShellArg($pathToCreatetorrent) . " "
+                        . Utility::escapeShellArg($path_edit) . " "
+                        . $piece_size . " "
+                        . Utility::escapeShellArg(User::getUser()) . " "
+                        . Utility::escapeShellArg(rTask::formatPath($task->id)) . " "
+                        . Utility::escapeShellArg($hybrid);
 
-					$commands[] = '{';
-					$commands[] = 'chmod a+r "${dir}"/result.torrent';
-					$commands[] = '}';
-					$ret = $task->start($commands, 0);
-					break;
-				}
-				else
-				{
-					CreateBoundary::log('create:', $refusal, $entry);
-					$error = 'Incorrect directory ('.$entry.')';
-				}
-			}
-			$ret = [ "no"=>-1, "pid"=>0, "status"=>255, "log"=>[], "errors"=>[$error] ];
-			break;
-		}
-		case "getfile":
-		{
-			$dir = rTask::formatPath( $_REQUEST['no'] );
-			$torrent = new Torrent( $dir."/result.torrent" );
-			if( !$torrent->errors() ) {
-				$torrent->send(); }
-			else {
-				header('HTTP/1.0 404 Not Found'); }
-			exit();
-		}
-	}
+                        $commands[] = '{';
+                        $commands[] = 'chmod a+r "${dir}"/result.torrent';
+                        $commands[] = '}';
+                        $ret = $task->start($commands, 0);
+                        break;
+                    } else {
+                        CreateBoundary::log('create:', $refusal, $entry);
+                        $error = 'Incorrect directory (' . $entry . ')';
+                    }
+                }
+                $ret = [ "no" => -1, "pid" => 0, "status" => 255, "log" => [], "errors" => [$error] ];
+                break;
+            }
+        case "getfile":
+            {
+                $dir = rTask::formatPath($_REQUEST['no']);
+                $torrent = new Torrent($dir . "/result.torrent");
+                if (!$torrent->errors()) {
+                    $torrent->send();
+                } else {
+                    header('HTTP/1.0 404 Not Found');
+                }
+                exit();
+            }
+    }
 }
 
-CachedEcho::send(JSON::safeEncode($ret),"application/json");
+CachedEcho::send(JSON::safeEncode($ret), "application/json");

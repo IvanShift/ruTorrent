@@ -1,125 +1,156 @@
 <?php
 
-require_once(__DIR__.'/TestCase.php');
-require_once(__DIR__.'/../../php/xmlrpc.php');
-require_once(__DIR__.'/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/../../php/xmlrpc.php');
+require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 
 class RPCMethodCapabilityTest extends TestCase
 {
-	private $directory;
-	private $settingsProperty;
-	private $previousSettings;
-	private $daemon;
-	private $globals = [];
+    private $directory;
+    private $settingsProperty;
+    private $previousSettings;
+    private $daemon;
+    private $globals = [];
 
-	public function setUp()
-	{
-		$this->directory = sys_get_temp_dir().'/rpc-capability-'.getmypid();
-		mkdir($this->directory, 0700);
-		$this->settingsProperty = self::makeAccessible(new ReflectionProperty('rTorrentSettings', 'theSettings'));
-		$this->previousSettings = $this->settingsProperty->getValue();
-		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$settings->iVersion = 0x1019; $settings->apiVersion = 11; $settings->aliases = [];
-		$this->settingsProperty->setValue(null, $settings);
-		foreach(['scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file'] as $key) {
-			$this->globals[$key] = array_key_exists($key, $GLOBALS) ? [true, $GLOBALS[$key]] : [false, null]; }
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['rpcTimeOut'] = 3;
-		$GLOBALS['rpcLogCalls'] = false;
-		$GLOBALS['rpcLogFaults'] = false;
-		$GLOBALS['log_file'] = $this->directory.'/app.log';
-	}
+    public function setUp()
+    {
+        $this->directory = sys_get_temp_dir() . '/rpc-capability-' . getmypid();
+        mkdir($this->directory, 0700);
+        $this->settingsProperty = self::makeAccessible(new ReflectionProperty('rTorrentSettings', 'theSettings'));
+        $this->previousSettings = $this->settingsProperty->getValue();
+        $settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+        $settings->iVersion = 0x1019;
+        $settings->apiVersion = 11;
+        $settings->aliases = [];
+        $this->settingsProperty->setValue(null, $settings);
+        foreach (['scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file'] as $key) {
+            $this->globals[$key] = array_key_exists($key, $GLOBALS) ? [true, $GLOBALS[$key]] : [false, null];
+        }
+        $GLOBALS['scgi_host'] = '127.0.0.1';
+        $GLOBALS['rpcTimeOut'] = 3;
+        $GLOBALS['rpcLogCalls'] = false;
+        $GLOBALS['rpcLogFaults'] = false;
+        $GLOBALS['log_file'] = $this->directory . '/app.log';
+    }
 
-	public function tearDown()
-	{
-		if($this->daemon !== null) { $this->daemon->stop(); }
-		$this->settingsProperty->setValue(null, $this->previousSettings);
-		foreach($this->globals as $key => $value) {
-			if($value[0]) { $GLOBALS[$key] = $value[1]; } else { unset($GLOBALS[$key]); } }
-		foreach(glob($this->directory.'/*') ?: [] as $file) { unlink($file); }
-		rmdir($this->directory);
-	}
+    public function tearDown()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+        }
+        $this->settingsProperty->setValue(null, $this->previousSettings);
+        foreach ($this->globals as $key => $value) {
+            if ($value[0]) {
+                $GLOBALS[$key] = $value[1];
+            } else {
+                unset($GLOBALS[$key]);
+            }
+        }
+        foreach (glob($this->directory . '/*') ?: [] as $file) {
+            unlink($file);
+        }
+        rmdir($this->directory);
+    }
 
-	public function testKnownListsExposeTheWholeValidatedSnapshotIncludingPartialSupport()
-	{
-		$list = ['system.listMethods', 'd.autotools.move.enqueue', 'execute.argv'];
-		$this->serve($list);
-		$available = null;
-		$this->assertSame('available', rpcMethodCapability(['execute.argv'], $available), 'a known complete ABI is supported');
-		$this->assertSame($list, $available, 'the same single read exposes all validated names');
-		$this->assertSame(['system.listMethods'], $this->daemon->calls(), 'capability consumers share one daemon read');
-		$this->serve(['system.listMethods', '123', '123']);
-		$this->assertSame('available', rpcMethodCapability(['123'], $available), 'numeric command names use the same command-name owner');
-		$this->assertSame(['system.listMethods', '123'], $available, 'deduplication retains exact string method names');
-		$this->serve($list);
-		$this->assertSame('unsupported', rpcMethodCapability(['d.autotools.move.enqueue', 'd.stop_lease.acquire'], $available),
-			'a partial native ABI stays unsupported');
-		$this->assertSame($list, $available, 'the complete known list allows a caller to distinguish partial native from absent native');
-		$this->serve(['system.listMethods', 'execute.argv']);
-		$this->assertSame('unsupported', rpcMethodCapability(['d.autotools.move.enqueue'], $available), 'known absence remains unsupported');
-		$this->assertSame(['system.listMethods', 'execute.argv'], $available, 'known absent native methods can select the upstream path');
-	}
+    public function testKnownListsExposeTheWholeValidatedSnapshotIncludingPartialSupport()
+    {
+        $list = ['system.listMethods', 'd.autotools.move.enqueue', 'execute.argv'];
+        $this->serve($list);
+        $available = null;
+        $this->assertSame('available', rpcMethodCapability(['execute.argv'], $available), 'a known complete ABI is supported');
+        $this->assertSame($list, $available, 'the same single read exposes all validated names');
+        $this->assertSame(['system.listMethods'], $this->daemon->calls(), 'capability consumers share one daemon read');
+        $this->serve(['system.listMethods', '123', '123']);
+        $this->assertSame('available', rpcMethodCapability(['123'], $available), 'numeric command names use the same command-name owner');
+        $this->assertSame(['system.listMethods', '123'], $available, 'deduplication retains exact string method names');
+        $this->serve($list);
+        $this->assertSame(
+            'unsupported',
+            rpcMethodCapability(['d.autotools.move.enqueue', 'd.stop_lease.acquire'], $available),
+            'a partial native ABI stays unsupported',
+        );
+        $this->assertSame($list, $available, 'the complete known list allows a caller to distinguish partial native from absent native');
+        $this->serve(['system.listMethods', 'execute.argv']);
+        $this->assertSame('unsupported', rpcMethodCapability(['d.autotools.move.enqueue'], $available), 'known absence remains unsupported');
+        $this->assertSame(['system.listMethods', 'execute.argv'], $available, 'known absent native methods can select the upstream path');
+    }
 
-	public function testMalformedOrUnknownRepliesNeverPublishAPartialSnapshot()
-	{
-		foreach([['system.listMethods', 'd.autotools.move.enqueue', ''],
-			['system.listMethods', 123], ['execute.argv'], [], null,
-			new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><dateTime.iso8601>execute.argv</dateTime.iso8601></value></data></array></value></param></params></methodResponse>'),
-			new FakeRtorrentRawReply('<methodResponse><params><param><value><string>system.listMethods</string></value></param></params></methodResponse>'),
-			new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><array><data><value><string>system.listMethods</string></value></data></array></value></data></array></value></param></params></methodResponse>'),
-			new FakeRtorrentRawReply('<methodResponse><params><param><value><struct><member><name>anything</name><value><string>system.listMethods</string></value></member></struct></value></param></params></methodResponse>'),
-			new FakeRtorrentRawReply('<methodResponse><params><param><value><struct><member><name>0</name><value><string>system.listMethods</string></value></member></struct></value></param></params></methodResponse>'),
-			new FakeRtorrentRawReply('<methodResponse>')] as $reply)
-		{
-			$this->serve($reply);
-			$available = ['stale-actor-snapshot'];
-			$this->assertSame('unconfirmed', rpcMethodCapability(['d.autotools.move.enqueue'], $available),
-				'unknown or malformed lists cannot decide a fallback');
-			$this->assertSame(null, $available, 'no stale or partially validated method list survives');
-		}
-	}
+    public function testMalformedOrUnknownRepliesNeverPublishAPartialSnapshot()
+    {
+        foreach ([['system.listMethods', 'd.autotools.move.enqueue', ''],
+            ['system.listMethods', 123], ['execute.argv'], [], null,
+            new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><dateTime.iso8601>execute.argv</dateTime.iso8601></value></data></array></value></param></params></methodResponse>'),
+            new FakeRtorrentRawReply('<methodResponse><params><param><value><string>system.listMethods</string></value></param></params></methodResponse>'),
+            new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><array><data><value><string>system.listMethods</string></value></data></array></value></data></array></value></param></params></methodResponse>'),
+            new FakeRtorrentRawReply('<methodResponse><params><param><value><struct><member><name>anything</name><value><string>system.listMethods</string></value></member></struct></value></param></params></methodResponse>'),
+            new FakeRtorrentRawReply('<methodResponse><params><param><value><struct><member><name>0</name><value><string>system.listMethods</string></value></member></struct></value></param></params></methodResponse>'),
+            new FakeRtorrentRawReply('<methodResponse>')] as $reply) {
+            $this->serve($reply);
+            $available = ['stale-actor-snapshot'];
+            $this->assertSame(
+                'unconfirmed',
+                rpcMethodCapability(['d.autotools.move.enqueue'], $available),
+                'unknown or malformed lists cannot decide a fallback',
+            );
+            $this->assertSame(null, $available, 'no stale or partially validated method list survives');
+        }
+    }
 
-	public function testRealCustomMethodNamesDoNotInvalidateUnrelatedCapabilities()
-	{
-		// Captured through method.insert/system.listMethods on 0.16.25 and
-		// 0.9.8 (2026-10-09): custom names are not limited to the proxy grammar.
-		$list = ['system.listMethods', 'execute.raw.bg', 'my-notify',
-			'name with space', 'name:colon', 'name/slash', 'name<markup>', 'name@sign'];
-		$this->serve(array_merge($list, ['my-notify']));
-		$available = null;
-		$this->assertSame('available', rpcMethodCapability(['execute.raw.bg'], $available),
-			'valid custom names cannot disable an unrelated advertised capability');
-		$this->assertSame($list, $available, 'the complete snapshot retains exact custom names and removes duplicates');
-		$this->serve($list);
-		$this->assertSame('unsupported', rpcMethodCapability(['d.stop_lease.acquire'], $available),
-			'valid custom names still allow a known absent capability to choose its fallback');
-		$this->assertSame($list, $available, 'a known absent capability still publishes the complete snapshot');
-	}
+    public function testRealCustomMethodNamesDoNotInvalidateUnrelatedCapabilities()
+    {
+        // Captured through method.insert/system.listMethods on 0.16.25 and
+        // 0.9.8 (2026-10-09): custom names are not limited to the proxy grammar.
+        $list = ['system.listMethods', 'execute.raw.bg', 'my-notify',
+            'name with space', 'name:colon', 'name/slash', 'name<markup>', 'name@sign'];
+        $this->serve(array_merge($list, ['my-notify']));
+        $available = null;
+        $this->assertSame(
+            'available',
+            rpcMethodCapability(['execute.raw.bg'], $available),
+            'valid custom names cannot disable an unrelated advertised capability',
+        );
+        $this->assertSame($list, $available, 'the complete snapshot retains exact custom names and removes duplicates');
+        $this->serve($list);
+        $this->assertSame(
+            'unsupported',
+            rpcMethodCapability(['d.stop_lease.acquire'], $available),
+            'valid custom names still allow a known absent capability to choose its fallback',
+        );
+        $this->assertSame($list, $available, 'a known absent capability still publishes the complete snapshot');
+    }
 
-	public function testBase64MethodNamesRetainTheirStringSemantics()
-	{
-		$this->serve(new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><string>execute.raw.bg</string></value><value><base64>bXktbm90aWZ5</base64></value></data></array></value></param></params></methodResponse>'));
-		$available = null;
-		$this->assertSame('available', rpcMethodCapability(['execute.raw.bg'], $available),
-			'base64 string transport does not invalidate a method inventory');
-		$this->assertSame(['system.listMethods', 'execute.raw.bg', 'my-notify'], $available,
-			'base64 method names are published as their decoded bytes');
-	}
+    public function testBase64MethodNamesRetainTheirStringSemantics()
+    {
+        $this->serve(new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data><value><string>system.listMethods</string></value><value><string>execute.raw.bg</string></value><value><base64>bXktbm90aWZ5</base64></value></data></array></value></param></params></methodResponse>'));
+        $available = null;
+        $this->assertSame(
+            'available',
+            rpcMethodCapability(['execute.raw.bg'], $available),
+            'base64 string transport does not invalidate a method inventory',
+        );
+        $this->assertSame(
+            ['system.listMethods', 'execute.raw.bg', 'my-notify'],
+            $available,
+            'base64 method names are published as their decoded bytes',
+        );
+    }
 
-	public function testEveryCallReadsItsOwnCurrentSnapshotAndOldCallersRemainCompatible()
-	{
-		$this->serve(['system.listMethods', 'execute.argv']);
-		$this->assertSame('available', rpcMethodCapability(['execute.argv']), 'the original one-argument signature stays available');
-		$this->serve(['system.listMethods']);
-		$available = null;
-		$this->assertSame('unsupported', rpcMethodCapability(['execute.argv'], $available), 'a later actor gets a fresh read');
-		$this->assertSame(['system.listMethods'], $available, 'no earlier capability snapshot is cached');
-	}
+    public function testEveryCallReadsItsOwnCurrentSnapshotAndOldCallersRemainCompatible()
+    {
+        $this->serve(['system.listMethods', 'execute.argv']);
+        $this->assertSame('available', rpcMethodCapability(['execute.argv']), 'the original one-argument signature stays available');
+        $this->serve(['system.listMethods']);
+        $available = null;
+        $this->assertSame('unsupported', rpcMethodCapability(['execute.argv'], $available), 'a later actor gets a fresh read');
+        $this->assertSame(['system.listMethods'], $available, 'no earlier capability snapshot is cached');
+    }
 
-	private function serve($reply)
-	{
-		if($this->daemon !== null) { $this->daemon->stop(); }
-		$this->daemon = new FakeRtorrentDaemon([$reply], $this->directory.'/daemon.log');
-		$GLOBALS['scgi_port'] = $this->daemon->port();
-	}
+    private function serve($reply)
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+        }
+        $this->daemon = new FakeRtorrentDaemon([$reply], $this->directory . '/daemon.log');
+        $GLOBALS['scgi_port'] = $this->daemon->port();
+    }
 }

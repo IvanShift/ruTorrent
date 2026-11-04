@@ -58,20 +58,26 @@ class RuTrackerBencode
      */
     public static function decode($payload, $limits)
     {
-        if (!is_string($payload) || !is_array($limits)) { return false; }
+        if (!is_string($payload) || !is_array($limits)) {
+            return false;
+        }
 
         $bounds = [];
         foreach (['max_bytes', 'max_depth', 'max_tokens',
-                       'max_integer_digits', 'max_length_digits'] as $name) {
+            'max_integer_digits', 'max_length_digits'] as $name) {
             // A missing or nonsensical ceiling is refused rather than guessed:
             // a decoder that silently invents its own bound is a decoder with
             // no bound the caller can reason about.
-            if (!isset($limits[$name]) || !is_int($limits[$name]) || $limits[$name] < 1) { return false; }
+            if (!isset($limits[$name]) || !is_int($limits[$name]) || $limits[$name] < 1) {
+                return false;
+            }
             $bounds[$name] = $limits[$name];
         }
 
         $len = strlen($payload);
-        if ($len === 0 || $len > $bounds['max_bytes']) { return false; }
+        if ($len === 0 || $len > $bounds['max_bytes']) {
+            return false;
+        }
 
         $pos = 0;
         $tokens = 0;
@@ -84,7 +90,9 @@ class RuTrackerBencode
 
         while (true) {
             $depth = count($stack);
-            if ($pos >= $len) { return false; }
+            if ($pos >= $len) {
+                return false;
+            }
             $byte = $payload[$pos];
             $node = null;
 
@@ -98,15 +106,23 @@ class RuTrackerBencode
                         $node = ['type' => 'dictionary', 'value' => $stack[$top]['value']];
                         array_pop($stack);
                     } else {
-                        if (!self::isDigit($byte)) { return false; }
+                        if (!self::isDigit($byte)) {
+                            return false;
+                        }
                         $key = self::takeString($payload, $pos, $len, $bounds['max_length_digits']);
-                        if ($key === false) { return false; }
-                        if (++$tokens > $bounds['max_tokens']) { return false; }
+                        if ($key === false) {
+                            return false;
+                        }
+                        if (++$tokens > $bounds['max_tokens']) {
+                            return false;
+                        }
                         // NOT an ordinary array key: "1" would become integer
                         // 1 and "0123" would not, so a raw-bytes guard needs a
                         // prefix no bencode key can produce a collision with.
                         $guard = "\0" . $key;
-                        if (isset($stack[$top]['seen'][$guard])) { return false; }
+                        if (isset($stack[$top]['seen'][$guard])) {
+                            return false;
+                        }
                         $stack[$top]['seen'][$guard] = true;
                         $stack[$top]['pending'] = $key;
                         continue;
@@ -122,8 +138,12 @@ class RuTrackerBencode
                 if ($byte === 'l' || $byte === 'd') {
                     // A container costs exactly one token, counted when it
                     // opens, so a document cannot buy extra budget by nesting.
-                    if (++$tokens > $bounds['max_tokens']) { return false; }
-                    if ($depth >= $bounds['max_depth']) { return false; }
+                    if (++$tokens > $bounds['max_tokens']) {
+                        return false;
+                    }
+                    if ($depth >= $bounds['max_depth']) {
+                        return false;
+                    }
                     $pos++;
                     $stack[] = [
                         'type' => $byte === 'l' ? 'list' : 'dictionary',
@@ -136,13 +156,21 @@ class RuTrackerBencode
 
                 if ($byte === 'i') {
                     $token = self::takeInteger($payload, $pos, $len, $bounds['max_integer_digits']);
-                    if ($token === false) { return false; }
-                    if (++$tokens > $bounds['max_tokens']) { return false; }
+                    if ($token === false) {
+                        return false;
+                    }
+                    if (++$tokens > $bounds['max_tokens']) {
+                        return false;
+                    }
                     $node = ['type' => 'integer', 'value' => $token];
                 } elseif (self::isDigit($byte)) {
                     $raw = self::takeString($payload, $pos, $len, $bounds['max_length_digits']);
-                    if ($raw === false) { return false; }
-                    if (++$tokens > $bounds['max_tokens']) { return false; }
+                    if ($raw === false) {
+                        return false;
+                    }
+                    if (++$tokens > $bounds['max_tokens']) {
+                        return false;
+                    }
                     $node = ['type' => 'string', 'value' => $raw];
                 } else {
                     return false;
@@ -169,7 +197,9 @@ class RuTrackerBencode
         // shape a tracker error page takes when it is appended to an otherwise
         // valid answer, and reading only the prefix would call that answer
         // trustworthy.
-        if ($pos !== $len) { return false; }
+        if ($pos !== $len) {
+            return false;
+        }
         return $root;
     }
 
@@ -187,9 +217,13 @@ class RuTrackerBencode
      */
     public static function entry($node, $key)
     {
-        if (!is_array($node) || !isset($node['type']) || $node['type'] !== 'dictionary') { return null; }
+        if (!is_array($node) || !isset($node['type']) || $node['type'] !== 'dictionary') {
+            return null;
+        }
         foreach ($node['value'] as $entry) {
-            if ($entry['key'] === $key) { return $entry['value']; }
+            if ($entry['key'] === $key) {
+                return $entry['value'];
+            }
         }
         return null;
     }
@@ -208,19 +242,29 @@ class RuTrackerBencode
     private static function takeString($payload, &$pos, $len, $maxLengthDigits)
     {
         $colon = strpos($payload, ':', $pos);
-        if ($colon === false) { return false; }
+        if ($colon === false) {
+            return false;
+        }
         $digits = $colon - $pos;
-        if ($digits < 1 || $digits > $maxLengthDigits) { return false; }
+        if ($digits < 1 || $digits > $maxLengthDigits) {
+            return false;
+        }
         $prefix = substr($payload, $pos, $digits);
-        if (!ctype_digit($prefix)) { return false; }
+        if (!ctype_digit($prefix)) {
+            return false;
+        }
         // Canonical: "0" is the only spelling of zero and no length carries a
         // leading zero, so one string has exactly one encoding.
-        if ($digits > 1 && $prefix[0] === '0') { return false; }
+        if ($digits > 1 && $prefix[0] === '0') {
+            return false;
+        }
         $length = (int) $prefix;
         $start = $colon + 1;
         // Written as a subtraction rather than $start + $length so an absurd
         // prefix cannot overflow the comparison itself.
-        if ($length > $len - $start) { return false; }
+        if ($length > $len - $start) {
+            return false;
+        }
         $pos = $start + $length;
         return substr($payload, $start, $length);
     }
@@ -234,19 +278,29 @@ class RuTrackerBencode
     private static function takeInteger($payload, &$pos, $len, $maxIntegerDigits)
     {
         $end = strpos($payload, 'e', $pos + 1);
-        if ($end === false) { return false; }
+        if ($end === false) {
+            return false;
+        }
         $token = substr($payload, $pos + 1, $end - $pos - 1);
         $negative = isset($token[0]) && $token[0] === '-';
         $digits = $negative ? substr($token, 1) : $token;
-        if ($digits === '' || !ctype_digit($digits)) { return false; }
+        if ($digits === '' || !ctype_digit($digits)) {
+            return false;
+        }
         // Canonical: i01e and i-0e are two spellings of a number that already
         // has one, and a tracker answer that spells a counter twice over is
         // not an answer this plugin acts on.
-        if (strlen($digits) > 1 && $digits[0] === '0') { return false; }
-        if ($negative && $digits === '0') { return false; }
+        if (strlen($digits) > 1 && $digits[0] === '0') {
+            return false;
+        }
+        if ($negative && $digits === '0') {
+            return false;
+        }
         // The sign is not a digit: the ceiling bounds magnitude, so i-1e and
         // i1e cost the same.
-        if (strlen($digits) > $maxIntegerDigits) { return false; }
+        if (strlen($digits) > $maxIntegerDigits) {
+            return false;
+        }
         $pos = $end + 1;
         return $token;
     }

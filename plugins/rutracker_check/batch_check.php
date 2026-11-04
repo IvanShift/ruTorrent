@@ -1,9 +1,10 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
-require_once( dirname(__FILE__).'/launcher.php' );
+require_once(dirname(__FILE__) . '/launcher.php');
 
 /**
  * The detached worker for a manual "check for update".
@@ -16,113 +17,107 @@ require_once( dirname(__FILE__).'/launcher.php' );
  */
 class ruTrackerBatchCheck
 {
+    /**
+     * Check every hash named by the handover, remove it, then start the forum
+     * crawl that resolves topics queued by the checks.
+     *
+     * @param callable|null $checker Injection seam for tests.
+     * @param callable|null $crawler Injection seam for the fork's forum index.
+     * @param callable|null $deleter Injection seam for tests.
+     * @param callable|null $logger  Injection seam for tests.
+     */
+    public static function runHandover(
+        $handoverPath,
+        $checker = null,
+        $crawler = null,
+        $deleter = null,
+        $logger = null
+    ) {
+        $raw = (is_string($handoverPath) && $handoverPath !== '' && file_exists($handoverPath))
+            ? @file_get_contents($handoverPath)
+            : false;
+        $hashes = ($raw !== false && $raw !== '')
+            ? @unserialize($raw, ['allowed_classes' => false])
+            : null;
 
-	/**
-	 * Check every hash named by the handover, remove it, then start the forum
-	 * crawl that resolves topics queued by the checks.
-	 *
-	 * @param callable|null $checker Injection seam for tests.
-	 * @param callable|null $crawler Injection seam for the fork's forum index.
-	 * @param callable|null $deleter Injection seam for tests.
-	 * @param callable|null $logger  Injection seam for tests.
-	 */
-	public static function runHandover($handoverPath, $checker = null, $crawler = null,
-		$deleter = null, $logger = null)
-	{
-		$raw = (is_string($handoverPath) && $handoverPath !== '' && file_exists($handoverPath))
-			? @file_get_contents($handoverPath)
-			: false;
-		$hashes = ($raw !== false && $raw !== '')
-			? @unserialize($raw, ['allowed_classes' => false])
-			: null;
+        if (!is_array($hashes)) {
+            self::log('batch_check: the handover file held no usable selection', $logger);
+        }
 
-		if(!is_array($hashes)) {
-			self::log('batch_check: the handover file held no usable selection', $logger); }
+        try {
+            if (is_array($hashes)) {
+                // One manual selection is one cycle, even in a reused worker.
+                if (class_exists('KinozalCheckImpl', false)) {
+                    KinozalCheckImpl::resetCycle();
+                }
+                foreach ($hashes as $hash) {
+                    if (!is_string($hash) || $hash === '') {
+                        continue;
+                    }
+                    try {
+                        if ($checker !== null) {
+                            call_user_func($checker, $hash);
+                        } else {
+                            ruTrackerChecker::run($hash);
+                        }
+                    } catch (Throwable $e) {
+                        // One unreachable tracker is the ordinary case, not a
+                        // reason to abandon the rest of a deliberate selection.
+                        // Keep remote exception text out of the routine log.
+                        self::log('batch_check: a selected torrent could not be checked', $logger);
+                    }
+                }
+            }
+        } finally {
+            // The handover is this process's own temporary file. Left behind by a
+            // batch that threw, it accumulates in the temp directory forever.
+            $removed = false;
+            try {
+                $removed = RuTrackerBatchDispatch::removeHandover($handoverPath, $deleter);
+            } catch (Throwable $e) {
+                $removed = false;
+            }
+            if (!$removed) {
+                self::log('batch_check: could not remove the handover file', $logger);
+            }
 
-		try
-		{
-			if(is_array($hashes))
-			{
-				// One manual selection is one cycle, even in a reused worker.
-				if(class_exists('KinozalCheckImpl', false)) { KinozalCheckImpl::resetCycle(); }
-				foreach($hashes as $hash)
-				{
-					if(!is_string($hash) || $hash === '') {
-						continue; }
-					try
-					{
-						if($checker !== null) {
-							call_user_func($checker, $hash); }
-						else {
-							ruTrackerChecker::run($hash); }
-					}
-					catch(Throwable $e)
-					{
-						// One unreachable tracker is the ordinary case, not a
-						// reason to abandon the rest of a deliberate selection.
-						// Keep remote exception text out of the routine log.
-						self::log('batch_check: a selected torrent could not be checked', $logger);
-					}
-				}
-			}
-		}
-		finally
-		{
-			// The handover is this process's own temporary file. Left behind by a
-			// batch that threw, it accumulates in the temp directory forever.
-			$removed = false;
-			try
-			{
-				$removed = RuTrackerBatchDispatch::removeHandover($handoverPath, $deleter);
-			}
-			catch(Throwable $e)
-			{
-				$removed = false;
-			}
-			if(!$removed) {
-				self::log('batch_check: could not remove the handover file', $logger); }
-
-			// Manual checks can be the only pass when the scheduler is disabled.
-			// Spawn after all checks so every unresolved topic has been queued.
-			try
-			{
-				if($crawler !== null) {
-					call_user_func($crawler); }
-				else {
-					RuTrackerForumIndex::spawnCrawl(); }
-			}
-			catch(Throwable $e)
-			{
-				self::log('batch_check: the forum crawl could not be started', $logger);
-			}
-		}
-	}
-	private static function log($message, $logger = null)
-	{
-		try
-		{
-			if($logger !== null) {
-				call_user_func($logger, $message); }
-			elseif(class_exists('ruTrackerChecker', false)) {
-				ruTrackerChecker::logUnrepairable($message); }
-		}
-		catch(Throwable $e)
-		{
-			// The log is a diagnostic, not a step of the batch.
-		}
-	}
+            // Manual checks can be the only pass when the scheduler is disabled.
+            // Spawn after all checks so every unresolved topic has been queued.
+            try {
+                if ($crawler !== null) {
+                    call_user_func($crawler);
+                } else {
+                    RuTrackerForumIndex::spawnCrawl();
+                }
+            } catch (Throwable $e) {
+                self::log('batch_check: the forum crawl could not be started', $logger);
+            }
+        }
+    }
+    private static function log($message, $logger = null)
+    {
+        try {
+            if ($logger !== null) {
+                call_user_func($logger, $message);
+            } elseif (class_exists('ruTrackerChecker', false)) {
+                ruTrackerChecker::logUnrepairable($message);
+            }
+        } catch (Throwable $e) {
+            // The log is a diagnostic, not a step of the batch.
+        }
+    }
 }
 
-if( count( $argv ) > 2 ) {
-	$_SERVER['REMOTE_USER'] = $argv[2]; }
+if (count($argv) > 2) {
+    $_SERVER['REMOTE_USER'] = $argv[2];
+}
 
-if(( count( $argv ) > 1 ) && chdir(dirname( __FILE__)))
-{
-	require_once( "cli_log.php" );
-	RuTrackerCliLog::install("batch_check");
-	require_once( "../../php/util.php" );
-	RuTrackerCliLog::useConfiguredLog();
-	require_once( "check.php" );
+if ((count($argv) > 1) && chdir(dirname(__FILE__))) {
+    require_once("cli_log.php");
+    RuTrackerCliLog::install("batch_check");
+    require_once("../../php/util.php");
+    RuTrackerCliLog::useConfiguredLog();
+    require_once("check.php");
 
-	ruTrackerBatchCheck::runHandover($argv[1]);
+    ruTrackerBatchCheck::runHandover($argv[1]);
 }

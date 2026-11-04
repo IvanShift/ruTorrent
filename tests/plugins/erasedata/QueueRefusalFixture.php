@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__.'/../../php/SourceDefinitionFixture.php';
+require_once __DIR__ . '/../../php/SourceDefinitionFixture.php';
 
 // Execute copied production init/worker bytes against a physical queue. Only
 // RPC and Ratio's unrelated group configuration are replaced by recording peers.
@@ -12,56 +12,60 @@ class ErasedataQueueRefusalFixture
         $paths = ['php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php', 'php/utility/utility.php',
             'php/utility/json.php', 'php/utility/utf.php',
             'plugins/rutracker_check/launcher.php'];
-        foreach($paths as $relative)
-        {
-            copy($root.'/'.$relative, $tree.'/'.$relative);
-            if(hash_file('sha256', $root.'/'.$relative) !== hash_file('sha256', $tree.'/'.$relative)) {
-                throw new RuntimeException('queue checker dependency identity mismatch: '.$relative); }
+        foreach ($paths as $relative) {
+            copy($root . '/' . $relative, $tree . '/' . $relative);
+            if (hash_file('sha256', $root . '/' . $relative) !== hash_file('sha256', $tree . '/' . $relative)) {
+                throw new RuntimeException('queue checker dependency identity mismatch: ' . $relative);
+            }
         }
         // FileUtil belongs to the RPC adapter; these real core files require
         // util.php by name before reaching their command helpers.
-        file_put_contents($tree.'/php/util.php', '<?php require_once __DIR__."/xmlrpc.php";');
+        file_put_contents($tree . '/php/util.php', '<?php require_once __DIR__."/xmlrpc.php";');
         // Keep the actual capability gate and command-name validator while
         // the recording RPC adapter supplies the daemon's structured reply.
-        $command = loadClassDefinition($root.'/php/xmlrpc.php', 'rXMLRPCCommand');
+        $command = loadClassDefinition($root . '/php/xmlrpc.php', 'rXMLRPCCommand');
         $nextClass = strpos($command, 'class rXMLRPCRequest');
-        if($nextClass === false) { throw new RuntimeException('queue command validator boundary moved'); }
+        if ($nextClass === false) {
+            throw new RuntimeException('queue command validator boundary moved');
+        }
         $command = substr($command, 0, $nextClass);
         $command = str_replace('class rXMLRPCCommand', 'class QueueCoreXMLRPCCommand', $command);
-        file_put_contents($tree.'/php/xmlrpc.php', "\n".$command."\n"
-            .loadFunctionDefinition($root.'/php/xmlrpc.php', 'rpcMethodCapability'), FILE_APPEND);
+        file_put_contents($tree . '/php/xmlrpc.php', "\n" . $command . "\n"
+            . loadFunctionDefinition($root . '/php/xmlrpc.php', 'rpcMethodCapability'), FILE_APPEND);
         return $paths;
     }
 
     public static function run($base, $route, $ready, $removeFails = false, $user = 'alice', $interval = 60)
     {
         $root = dirname(__DIR__, 3);
-        $tree = $base.'/queue-refusal-'.bin2hex(random_bytes(5));
-        foreach(['plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php/utility', 'settings', 'session'] as $name) {
-            mkdir($tree.'/'.$name, 0700, true); }
-        foreach(['plugins/erasedata/init.php', 'plugins/erasedata/update.php',
+        $tree = $base . '/queue-refusal-' . bin2hex(random_bytes(5));
+        foreach (['plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php/utility', 'settings', 'session'] as $name) {
+            mkdir($tree . '/' . $name, 0700, true);
+        }
+        foreach (['plugins/erasedata/init.php', 'plugins/erasedata/update.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
             'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
-            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php'] as $name)
-        {
-            copy($root.'/'.$name, $tree.'/'.$name);
-            if(hash_file('sha256', $root.'/'.$name) !== hash_file('sha256', $tree.'/'.$name)) {
-                throw new RuntimeException('queue refusal mirror identity mismatch: '.$name); }
+            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php'] as $name) {
+            copy($root . '/' . $name, $tree . '/' . $name);
+            if (hash_file('sha256', $root . '/' . $name) !== hash_file('sha256', $tree . '/' . $name)) {
+                throw new RuntimeException('queue refusal mirror identity mismatch: ' . $name);
+            }
         }
-        if(!$ready)
-        {
-            mkdir($tree.'/settings/erasedata', 0700);
-            file_put_contents($tree.'/settings/erasedata/old.list', 'durable deletion obligation');
-            chmod($tree.'/settings', 0777);
+        if (!$ready) {
+            mkdir($tree . '/settings/erasedata', 0700);
+            file_put_contents($tree . '/settings/erasedata/old.list', 'durable deletion obligation');
+            chmod($tree . '/settings', 0777);
         }
-        file_put_contents($tree.'/plugins/ratio/ratio.php', '<?php class rRatio {'
-            .'public static function load(){return new self();} public function obtain(){return true;}'
-            .'public function get(){return "ratio-ready";}}');
-        file_put_contents($tree.'/php/nativehelpers.php', '<?php class NativeHelpers {'
-            .'public static function path($name){return PHP_BINARY;}}');
-        file_put_contents($tree.'/php/xmlrpc.php', <<<'PHP'
+        file_put_contents($tree . '/plugins/ratio/ratio.php', '<?php class rRatio {'
+            . 'public static function load(){return new self();} public function obtain(){return true;}'
+            . 'public function get(){return "ratio-ready";}}');
+        file_put_contents($tree . '/php/nativehelpers.php', '<?php class NativeHelpers {'
+            . 'public static function path($name){return PHP_BINARY;}}');
+        file_put_contents(
+            $tree . '/php/xmlrpc.php',
+            <<<'PHP'
 <?php
 class FileUtil {
  public static $log=array();
@@ -116,10 +120,12 @@ class rTorrentSettings {
  public function isPluginRegistered($name){return in_array($name,$this->registered,true);}
 }
 function getCmd($name){return $name;}
-PHP
+PHP,
         );
         self::installCheckerDependencies($tree);
-        file_put_contents($tree.'/driver.php', <<<'PHP'
+        file_put_contents(
+            $tree . '/driver.php',
+            <<<'PHP'
 <?php
 require __DIR__.'/php/xmlrpc.php';
 $user=User::getUser();
@@ -137,17 +143,28 @@ $queue=__DIR__.'/settings/erasedata';
 echo json_encode(array('requests'=>rXMLRPCRequest::$requests,'schedules'=>rXMLRPCRequest::$schedules,
  'registered'=>$theSettings->registered,'javascript'=>$jResult,'log'=>FileUtil::$log,
  'queue_exists'=>is_dir($queue),'intent'=>is_file($queue.'/old.list')?file_get_contents($queue.'/old.list'):null));
-PHP
+PHP,
         );
-        $process=proc_open([PHP_BINARY,'-c',$root.'/tests/php-test.ini',$tree.'/driver.php'],
-            [0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,null,
-            array_merge($_ENV,['QUEUE_ROUTE'=>$route,'QUEUE_USER_JSON'=>json_encode($user),
-                'REMOVE_FAILS'=>$removeFails?'1':'0','CHECK_INTERVAL'=>(string)$interval]));
-        if(!is_resource($process)) {throw new RuntimeException('queue refusal child unavailable'); }
-        $out=stream_get_contents($pipes[1]);$err=stream_get_contents($pipes[2]);
-        fclose($pipes[1]);fclose($pipes[2]);$code=proc_close($process);
-        $data=json_decode($out,true);
-        if($code!==0||!is_array($data)) {throw new RuntimeException('queue refusal child failed: '.$err.$out); }
+        $process = proc_open(
+            [PHP_BINARY,'-c',$root . '/tests/php-test.ini',$tree . '/driver.php'],
+            [0 => ['file','/dev/null','r'],1 => ['pipe','w'],2 => ['pipe','w']],
+            $pipes,
+            null,
+            array_merge($_ENV, ['QUEUE_ROUTE' => $route,'QUEUE_USER_JSON' => json_encode($user),
+                'REMOVE_FAILS' => $removeFails ? '1' : '0','CHECK_INTERVAL' => (string) $interval]),
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('queue refusal child unavailable');
+        }
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $code = proc_close($process);
+        $data = json_decode($out, true);
+        if ($code !== 0 || !is_array($data)) {
+            throw new RuntimeException('queue refusal child failed: ' . $err . $out);
+        }
         return $data;
     }
 }

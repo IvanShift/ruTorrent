@@ -1,136 +1,138 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
-if( !chdir( dirname( __FILE__ ) ) ) {
-	exit(); }
-
-if( count( $argv ) > 1 ) {
-	$_SERVER['REMOTE_USER'] = $argv[1]; }
-
-require_once( "../../php/rtorrent.php" );
-require_once( "./util_rt.php" );
-require_once( "./autotools.php" );
-eval( FileUtil::getPluginConf( 'autotools' ) );
-
-function Debug( $str )
-{
-	global $autodebug_enabled;
-	if( $autodebug_enabled ) { rtDbg( "AutoWatch", $str ); }
+if (!chdir(dirname(__FILE__))) {
+    exit();
 }
 
-Debug( "" );
-Debug( "--- begin ---" );
+if (count($argv) > 1) {
+    $_SERVER['REMOTE_USER'] = $argv[1];
+}
+
+require_once("../../php/rtorrent.php");
+require_once("./util_rt.php");
+require_once("./autotools.php");
+eval(FileUtil::getPluginConf('autotools'));
+
+function Debug($str)
+{
+    global $autodebug_enabled;
+    if ($autodebug_enabled) {
+        rtDbg("AutoWatch", $str);
+    }
+}
+
+Debug("");
+Debug("--- begin ---");
 
 $is_ok = true;
 
 // Read configuration
-if( $is_ok )
-{
-	$at = rAutoTools::load();
-	Debug( "enabled          : ".$at->enable_watch );
-	Debug( "autostart        : ".$at->watch_start );
-	if( $at->enable_watch )
-	{
-		$auto_start = $at->watch_start;
-		$path_to_watch = rtAddTailSlash( trim( $at->path_to_watch ) );
-		Debug( "path_to_watch    : ".$path_to_watch );
-		if( $path_to_watch == '' || $path_to_watch == '/' ) {
-			$is_ok = false; }
-		// The scan, the touch and the load follow links, so the directory has
-		// to stay inside the top directory once they are followed. Refused on
-		// every pass, so the log keeps showing it until it is corrected.
-		elseif( !rTorrent::isInsideTopDirectory( $path_to_watch ) )
-		{
-			FileUtil::toLog( 'autotools: watch refused: watch-directory-outside-top-directory; no torrent is'
-				.' loaded from it until it resolves inside the top directory' );
-			$is_ok = false;
-		}
-	}
-	else { $is_ok = false; }
+if ($is_ok) {
+    $at = rAutoTools::load();
+    Debug("enabled          : " . $at->enable_watch);
+    Debug("autostart        : " . $at->watch_start);
+    if ($at->enable_watch) {
+        $auto_start = $at->watch_start;
+        $path_to_watch = rtAddTailSlash(trim($at->path_to_watch));
+        Debug("path_to_watch    : " . $path_to_watch);
+        if ($path_to_watch == '' || $path_to_watch == '/') {
+            $is_ok = false;
+        }
+        // The scan, the touch and the load follow links, so the directory has
+        // to stay inside the top directory once they are followed. Refused on
+        // every pass, so the log keeps showing it until it is corrected.
+        elseif (!rTorrent::isInsideTopDirectory($path_to_watch)) {
+            FileUtil::toLog('autotools: watch refused: watch-directory-outside-top-directory; no torrent is'
+                . ' loaded from it until it resolves inside the top directory');
+            $is_ok = false;
+        }
+    } else {
+        $is_ok = false;
+    }
 }
 
 // Ask info from rTorrent
-if( $is_ok )
-{
-	$directory = rtAddTailSlash( rTorrentSettings::get()->directory );
-	Debug( "get_directory    : ".$directory );
-	if( $directory == '' || $directory == '/' ) {
-		$is_ok = false; }
+if ($is_ok) {
+    $directory = rtAddTailSlash(rTorrentSettings::get()->directory);
+    Debug("get_directory    : " . $directory);
+    if ($directory == '' || $directory == '/') {
+        $is_ok = false;
+    }
 }
 
 // Scan for *.torrent files at $path_to_watch
-if( $is_ok )
-{
-	$files = rtScanFiles( $path_to_watch, "/.*\.torrent$/i" ); // ignore case
-	foreach( $files as $file )
-	{
-		$torrent_file = $path_to_watch.$file; // don't use realpath() here !!!
-		$dest_path = rtAddTailSlash( dirname( $directory.$file ) );
-		Debug( "torrent file     : ".$torrent_file );
-		Debug( "save data to     : ".$dest_path );
+if ($is_ok) {
+    $files = rtScanFiles($path_to_watch, "/.*\.torrent$/i"); // ignore case
+    foreach ($files as $file) {
+        $torrent_file = $path_to_watch . $file; // don't use realpath() here !!!
+        $dest_path = rtAddTailSlash(dirname($directory . $file));
+        Debug("torrent file     : " . $torrent_file);
+        Debug("save data to     : " . $dest_path);
 
-		$is_ok = true;
-		// The torrent may be a link to a file elsewhere, and its data
-		// directory is made and loaded through any link on the way. A refused
-		// torrent is set aside as .fail like any other, so the next scan does
-		// not take it up again.
-		foreach( [ 'torrent' => $torrent_file, 'data-directory' => $dest_path ] as $what => $path ) {
-			if( $is_ok && !rTorrent::isInsideTopDirectory( $path ) )
-			{
-				FileUtil::toLog( 'autotools: watch refused: '.$what.'-outside-top-directory; the torrent is set'
-					.' aside as .fail' );
-				$is_ok = false;
-			} }
-		// rTorrent store info about all added torrents,
-		// so we must change $torrent_file's time to trick rTorrent.
-		// ( If we want to add same torrent again )
-		if( $is_ok && ( !is_writeable( $torrent_file ) || !touch( $torrent_file ) ) )
-		{
-			Debug( "no access to ".$torrent_file );
-			$is_ok = false;
-		}
+        $is_ok = true;
+        // The torrent may be a link to a file elsewhere, and its data
+        // directory is made and loaded through any link on the way. A refused
+        // torrent is set aside as .fail like any other, so the next scan does
+        // not take it up again.
+        foreach ([ 'torrent' => $torrent_file, 'data-directory' => $dest_path ] as $what => $path) {
+            if ($is_ok && !rTorrent::isInsideTopDirectory($path)) {
+                FileUtil::toLog('autotools: watch refused: ' . $what . '-outside-top-directory; the torrent is set'
+                    . ' aside as .fail');
+                $is_ok = false;
+            }
+        }
+        // rTorrent store info about all added torrents,
+        // so we must change $torrent_file's time to trick rTorrent.
+        // ( If we want to add same torrent again )
+        if ($is_ok && (!is_writeable($torrent_file) || !touch($torrent_file))) {
+            Debug("no access to " . $torrent_file);
+            $is_ok = false;
+        }
 
-		if( $is_ok && !rtMkDir( $dest_path, 0777 ) )
-		{
-			Debug( "can't create ".$dest_path );
-			$is_ok = false;
-		}
+        if ($is_ok && !rtMkDir($dest_path, 0777)) {
+            Debug("can't create " . $dest_path);
+            $is_ok = false;
+        }
 
 
-		if( $is_ok )
-		{
-			$pendingReceipt = null;
-			$hash = rTorrent::sendTorrent(
-				$torrent_file,			// path to .torrent file
-				$auto_start,			// start it or not
-				true,				// add_path
-				$dest_path,			// directory for torrent's data
-				null,				// label is emply
-				false,				// don't saveUploadedTorrents
-				false,				// don't fast_resume
-				true, null, $pendingReceipt, null, true,
-			);
-			if( $hash === false )
-			{
-				Debug( "addition of torrent fail" );
-				$is_ok = false;
-			}
-			elseif( $hash === null )
-			{
-				Debug( "torrent load pending confirmation" );
-				if( !empty($pendingReceipt['raw']) ) {
-					@unlink($torrent_file); }
-			}
-			else {
-				Debug( "torrent added    : ".$hash ); }
-		}
+        if ($is_ok) {
+            $pendingReceipt = null;
+            $hash = rTorrent::sendTorrent(
+                $torrent_file,			// path to .torrent file
+                $auto_start,			// start it or not
+                true,				// add_path
+                $dest_path,			// directory for torrent's data
+                null,				// label is emply
+                false,				// don't saveUploadedTorrents
+                false,				// don't fast_resume
+                true,
+                null,
+                $pendingReceipt,
+                null,
+                true,
+            );
+            if ($hash === false) {
+                Debug("addition of torrent fail");
+                $is_ok = false;
+            } elseif ($hash === null) {
+                Debug("torrent load pending confirmation");
+                if (!empty($pendingReceipt['raw'])) {
+                    @unlink($torrent_file);
+                }
+            } else {
+                Debug("torrent added    : " . $hash);
+            }
+        }
 
-		if( !$is_ok ) {
-			rename( $torrent_file, $torrent_file.".fail" ); }
-	}
+        if (!$is_ok) {
+            rename($torrent_file, $torrent_file . ".fail");
+        }
+    }
 }
 
 
-Debug( "--- end ---" );
+Debug("--- end ---");

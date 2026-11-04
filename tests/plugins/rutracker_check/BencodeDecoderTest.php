@@ -66,12 +66,21 @@ function bdAssertAllRejected($suiteLabel, $cases, $overrides = [])
 }
 
 $suite->test('scalar nodes carry the exact typed contract', function () {
-    strictAssertSame(['type' => 'string', 'value' => ''], bdDecode('0:'),
-        'an empty string is a string node carrying zero bytes');
-    strictAssertSame(['type' => 'string', 'value' => 'abcd'], bdDecode('4:abcd'),
-        'a string node carries its raw bytes');
-    strictAssertSame(['type' => 'string', 'value' => "\x00\xffz"], bdDecode("3:\x00\xffz"),
-        'string bytes are raw: NUL and high bytes survive unchanged');
+    strictAssertSame(
+        ['type' => 'string', 'value' => ''],
+        bdDecode('0:'),
+        'an empty string is a string node carrying zero bytes',
+    );
+    strictAssertSame(
+        ['type' => 'string', 'value' => 'abcd'],
+        bdDecode('4:abcd'),
+        'a string node carries its raw bytes',
+    );
+    strictAssertSame(
+        ['type' => 'string', 'value' => "\x00\xffz"],
+        bdDecode("3:\x00\xffz"),
+        'string bytes are raw: NUL and high bytes survive unchanged',
+    );
 
     strictAssertSame(['type' => 'integer', 'value' => '0'], bdDecode('i0e'), 'canonical zero');
     strictAssertSame(['type' => 'integer', 'value' => '42'], bdDecode('i42e'), 'canonical positive');
@@ -162,8 +171,11 @@ $suite->test('numeric-looking dictionary keys stay raw strings', function () {
     strictAssertTrue(is_string($node['value'][1]['key']), 'and it is a string, not integer 10');
 
     $wide = bdDecode('d19:92233720368547758080:e');
-    strictAssertSame('9223372036854775808', $wide['value'][0]['key'],
-        'a key past PHP_INT_MAX is preserved byte for byte');
+    strictAssertSame(
+        '9223372036854775808',
+        $wide['value'][0]['key'],
+        'a key past PHP_INT_MAX is preserved byte for byte',
+    );
 
     $binaryKey = "\x00\x01" . '1';
     $binary = bdDecode('d3:' . $binaryKey . '0:e');
@@ -221,8 +233,11 @@ $suite->test('only canonical integer tokens are accepted', function () {
     ]);
 
     foreach (['i0e' => '0', 'i7e' => '7', 'i10e' => '10', 'i-1e' => '-1', 'i-10e' => '-10'] as $payload => $token) {
-        strictAssertSame(['type' => 'integer', 'value' => $token], bdDecode($payload),
-            'canonical token ' . $payload);
+        strictAssertSame(
+            ['type' => 'integer', 'value' => $token],
+            bdDecode($payload),
+            'canonical token ' . $payload,
+        );
     }
 });
 
@@ -236,8 +251,11 @@ $suite->test('only canonical string length prefixes are accepted', function () {
         'decimal length' => '1.0:a',
     ]);
 
-    strictAssertSame(['type' => 'string', 'value' => ''], bdDecode('0:'),
-        'a single zero is the one canonical way to spell an empty string');
+    strictAssertSame(
+        ['type' => 'string', 'value' => ''],
+        bdDecode('0:'),
+        'a single zero is the one canonical way to spell an empty string',
+    );
 });
 
 $suite->test('truncated tokens are rejected', function () {
@@ -308,8 +326,11 @@ $suite->test('max_depth is enforced at the exact boundary', function () {
     strictAssertSame('list', bdDecode('llleee', $limits)['type'], 'three nested lists are exactly max_depth');
     strictAssertSame(false, bdDecode('lllleeee', $limits), 'four nested lists exceed max_depth');
 
-    strictAssertSame('dictionary', bdDecode('d1:ad1:adeee', $limits)['type'],
-        'three nested dictionaries are exactly max_depth');
+    strictAssertSame(
+        'dictionary',
+        bdDecode('d1:ad1:adeee', $limits)['type'],
+        'three nested dictionaries are exactly max_depth',
+    );
     strictAssertSame(false, bdDecode('d1:ad1:ad1:adeeee', $limits), 'four nested dictionaries exceed max_depth');
 
     strictAssertSame('dictionary', bdDecode('d1:alleee', $limits)['type'], 'mixed nesting counts the same way');
@@ -317,62 +338,103 @@ $suite->test('max_depth is enforced at the exact boundary', function () {
 
     // Depth is the number of OPEN containers, not the number of containers:
     // a wide but shallow document is unaffected by the ceiling.
-    strictAssertSame('list', bdDecode('ll' . str_repeat('le', 10) . 'ee', $limits)['type'],
-        'many sibling containers stay within a depth of three');
+    strictAssertSame(
+        'list',
+        bdDecode('ll' . str_repeat('le', 10) . 'ee', $limits)['type'],
+        'many sibling containers stay within a depth of three',
+    );
 });
 
 $suite->test('max_tokens counts every container and every scalar exactly once', function () {
     // 1 list + 3 strings.
-    strictAssertSame('list', bdDecode('l0:0:0:e', ['max_tokens' => 4])['type'],
-        'exactly max_tokens is accepted');
-    strictAssertSame(false, bdDecode('l0:0:0:0:e', ['max_tokens' => 4]),
-        'one token over the ceiling is rejected');
+    strictAssertSame(
+        'list',
+        bdDecode('l0:0:0:e', ['max_tokens' => 4])['type'],
+        'exactly max_tokens is accepted',
+    );
+    strictAssertSame(
+        false,
+        bdDecode('l0:0:0:0:e', ['max_tokens' => 4]),
+        'one token over the ceiling is rejected',
+    );
 
     // A dictionary KEY is a token of its own: 1 dictionary + 1 key + 1 value.
-    strictAssertSame('dictionary', bdDecode('d1:a0:e', ['max_tokens' => 3])['type'],
-        'a dictionary costs one token per container plus one per key and value');
-    strictAssertSame(false, bdDecode('d1:a0:e', ['max_tokens' => 2]),
-        'the same document is rejected one token below its cost');
+    strictAssertSame(
+        'dictionary',
+        bdDecode('d1:a0:e', ['max_tokens' => 3])['type'],
+        'a dictionary costs one token per container plus one per key and value',
+    );
+    strictAssertSame(
+        false,
+        bdDecode('d1:a0:e', ['max_tokens' => 2]),
+        'the same document is rejected one token below its cost',
+    );
 
     // A container costs exactly one token, not one per delimiter byte.
-    strictAssertSame('list', bdDecode('llleee', ['max_tokens' => 3])['type'],
-        'three nested containers cost exactly three tokens');
-    strictAssertSame(false, bdDecode('llleee', ['max_tokens' => 2]),
-        'and are rejected at two');
+    strictAssertSame(
+        'list',
+        bdDecode('llleee', ['max_tokens' => 3])['type'],
+        'three nested containers cost exactly three tokens',
+    );
+    strictAssertSame(
+        false,
+        bdDecode('llleee', ['max_tokens' => 2]),
+        'and are rejected at two',
+    );
 });
 
 $suite->test('max_integer_digits counts digits and not the sign', function () {
     $limits = ['max_integer_digits' => 3];
 
-    strictAssertSame(['type' => 'integer', 'value' => '123'], bdDecode('i123e', $limits),
-        'exactly max_integer_digits is accepted');
-    strictAssertSame(['type' => 'integer', 'value' => '-123'], bdDecode('i-123e', $limits),
-        'the minus sign is not a digit');
+    strictAssertSame(
+        ['type' => 'integer', 'value' => '123'],
+        bdDecode('i123e', $limits),
+        'exactly max_integer_digits is accepted',
+    );
+    strictAssertSame(
+        ['type' => 'integer', 'value' => '-123'],
+        bdDecode('i-123e', $limits),
+        'the minus sign is not a digit',
+    );
     strictAssertSame(false, bdDecode('i1234e', $limits), 'one digit over the ceiling is rejected');
     strictAssertSame(false, bdDecode('i-1234e', $limits), 'and a negative token is measured the same way');
 
-    strictAssertSame(['type' => 'integer', 'value' => '1234567890123456789'],
+    strictAssertSame(
+        ['type' => 'integer', 'value' => '1234567890123456789'],
         bdDecode('i1234567890123456789e', ['max_integer_digits' => 19]),
-        'the NNM ceiling admits a full 19-digit counter');
-    strictAssertSame(false, bdDecode('i12345678901234567890e', ['max_integer_digits' => 19]),
-        'a twentieth digit is refused');
+        'the NNM ceiling admits a full 19-digit counter',
+    );
+    strictAssertSame(
+        false,
+        bdDecode('i12345678901234567890e', ['max_integer_digits' => 19]),
+        'a twentieth digit is refused',
+    );
 });
 
 $suite->test('max_length_digits bounds the string length prefix', function () {
     $limits = ['max_length_digits' => 2];
 
-    strictAssertSame(['type' => 'string', 'value' => str_repeat('a', 12)],
-        bdDecode('12:' . str_repeat('a', 12), $limits), 'a two-digit length prefix is exactly at the ceiling');
-    strictAssertSame(['type' => 'string', 'value' => ''], bdDecode('0:', $limits),
-        'a one-digit prefix is within it');
+    strictAssertSame(
+        ['type' => 'string', 'value' => str_repeat('a', 12)],
+        bdDecode('12:' . str_repeat('a', 12), $limits),
+        'a two-digit length prefix is exactly at the ceiling',
+    );
+    strictAssertSame(
+        ['type' => 'string', 'value' => ''],
+        bdDecode('0:', $limits),
+        'a one-digit prefix is within it',
+    );
 
     $three = '100:' . str_repeat('a', 100);
     strictAssertSame('string', bdDecode($three)['type'], 'the over-limit fixture is valid under a larger ceiling');
     strictAssertSame(false, bdDecode($three, $limits), 'a three-digit length prefix is refused');
 
     // The ceiling applies to keys too, not only to values.
-    strictAssertSame(false, bdDecode('d100:' . str_repeat('k', 100) . '0:e', $limits),
-        'an over-long key prefix is refused as well');
+    strictAssertSame(
+        false,
+        bdDecode('d100:' . str_repeat('k', 100) . '0:e', $limits),
+        'an over-long key prefix is refused as well',
+    );
 });
 
 $suite->test('an incomplete or unusable limit set decodes nothing', function () {
@@ -382,15 +444,21 @@ $suite->test('an incomplete or unusable limit set decodes nothing', function () 
     foreach (array_keys($complete) as $missing) {
         $partial = $complete;
         unset($partial[$missing]);
-        strictAssertSame(false, RuTrackerBencode::decode('0:', $partial),
-            'a limit set missing ' . $missing . ' decodes nothing');
+        strictAssertSame(
+            false,
+            RuTrackerBencode::decode('0:', $partial),
+            'a limit set missing ' . $missing . ' decodes nothing',
+        );
     }
 
     strictAssertSame(false, RuTrackerBencode::decode('0:', []), 'an empty limit set decodes nothing');
     strictAssertSame(false, RuTrackerBencode::decode('0:', 'nonsense'), 'a non-array limit set decodes nothing');
     strictAssertSame(false, RuTrackerBencode::decode(null, $complete), 'a non-string payload decodes nothing');
-    strictAssertSame(false, RuTrackerBencode::decode('0:', array_merge($complete, ['max_bytes' => 0])),
-        'a zero ceiling admits nothing rather than everything');
+    strictAssertSame(
+        false,
+        RuTrackerBencode::decode('0:', array_merge($complete, ['max_bytes' => 0])),
+        'a zero ceiling admits nothing rather than everything',
+    );
 });
 
 // The announce body cap has always been a bound on decoding cost as much as on
@@ -419,7 +487,9 @@ $suite->test('the announce ceilings admit every shape an 8192-byte body can spel
         $levels++;
         $walk = $walk['value'][0];
     }
-    if ($walk['type'] === 'list') { $levels++; }
+    if ($walk['type'] === 'list') {
+        $levels++;
+    }
     strictAssertSame($depth, $levels, 'and every one of the nested lists is present as a typed node');
 
     // Every ceiling is slack enough that the byte cap is what binds. A token
@@ -427,20 +497,31 @@ $suite->test('the announce ceilings admit every shape an 8192-byte body can spel
     // nesting, so 8192 bytes can spell at most 4096 of either.
     $widest = 'l' . str_repeat('le', 4095) . 'e';
     strictAssertSame(8192, strlen($widest), 'the token-densest admitted body is exactly the cap');
-    strictAssertSame('list', RuTrackerBencode::decode($widest, $limits)['type'],
-        '4096 tokens -- the most 8192 bytes can spell -- are admitted');
+    strictAssertSame(
+        'list',
+        RuTrackerBencode::decode($widest, $limits)['type'],
+        '4096 tokens -- the most 8192 bytes can spell -- are admitted',
+    );
 
     $deepest = str_repeat('l', 4096) . str_repeat('e', 4096);
     strictAssertSame(8192, strlen($deepest), 'the depth-densest admitted body is exactly the cap');
-    strictAssertSame('list', RuTrackerBencode::decode($deepest, $limits)['type'],
-        'depth 4096 -- the most 8192 bytes can spell -- is admitted');
+    strictAssertSame(
+        'list',
+        RuTrackerBencode::decode($deepest, $limits)['type'],
+        'depth 4096 -- the most 8192 bytes can spell -- is admitted',
+    );
 
     $longest = '8190:' . str_repeat('a', 8187);
-    strictAssertSame(false, RuTrackerBencode::decode($longest, $limits),
-        'a four-digit length that overruns the body is still truncation, not an accepted string');
-    strictAssertSame(['type' => 'string', 'value' => str_repeat('a', 8187)],
+    strictAssertSame(
+        false,
+        RuTrackerBencode::decode($longest, $limits),
+        'a four-digit length that overruns the body is still truncation, not an accepted string',
+    );
+    strictAssertSame(
+        ['type' => 'string', 'value' => str_repeat('a', 8187)],
         RuTrackerBencode::decode('8187:' . str_repeat('a', 8187), $limits),
-        'the longest string 8192 bytes can carry needs only four length digits');
+        'the longest string 8192 bytes can carry needs only four length digits',
+    );
 });
 
 exit($suite->run());

@@ -21,8 +21,11 @@ class RSSValidatorSocketReplies extends Snoopy
         $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
         testAssertTrue(is_array($pair), 'RSS socket pair opens');
         $response = array_shift($this->responses);
-        testAssertSame(strlen($response), fwrite($pair[1], $response),
-            'Complete RSS response was written');
+        testAssertSame(
+            strlen($response),
+            fwrite($pair[1], $response),
+            'Complete RSS response was written',
+        );
         stream_socket_shutdown($pair[1], STREAM_SHUT_WR);
         $this->peers[] = $pair[1];
         return $pair[0];
@@ -62,20 +65,35 @@ final class RSSValidatorOriginTest extends TestCase
         ], $seen);
         $history = new rRSSHistory();
         $this->assertSame(true, $feed->fetch($history), 'A to B first poll parses the feed');
-        $this->assertSame(self::DESTINATION, $seen[0]['terminal'],
-            'The real Snoopy redirect ended on B');
-        $this->assertSame([], $this->headerValues($seen[0]['wire'][0], 'If-None-Match'),
-            'First A request starts without a validator');
+        $this->assertSame(
+            self::DESTINATION,
+            $seen[0]['terminal'],
+            'The real Snoopy redirect ended on B',
+        );
+        $this->assertSame(
+            [],
+            $this->headerValues($seen[0]['wire'][0], 'If-None-Match'),
+            'First A request starts without a validator',
+        );
         $this->assertSame(null, $feed->etag, 'B ETag is not stored under A');
         $this->assertSame(null, $feed->lastModified, 'B Last-Modified is not stored under A');
 
         $this->assertSame(true, $feed->fetch($history), 'Next cycle requests A again');
-        $this->assertSame([], $seen[1]['headers'],
-            'B validators are absent from the next fetcher call to A');
-        $this->assertSame([], $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
-            'B ETag never reaches A on the wire');
-        $this->assertSame([], $this->headerValues($seen[1]['wire'][0], 'If-Modified-Since'),
-            'B Last-Modified never reaches A on the wire');
+        $this->assertSame(
+            [],
+            $seen[1]['headers'],
+            'B validators are absent from the next fetcher call to A',
+        );
+        $this->assertSame(
+            [],
+            $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
+            'B ETag never reaches A on the wire',
+        );
+        $this->assertSame(
+            [],
+            $this->headerValues($seen[1]['wire'][0], 'If-Modified-Since'),
+            'B Last-Modified never reaches A on the wire',
+        );
         $this->assertSame('"A"', $feed->etag, 'A may store its own later ETag');
     }
 
@@ -93,24 +111,40 @@ final class RSSValidatorOriginTest extends TestCase
         ], $seen, 1);
         $history = new rRSSHistory();
         $this->assertSame(true, $feed->fetch($history), 'Stopped chain returns B feed body');
-        $this->assertSame(200, (int)$seen[0]['status'], 'Terminal B response is successful');
+        $this->assertSame(200, (int) $seen[0]['status'], 'Terminal B response is successful');
         $this->assertSame(2, count($seen[0]['wire']), 'No third request is sent to A');
-        $this->assertSame(['cdn.example'],
+        $this->assertSame(
+            ['cdn.example'],
             $this->headerValues($seen[0]['wire'][1], 'Host'),
-            'The terminal response came from B');
-        $this->assertSame(self::SOURCE, $seen[0]['terminal'],
-            'Legacy lastredirectaddr names the unvisited Location A');
-        $this->assertSame(self::DESTINATION, $seen[0]['responseURL'],
-            'Snoopy records the URL that actually answered');
+            'The terminal response came from B',
+        );
+        $this->assertSame(
+            self::SOURCE,
+            $seen[0]['terminal'],
+            'Legacy lastredirectaddr names the unvisited Location A',
+        );
+        $this->assertSame(
+            self::DESTINATION,
+            $seen[0]['responseURL'],
+            'Snoopy records the URL that actually answered',
+        );
         $this->assertSame(null, $feed->etag, 'B ETag is not stored under A');
-        $this->assertSame(null, $feed->lastModified,
-            'B Last-Modified is not stored under A');
+        $this->assertSame(
+            null,
+            $feed->lastModified,
+            'B Last-Modified is not stored under A',
+        );
         $this->assertSame(true, $feed->fetch($history), 'Next cycle starts at A');
-        $this->assertSame([], $seen[1]['headers'],
-            'B validators never enter the next fetcher call to A');
-        $this->assertSame([],
+        $this->assertSame(
+            [],
+            $seen[1]['headers'],
+            'B validators never enter the next fetcher call to A',
+        );
+        $this->assertSame(
+            [],
             $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
-            'B ETag does not reach A on the next wire request');
+            'B ETag does not reach A on the next wire request',
+        );
     }
 
     public function testSameHostOnAnotherPortIsASeparateValidatorOrigin()
@@ -127,13 +161,22 @@ final class RSSValidatorOriginTest extends TestCase
         ], $seen);
         $history = new rRSSHistory();
         $this->assertSame(true, $feed->fetch($history), 'Changed-port poll parses');
-        $this->assertSame($destination, $seen[0]['terminal'],
-            'The real redirect changed the effective port');
-        $this->assertSame(null, $feed->etag,
-            'Different-port ETag is not stored under the configured origin');
+        $this->assertSame(
+            $destination,
+            $seen[0]['terminal'],
+            'The real redirect changed the effective port',
+        );
+        $this->assertSame(
+            null,
+            $feed->etag,
+            'Different-port ETag is not stored under the configured origin',
+        );
         $this->assertSame(true, $feed->fetch($history), 'Next poll returns to configured port');
-        $this->assertSame([], $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
-            'Different-port validator never reaches configured port');
+        $this->assertSame(
+            [],
+            $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
+            'Different-port validator never reaches configured port',
+        );
     }
 
     public function testTerminalReturnToConfiguredOriginKeepsItsValidators()
@@ -151,22 +194,35 @@ final class RSSValidatorOriginTest extends TestCase
         ], $seen);
         $history = new rRSSHistory();
         $this->assertSame(true, $feed->fetch($history), 'A to B to A poll parses the feed');
-        $this->assertSame(self::SOURCE, $seen[0]['terminal'],
-            'The real Snoopy redirect returned to A');
+        $this->assertSame(
+            self::SOURCE,
+            $seen[0]['terminal'],
+            'The real Snoopy redirect returned to A',
+        );
         $this->assertSame('"A"', $feed->etag, 'Terminal A ETag is retained');
-        $this->assertSame(self::A_DATE, $feed->lastModified,
-            'Terminal A Last-Modified is retained');
+        $this->assertSame(
+            self::A_DATE,
+            $feed->lastModified,
+            'Terminal A Last-Modified is retained',
+        );
 
         $this->assertSame(true, $feed->fetch($history), 'A answers 304 next cycle');
-        $this->assertSame(['If-None-Match' => '"A"',
-            'If-Modified-Since' => self::A_DATE], $seen[1]['headers'],
-            'Both terminal A validators reach the next fetcher call');
-        $this->assertSame(['"A"'],
+        $this->assertSame(
+            ['If-None-Match' => '"A"',
+                'If-Modified-Since' => self::A_DATE],
+            $seen[1]['headers'],
+            'Both terminal A validators reach the next fetcher call',
+        );
+        $this->assertSame(
+            ['"A"'],
             $this->headerValues($seen[1]['wire'][0], 'If-None-Match'),
-            'A ETag reaches only A on the wire');
-        $this->assertSame([self::A_DATE],
+            'A ETag reaches only A on the wire',
+        );
+        $this->assertSame(
+            [self::A_DATE],
             $this->headerValues($seen[1]['wire'][0], 'If-Modified-Since'),
-            'A Last-Modified reaches only A on the wire');
+            'A Last-Modified reaches only A on the wire',
+        );
     }
 
     private function response($status, array $headers = [], $body = '')
@@ -181,20 +237,23 @@ final class RSSValidatorOriginTest extends TestCase
         $prefix = $name . ':';
         foreach (explode("\n", $request) as $line) {
             if (strncasecmp($line, $prefix, strlen($prefix)) === 0) {
-                $values[] = trim(substr($line, strlen($prefix))); } }
+                $values[] = trim(substr($line, strlen($prefix)));
+            }
+        }
         return $values;
     }
 
     private function feedWithResponses(array $cycles, &$seen, $maxredirs = null)
     {
         $seen = [];
-        return new rRSS(self::SOURCE, function ($url, $cookies, $headers)
-            use (&$cycles, &$seen, $maxredirs) {
+        return new rRSS(self::SOURCE, function ($url, $cookies, $headers) use (&$cycles, &$seen, $maxredirs) {
             testAssertSame(self::SOURCE, $url, 'Each poll begins at configured feed A');
             testAssertTrue(count($cycles) > 0, 'Expected RSS poll exists');
             $client = new RSSValidatorSocketReplies();
             $client->responses = array_shift($cycles);
-            if ($maxredirs !== null) { $client->maxredirs = $maxredirs; }
+            if ($maxredirs !== null) {
+                $client->maxredirs = $maxredirs;
+            }
             $client->rawheaders = $headers;
             $client->cookies = $cookies;
             $client->fetchComplex($url);

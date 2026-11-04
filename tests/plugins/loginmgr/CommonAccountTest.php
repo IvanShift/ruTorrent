@@ -259,13 +259,20 @@ $tests = [
 
     'a login reply with a failed Kinozal guest parser is refused' => function () {
         $method = new ReflectionMethod('commonAccount', 'loginWasNotRefused');
-        if (PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
+        if (PHP_VERSION_ID < 80100) {
+            $method->setAccessible(true);
+        }
         $limit = ini_get('pcre.backtrack_limit');
         try {
             ini_set('pcre.backtrack_limit', '1');
-            testAssertSame(false, (bool) $method->invoke(new KinozalTVAccount(),
-                caHolding(200, '<a href="/signup.php">guest</a>')),
-                'an unparsed login reply cannot authorize storing cookies');
+            testAssertSame(
+                false,
+                (bool) $method->invoke(
+                    new KinozalTVAccount(),
+                    caHolding(200, '<a href="/signup.php">guest</a>'),
+                ),
+                'an unparsed login reply cannot authorize storing cookies',
+            );
             testAssertTrue(preg_last_error() !== PREG_NO_ERROR, 'the fixture really exhausts PCRE');
         } finally {
             ini_set('pcre.backtrack_limit', $limit);
@@ -286,9 +293,19 @@ $tests = [
                     . '<input type=password size=35 id="password" name="password" value=""></form>'],
                 [403, $challenge],
             ]);
-            testAssertSame(false, $account->fetch($client,
-                'https://kinozal.guru/get_srv_details.php?action=2&id=1', 'fixture-user', 'fixture-password', 'GET', '', ''),
-                'the failed login cannot return the requested details');
+            testAssertSame(
+                false,
+                $account->fetch(
+                    $client,
+                    'https://kinozal.guru/get_srv_details.php?action=2&id=1',
+                    'fixture-user',
+                    'fixture-password',
+                    'GET',
+                    '',
+                    '',
+                ),
+                'the failed login cannot return the requested details',
+            );
             testAssertSame(1, $account->logins, 'the real adapter performed its relogin path');
             testAssertSame(3, $client->fetches, 'details, captured login form and takelogin were requested');
             testAssertSame([
@@ -436,8 +453,11 @@ $tests = [
         $account = new CAPermissivePostFetchAccount();
         $account->data->loaded = true;
         $client = new CAClient([[503, caLivePage()]]);
-        testAssertSame(false, caFetch($account, $client),
-            'a cached 503 cannot become success through a permissive override');
+        testAssertSame(
+            false,
+            caFetch($account, $client),
+            'a cached 503 cannot become success through a permissive override',
+        );
         testAssertSame(0, $account->logins, 'a server error does not spend credentials');
         testAssertSame(0, $account->data->removed, 'an unproven dead session keeps its cookies');
         testAssertSame(0, $account->data->stored, 'the failed fetch stores nothing');
@@ -445,8 +465,11 @@ $tests = [
         $account = new CAPermissivePostFetchAccount();
         $account->loginAnswer = [200, caLivePage()];
         $client = new CAClient([[503, caLivePage()]]);
-        testAssertSame(false, caFetch($account, $client),
-            'a fresh login cannot bless a later 503 through the override');
+        testAssertSame(
+            false,
+            caFetch($account, $client),
+            'a fresh login cannot bless a later 503 through the override',
+        );
         testAssertSame(1, $account->logins, 'the new login branch was exercised');
         testAssertSame(0, $account->data->stored, 'a failed post-login fetch is not cached');
     },
@@ -457,8 +480,11 @@ $tests = [
         $classes = caAccountClasses();
         testAssertSame(true, count($classes) > 0, 'the account files were found at all');
         foreach ($classes as $class) {
-            testAssertSame(true, caPostFetch($class, caHolding(200, caLivePage())),
-                $class . ' must accept an answer that did arrive');
+            testAssertSame(
+                true,
+                caPostFetch($class, caHolding(200, caLivePage())),
+                $class . ' must accept an answer that did arrive',
+            );
         }
     },
 
@@ -468,8 +494,11 @@ $tests = [
         foreach ($classes as $class) {
             foreach ([[200, ''], [503, caLivePage()], [302, caLivePage()],
                 [200, ['gzip: not in gzip format']]] as $answer) {
-                testAssertSame(false, caPostFetch($class, caHolding($answer[0], $answer[1])),
-                    $class . ' on status ' . $answer[0]);
+                testAssertSame(
+                    false,
+                    caPostFetch($class, caHolding($answer[0], $answer[1])),
+                    $class . ' on status ' . $answer[0],
+                );
             }
         }
     },
@@ -478,10 +507,16 @@ $tests = [
         // LostFilm is the only override in accounts/, and its fallthrough used
         // to answer true on its own -- the one way to skip the base verdict,
         // which on the cached path skipped isOK() with it.
-        testAssertSame(false, caPostFetch('LostFilmAccount', caHolding(200, '')),
-            'LostFilm is not exempt from the guard its siblings get');
-        testAssertSame(false, caPostFetch('LostFilmAccount', caHolding(503, caLivePage())),
-            'nor from the status half of it');
+        testAssertSame(
+            false,
+            caPostFetch('LostFilmAccount', caHolding(200, '')),
+            'LostFilm is not exempt from the guard its siblings get',
+        );
+        testAssertSame(
+            false,
+            caPostFetch('LostFilmAccount', caHolding(503, caLivePage())),
+            'nor from the status half of it',
+        );
     },
 
     'the override judges the answer the caller asked for' => function () {
@@ -493,17 +528,22 @@ $tests = [
         // pass on its own.
         $client = caHolding(200, caGuestPage(), '/browse.php?cat=1');
         $client->queueAnswers([[200, caLivePage()]]);
-        testAssertSame(false,
+        testAssertSame(
+            false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
-            'the guest answer to the download url decides, not details.php');
+            'the guest answer to the download url decides, not details.php',
+        );
     },
 
     'a failed LostFilm recovery cannot return a details page as the download' => function () {
         $url = 'https://lostfilm.tv/download.php?id=7&x';
         $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
         $client->queueAnswers([[200, caLivePage()]]);
-        testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
-            'a details page without the dlt token is not the requested torrent');
+        testAssertSame(
+            false,
+            caPostFetch('LostFilmAccount', $client, $url),
+            'a details page without the dlt token is not the requested torrent',
+        );
         testAssertSame(1, $client->fetches, 'the recovery path actually fetched details.php');
     },
 
@@ -518,17 +558,25 @@ $tests = [
             // the retried download: a filename header, but an error page
             [500, '<html>error</html>'],
         ]);
-        testAssertSame(false,
+        testAssertSame(
+            false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
-            'a 500 carrying a filename header is not a torrent');
+            'a 500 carrying a filename header is not a torrent',
+        );
     },
 
     'LostFilm public fetch keeps a cached session when browse recovery fails' => function () {
         $account = new class extends LostFilmAccount {
             public $data;
             public $logins = 0;
-            public function __construct() { $this->data = new CARecordingData('LostFilmProbe'); }
-            protected function loadData($client = null) { return $this->data; }
+            public function __construct()
+            {
+                $this->data = new CARecordingData('LostFilmProbe');
+            }
+            protected function loadData($client = null)
+            {
+                return $this->data;
+            }
             protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
             {
                 $this->logins++;
@@ -539,8 +587,11 @@ $tests = [
         $client = new CAClient([[200, caLivePage()], [200, caLivePage()]]);
         $client->lastredirectaddr = '/browse.php?cat=1';
         $url = 'https://lostfilm.tv/download.php?id=7&x';
-        testAssertSame(false, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''),
-            'a details page without a dlt token cannot become the download');
+        testAssertSame(
+            false,
+            $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''),
+            'a details page without a dlt token cannot become the download',
+        );
         testAssertSame(2, $client->fetches, 'the original URL and details page were fetched');
         testAssertSame(0, $account->logins, 'the failed recovery did not spend credentials');
         testAssertSame(0, $account->data->removed, 'an unproven dead session keeps its cookies');
@@ -552,8 +603,11 @@ $tests = [
         foreach ([[200, ['gzip failed'], true], [200, caLivePage(), false]] as $detail) {
             $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
             $client->queueAnswers([$detail]);
-            testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
-                'unusable details cannot turn the browse redirect into a download');
+            testAssertSame(
+                false,
+                caPostFetch('LostFilmAccount', $client, $url),
+                'unusable details cannot turn the browse redirect into a download',
+            );
             testAssertSame(1, $client->fetches, 'the recovery branch fetched details');
         }
     },
@@ -567,8 +621,11 @@ $tests = [
             . '4:infod6:lengthi1e4:name9:movie.mkv12:piece lengthi16384e6:pieces20:'
             . str_repeat("\0", 20) . 'ee';
         testAssertSame(false, Torrent::fromRawBytes($torrent)->errors(), 'the fixture is valid bencode');
-        testAssertSame(true, caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
-            'a torrent whose comment names /signup.php is still a torrent');
+        testAssertSame(
+            true,
+            caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
+            'a torrent whose comment names /signup.php is still a torrent',
+        );
     },
 ];
 

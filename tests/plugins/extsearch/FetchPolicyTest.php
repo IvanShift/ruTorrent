@@ -35,14 +35,20 @@ class KATFetchPolicyEngine extends KATEngine
 {
     public $client;
 
-    public function makeClient($url) { return $this->client; }
+    public function makeClient($url)
+    {
+        return $this->client;
+    }
 }
 
 class RARbgFetchPolicyEngine extends RARbgTorrentAPIEngine
 {
     public $client;
 
-    public function makeClient($url) { return $this->client; }
+    public function makeClient($url)
+    {
+        return $this->client;
+    }
 }
 
 function fetchPolicySame($expected, $actual, $message)
@@ -59,23 +65,38 @@ try {
     $engine->client = new FetchPolicyClient();
     $engine->client->nextError = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
     $engine->client->nextBody = '<html>Login required</html>';
-    fetchPolicySame(false, $engine->fetch('https://tracker.example/file'),
-        '2xx source response with a refused Location must not be accepted');
-    fetchPolicySame(false, $engine->getTorrent('https://tracker.example/file'),
-        'refused response must not be written as a torrent');
+    fetchPolicySame(
+        false,
+        $engine->fetch('https://tracker.example/file'),
+        '2xx source response with a refused Location must not be accepted',
+    );
+    fetchPolicySame(
+        false,
+        $engine->getTorrent('https://tracker.example/file'),
+        'refused response must not be written as a torrent',
+    );
     $engine->client->nextError = '';
-    fetchPolicySame(false, $engine->getTorrent('https://tracker.example/file'),
-        'ordinary HTML response must not be written as metainfo');
+    fetchPolicySame(
+        false,
+        $engine->getTorrent('https://tracker.example/file'),
+        'ordinary HTML response must not be written as metainfo',
+    );
     $engine->client->nextBody = 'd4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:abcdefghijklmnopqrstee';
     $engine->client->nextReturn = false;
-    fetchPolicySame(false, $engine->fetch('https://tracker.example/file'),
-        'a transport failure cannot reuse a previous 2xx status');
+    fetchPolicySame(
+        false,
+        $engine->fetch('https://tracker.example/file'),
+        'a transport failure cannot reuse a previous 2xx status',
+    );
     foreach ([new KATFetchPolicyEngine(), new RARbgFetchPolicyEngine()] as $override) {
         $override->client = new FetchPolicyClient();
         $override->client->nextError = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
         $override->client->nextBody = '<html>Login required</html>';
-        fetchPolicySame(false, $override->fetch('https://tracker.example/file'),
-            get_class($override) . ' must reject a classified 2xx refusal');
+        fetchPolicySame(
+            false,
+            $override->fetch('https://tracker.example/file'),
+            get_class($override) . ' must reject a classified 2xx refusal',
+        );
     }
     echo "ok - extsearch refuses credential redirects and non-metainfo bodies\n";
 } catch (Throwable $error) {

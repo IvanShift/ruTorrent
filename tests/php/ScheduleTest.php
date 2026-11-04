@@ -40,12 +40,20 @@ require_once(__DIR__ . '/../../php/settings.php');
 // parser has removed each quoting layer; unsupported commands fail the case.
 function scheduleEvaluate($argument, $cached)
 {
-    if (!is_string($argument) || substr($argument, 0, 1) !== '$') { return $argument; }
+    if (!is_string($argument) || substr($argument, 0, 1) !== '$') {
+        return $argument;
+    }
     $commands = RtorrentCommandParser::commands(substr($argument, 1));
-    if (count($commands) !== 1) { throw new RuntimeException('Unexpected registration command count'); }
+    if (count($commands) !== 1) {
+        throw new RuntimeException('Unexpected registration command count');
+    }
     $call = $commands[0];
-    if ($call['name'] === 'system.time') { return $cached; }
-    $args = array_map(function ($arg) use ($cached) { return scheduleEvaluate($arg, $cached); }, $call['args']);
+    if ($call['name'] === 'system.time') {
+        return $cached;
+    }
+    $args = array_map(function ($arg) use ($cached) {
+        return scheduleEvaluate($arg, $cached);
+    }, $call['args']);
     switch ($call['name']) {
         case 'cat': return implode('', $args);
         case 'math.add': return $args[0] + $args[1];
@@ -73,7 +81,11 @@ function scheduleCommandAt($name, $intervalMinutes, $now)
 {
     $startAt = 0;
     $command = rTorrentSettings::get()->getScheduleCommand(
-        $name, $intervalMinutes, 'print=noop', $startAt, $now,
+        $name,
+        $intervalMinutes,
+        'print=noop',
+        $startAt,
+        $now,
     );
     return [
         'now' => $now,
@@ -309,13 +321,18 @@ $tests = [
             $relative = (int) scheduleEvaluate($parsed[0]['args'][1], $cached);
             testAssertTrue($relative >= 1, 'Every registration has a positive delay');
             if ($cached >= $now + $startAt) {
-                testAssertTrue($relative <= 3600, 'An overdue registration has a bounded positive delay'); }
+                testAssertTrue($relative <= 3600, 'An overdue registration has a bounded positive delay');
+            }
             $firesAt = $cached + $relative;
             testAssertTrue($firesAt > $cached, 'An overdue target never becomes an unsigned negative delay');
-            testAssertSame(($now + $startAt) % 3600, $firesAt % 3600,
-                'A stale or delayed callback retains the chosen profile phase');
+            testAssertSame(
+                ($now + $startAt) % 3600,
+                $firesAt % 3600,
+                'A stale or delayed callback retains the chosen profile phase',
+            );
             if ($cached < $now + $startAt) {
-                testAssertSame($now + $startAt, $firesAt, 'A stale callback clock cannot move the chosen slot earlier'); }
+                testAssertSame($now + $startAt, $firesAt, 'A stale callback clock cannot move the chosen slot earlier');
+            }
         }
     },
     'the clock seam is optional' => function () {

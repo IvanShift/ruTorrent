@@ -23,11 +23,18 @@ function pacingStart($arguments)
 {
     $command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -c ' . escapeshellarg(__DIR__ . '/../php-test.ini')
         . ' ' . escapeshellarg(__FILE__);
-    foreach ($arguments as $argument) { $command .= ' ' . escapeshellarg($argument); }
+    foreach ($arguments as $argument) {
+        $command .= ' ' . escapeshellarg($argument);
+    }
     $pipes = [];
-    $process = proc_open($command . ' 2>&1', [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w']],
-        $pipes);
-    if (!is_resource($process)) { throw new RuntimeException('Cannot start ' . implode(' ', $arguments)); }
+    $process = proc_open(
+        $command . ' 2>&1',
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w']],
+        $pipes,
+    );
+    if (!is_resource($process)) {
+        throw new RuntimeException('Cannot start ' . implode(' ', $arguments));
+    }
     return [$process, $pipes[1]];
 }
 
@@ -39,8 +46,11 @@ function pacingFinish($child, $what)
     $printed = (string) stream_get_contents($output);
     fclose($output);
     testAssertSame(0, proc_close($process), $what . ' exits cleanly: ' . $printed);
-    testAssertSame(0, preg_match(pacingFailurePattern(), $printed),
-        $what . ' prints nothing the suite counts as a failure: ' . $printed);
+    testAssertSame(
+        0,
+        preg_match(pacingFailurePattern(), $printed),
+        $what . ' prints nothing the suite counts as a failure: ' . $printed,
+    );
     return $printed;
 }
 
@@ -51,7 +61,8 @@ function pacingFailurePattern()
     $source = (string) file_get_contents(__DIR__ . '/../php-failure-pattern.sh');
     if (!preg_match("/^PHP_FAILURE_PATTERN='([^']+)'$/m", $source, $match)) {
         throw new RuntimeException('tests/php-failure-pattern.sh no longer assigns PHP_FAILURE_PATTERN'
-            . ' in single quotes'); }
+            . ' in single quotes');
+    }
     return '~' . str_replace('~', '\\~', $match[1]) . '~m';
 }
 
@@ -64,11 +75,14 @@ function pacingReset()
     global $pacingFixture, $pacingRoot;
     foreach (['throttleGroups', 'throttleStates', 'throttleLogged'] as $name) {
         $property = new ReflectionProperty('Snoopy', $name);
-        if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
         $property->setValue(null, []);
     }
     foreach (glob(FileUtil::getSettingsPathEx('') . '/throttle-*.json') ?: [] as $state) {
-        testAssertTrue(unlink($state), 'The previous case\'s clock is removed'); }
+        testAssertTrue(unlink($state), 'The previous case\'s clock is removed');
+    }
     @unlink(pacingLoginStateFile());
     @unlink($pacingRoot . '/application.log');
     unset($GLOBALS['kinozalHosts']);
@@ -97,8 +111,10 @@ function pacingLoginState()
 
 function pacingStoreLoginState($state)
 {
-    testAssertTrue(file_put_contents(pacingLoginStateFile(), json_encode($state)) !== false,
-        'The login pause state is seeded');
+    testAssertTrue(
+        file_put_contents(pacingLoginStateFile(), json_encode($state)) !== false,
+        'The login pause state is seeded',
+    );
 }
 
 // Forgets the request pause a 429 left, as its expiry would: the login pause
@@ -107,11 +123,14 @@ function pacingExpireRequestPause()
 {
     foreach (['throttleStates'] as $name) {
         $property = new ReflectionProperty('Snoopy', $name);
-        if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
         $property->setValue(null, []);
     }
     foreach (glob(FileUtil::getSettingsPathEx('') . '/throttle-*.json') ?: [] as $state) {
-        testAssertTrue(unlink($state), 'The request pause is expired'); }
+        testAssertTrue(unlink($state), 'The request pause is expired');
+    }
 }
 
 // The one line the account wrote about $host's login, and its time.
@@ -119,14 +138,19 @@ function pacingLoginLine($host, $pattern)
 {
     global $pacingRoot;
     $log = (string) @file_get_contents($pacingRoot . '/application.log');
-    testAssertSame(1, preg_match_all('/kinozal: login on ' . preg_quote($host, '/') . ' ' . $pattern . '/', $log,
-        $lines), 'Exactly one such login line: ' . $log);
+    testAssertSame(1, preg_match_all(
+        '/kinozal: login on ' . preg_quote($host, '/') . ' ' . $pattern . '/',
+        $log,
+        $lines,
+    ), 'Exactly one such login line: ' . $log);
     return $lines;
 }
 
 function pacingChain($requests)
 {
-    return array_map(function ($request) { return [$request['method'], $request['url']]; }, $requests);
+    return array_map(function ($request) {
+        return [$request['method'], $request['url']];
+    }, $requests);
 }
 
 // The requests the stand-in received, once they are exactly $expected (method
@@ -147,9 +171,16 @@ function pacingAssertSpaced($requests, $minimum = KINOZAL_REQUEST_PAUSE - 0.001)
 {
     for ($i = 1; $i < count($requests); $i++) {
         $gap = $requests[$i]['time'] - $requests[$i - 1]['time'];
-        testAssertTrue($gap >= $minimum, sprintf('Wire request %d of %d (%s %s) started %.3f s after the one'
-            . ' before it, not %.3f s', $i + 1, count($requests), $requests[$i]['method'], $requests[$i]['url'],
-            $gap, $minimum));
+        testAssertTrue($gap >= $minimum, sprintf(
+            'Wire request %d of %d (%s %s) started %.3f s after the one'
+            . ' before it, not %.3f s',
+            $i + 1,
+            count($requests),
+            $requests[$i]['method'],
+            $requests[$i]['url'],
+            $gap,
+            $minimum,
+        ));
     }
 }
 
@@ -211,7 +242,8 @@ if ($pacingMode !== '--shipped-default') {
     // the wait itself, so it stays about nine times the 11 ms that separate two
     // unpaced requests to the stand-in (measured here 2026-10-14); the
     // --shipped-default child checks the real two seconds.
-    define('KINOZAL_REQUEST_PAUSE', 0.1); }
+    define('KINOZAL_REQUEST_PAUSE', 0.1);
+}
 require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 require_once(__DIR__ . '/../../php/Torrent.php');
 require_once(__DIR__ . '/../../plugins/loginmgr/accounts.php');
@@ -227,7 +259,9 @@ if ($pacingMode === '--request') {
     // processes meet the shared clock.
     $pathToExternals['curl'] = $pacingCurl;
     touch($pacingRoot . '/' . $pacingLabel . '.ready');
-    for ($waited = 0; !file_exists($pacingGate) && $waited < 10000; $waited++) { usleep(1000); }
+    for ($waited = 0; !file_exists($pacingGate) && $waited < 10000; $waited++) {
+        usleep(1000);
+    }
     if (!file_exists($pacingGate)) {
         echo "Failed: the gate never opened\n";
         exit(1);
@@ -247,118 +281,140 @@ $hash = strtoupper(Torrent::fromRawBytes($torrentBytes)->hash_info());
 
 if ($pacingMode === '--shipped-default') {
     $tests = [
-        'the shipped interval spaces requests across a cycle reset and a fresh client' =>
-            function () use ($mirror, $hash) {
-            testAssertSame(2, KINOZAL_REQUEST_PAUSE, 'The shipped request interval is two seconds');
-            testAssertSame(7200, KINOZAL_RATE_LIMIT_PAUSE, 'The shipped pause after HTTP 429 is two hours');
-            testAssertSame(7200, KINOZAL_LOGIN_PAUSE, 'The shipped pause after a credential POST is two hours');
-            testAssertSame(600, KINOZAL_PAUSE_MARGIN, 'Both pauses end ten minutes early');
-            $first = $mirror . '/get_srv_details.php?action=2&id=20';
-            $second = $mirror . '/get_srv_details.php?action=2&id=21';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $first, 200, '<li>' . $hash . '</li>'),
-                ScriptedCurlFixture::reply('GET', $second, 200, '<li>' . $hash . '</li>'),
-            ]);
-            testAssertSame(ruTrackerChecker::STE_UPTODATE,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=20', $hash, null),
-                'The first cycle checks the topic');
-            KinozalCheckImpl::resetCycle();
-            testAssertSame(ruTrackerChecker::STE_UPTODATE,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=21', $hash, null),
-                'The next cycle checks with a fresh client');
-            pacingAssertSpaced(pacingWire([['GET', $first], ['GET', $second]]), 1.95);
-        },
+        'the shipped interval spaces requests across a cycle reset and a fresh client'
+            => function () use ($mirror, $hash) {
+                testAssertSame(2, KINOZAL_REQUEST_PAUSE, 'The shipped request interval is two seconds');
+                testAssertSame(7200, KINOZAL_RATE_LIMIT_PAUSE, 'The shipped pause after HTTP 429 is two hours');
+                testAssertSame(7200, KINOZAL_LOGIN_PAUSE, 'The shipped pause after a credential POST is two hours');
+                testAssertSame(600, KINOZAL_PAUSE_MARGIN, 'Both pauses end ten minutes early');
+                $first = $mirror . '/get_srv_details.php?action=2&id=20';
+                $second = $mirror . '/get_srv_details.php?action=2&id=21';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $first, 200, '<li>' . $hash . '</li>'),
+                    ScriptedCurlFixture::reply('GET', $second, 200, '<li>' . $hash . '</li>'),
+                ]);
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=20', $hash, null),
+                    'The first cycle checks the topic',
+                );
+                KinozalCheckImpl::resetCycle();
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=21', $hash, null),
+                    'The next cycle checks with a fresh client',
+                );
+                pacingAssertSpaced(pacingWire([['GET', $first], ['GET', $second]]), 1.95);
+            },
     ];
 } else {
     $tests = [
-        'a default client on a Kinozal mirror waits its turn after a checker request; other hosts do not' =>
-            function () use ($mirror, $other, $hash, $torrentBytes) {
-            $checked = $mirror . '/get_srv_details.php?action=2&id=10';
-            $added = $mirror . '/download.php?id=11';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $checked, 200, '<li>' . $hash . '</li>'),
-                ScriptedCurlFixture::reply('GET', $added, 200, $torrentBytes),
-                ScriptedCurlFixture::reply('GET', $other, 200, '<rss version="2.0"></rss>'),
-            ]);
-            ruTrackerChecker::makeClient($checked);
-            // What RSS and add-by-URL fetch with: a client nobody set up for Kinozal.
-            testAssertSame(true, (new Snoopy())->fetchComplex($added), 'The default client fetches the mirror URL');
-            $clock = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
-            $beforeOther = file_get_contents($clock);
-            testAssertSame(true, (new Snoopy())->fetchComplex($other), 'The other host is fetched');
-            $requests = pacingWire([['GET', $checked], ['GET', $added], ['GET', $other]]);
-            testAssertSame('Cookie: sid=stored-session', $requests[1]['cookie'],
-                'The default client went through the KinozalTV account');
-            pacingAssertSpaced(array_slice($requests, 0, 2));
-            // External process startup can exceed the interval on a loaded
-            // runner. The unrelated request must not reserve or finish a turn.
-            testAssertSame($beforeOther, file_get_contents($clock), 'The other host does not consume the Kinozal clock');
-        },
-        'a cached download re-login waits its turn on each of its six wire requests' =>
-            function () use ($mirror, $loginForm) {
-            $download = $mirror . '/download.php?id=1';
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $landing = $mirror . '/userdetails.php?id=1';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $login]),
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-                ScriptedCurlFixture::reply('POST', $post, 302, '',
-                    ['Set-Cookie: sid=fresh; Path=/; Secure', 'Location: ' . $landing]),
-                ScriptedCurlFixture::reply('GET', $landing, 200, '<html>signed in</html>'),
-                ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $login]),
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-            ]);
-            $client = ruTrackerChecker::makeClient($download);
-            $chain = pacingChain($GLOBALS['pacingFixture']->requests());
-            $postAt = array_search(['POST', $post], $chain, true);
-            testAssertSame([1], array_keys(array_slice($chain, 0, $postAt === false ? null : $postAt),
-                ['GET', $login], true), 'The login reuses the form Snoopy followed the download to:'
-                . ' no second login.php GET precedes the POST');
-            testAssertSame('200', $client->status, 'The final guest answer remains observable');
-            $requests = pacingWire([['GET', $download], ['GET', $login], ['POST', $post],
-                ['GET', $landing], ['GET', $download], ['GET', $login]]);
-            testAssertSame('Cookie: sid=stored-session', $requests[0]['cookie'],
-                'The stored session reached the first wire request');
-            pacingAssertSpaced($requests);
-        },
-        'the handler paces details redirects and its reused download client' =>
-            function () use ($mirror, $torrentBytes, $hash) {
-            $details = $mirror . '/get_srv_details.php?action=2&id=1';
-            $confirmedDetails = $details . '&confirmed=1';
-            $download = $mirror . '/download.php?id=1';
-            $confirmedDownload = $download . '&confirmed=1';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $details, 302, '', ['Location: ' . $confirmedDetails]),
-                ScriptedCurlFixture::reply('GET', $confirmedDetails, 200, '<li>' . str_repeat('b', 40) . '</li>'),
-                ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $confirmedDownload]),
-                ScriptedCurlFixture::reply('GET', $confirmedDownload, 200, $torrentBytes),
-            ]);
-            testAssertSame(ruTrackerChecker::STE_UPTODATE,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=1', $hash, null),
-                'The downloaded infohash is the current one, so nothing is replaced');
-            pacingAssertSpaced(pacingWire([['GET', $details], ['GET', $confirmedDetails],
-                ['GET', $download], ['GET', $confirmedDownload]]));
-        },
-        'the handler paces the 403 download probe and its redirect at its one door' =>
-            function () use ($mirror, $torrentBytes, $hash) {
-            // The probe runs only when no other open door can answer details.
-            $GLOBALS['kinozalHosts'] = ['kinozal.jumpingcrab.com'];
-            KinozalCheckImpl::resetCycle();
-            $details = $mirror . '/get_srv_details.php?action=2&id=2';
-            $download = $mirror . '/download.php?id=2';
-            $confirmedDownload = $download . '&confirmed=1';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $details, 403, '<html>Forbidden</html>'),
-                ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $confirmedDownload]),
-                ScriptedCurlFixture::reply('GET', $confirmedDownload, 200, $torrentBytes),
-            ]);
-            testAssertSame(ruTrackerChecker::STE_UPTODATE,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=2', $hash, null),
-                'The probe settles the refused topic without daemon access');
-            pacingAssertSpaced(pacingWire([['GET', $details], ['GET', $download],
-                ['GET', $confirmedDownload]]));
-        },
+        'a default client on a Kinozal mirror waits its turn after a checker request; other hosts do not'
+            => function () use ($mirror, $other, $hash, $torrentBytes) {
+                $checked = $mirror . '/get_srv_details.php?action=2&id=10';
+                $added = $mirror . '/download.php?id=11';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $checked, 200, '<li>' . $hash . '</li>'),
+                    ScriptedCurlFixture::reply('GET', $added, 200, $torrentBytes),
+                    ScriptedCurlFixture::reply('GET', $other, 200, '<rss version="2.0"></rss>'),
+                ]);
+                ruTrackerChecker::makeClient($checked);
+                // What RSS and add-by-URL fetch with: a client nobody set up for Kinozal.
+                testAssertSame(true, (new Snoopy())->fetchComplex($added), 'The default client fetches the mirror URL');
+                $clock = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
+                $beforeOther = file_get_contents($clock);
+                testAssertSame(true, (new Snoopy())->fetchComplex($other), 'The other host is fetched');
+                $requests = pacingWire([['GET', $checked], ['GET', $added], ['GET', $other]]);
+                testAssertSame(
+                    'Cookie: sid=stored-session',
+                    $requests[1]['cookie'],
+                    'The default client went through the KinozalTV account',
+                );
+                pacingAssertSpaced(array_slice($requests, 0, 2));
+                // External process startup can exceed the interval on a loaded
+                // runner. The unrelated request must not reserve or finish a turn.
+                testAssertSame($beforeOther, file_get_contents($clock), 'The other host does not consume the Kinozal clock');
+            },
+        'a cached download re-login waits its turn on each of its six wire requests'
+            => function () use ($mirror, $loginForm) {
+                $download = $mirror . '/download.php?id=1';
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $landing = $mirror . '/userdetails.php?id=1';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $login]),
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                    ScriptedCurlFixture::reply(
+                        'POST',
+                        $post,
+                        302,
+                        '',
+                        ['Set-Cookie: sid=fresh; Path=/; Secure', 'Location: ' . $landing],
+                    ),
+                    ScriptedCurlFixture::reply('GET', $landing, 200, '<html>signed in</html>'),
+                    ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $login]),
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                ]);
+                $client = ruTrackerChecker::makeClient($download);
+                $chain = pacingChain($GLOBALS['pacingFixture']->requests());
+                $postAt = array_search(['POST', $post], $chain, true);
+                testAssertSame([1], array_keys(
+                    array_slice($chain, 0, $postAt === false ? null : $postAt),
+                    ['GET', $login],
+                    true,
+                ), 'The login reuses the form Snoopy followed the download to:'
+                    . ' no second login.php GET precedes the POST');
+                testAssertSame('200', $client->status, 'The final guest answer remains observable');
+                $requests = pacingWire([['GET', $download], ['GET', $login], ['POST', $post],
+                    ['GET', $landing], ['GET', $download], ['GET', $login]]);
+                testAssertSame(
+                    'Cookie: sid=stored-session',
+                    $requests[0]['cookie'],
+                    'The stored session reached the first wire request',
+                );
+                pacingAssertSpaced($requests);
+            },
+        'the handler paces details redirects and its reused download client'
+            => function () use ($mirror, $torrentBytes, $hash) {
+                $details = $mirror . '/get_srv_details.php?action=2&id=1';
+                $confirmedDetails = $details . '&confirmed=1';
+                $download = $mirror . '/download.php?id=1';
+                $confirmedDownload = $download . '&confirmed=1';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $details, 302, '', ['Location: ' . $confirmedDetails]),
+                    ScriptedCurlFixture::reply('GET', $confirmedDetails, 200, '<li>' . str_repeat('b', 40) . '</li>'),
+                    ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $confirmedDownload]),
+                    ScriptedCurlFixture::reply('GET', $confirmedDownload, 200, $torrentBytes),
+                ]);
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=1', $hash, null),
+                    'The downloaded infohash is the current one, so nothing is replaced',
+                );
+                pacingAssertSpaced(pacingWire([['GET', $details], ['GET', $confirmedDetails],
+                    ['GET', $download], ['GET', $confirmedDownload]]));
+            },
+        'the handler paces the 403 download probe and its redirect at its one door'
+            => function () use ($mirror, $torrentBytes, $hash) {
+                // The probe runs only when no other open door can answer details.
+                $GLOBALS['kinozalHosts'] = ['kinozal.jumpingcrab.com'];
+                KinozalCheckImpl::resetCycle();
+                $details = $mirror . '/get_srv_details.php?action=2&id=2';
+                $download = $mirror . '/download.php?id=2';
+                $confirmedDownload = $download . '&confirmed=1';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $details, 403, '<html>Forbidden</html>'),
+                    ScriptedCurlFixture::reply('GET', $download, 302, '', ['Location: ' . $confirmedDownload]),
+                    ScriptedCurlFixture::reply('GET', $confirmedDownload, 200, $torrentBytes),
+                ]);
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=2', $hash, null),
+                    'The probe settles the refused topic without daemon access',
+                );
+                pacingAssertSpaced(pacingWire([['GET', $details], ['GET', $download],
+                    ['GET', $confirmedDownload]]));
+            },
         'the handler keeps the pace without a KinozalTV account' => function () use ($mirror, $hash) {
             // No account fetch is involved; the handler and transport keep
             // their shared pace independently of loginmgr.
@@ -370,9 +426,11 @@ if ($pacingMode === '--shipped-default') {
                     ScriptedCurlFixture::reply('GET', $details, 302, '', ['Location: ' . $confirmedDetails]),
                     ScriptedCurlFixture::reply('GET', $confirmedDetails, 200, '<li>' . $hash . '</li>'),
                 ]);
-                testAssertSame(ruTrackerChecker::STE_UPTODATE,
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
                     KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=9', $hash, null),
-                    'The details answer names the current infohash');
+                    'The details answer names the current infohash',
+                );
             } finally {
                 rTorrentSettings::get()->registerPlugin('loginmgr');
             }
@@ -398,7 +456,9 @@ if ($pacingMode === '--shipped-default') {
             $answer = ScriptedCurlFixture::reply('GET', $url, 200, '<li>' . $hash . '</li>');
             $GLOBALS['pacingFixture']->plan([$answer, $answer]);
             $gate = $pacingRoot . '/go';
-            $ready = function () use ($pacingRoot) { return count(glob($pacingRoot . '/*.ready') ?: []); };
+            $ready = function () use ($pacingRoot) {
+                return count(glob($pacingRoot . '/*.ready') ?: []);
+            };
             $children = [];
             $clock = FileUtil::getSettingsPathEx('') . '/throttle-kinozal.json';
             $writer = false;
@@ -406,8 +466,11 @@ if ($pacingMode === '--shipped-default') {
             try {
                 foreach (['scheduler', 'batch'] as $label) {
                     $children[$label] = pacingStart(['--request', $pacingRoot, $pathToExternals['curl'],
-                        $label, $gate, $url]); }
-                for ($waited = 0; $ready() < 2 && $waited < 10000; $waited++) { usleep(1000); }
+                        $label, $gate, $url]);
+                }
+                for ($waited = 0; $ready() < 2 && $waited < 10000; $waited++) {
+                    usleep(1000);
+                }
                 testAssertSame(2, $ready(), 'Both processes wait at the gate');
                 // A third writer holds the shared clock in the middle of its write,
                 // after ftruncate() and before fwrite(), while both processes ask
@@ -415,10 +478,14 @@ if ($pacingMode === '--shipped-default') {
                 // The hold is how long a process that skipped the clock has to show
                 // itself; each process reserves within milliseconds of the gate.
                 // The children start first: they must not inherit the lock.
-                if (!is_dir(dirname($clock))) { mkdir(dirname($clock), 0700, true); }
+                if (!is_dir(dirname($clock))) {
+                    mkdir(dirname($clock), 0700, true);
+                }
                 $writer = fopen($clock, 'c+');
-                testAssertTrue($writer !== false && flock($writer, LOCK_EX) && ftruncate($writer, 0),
-                    'The third writer holds the shared clock mid-write (precondition)');
+                testAssertTrue(
+                    $writer !== false && flock($writer, LOCK_EX) && ftruncate($writer, 0),
+                    'The third writer holds the shared clock mid-write (precondition)',
+                );
                 touch($gate);
                 usleep(300000);
                 $writerSlot = microtime(true);
@@ -430,12 +497,17 @@ if ($pacingMode === '--shipped-default') {
                 foreach (array_keys($children) as $label) {
                     $child = $children[$label];
                     unset($children[$label]);
-                    testAssertSame("answer=200 error=\n", pacingFinish($child, 'The ' . $label . ' process'),
-                        'The ' . $label . ' process got its answer');
+                    testAssertSame(
+                        "answer=200 error=\n",
+                        pacingFinish($child, 'The ' . $label . ' process'),
+                        'The ' . $label . ' process got its answer',
+                    );
                 }
             } finally {
                 // Release and reap a child an assertion above left behind.
-                if ($writer !== false) { fclose($writer); }
+                if ($writer !== false) {
+                    fclose($writer);
+                }
                 touch($gate);
                 foreach ($children as $child) {
                     stream_get_contents($child[1]);
@@ -443,7 +515,8 @@ if ($pacingMode === '--shipped-default') {
                     proc_close($child[0]);
                 }
                 foreach (array_merge([$gate], glob($pacingRoot . '/*.ready') ?: []) as $file) {
-                    @unlink($file); }
+                    @unlink($file);
+                }
             }
             $requests = pacingWire([['GET', $url], ['GET', $url]]);
             // The slots follow the third writer's one interval apart. The stand-in
@@ -453,16 +526,23 @@ if ($pacingMode === '--shipped-default') {
             // to the earliest its slot allows, not to the other start. The
             // millisecond covers the two clocks (pacingAssertSpaced()).
             $state = json_decode((string) file_get_contents($clock), true);
-            testAssertTrue(is_array($state) && $state['next'] >= $writerSlot + 3 * KINOZAL_REQUEST_PAUSE - 0.000001,
-                'Both processes took their slots from the shared clock, after the third writer\'s');
+            testAssertTrue(
+                is_array($state) && $state['next'] >= $writerSlot + 3 * KINOZAL_REQUEST_PAUSE - 0.000001,
+                'Both processes took their slots from the shared clock, after the third writer\'s',
+            );
             $mono = hrtime();
             $wall = microtime(true) - ($mono[0] + $mono[1] / 1000000000.0);
             $starts = [$wall + $requests[0]['time'], $wall + $requests[1]['time']];
             sort($starts);
             foreach ($starts as $i => $start) {
-                testAssertTrue($start >= $writerSlot + ($i + 1) * KINOZAL_REQUEST_PAUSE - 0.001, sprintf('The %s process'
+                testAssertTrue($start >= $writerSlot + ($i + 1) * KINOZAL_REQUEST_PAUSE - 0.001, sprintf(
+                    'The %s process'
                     . ' waited for its slot, %d interval(s) after the third writer\'s (it started %.3f s after it)',
-                    $i === 0 ? 'earlier' : 'later', $i + 1, $start - $writerSlot)); }
+                    $i === 0 ? 'earlier' : 'later',
+                    $i + 1,
+                    $start - $writerSlot,
+                ));
+            }
         },
         'a wait longer than the request deadline refuses before the wire' => function () use ($mirror) {
             $primed = $mirror . '/get_srv_details.php?action=2&id=6';
@@ -494,13 +574,18 @@ if ($pacingMode === '--shipped-default') {
                 ScriptedCurlFixture::reply('GET', $other, 200, '<rss version="2.0"></rss>'),
             ]);
             $before = time();
-            testAssertSame('429', ruTrackerChecker::makeClient($download)->status,
-                'The limiter answered the login hop');
+            testAssertSame(
+                '429',
+                ruTrackerChecker::makeClient($download)->status,
+                'The limiter answered the login hop',
+            );
             $after = time();
             // From here on no Kinozal request reaches the wire, whoever sends it.
-            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
+            testAssertSame(
+                ruTrackerChecker::STE_UNCHANGED,
                 KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=8', $hash, null),
-                'A 429 concerns the IP, not the topic: its verdict stands');
+                'A 429 concerns the IP, not the topic: its verdict stands',
+            );
             foreach (['https://kinozal.cloudns.nz/browse.php', 'https://kinozal.me/details.php?id=8'] as $url) {
                 $client = new Snoopy();
                 testAssertSame(false, $client->fetchComplex($url), 'A later request to ' . $url . ' is refused');
@@ -520,180 +605,226 @@ if ($pacingMode === '--shipped-default') {
             testAssertSame(true, (new Snoopy())->fetchComplex($other), 'A host outside the group is not paused');
             pacingWire([['GET', $download], ['GET', $login], ['GET', $other]]);
             $log = (string) @file_get_contents($pacingRoot . '/application.log');
-            testAssertSame(1, preg_match_all('/Snoopy: throttle-paused group=kinozal until=(\S+)/', $log, $paused),
-                'The pause is logged once, with its end: ' . $log);
+            testAssertSame(
+                1,
+                preg_match_all('/Snoopy: throttle-paused group=kinozal until=(\S+)/', $log, $paused),
+                'The pause is logged once, with its end: ' . $log,
+            );
             $until = strtotime($paused[1][0]);
             // Ten minutes early, so the hourly run two hours later is admitted
             // whatever second it reaches Kinozal at, and the run an hour
             // later is not: 2026-10-15 a pause ending at 14:00:20 refused the
             // 14:00 run, which asked at 14:00:11, and cost a whole hour.
-            testAssertTrue($until >= $before + KINOZAL_RATE_LIMIT_PAUSE - KINOZAL_PAUSE_MARGIN
+            testAssertTrue(
+                $until >= $before + KINOZAL_RATE_LIMIT_PAUSE - KINOZAL_PAUSE_MARGIN
                 && $until <= $after + KINOZAL_RATE_LIMIT_PAUSE - KINOZAL_PAUSE_MARGIN + 1,
-                'The pause lasts the shipped KINOZAL_RATE_LIMIT_PAUSE less the margin: ' . $paused[1][0]);
+                'The pause lasts the shipped KINOZAL_RATE_LIMIT_PAUSE less the margin: ' . $paused[1][0],
+            );
         },
-        'a credential POST answered 429 is logged and closes the login for two hours, ten minutes early' =>
-            function () use ($mirror, $loginForm, $hash) {
-            // Production 2026-10-15: no stored session, login.php answered 200
-            // with the form and the credential POST 429, every other hour.
-            (new privateData('KinozalTV'))->remove();
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-                ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>'),
-            ]);
-            $before = time();
-            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=11', $hash, null),
-                'The 429 refused the login, not the topic: its verdict stands');
-            $after = time();
-            pacingWire([['GET', $login], ['POST', $post]]);
-            $lines = pacingLoginLine('kinozal.jumpingcrab.com',
-                'refused \(credential-post-http-429\); the next credential POST is not sent before (\S+)');
-            $next = strtotime($lines[1][0]);
-            testAssertTrue($next >= $before + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN
-                && $next <= $after + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN + 1,
-                'The login pause lasts two hours less the margin: ' . $lines[1][0]);
-            testAssertSame(1, pacingLoginState()['strikes'], 'The failed POST is the first strike');
-        },
-        'no credential POST is sent again before the login pause ends, by any process' =>
-            function () use ($mirror, $loginForm, $hash) {
-            global $pacingRoot, $pathToExternals;
-            (new privateData('KinozalTV'))->remove();
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-                ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>'),
-            ]);
-            KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=12', $hash, null);
-            $closed = pacingLoginState();
-            // The request pause runs out first, or a login.php GET answered 200
-            // would have reset its strikes: neither may reopen the login.
-            pacingExpireRequestPause();
-            KinozalCheckImpl::resetCycle();
-            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=12', $hash, null),
-                'The next cycle sends nothing and leaves the topic as it was');
-            $gate = $pacingRoot . '/open';
-            touch($gate);
-            try {
-                $printed = pacingFinish(pacingStart(['--request', $pacingRoot, $pathToExternals['curl'],
-                    'login', $gate, $mirror . '/get_srv_details.php?action=2&id=12']), 'The other process');
-            } finally {
-                @unlink($gate);
-                @unlink($pacingRoot . '/login.ready');
-            }
-            testAssertSame(1, preg_match('/ error=login-paused$/m', $printed),
-                'Another process does not log in either: ' . $printed);
-            pacingWire([['GET', $login], ['POST', $post]]);
-            $log = (string) @file_get_contents($pacingRoot . '/application.log');
-            testAssertSame(2, preg_match_all('/kinozal: login on kinozal\.jumpingcrab\.com paused until \S+ after the'
-                . ' previous credential POST; no request was sent/', $log),
-                'Each process says once why it sent nothing: ' . $log);
-            testAssertSame(1, substr_count($log, 'reason=login-paused'),
-                'The checker names the paused login as the reason it skipped the cycle');
-            testAssertSame($closed, pacingLoginState(), 'Refusals neither extend nor reopen the pause');
-        },
-        'two processes that both find the login open send one credential POST between them' =>
-            function () use ($mirror, $loginForm) {
-            global $pacingRoot, $pathToExternals;
-            // The scheduler and a manual batch both need a login at once: both
-            // see the pause open and fetch the form; the pace orders their
-            // requests, and only the reservation under the pause's lock can
-            // keep the second POST off the wire.
-            (new privateData('KinozalTV'))->remove();
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $form = ScriptedCurlFixture::reply('GET', $login, 200, $loginForm);
-            $GLOBALS['pacingFixture']->plan([$form, $form,
-                ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>')]);
-            $gate = $pacingRoot . '/go';
-            $ready = function () use ($pacingRoot) { return count(glob($pacingRoot . '/*.ready') ?: []); };
-            $children = $printed = [];
-            try {
-                foreach (['scheduler', 'batch'] as $label) {
-                    $children[$label] = pacingStart(['--request', $pacingRoot, $pathToExternals['curl'],
-                        $label, $gate, $mirror . '/get_srv_details.php?action=2&id=16']); }
-                for ($waited = 0; $ready() < 2 && $waited < 10000; $waited++) { usleep(1000); }
-                testAssertSame(2, $ready(), 'Both processes wait at the gate');
+        'a credential POST answered 429 is logged and closes the login for two hours, ten minutes early'
+            => function () use ($mirror, $loginForm, $hash) {
+                // Production 2026-10-15: no stored session, login.php answered 200
+                // with the form and the credential POST 429, every other hour.
+                (new privateData('KinozalTV'))->remove();
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                    ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>'),
+                ]);
+                $before = time();
+                testAssertSame(
+                    ruTrackerChecker::STE_UNCHANGED,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=11', $hash, null),
+                    'The 429 refused the login, not the topic: its verdict stands',
+                );
+                $after = time();
+                pacingWire([['GET', $login], ['POST', $post]]);
+                $lines = pacingLoginLine(
+                    'kinozal.jumpingcrab.com',
+                    'refused \(credential-post-http-429\); the next credential POST is not sent before (\S+)',
+                );
+                $next = strtotime($lines[1][0]);
+                testAssertTrue(
+                    $next >= $before + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN
+                    && $next <= $after + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN + 1,
+                    'The login pause lasts two hours less the margin: ' . $lines[1][0],
+                );
+                testAssertSame(1, pacingLoginState()['strikes'], 'The failed POST is the first strike');
+            },
+        'no credential POST is sent again before the login pause ends, by any process'
+            => function () use ($mirror, $loginForm, $hash) {
+                global $pacingRoot, $pathToExternals;
+                (new privateData('KinozalTV'))->remove();
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                    ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>'),
+                ]);
+                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=12', $hash, null);
+                $closed = pacingLoginState();
+                // The request pause runs out first, or a login.php GET answered 200
+                // would have reset its strikes: neither may reopen the login.
+                pacingExpireRequestPause();
+                KinozalCheckImpl::resetCycle();
+                testAssertSame(
+                    ruTrackerChecker::STE_UNCHANGED,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=12', $hash, null),
+                    'The next cycle sends nothing and leaves the topic as it was',
+                );
+                $gate = $pacingRoot . '/open';
                 touch($gate);
-                foreach (array_keys($children) as $label) {
-                    $child = $children[$label];
-                    unset($children[$label]);
-                    $printed[] = pacingFinish($child, 'The ' . $label . ' process');
+                try {
+                    $printed = pacingFinish(pacingStart(['--request', $pacingRoot, $pathToExternals['curl'],
+                        'login', $gate, $mirror . '/get_srv_details.php?action=2&id=12']), 'The other process');
+                } finally {
+                    @unlink($gate);
+                    @unlink($pacingRoot . '/login.ready');
                 }
-            } finally {
-                touch($gate);
-                foreach ($children as $child) {
-                    stream_get_contents($child[1]);
-                    fclose($child[1]);
-                    proc_close($child[0]);
+                testAssertSame(
+                    1,
+                    preg_match('/ error=login-paused$/m', $printed),
+                    'Another process does not log in either: ' . $printed,
+                );
+                pacingWire([['GET', $login], ['POST', $post]]);
+                $log = (string) @file_get_contents($pacingRoot . '/application.log');
+                testAssertSame(
+                    2,
+                    preg_match_all('/kinozal: login on kinozal\.jumpingcrab\.com paused until \S+ after the'
+                    . ' previous credential POST; no request was sent/', $log),
+                    'Each process says once why it sent nothing: ' . $log,
+                );
+                testAssertSame(
+                    1,
+                    substr_count($log, 'reason=login-paused'),
+                    'The checker names the paused login as the reason it skipped the cycle',
+                );
+                testAssertSame($closed, pacingLoginState(), 'Refusals neither extend nor reopen the pause');
+            },
+        'two processes that both find the login open send one credential POST between them'
+            => function () use ($mirror, $loginForm) {
+                global $pacingRoot, $pathToExternals;
+                // The scheduler and a manual batch both need a login at once: both
+                // see the pause open and fetch the form; the pace orders their
+                // requests, and only the reservation under the pause's lock can
+                // keep the second POST off the wire.
+                (new privateData('KinozalTV'))->remove();
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $form = ScriptedCurlFixture::reply('GET', $login, 200, $loginForm);
+                $GLOBALS['pacingFixture']->plan([$form, $form,
+                    ScriptedCurlFixture::reply('POST', $post, 429, '<html>429 Too Many Requests</html>')]);
+                $gate = $pacingRoot . '/go';
+                $ready = function () use ($pacingRoot) {
+                    return count(glob($pacingRoot . '/*.ready') ?: []);
+                };
+                $children = $printed = [];
+                try {
+                    foreach (['scheduler', 'batch'] as $label) {
+                        $children[$label] = pacingStart(['--request', $pacingRoot, $pathToExternals['curl'],
+                            $label, $gate, $mirror . '/get_srv_details.php?action=2&id=16']);
+                    }
+                    for ($waited = 0; $ready() < 2 && $waited < 10000; $waited++) {
+                        usleep(1000);
+                    }
+                    testAssertSame(2, $ready(), 'Both processes wait at the gate');
+                    touch($gate);
+                    foreach (array_keys($children) as $label) {
+                        $child = $children[$label];
+                        unset($children[$label]);
+                        $printed[] = pacingFinish($child, 'The ' . $label . ' process');
+                    }
+                } finally {
+                    touch($gate);
+                    foreach ($children as $child) {
+                        stream_get_contents($child[1]);
+                        fclose($child[1]);
+                        proc_close($child[0]);
+                    }
+                    foreach (array_merge([$gate], glob($pacingRoot . '/*.ready') ?: []) as $file) {
+                        @unlink($file);
+                    }
                 }
-                foreach (array_merge([$gate], glob($pacingRoot . '/*.ready') ?: []) as $file) {
-                    @unlink($file); }
-            }
-            pacingWire([['GET', $login], ['GET', $login], ['POST', $post]]);
-            testAssertSame(1, count(preg_grep('/ error=login-paused$/', array_map('trim', $printed))),
-                'The process that reserved second sent no POST: ' . implode(' | ', $printed));
-            testAssertSame(1, pacingLoginState()['strikes'], 'One POST, one strike');
-        },
-        'each further failed credential POST doubles the login pause' =>
-            function () use ($mirror, $loginForm, $hash) {
-            (new privateData('KinozalTV'))->remove();
-            $now = microtime(true);
-            pacingStoreLoginState(['last' => $now - 6601, 'until' => $now - 1, 'strikes' => 1]);
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-                ScriptedCurlFixture::reply('POST', $post, 500, '<html>Internal Server Error</html>'),
-            ]);
-            $before = time();
-            KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=13', $hash, null);
-            $after = time();
-            pacingWire([['GET', $login], ['POST', $post]]);
-            $lines = pacingLoginLine('kinozal.jumpingcrab.com',
-                'refused \(credential-post-http-500\); the next credential POST is not sent before (\S+)');
-            $next = strtotime($lines[1][0]);
-            testAssertTrue($next >= $before + 2 * KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN
-                && $next <= $after + 2 * KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN + 1,
-                'The second strike waits twice as long: ' . $lines[1][0]);
-            testAssertSame(2, pacingLoginState()['strikes'], 'That is the second strike');
-        },
-        'a successful login spaces the next credential POST, and a day without one forgets the strikes' =>
-            function () use ($mirror, $loginForm, $hash) {
-            (new privateData('KinozalTV'))->remove();
-            $now = microtime(true);
-            pacingStoreLoginState(['last' => $now - 86401, 'until' => $now - 80000, 'strikes' => 5]);
-            $details = $mirror . '/get_srv_details.php?action=2&id=14';
-            $login = $mirror . '/login.php';
-            $post = $mirror . '/takelogin.php';
-            $landing = $mirror . '/userdetails.php?id=1';
-            $GLOBALS['pacingFixture']->plan([
-                ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
-                ScriptedCurlFixture::reply('POST', $post, 302, '',
-                    ['Set-Cookie: uid=1; Path=/; Secure', 'Location: ' . $landing]),
-                ScriptedCurlFixture::reply('GET', $landing, 200, '<a href="/logout.php">Exit</a>'),
-                ScriptedCurlFixture::reply('GET', $details, 200, '<li>' . $hash . '</li>'),
-            ]);
-            $before = time();
-            testAssertSame(ruTrackerChecker::STE_UPTODATE,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=14', $hash, null),
-                'The login works');
-            $state = pacingLoginState();
-            testAssertSame(1, $state['strikes'], 'A streak older than the longest pause is forgotten');
-            testAssertTrue($state['until'] >= $before + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN,
-                'Even a successful POST is the only one for a pause');
-            // The session is lost again at once: no second POST within the pause.
-            (new privateData('KinozalTV'))->remove();
-            KinozalCheckImpl::resetCycle();
-            testAssertSame(ruTrackerChecker::STE_UNCHANGED,
-                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=14', $hash, null),
-                'The topic keeps its verdict while the login pause runs');
-            pacingWire([['GET', $login], ['POST', $post], ['GET', $landing],
-                ['GET', $details]]);
-        },
+                pacingWire([['GET', $login], ['GET', $login], ['POST', $post]]);
+                testAssertSame(
+                    1,
+                    count(preg_grep('/ error=login-paused$/', array_map('trim', $printed))),
+                    'The process that reserved second sent no POST: ' . implode(' | ', $printed),
+                );
+                testAssertSame(1, pacingLoginState()['strikes'], 'One POST, one strike');
+            },
+        'each further failed credential POST doubles the login pause'
+            => function () use ($mirror, $loginForm, $hash) {
+                (new privateData('KinozalTV'))->remove();
+                $now = microtime(true);
+                pacingStoreLoginState(['last' => $now - 6601, 'until' => $now - 1, 'strikes' => 1]);
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                    ScriptedCurlFixture::reply('POST', $post, 500, '<html>Internal Server Error</html>'),
+                ]);
+                $before = time();
+                KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=13', $hash, null);
+                $after = time();
+                pacingWire([['GET', $login], ['POST', $post]]);
+                $lines = pacingLoginLine(
+                    'kinozal.jumpingcrab.com',
+                    'refused \(credential-post-http-500\); the next credential POST is not sent before (\S+)',
+                );
+                $next = strtotime($lines[1][0]);
+                testAssertTrue(
+                    $next >= $before + 2 * KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN
+                    && $next <= $after + 2 * KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN + 1,
+                    'The second strike waits twice as long: ' . $lines[1][0],
+                );
+                testAssertSame(2, pacingLoginState()['strikes'], 'That is the second strike');
+            },
+        'a successful login spaces the next credential POST, and a day without one forgets the strikes'
+            => function () use ($mirror, $loginForm, $hash) {
+                (new privateData('KinozalTV'))->remove();
+                $now = microtime(true);
+                pacingStoreLoginState(['last' => $now - 86401, 'until' => $now - 80000, 'strikes' => 5]);
+                $details = $mirror . '/get_srv_details.php?action=2&id=14';
+                $login = $mirror . '/login.php';
+                $post = $mirror . '/takelogin.php';
+                $landing = $mirror . '/userdetails.php?id=1';
+                $GLOBALS['pacingFixture']->plan([
+                    ScriptedCurlFixture::reply('GET', $login, 200, $loginForm),
+                    ScriptedCurlFixture::reply(
+                        'POST',
+                        $post,
+                        302,
+                        '',
+                        ['Set-Cookie: uid=1; Path=/; Secure', 'Location: ' . $landing],
+                    ),
+                    ScriptedCurlFixture::reply('GET', $landing, 200, '<a href="/logout.php">Exit</a>'),
+                    ScriptedCurlFixture::reply('GET', $details, 200, '<li>' . $hash . '</li>'),
+                ]);
+                $before = time();
+                testAssertSame(
+                    ruTrackerChecker::STE_UPTODATE,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=14', $hash, null),
+                    'The login works',
+                );
+                $state = pacingLoginState();
+                testAssertSame(1, $state['strikes'], 'A streak older than the longest pause is forgotten');
+                testAssertTrue(
+                    $state['until'] >= $before + KINOZAL_LOGIN_PAUSE - KINOZAL_PAUSE_MARGIN,
+                    'Even a successful POST is the only one for a pause',
+                );
+                // The session is lost again at once: no second POST within the pause.
+                (new privateData('KinozalTV'))->remove();
+                KinozalCheckImpl::resetCycle();
+                testAssertSame(
+                    ruTrackerChecker::STE_UNCHANGED,
+                    KinozalCheckImpl::download_torrent('https://kinozal.me/details.php?id=14', $hash, null),
+                    'The topic keeps its verdict while the login pause runs',
+                );
+                pacingWire([['GET', $login], ['POST', $post], ['GET', $landing],
+                    ['GET', $details]]);
+            },
         'an unavailable login state sends no credentials' => function () use ($mirror, $hash) {
             (new privateData('KinozalTV'))->remove();
             // A directory where the state file cannot be created.
@@ -711,8 +842,11 @@ if ($pacingMode === '--shipped-default') {
             $child = $pacingShipped;
             $pacingShipped = null;
             $printed = pacingFinish($child, 'The --shipped-default run');
-            testAssertSame(1, preg_match('/^1 tests, 0 failures$/m', $printed),
-                'The --shipped-default run passed its case: ' . $printed);
+            testAssertSame(
+                1,
+                preg_match('/^1 tests, 0 failures$/m', $printed),
+                'The --shipped-default run passed its case: ' . $printed,
+            );
         },
     ];
 }
@@ -725,7 +859,9 @@ try {
         'path' => realpath(__DIR__ . '/../../plugins/loginmgr/accounts/KinozalTV.php'),
         'object' => 'KinozalTVAccount', 'login' => 'fixture-user', 'password' => 'fixture-password',
         'enabled' => 1, 'auto' => 0];
-    if (!$manager->store()) { throw new RuntimeException('Cannot save the private account fixture'); }
+    if (!$manager->store()) {
+        throw new RuntimeException('Cannot save the private account fixture');
+    }
     $status = testRunCases($tests, 'pacingReset');
 } finally {
     if ($pacingShipped !== null) {
@@ -734,7 +870,9 @@ try {
         fclose($pacingShipped[1]);
         proc_close($pacingShipped[0]);
     }
-    if (isset($pacingFixture)) { $pacingFixture->restore(); }
+    if (isset($pacingFixture)) {
+        $pacingFixture->restore();
+    }
     FileUtil::deleteDirectory($pacingRoot);
 }
 exit($status);

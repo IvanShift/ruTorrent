@@ -13,7 +13,9 @@ class RtPluginUtilTest extends TestCase
         $this->root = realpath(__DIR__ . '/../..');
         $parent = getenv('TMPDIR') ?: sys_get_temp_dir();
         $this->temp = $parent . '/rt-plugin-util-' . getmypid() . '-' . bin2hex(random_bytes(4));
-        if (!mkdir($this->temp, 0700)) { throw new RuntimeException('cannot create utility fixture'); }
+        if (!mkdir($this->temp, 0700)) {
+            throw new RuntimeException('cannot create utility fixture');
+        }
     }
 
     public function tearDown()
@@ -30,15 +32,19 @@ class RtPluginUtilTest extends TestCase
         $auto = $this->probe('autotools');
         $data = $this->probe('datadir');
         foreach ($auto['origins'] as $name => $origin) {
-            $this->assertSame($origin, $data['origins'][$name], $name . ' has one implementation'); }
+            $this->assertSame($origin, $data['origins'][$name], $name . ' has one implementation');
+        }
     }
 
     public function testBothEntrypointsPreservePathAndDirectoryBehavior()
     {
         foreach (['autotools', 'datadir'] as $plugin) {
             $value = $this->probe($plugin);
-            $this->assertSame(['/', '/data/', '/data/'], $value['slash'],
-                $plugin . ' trailing slash contract, including empty input');
+            $this->assertSame(
+                ['/', '/data/', '/data/'],
+                $value['slash'],
+                $plugin . ' trailing slash contract, including empty input',
+            );
             $this->assertSame(true, $value['made'], $plugin . ' creates and accepts directory');
         }
     }
@@ -47,7 +53,8 @@ class RtPluginUtilTest extends TestCase
     {
         $data = $this->probe('datadir');
         foreach ($data['unused'] as $name => $present) {
-            $this->assertSame(false, $present, 'DataDir no longer loads ' . $name); }
+            $this->assertSame(false, $present, 'DataDir no longer loads ' . $name);
+        }
         $this->assertSame(false, $data['auto_op'], 'DataDir never gets AutoTools transaction');
     }
 
@@ -55,9 +62,13 @@ class RtPluginUtilTest extends TestCase
     {
         $auto = $this->probe('autotools');
         foreach (['rtIsDaemon', 'rtDaemon', 'rtSemGet', 'rtScanFiles'] as $name) {
-            $this->assertSame(true, $auto['unused'][$name], 'AutoTools retains ' . $name); }
-        $this->assertSame(false, $auto['unused']['rtRemoveDirectory'],
-            'AutoTools has no legacy Move cleanup');
+            $this->assertSame(true, $auto['unused'][$name], 'AutoTools retains ' . $name);
+        }
+        $this->assertSame(
+            false,
+            $auto['unused']['rtRemoveDirectory'],
+            'AutoTools has no legacy Move cleanup',
+        );
         $this->assertSame(true, $auto['auto_op'], 'AutoTools retains non-Move transaction');
     }
 
@@ -85,12 +96,17 @@ echo 'RT_UTIL_RESULT:' . json_encode(array(
 ));
 SCRIPT;
         $dir = $this->root . '/plugins/' . $plugin;
-        $process = proc_open([PHP_BINARY, '-r', $script],
+        $process = proc_open(
+            [PHP_BINARY, '-r', $script],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, $dir,
+            $pipes,
+            $dir,
             array_merge($_ENV, ['RT_UTIL_TEMP' => $this->temp,
-                'RT_UTIL_PLUGIN' => $plugin]));
-        if (!is_resource($process)) { throw new RuntimeException('cannot start utility fixture'); }
+                'RT_UTIL_PLUGIN' => $plugin]),
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('cannot start utility fixture');
+        }
         fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]);
         $errors = stream_get_contents($pipes[2]);
@@ -98,9 +114,12 @@ SCRIPT;
         fclose($pipes[2]);
         $exit = proc_close($process);
         if ($exit !== 0 || strpos($output, 'RT_UTIL_RESULT:') !== 0) {
-            throw new RuntimeException($plugin . ' utility fixture failed: ' . $output . ' ' . $errors); }
+            throw new RuntimeException($plugin . ' utility fixture failed: ' . $output . ' ' . $errors);
+        }
         $value = json_decode(substr($output, strlen('RT_UTIL_RESULT:')), true);
-        if (!is_array($value)) { throw new RuntimeException('invalid utility fixture result'); }
+        if (!is_array($value)) {
+            throw new RuntimeException('invalid utility fixture result');
+        }
         return $value;
     }
 }

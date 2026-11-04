@@ -39,20 +39,33 @@ class RuTrackerReplacementRecord
     public static function decode($value, &$shaped = null)
     {
         $shaped = false;
-        if (!is_string($value)) { return null; }
+        if (!is_string($value)) {
+            return null;
+        }
         $parts = explode('-', $value);
-        if (count($parts) !== 3) { return null; }
-        if (!preg_match('/^[0-9a-fA-F]{40}$/D', $parts[0])) { return null; }
+        if (count($parts) !== 3) {
+            return null;
+        }
+        if (!preg_match('/^[0-9a-fA-F]{40}$/D', $parts[0])) {
+            return null;
+        }
         if (!in_array($parts[1], [self::RUN_STARTED, self::RUN_OPEN, self::RUN_STOPPED], true)) {
-            return null; }
-        if (!preg_match('/^[0-9]+$/D', $parts[2])) { return null; }
+            return null;
+        }
+        if (!preg_match('/^[0-9]+$/D', $parts[2])) {
+            return null;
+        }
         $shaped = true;
         // encode() always writes uppercase. A different spelling is corruption,
         // not a second ownership identity that individual consumers may normalize.
-        if ($parts[0] !== strtoupper($parts[0])) { return null; }
+        if ($parts[0] !== strtoupper($parts[0])) {
+            return null;
+        }
         // "03" is not the epoch 3: it is a record encode() cannot reproduce.
         $staged = RuTrackerRpcValue::canonicalNonnegativeInteger($parts[2]);
-        if ($staged === null || $staged <= 0) { return null; }
+        if ($staged === null || $staged <= 0) {
+            return null;
+        }
         return [
             'old' => $parts[0],
             'run' => [
@@ -138,9 +151,15 @@ class RuTrackerRpcValue
      */
     public static function canonicalForumId($value)
     {
-        if ($value === null) { return null; }
-        if (is_int($value)) { return self::canonicalPositiveInt32($value); }
-        if (!is_string($value)) { return null; }
+        if ($value === null) {
+            return null;
+        }
+        if (is_int($value)) {
+            return self::canonicalPositiveInt32($value);
+        }
+        if (!is_string($value)) {
+            return null;
+        }
         return self::canonicalPositiveInt32(trim($value));
     }
 
@@ -154,12 +173,20 @@ class RuTrackerRpcValue
     /** Canonical signed int32, -2147483648..2147483647; else null. "-0" is not it. */
     public static function canonicalSignedInt32($value)
     {
-        if (is_int($value)) { return ($value >= -2147483648 && $value <= 2147483647) ? $value : null; }
-        if (!is_string($value) || $value === '') { return null; }
+        if (is_int($value)) {
+            return ($value >= -2147483648 && $value <= 2147483647) ? $value : null;
+        }
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
         $negative = $value[0] === '-';
         $magnitude = self::canonicalNonnegativeInteger($negative ? substr($value, 1) : $value);
-        if ($magnitude === null) { return null; }
-        if (!$negative) { return $magnitude <= 2147483647 ? $magnitude : null; }
+        if ($magnitude === null) {
+            return null;
+        }
+        if (!$negative) {
+            return $magnitude <= 2147483647 ? $magnitude : null;
+        }
         // "-0" is a second spelling of zero, so it is not the canonical form.
         return ($magnitude > 0 && $magnitude <= 2147483648) ? -$magnitude : null;
     }
@@ -173,11 +200,12 @@ class RuTrackerRpcValue
  */
 class RuTrackerCustomProjection
 {
-
     /** @return bool|null true when complete, null only when target absence is confirmed */
     public static function write($hash, $commands, $context, $localId = null, $expectedCustoms = [])
     {
-        if (!is_array($expectedCustoms) || ($expectedCustoms && $localId === null)) { return false; }
+        if (!is_array($expectedCustoms) || ($expectedCustoms && $localId === null)) {
+            return false;
+        }
         $expected = [];
         foreach ($commands as $command) {
             $field = self::parameterValue($command->params[1]);
@@ -185,23 +213,35 @@ class RuTrackerCustomProjection
         }
 
         if ($localId !== null) {
-            $outcome = RuTrackerAtomicOwnership::setFastProjection($hash, $localId, $expected,
-                $expectedCustoms);
-            if ($outcome === RuTrackerAtomicOwnership::ACTED) { return true; }
-            if ($outcome === RuTrackerAtomicOwnership::SKIPPED) { return false; }
+            $outcome = RuTrackerAtomicOwnership::setFastProjection(
+                $hash,
+                $localId,
+                $expected,
+                $expectedCustoms,
+            );
+            if ($outcome === RuTrackerAtomicOwnership::ACTED) {
+                return true;
+            }
+            if ($outcome === RuTrackerAtomicOwnership::SKIPPED) {
+                return false;
+            }
         } else {
             $write = new rXMLRPCRequest($commands);
             $write->important = false;
             $writeOk = $write->success();
             if ($writeOk && !$write->fault && is_array($write->val)
-                && count($write->val) === count($commands)) { return true; }
+                && count($write->val) === count($commands)) {
+                return true;
+            }
         }
 
         $reads = [];
         foreach ($expected as $field => $value) {
-            $reads[] = new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, $field]); }
+            $reads[] = new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, $field]);
+        }
         if ($localId !== null) {
-            $reads[] = new rXMLRPCCommand(getCmd('d.get_local_id'), [$hash]); }
+            $reads[] = new rXMLRPCCommand(getCmd('d.get_local_id'), [$hash]);
+        }
         $verify = new rXMLRPCRequest($reads);
         $verify->important = false;
         if ($verify->success() && !$verify->fault && is_array($verify->val)
@@ -209,15 +249,20 @@ class RuTrackerCustomProjection
             // A lost branch reply can only be acknowledged for its original
             // daemon generation, even when a replacement has the same fields.
             if ($localId !== null && (string) $verify->val[count($expected)] !== $localId) {
-                return false; }
+                return false;
+            }
             $mismatches = [];
             $index = 0;
             foreach ($expected as $field => $value) {
                 // Daemon bytes against the logical value (parameterValue()).
-                if ((string) $verify->val[$index] !== $value) { $mismatches[] = $field; }
+                if ((string) $verify->val[$index] !== $value) {
+                    $mismatches[] = $field;
+                }
                 $index++;
             }
-            if (!count($mismatches)) { return true; }
+            if (!count($mismatches)) {
+                return true;
+            }
             ruTrackerChecker::logDebug($context . ': ' . $hash
                 . ' has an incomplete projection; mismatched fields: '
                 . implode(', ', $mismatches));
@@ -306,10 +351,13 @@ class RuTrackerAtomicOwnership
         // erase caller may dispose it, even from a stale ownership snapshot.
         if (!is_array($expectedCustoms)
             || (array_key_exists('chk-reuse', $expectedCustoms) && $expectedCustoms['chk-reuse'] !== '')) {
-            return self::UNKNOWN; }
+            return self::UNKNOWN;
+        }
         $expectedCustoms['chk-reuse'] = '';
         $condStr = self::buildCondition($expectedCustoms, $expectedValues);
-        if ($condStr === null) { return self::UNKNOWN; }
+        if ($condStr === null) {
+            return self::UNKNOWN;
+        }
 
         $trueBody = 'cat="$' . getCmd('d.erase=') . '",' . self::SENTINEL_ERASED;
         $falseBody = 'cat=' . self::SENTINEL_SKIPPED;
@@ -322,15 +370,21 @@ class RuTrackerAtomicOwnership
     /** Release a replacement, disposing only a stopped copy created by us. */
     public static function closeReplacement($hash, $marker, $record, $expectedValues = [], $discard = false)
     {
-        if (!self::validateExpectedValues($expectedValues) || !is_bool($discard)) { return self::UNKNOWN; }
+        if (!self::validateExpectedValues($expectedValues) || !is_bool($discard)) {
+            return self::UNKNOWN;
+        }
         $pair = ['chk-replacement' => $marker, 'chk-replaces' => $record];
         $reuseValues = $expectedValues;
         unset($reuseValues['state'], $reuseValues['is_open']);
         $reuse = self::buildCondition($pair + ['chk-reuse' => $marker], $reuseValues);
-        $ordinary = self::buildCondition($pair + ['chk-reuse' => ''],
-            $discard ? array_merge($expectedValues, ['state' => 0, 'is_open' => 0]) : $expectedValues);
+        $ordinary = self::buildCondition(
+            $pair + ['chk-reuse' => ''],
+            $discard ? array_merge($expectedValues, ['state' => 0, 'is_open' => 0]) : $expectedValues,
+        );
         if ($reuse === null || $ordinary === null || !RuTrackerReplacementRecord::isPluginMarker($marker)
-            || RuTrackerReplacementRecord::decode($record) === null) { return self::UNKNOWN; }
+            || RuTrackerReplacementRecord::decode($record) === null) {
+            return self::UNKNOWN;
+        }
         // Reuse is written first on claim and cleared last on release: a
         // partially executed command never makes an existing torrent disposable.
         $clear = 'cat=' . self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . 'chk-replaces,')
@@ -345,7 +399,9 @@ class RuTrackerAtomicOwnership
             self::SENTINEL_CLEARED => self::ACTED,
             self::SENTINEL_SKIPPED => self::SKIPPED,
         ];
-        if ($discard) { $replies[self::SENTINEL_ERASED] = self::ACTED; }
+        if ($discard) {
+            $replies[self::SENTINEL_ERASED] = self::ACTED;
+        }
         return self::executeBranch($hash, $reuse, $clear, $fallback, $replies);
     }
 
@@ -354,12 +410,18 @@ class RuTrackerAtomicOwnership
      */
     public static function clearCustoms($hash, $expectedCustoms, $keys, $expectedValues = [])
     {
-        if (!is_array($keys) || count($keys) === 0) { return self::UNKNOWN; }
+        if (!is_array($keys) || count($keys) === 0) {
+            return self::UNKNOWN;
+        }
         foreach ($keys as $k) {
-            if (!in_array($k, self::$allowedCustomKeys, true)) { return self::UNKNOWN; }
+            if (!in_array($k, self::$allowedCustomKeys, true)) {
+                return self::UNKNOWN;
+            }
         }
         $condStr = self::buildCondition($expectedCustoms, $expectedValues);
-        if ($condStr === null) { return self::UNKNOWN; }
+        if ($condStr === null) {
+            return self::UNKNOWN;
+        }
 
         $parts = [];
         foreach ($keys as $k) {
@@ -377,16 +439,25 @@ class RuTrackerAtomicOwnership
     /**
      * Conditionally set customs on a download in the given order if its ownership matches.
      */
-    public static function setCustoms($hash, $expectedCustoms, $customsToSet, $expectedValues = [],
-        $saveSession = false)
-    {
+    public static function setCustoms(
+        $hash,
+        $expectedCustoms,
+        $customsToSet,
+        $expectedValues = [],
+        $saveSession = false
+    ) {
         if (!is_bool($saveSession) || !is_array($customsToSet) || count($customsToSet) === 0) {
-            return self::UNKNOWN; }
+            return self::UNKNOWN;
+        }
         foreach ($customsToSet as $k => $v) {
-            if (!self::validateCustomKeyAndValue($k, $v)) { return self::UNKNOWN; }
+            if (!self::validateCustomKeyAndValue($k, $v)) {
+                return self::UNKNOWN;
+            }
         }
         $condStr = self::buildCondition($expectedCustoms, $expectedValues);
-        if ($condStr === null) { return self::UNKNOWN; }
+        if ($condStr === null) {
+            return self::UNKNOWN;
+        }
 
         $parts = [];
         foreach ($customsToSet as $k => $v) {
@@ -418,26 +489,36 @@ class RuTrackerAtomicOwnership
     {
         if (!self::isValidHash($hash)
             || !is_string($localId) || preg_match('/^[0-9A-F]{40}$/D', $localId) !== 1
-            || !is_array($fields) || !count($fields) || !is_array($expectedCustoms)) { return self::UNKNOWN; }
+            || !is_array($fields) || !count($fields) || !is_array($expectedCustoms)) {
+            return self::UNKNOWN;
+        }
         $allowed = ['chk-state', 'chk-time', 'chk-stime', 'chk-msg', 'chk-del', 'chk-topic',
             'chk-meta-new', 'chk-meta-until'];
         $parts = [];
         foreach ($fields as $key => $value) {
             if (!in_array($key, $allowed, true) || !RtorrentCommandArguments::isLiteral($value)) {
-                return self::UNKNOWN; }
+                return self::UNKNOWN;
+            }
             $parts[] = self::quoteRtorrentArgument('$' . getCmd('d.set_custom=') . $key
                 . ',' . self::quoteRtorrentArgument($value));
         }
         $condition = $expectedCustoms
             ? self::buildCondition($expectedCustoms, ['local_id' => $localId])
             : self::localIdCondition($localId);
-        if ($condition === null) { return self::UNKNOWN; }
+        if ($condition === null) {
+            return self::UNKNOWN;
+        }
         $body = 'cat=' . implode(',', $parts) . ',' . self::SENTINEL_ACTED;
-        return self::executeBranch($hash, $condition, $body,
-            'cat=' . self::SENTINEL_SKIPPED, [
+        return self::executeBranch(
+            $hash,
+            $condition,
+            $body,
+            'cat=' . self::SENTINEL_SKIPPED,
+            [
                 self::SENTINEL_ACTED => self::ACTED,
                 self::SENTINEL_SKIPPED => self::SKIPPED,
-            ]);
+            ],
+        );
     }
 
     /**
@@ -445,17 +526,26 @@ class RuTrackerAtomicOwnership
      */
     public static function runState($hash, $expectedCustoms, $wantStarted, $expectedValues = [], $afterSuccess = [])
     {
-        if (!is_bool($wantStarted)) { return self::UNKNOWN; }
+        if (!is_bool($wantStarted)) {
+            return self::UNKNOWN;
+        }
         if (!is_array($expectedCustoms)
             || (array_key_exists('chk-reuse', $expectedCustoms) && $expectedCustoms['chk-reuse'] !== '')) {
-            return self::UNKNOWN; }
+            return self::UNKNOWN;
+        }
         $expectedCustoms['chk-reuse'] = '';
-        if (!is_array($afterSuccess)) { return self::UNKNOWN; }
+        if (!is_array($afterSuccess)) {
+            return self::UNKNOWN;
+        }
         foreach ($afterSuccess as $k => $v) {
-            if (!self::validateCustomKeyAndValue($k, $v)) { return self::UNKNOWN; }
+            if (!self::validateCustomKeyAndValue($k, $v)) {
+                return self::UNKNOWN;
+            }
         }
         $condStr = self::buildCondition($expectedCustoms, $expectedValues);
-        if ($condStr === null) { return self::UNKNOWN; }
+        if ($condStr === null) {
+            return self::UNKNOWN;
+        }
 
         $afterParts = [];
         foreach ($afterSuccess as $k => $v) {
@@ -493,12 +583,18 @@ class RuTrackerAtomicOwnership
      * Ordinary revival stamps success after verifying run state. Legacy
      * revival reserves its one-time stamp before opening or starting.
      */
-    public static function revivePredecessor($hash, $expectedReplacing, $recordedRun, $stamp,
-        $expectedValues = [], $legacyExpected = [])
-    {
+    public static function revivePredecessor(
+        $hash,
+        $expectedReplacing,
+        $recordedRun,
+        $stamp,
+        $expectedValues = [],
+        $legacyExpected = []
+    ) {
         $stampInt = RuTrackerRpcValue::canonicalNonnegativeInteger($stamp);
         if ($stampInt === null || $stampInt <= 0 || !self::validateExpectedValues($expectedValues)) {
-            return self::UNKNOWN; }
+            return self::UNKNOWN;
+        }
         if (!is_array($recordedRun)
             || count($recordedRun) !== 2
             || !array_key_exists('started', $recordedRun)
@@ -510,19 +606,28 @@ class RuTrackerAtomicOwnership
             return self::UNKNOWN;
         }
 
-        if (!is_array($legacyExpected) || ($legacyExpected &&
-            (count($legacyExpected) !== 5 || count(array_diff(['chk-meta-new', 'chk-state', 'chk-time',
-                'chk-replacement', 'chk-replaces'],
-                array_keys($legacyExpected))) !== 0))) {
-            return self::UNKNOWN; }
-        $expectedCustoms = array_merge($legacyExpected,
-            ['chk-replacing' => $expectedReplacing, 'chk-reuse' => '']);
+        if (!is_array($legacyExpected) || ($legacyExpected
+            && (count($legacyExpected) !== 5 || count(array_diff(
+                ['chk-meta-new', 'chk-state', 'chk-time',
+                    'chk-replacement', 'chk-replaces'],
+                array_keys($legacyExpected),
+            )) !== 0))) {
+            return self::UNKNOWN;
+        }
+        $expectedCustoms = array_merge(
+            $legacyExpected,
+            ['chk-replacing' => $expectedReplacing, 'chk-reuse' => ''],
+        );
         // Revival is authorized only for the stopped+closed crash signature.
         // Caller predicates may add is_meta, but can never weaken these two.
-        $allExpectedValues = array_merge($expectedValues,
-            ['state' => 0, 'is_open' => 0]);
+        $allExpectedValues = array_merge(
+            $expectedValues,
+            ['state' => 0, 'is_open' => 0],
+        );
         $condStr = self::buildCondition($expectedCustoms, $allExpectedValues);
-        if ($condStr === null) { return self::UNKNOWN; }
+        if ($condStr === null) {
+            return self::UNKNOWN;
+        }
 
         $wantStarted = !empty($recordedRun['started']);
         $postCmd = $wantStarted ? getCmd('d.get_state=') : getCmd('d.is_open=');
@@ -534,7 +639,8 @@ class RuTrackerAtomicOwnership
         $successActions = 'cat=';
         if (!$legacyOnce) {
             $successActions .= self::quoteRtorrentArgument('$' . getCmd('d.set_custom=')
-                . 'chk-revived,' . $stampInt) . ','; }
+                . 'chk-revived,' . $stampInt) . ',';
+        }
         $successActions .= self::quoteRtorrentArgument('$' . getCmd('d.set_custom=')
             . 'chk-replacing,') . ',' . self::SENTINEL_REVIVED;
 
@@ -543,7 +649,8 @@ class RuTrackerAtomicOwnership
 
         $runParts = [self::quoteRtorrentArgument('$' . getCmd('d.open='))];
         if ($wantStarted) {
-            $runParts[] = self::quoteRtorrentArgument('$' . getCmd('d.start=')); }
+            $runParts[] = self::quoteRtorrentArgument('$' . getCmd('d.start='));
+        }
         $runParts[] = self::quoteRtorrentArgument($verifyBranch);
         $runBody = 'cat=' . implode(',', $runParts);
 
@@ -624,14 +731,22 @@ class RuTrackerAtomicOwnership
 
     private static function validateExpectedValues($expectedValues)
     {
-        if (!is_array($expectedValues)) { return false; }
+        if (!is_array($expectedValues)) {
+            return false;
+        }
         foreach ($expectedValues as $k => $v) {
             if (in_array($k, ['state_changed', 'state_counter'], true)) {
-                if (RuTrackerRpcValue::canonicalNonnegativeInteger($v) === null) { return false; }
+                if (RuTrackerRpcValue::canonicalNonnegativeInteger($v) === null) {
+                    return false;
+                }
             } elseif (in_array($k, ['state', 'is_open', 'is_meta'], true)) {
-                if ($v !== 0 && $v !== 1 && $v !== '0' && $v !== '1') { return false; }
+                if ($v !== 0 && $v !== 1 && $v !== '0' && $v !== '1') {
+                    return false;
+                }
             } elseif ($k === 'local_id') {
-                if (!is_string($v) || preg_match('/^[0-9A-F]{40}$/D', $v) !== 1) { return false; }
+                if (!is_string($v) || preg_match('/^[0-9A-F]{40}$/D', $v) !== 1) {
+                    return false;
+                }
             } else {
                 return false;
             }
@@ -664,7 +779,9 @@ class RuTrackerAtomicOwnership
             // Through the one canonical parser, not a second weaker cast.
             $intVal = RuTrackerRpcValue::canonicalNonnegativeInteger($v);
             if ($intVal === null || (in_array($k, ['state', 'is_open', 'is_meta'], true)
-                && !in_array($intVal, [0, 1], true))) { return null; }
+                && !in_array($intVal, [0, 1], true))) {
+                return null;
+            }
             if ($k === 'state') {
                 $conditions[] = 'equal=' . getCmd('d.get_state=') . ',value=' . $intVal;
             } elseif ($k === 'is_open') {

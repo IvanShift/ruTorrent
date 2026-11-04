@@ -1,6 +1,6 @@
 <?php
 
-require_once(dirname(__DIR__, 2).'/php/cli-only.php');
+require_once(dirname(__DIR__, 2) . '/php/cli-only.php');
 rutorrent_require_cli(__FILE__);
 
 // CLI entry point for "erase this download and delete its data", for callers
@@ -21,20 +21,23 @@ $hash = isset($argv[1]) ? $argv[1] : "";
 $force = isset($argv[2]) ? $argv[2] : null;
 $user = isset($argv[3]) ? $argv[3] : "";
 
-if(!preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) {
-	exit(1); }
-require_once( dirname(__FILE__)."/manifest.php" );
+if (!preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) {
+    exit(1);
+}
+require_once(dirname(__FILE__) . "/manifest.php");
 // The wire boundary: an argv word is a string and can be nothing else, so this
 // is where the decimal spelling becomes the integer force the plugin speaks
 // everywhere below. An unreadable force refuses the run; it is never coerced.
 $normalizedForce = ErasedataManifestCodec::normalizeForce($force);
-if(is_null($normalizedForce)) {
-	exit(1); }
-if($user !== "") {
-	$_SERVER['REMOTE_USER'] = $user; }
+if (is_null($normalizedForce)) {
+    exit(1);
+}
+if ($user !== "") {
+    $_SERVER['REMOTE_USER'] = $user;
+}
 
-require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
-require_once( dirname(__FILE__)."/removewithdata.php" );
+require_once(dirname(__FILE__) . "/../../php/xmlrpc.php");
+require_once(dirname(__FILE__) . "/removewithdata.php");
 
 // One generation-bound admission transaction, shared with the web door in
 // action.php: the obligation is recorded under a generation of its own, the

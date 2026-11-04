@@ -12,13 +12,17 @@ class PluginMutationMethodTest extends TestCase
         $this->root = sys_get_temp_dir() . '/rutorrent-plugin-method-' . getmypid() . '-' . bin2hex(random_bytes(6));
         foreach (['rss', 'extratio', 'extsearch'] as $plugin) {
             mkdir($this->root . '/plugins/' . $plugin, 0700, true);
-            copy(__DIR__ . '/../../plugins/' . $plugin . '/action.php',
-                $this->root . '/plugins/' . $plugin . '/action.php');
+            copy(
+                __DIR__ . '/../../plugins/' . $plugin . '/action.php',
+                $this->root . '/plugins/' . $plugin . '/action.php',
+            );
         }
         mkdir($this->root . '/php', 0700, true);
         file_put_contents($this->root . '/php/util.php', '<?php');
         file_put_contents($this->root . '/php/rtorrent.php', '<?php');
-        file_put_contents($this->root . '/plugins/rss/rss.php', <<<'STUB'
+        file_put_contents(
+            $this->root . '/plugins/rss/rss.php',
+            <<<'STUB'
 <?php
 class rRSSManager {
     public function __call($name, $args) { $GLOBALS['calls'][] = $name; return array(); }
@@ -26,33 +30,40 @@ class rRSSManager {
 }
 class rRSSFilter { public function __construct(...$args) {} }
 class rRSSFilterList { public function add($filter) {} }
-STUB
+STUB,
         );
-        file_put_contents($this->root . '/plugins/extratio/rules.php', <<<'STUB'
+        file_put_contents(
+            $this->root . '/plugins/extratio/rules.php',
+            <<<'STUB'
 <?php
 class rRatioRulesList {
     public static function load() { return new self(); }
     public function __call($name, $args) { $GLOBALS['calls'][] = $name; return array(); }
 }
-STUB
+STUB,
         );
-        file_put_contents($this->root . '/plugins/extsearch/engines.php', <<<'STUB'
+        file_put_contents(
+            $this->root . '/plugins/extsearch/engines.php',
+            <<<'STUB'
 <?php
 class engineManager {
     public static function load() { return new self(); }
     public function __call($name, $args) { $GLOBALS['calls'][] = $name; return array(); }
     public function get() { $GLOBALS['calls'][] = 'get'; return '{}'; }
 }
-STUB
+STUB,
         );
     }
 
     public function tearDown()
     {
-        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->root,
-            FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+            $this->root,
+            FilesystemIterator::SKIP_DOTS,
+        ), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($files as $entry) {
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        }
         rmdir($this->root);
     }
 
@@ -94,8 +105,11 @@ STUB
         }
         foreach (['getsettings' => 'getSettings', 'getfilters' => 'getFilters',
             'getdesc' => 'getDescription', 'checkfilter' => 'testFilter'] as $mode => $call) {
-            list($status, $calls, $exit) = $this->request('rss', 'GET',
-                'mode=' . $mode . '&rss=feed&href=item');
+            list($status, $calls, $exit) = $this->request(
+                'rss',
+                'GET',
+                'mode=' . $mode . '&rss=feed&href=item',
+            );
             $this->assertEquals(200, $status, $mode . ' remains available by GET');
             $this->assertTrue(in_array($call, $calls, true), $mode . ' reaches its reader');
             $this->assertEquals(0, $exit, $mode . ' exits cleanly');
@@ -152,15 +166,20 @@ class JSON { public static function safeEncode($value) { return '{}'; } }
 class CachedEcho { public static function send($value, $type = null, $compress = null, $cache = null) {} }
 require 'action.php';
 SCRIPT;
-        $process = proc_open([PHP_BINARY, '-r', $script],
+        $process = proc_open(
+            [PHP_BINARY, '-r', $script],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, $this->root . '/plugins/' . $plugin,
+            $pipes,
+            $this->root . '/plugins/' . $plugin,
             array_merge($_ENV, [
                 'ROUTE_QUERY' => $query,
                 'ROUTE_METHOD' => $method,
                 'ROUTE_SOURCE' => realpath(__DIR__ . '/../..'),
-            ]));
-        if (!is_resource($process)) { throw new RuntimeException('cannot start route fixture'); }
+            ]),
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('cannot start route fixture');
+        }
         fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]);
         $errors = stream_get_contents($pipes[2]);
@@ -168,7 +187,8 @@ SCRIPT;
         fclose($pipes[2]);
         $exit = proc_close($process);
         if (!preg_match('/ROUTE_RESULT:(\d+):(\[[^\]]*\])/', $output, $match)) {
-            throw new RuntimeException('route fixture failed: ' . $output . ' ' . $errors); }
+            throw new RuntimeException('route fixture failed: ' . $output . ' ' . $errors);
+        }
         return [(int) $match[1], json_decode($match[2], true), $exit, $errors];
     }
 }

@@ -16,96 +16,112 @@ require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
  */
 class AudUnpackPathTest extends TestCase
 {
-	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
-	public const AUD = 'aud "q" \b \'a\' &c';
-	// The probe name plus the pairs an extra unescape would collapse.
-	public const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
+    public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+    public const AUD = 'aud "q" \b \'a\' &c';
+    // The probe name plus the pairs an extra unescape would collapse.
+    public const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
 
-	private $base;
-	private $directory;
-	private $daemon;
+    private $base;
+    private $directory;
+    private $daemon;
 
-	public function setUp()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-aud-unpack-' . getmypid();
-		$this->directory = $this->base . '/data/' . self::AUD_PAIRS;
-		mkdir($this->directory, 0700, true);
-		file_put_contents($this->directory . '/inner.zip', 'not really a zip');
-	}
+    public function setUp()
+    {
+        $this->base = sys_get_temp_dir() . '/rutorrent-aud-unpack-' . getmypid();
+        $this->directory = $this->base . '/data/' . self::AUD_PAIRS;
+        mkdir($this->directory, 0700, true);
+        file_put_contents($this->directory . '/inner.zip', 'not really a zip');
+    }
 
-	public function tearDown()
-	{
-		$this->stopDaemon();
-		PluginEntryDriver::removeTree($this->base);
-	}
+    public function tearDown()
+    {
+        $this->stopDaemon();
+        PluginEntryDriver::removeTree($this->base);
+    }
 
-	public function testAudArchiveFromAClosedDownloadIsUnpackedBesideItself()
-	{
-		$archive = $this->directory . '/inner.zip';
-		list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', $archive]));
-		$this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
-		$expected = escapeshellarg('unzip') . ' ' . escapeshellarg($archive) . ' '
-			. escapeshellarg($this->directory . '/');
-		$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], 'unzip_file.sh') !== false
-			&& strpos($scripts[0], $expected) !== false,
-			'the archive the daemon named is unpacked into its own directory: ' . ($scripts[0] ?? ''));
-	}
+    public function testAudArchiveFromAClosedDownloadIsUnpackedBesideItself()
+    {
+        $archive = $this->directory . '/inner.zip';
+        list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', $archive]));
+        $this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
+        $expected = escapeshellarg('unzip') . ' ' . escapeshellarg($archive) . ' '
+            . escapeshellarg($this->directory . '/');
+        $this->assertTrue(
+            isset($scripts[0]) && strpos($scripts[0], 'unzip_file.sh') !== false
+            && strpos($scripts[0], $expected) !== false,
+            'the archive the daemon named is unpacked into its own directory: ' . ($scripts[0] ?? ''),
+        );
+    }
 
-	public function testAudArchiveWithoutAPathStartsNoTask()
-	{
-		list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', '']));
-		$this->assertSame([], $scripts,
-			'a download that names no file is not unpacked into the current directory: ' . $out);
-	}
+    public function testAudArchiveWithoutAPathStartsNoTask()
+    {
+        list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', '']));
+        $this->assertSame(
+            [],
+            $scripts,
+            'a download that names no file is not unpacked into the current directory: ' . $out,
+        );
+    }
 
-	public function testAudDownloadIsUnpackedIntoItsLabelAndNameDirectories()
-	{
-		list($scripts, $out) = $this->unpack('', '0', [
-			'd.get_base_path' => [$this->directory], 'd.base_path' => [$this->directory],
-			// A label another client wrote without percent-encoding.
-			'd.get_custom1' => [self::AUD], 'd.custom1' => [self::AUD],
-			'd.get_name' => [self::AUD_PAIRS], 'd.name' => [self::AUD_PAIRS],
-			'f.multicall' => ['inner.zip'],
-		]);
-		$this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
-		$expected = escapeshellarg($this->directory . '/') . ' '
-			. escapeshellarg($this->directory . '/' . self::AUD . '/' . self::AUD_PAIRS . '/');
-		$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], 'unzip_dir.sh') !== false
-			&& strpos($scripts[0], $expected) !== false,
-			'the base path is a directory and the label and name are the daemon\'s own: ' . ($scripts[0] ?? ''));
-	}
+    public function testAudDownloadIsUnpackedIntoItsLabelAndNameDirectories()
+    {
+        list($scripts, $out) = $this->unpack('', '0', [
+            'd.get_base_path' => [$this->directory], 'd.base_path' => [$this->directory],
+            // A label another client wrote without percent-encoding.
+            'd.get_custom1' => [self::AUD], 'd.custom1' => [self::AUD],
+            'd.get_name' => [self::AUD_PAIRS], 'd.name' => [self::AUD_PAIRS],
+            'f.multicall' => ['inner.zip'],
+        ]);
+        $this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
+        $expected = escapeshellarg($this->directory . '/') . ' '
+            . escapeshellarg($this->directory . '/' . self::AUD . '/' . self::AUD_PAIRS . '/');
+        $this->assertTrue(
+            isset($scripts[0]) && strpos($scripts[0], 'unzip_dir.sh') !== false
+            && strpos($scripts[0], $expected) !== false,
+            'the base path is a directory and the label and name are the daemon\'s own: ' . ($scripts[0] ?? ''),
+        );
+    }
 
-	private function stopDaemon()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-	}
+    private function stopDaemon()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+            $this->daemon = null;
+        }
+    }
 
-	private function unpack($mode, $no, array $replies)
-	{
-		$this->stopDaemon();
-		PluginEntryDriver::removeTree($this->base . '/profile');
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies($replies),
-			$this->base . '/calls.log');
-		// Label and name subdirectories on, as a user can set them.
-		$before = 'require_once(' . var_export(realpath(__DIR__ . '/../../../plugins/unpack/unpack.php'), true) . ');'
-			. ' $up = new rUnpack(); $up->addLabel = 1; $up->addName = 1; $up->store();';
-		list($exit, $out, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(),
-			'plugins/unpack/action.php', ['before' => $before,
-			'post' => ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => $mode, 'no' => $no]]);
-		// rTask reports its refused launch on stderr; nothing else may be there.
-		$this->assertSame(0, preg_match('/(Warning|Notice|Deprecated|Fatal error):/', $err),
-			'the unpack action emits no PHP diagnostics: ' . $err);
-		return [PluginEntryDriver::taskScripts($this->base), $out];
-	}
+    private function unpack($mode, $no, array $replies)
+    {
+        $this->stopDaemon();
+        PluginEntryDriver::removeTree($this->base . '/profile');
+        $this->daemon = new FakeRtorrentDaemon(
+            new FakeRtorrentMethodReplies($replies),
+            $this->base . '/calls.log',
+        );
+        // Label and name subdirectories on, as a user can set them.
+        $before = 'require_once(' . var_export(realpath(__DIR__ . '/../../../plugins/unpack/unpack.php'), true) . ');'
+            . ' $up = new rUnpack(); $up->addLabel = 1; $up->addName = 1; $up->store();';
+        list($exit, $out, $err) = PluginEntryDriver::run(
+            $this->base,
+            $this->daemon->port(),
+            'plugins/unpack/action.php',
+            ['before' => $before,
+                'post' => ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => $mode, 'no' => $no]],
+        );
+        // rTask reports its refused launch on stderr; nothing else may be there.
+        $this->assertSame(
+            0,
+            preg_match('/(Warning|Notice|Deprecated|Fatal error):/', $err),
+            'the unpack action emits no PHP diagnostics: ' . $err,
+        );
+        return [PluginEntryDriver::taskScripts($this->base), $out];
+    }
 
-	private static function frozen(array $answers)
-	{
-		$calls = new FakeRtorrentPerCall(array_map(function ($path) {
-			return [$path];
-		}, $answers));
-		return ['f.get_frozen_path' => $calls, 'f.frozen_path' => $calls];
-	}
+    private static function frozen(array $answers)
+    {
+        $calls = new FakeRtorrentPerCall(array_map(function ($path) {
+            return [$path];
+        }, $answers));
+        return ['f.get_frozen_path' => $calls, 'f.frozen_path' => $calls];
+    }
 }

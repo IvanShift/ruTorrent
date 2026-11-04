@@ -33,12 +33,20 @@ class CacheNestedRulesTest extends TestCase
         $this->assertTrue($cache->set($stored), 'ratio rules are stored');
         $loaded = new rRatioRulesList();
         $this->assertTrue($cache->get($loaded), 'ratio rules load from their cache file');
-        $this->assertTrue(isset($loaded->lst[0]) && $loaded->lst[0] instanceof rRatioRule,
-            'the nested ratio rule retains its class');
-        $this->assertSame('ratio rule', $loaded->lst[0]->name ?? null,
-            'the nested ratio rule retains its name');
-        $this->assertSame(RR_TRACKER_CONTAIN, $loaded->lst[0]->reason ?? null,
-            'the nested ratio rule retains its matching reason');
+        $this->assertTrue(
+            isset($loaded->lst[0]) && $loaded->lst[0] instanceof rRatioRule,
+            'the nested ratio rule retains its class',
+        );
+        $this->assertSame(
+            'ratio rule',
+            $loaded->lst[0]->name ?? null,
+            'the nested ratio rule retains its name',
+        );
+        $this->assertSame(
+            RR_TRACKER_CONTAIN,
+            $loaded->lst[0]->reason ?? null,
+            'the nested ratio rule retains its matching reason',
+        );
     }
 
     public function testRewriteRulesKeepTheirNestedRuleObjects()
@@ -49,11 +57,19 @@ class CacheNestedRulesTest extends TestCase
         $this->assertTrue($cache->set($stored), 'rewrite rules are stored');
         $loaded = new rURLRewriteRulesList();
         $this->assertTrue($cache->get($loaded), 'rewrite rules load from their cache file');
-        $this->assertTrue(isset($loaded->lst[0]) && $loaded->lst[0] instanceof rURLRewriteRule,
-            'the nested rewrite rule retains its class');
-        $this->assertSame('rewrite rule', $loaded->lst[0]->name ?? null,
-            'the nested rewrite rule retains its name');
-        $this->assertSame('/old/', $loaded->lst[0]->pattern ?? null,
-            'the nested rewrite rule retains its pattern');
+        $this->assertTrue(
+            isset($loaded->lst[0]) && $loaded->lst[0] instanceof rURLRewriteRule,
+            'the nested rewrite rule retains its class',
+        );
+        $this->assertSame(
+            'rewrite rule',
+            $loaded->lst[0]->name ?? null,
+            'the nested rewrite rule retains its name',
+        );
+        $this->assertSame(
+            '/old/',
+            $loaded->lst[0]->pattern ?? null,
+            'the nested rewrite rule retains its pattern',
+        );
     }
 }

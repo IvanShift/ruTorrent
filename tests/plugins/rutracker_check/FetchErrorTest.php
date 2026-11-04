@@ -20,17 +20,27 @@ $suite = new StrictTestSuite();
 $suite->test('every shared Snoopy message classifies to its token', function () {
     foreach (fetchErrorParityCases() as $case) {
         list($message, $expected) = $case;
-        strictAssertSame($expected, RuTrackerFetchError::classify($message),
-            'token for ' . var_export($message, true));
+        strictAssertSame(
+            $expected,
+            RuTrackerFetchError::classify($message),
+            'token for ' . var_export($message, true),
+        );
     }
 });
 
 $suite->test('the request body write refusal has one exact classified token', function () {
-    strictAssertSame('request-body-not-written', RuTrackerFetchError::classify('request-body-not-written'),
-        'the local temporary-body failure remains visible without echoing a payload');
+    strictAssertSame(
+        'request-body-not-written',
+        RuTrackerFetchError::classify('request-body-not-written'),
+        'the local temporary-body failure remains visible without echoing a payload',
+    );
     foreach (['request-body-not-written extra', 'prefix-request-body-not-written'] as $message) {
-        strictAssertSame('unclassified', RuTrackerFetchError::classify($message),
-            'a near-match cannot claim the local write-failure token'); }
+        strictAssertSame(
+            'unclassified',
+            RuTrackerFetchError::classify($message),
+            'a near-match cannot claim the local write-failure token',
+        );
+    }
 });
 
 // The sentences php/Snoopy.class.inc actually writes, spelled here with
@@ -68,8 +78,11 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
     // Protocol refusal now uses the shared request helper instead of a direct
     // assignment; the remaining assignments retain their classified messages.
-    strictAssertSame(14, count($assignments[0]),
-        'new direct Snoopy error assignments require classification');
+    strictAssertSame(
+        14,
+        count($assignments[0]),
+        'new direct Snoopy error assignments require classification',
+    );
     // Compare distinct reasons, not call sites: redirects and transports may
     // reuse a refusal, while a new reason still needs explicit classification.
     preg_match_all('/refuse(?:ResponseBody|Request)\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
@@ -80,10 +93,15 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline'];
     sort($actualRefusals);
     sort($expectedRefusals);
-    strictAssertSame($expectedRefusals, $actualRefusals,
-        'every distinct literal request/body refusal requires an explicit classified case');
-    strictAssertTrue(strpos($source, "\$this->error = 'oversized-response';") !== false,
-        'the oversized response assignment stays classified');
+    strictAssertSame(
+        $expectedRefusals,
+        $actualRefusals,
+        'every distinct literal request/body refusal requires an explicit classified case',
+    );
+    strictAssertTrue(
+        strpos($source, "\$this->error = 'oversized-response';") !== false,
+        'the oversized response assignment stays classified',
+    );
     // Count alone misses a reworded assignment. For direct assignments,
     // include the opening quote and literal prefix: a changed first word
     // otherwise still matches a needle taken from the middle of the message.
@@ -111,32 +129,51 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
         'request-deadline' => 'request-deadline',
     ];
-    strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
-        'the redirect refusal constant retains the classified token');
+    strictAssertSame(
+        1,
+        preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
+        'the redirect refusal constant retains the classified token',
+    );
     // The throttle refusal is a constant too, so the literal scan above
     // cannot see it; its definition and its one refusal are pinned here.
-    strictAssertSame(1, preg_match("/const REQUEST_THROTTLED\s*=\s*'request-throttled';/", $source),
-        'the throttle refusal constant retains the classified token');
-    strictAssertSame(1, preg_match('/refuseResponseBody\(\s*self::REQUEST_THROTTLED\s*\)/', $source),
-        'request-throttled: Snoopy still refuses with the reason this token classifies');
+    strictAssertSame(
+        1,
+        preg_match("/const REQUEST_THROTTLED\s*=\s*'request-throttled';/", $source),
+        'the throttle refusal constant retains the classified token',
+    );
+    strictAssertSame(
+        1,
+        preg_match('/refuseResponseBody\(\s*self::REQUEST_THROTTLED\s*\)/', $source),
+        'request-throttled: Snoopy still refuses with the reason this token classifies',
+    );
     // The KinozalTV account marks a failed credential POST with a constant too.
     $kinozal = (string) file_get_contents(__DIR__ . '/../../../php/kinozal.php');
-    strictAssertSame(1, preg_match("/const CREDENTIAL_POST_FAILED\s*=\s*'credential-post-failed';/", $kinozal),
-        'the credential POST mark retains the classified token');
+    strictAssertSame(
+        1,
+        preg_match("/const CREDENTIAL_POST_FAILED\s*=\s*'credential-post-failed';/", $kinozal),
+        'the credential POST mark retains the classified token',
+    );
     foreach ($sourceNeedles as $token => $needle) {
         $isHelperRefusal = in_array($token, $expectedRefusals, true);
         $pattern = $isHelperRefusal
             ? '/refuse(?:ResponseBody|Request)\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
             : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
         if ($token === 'invalid-protocol') {
-            $pattern = '/refuseRequest\(\s*' . preg_quote($needle, '/') . '/'; }
-        strictAssertSame(1, preg_match($pattern, $source),
-            $token . ': Snoopy still writes the reason this token classifies');
+            $pattern = '/refuseRequest\(\s*' . preg_quote($needle, '/') . '/';
+        }
+        strictAssertSame(
+            1,
+            preg_match($pattern, $source),
+            $token . ': Snoopy still writes the reason this token classifies',
+        );
     }
     $seen = [];
     foreach ($expected as $message => $token) {
-        strictAssertSame($token, RuTrackerFetchError::classify($message),
-            'token for ' . var_export($message, true));
+        strictAssertSame(
+            $token,
+            RuTrackerFetchError::classify($message),
+            'token for ' . var_export($message, true),
+        );
         $seen[$token] = true;
     }
     strictAssertSame(count($expected), count($seen), 'the messages map onto distinct tokens');
@@ -146,43 +183,60 @@ $suite->test('each of Snoopy own messages has its own token', function () {
 // Keep it separate from the one-message-per-token assertion above.
 $suite->test('the zero errno resolver message retains the existing DNS token', function () {
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
-    strictAssertSame(1, preg_match('/\$this->error\s*=\s*\'dns lookup failure \(0\)\';/', $source),
-        'the zero-errno resolver assignment keeps its classified sentence');
-    strictAssertSame('dns-lookup', RuTrackerFetchError::classify('dns lookup failure (0)'),
-        'a recognised resolver failure keeps its DNS category even without an errno');
-    strictAssertSame('connect-errno', RuTrackerFetchError::classify('connection failed (0)'),
-        'an unclassified zero-errno connection failure does not imply DNS');
+    strictAssertSame(
+        1,
+        preg_match('/\$this->error\s*=\s*\'dns lookup failure \(0\)\';/', $source),
+        'the zero-errno resolver assignment keeps its classified sentence',
+    );
+    strictAssertSame(
+        'dns-lookup',
+        RuTrackerFetchError::classify('dns lookup failure (0)'),
+        'a recognised resolver failure keeps its DNS category even without an errno',
+    );
+    strictAssertSame(
+        'connect-errno',
+        RuTrackerFetchError::classify('connection failed (0)'),
+        'an unclassified zero-errno connection failure does not imply DNS',
+    );
 });
 
 // Whitespace is normalised before matching, not after. Snoopy's strings are
 // vendored and the log is line-oriented, so a reworded message that wraps or
 // re-spaces must still land on its token instead of on 'unclassified' for a
 // reason that has nothing to do with what it says.
-$suite->test('leading, trailing, repeated and embedded whitespace does not change the class',
-        function () {
-    $variants = [
-        'connection failed (111)',
-        '  connection failed (111)',
-        "connection failed (111)\n",
-        "\tconnection failed (111)\t",
-        'connection   failed (111)',
-        "connection\tfailed (111)",
-        "connection\nfailed (111)",
-        "connection\r\nfailed (111)",
-        "  \t connection   failed\t(111)\nhost bt4.t-ru.org  ",
-        "\n\n connection \r\n\t failed  (111) \n\n",
-    ];
-    foreach ($variants as $variant) {
-        strictAssertSame('connect-errno', RuTrackerFetchError::classify($variant),
-            'whitespace variant ' . var_export($variant, true));
-    }
-    // A message that is nothing but whitespace carries no more information
-    // than an absent one, and says so the same way.
-    foreach ([' ', "\t", "\n", "  \r\n\t  "] as $blank) {
-        strictAssertSame('', RuTrackerFetchError::classify($blank),
-            'whitespace-only message ' . var_export($blank, true));
-    }
-});
+$suite->test(
+    'leading, trailing, repeated and embedded whitespace does not change the class',
+    function () {
+        $variants = [
+            'connection failed (111)',
+            '  connection failed (111)',
+            "connection failed (111)\n",
+            "\tconnection failed (111)\t",
+            'connection   failed (111)',
+            "connection\tfailed (111)",
+            "connection\nfailed (111)",
+            "connection\r\nfailed (111)",
+            "  \t connection   failed\t(111)\nhost bt4.t-ru.org  ",
+            "\n\n connection \r\n\t failed  (111) \n\n",
+        ];
+        foreach ($variants as $variant) {
+            strictAssertSame(
+                'connect-errno',
+                RuTrackerFetchError::classify($variant),
+                'whitespace variant ' . var_export($variant, true),
+            );
+        }
+        // A message that is nothing but whitespace carries no more information
+        // than an absent one, and says so the same way.
+        foreach ([' ', "\t", "\n", "  \r\n\t  "] as $blank) {
+            strictAssertSame(
+                '',
+                RuTrackerFetchError::classify($blank),
+                'whitespace-only message ' . var_export($blank, true),
+            );
+        }
+    },
+);
 
 // An absent message is evidence in its own right. Both callers render '' by
 // omitting the error= field entirely rather than logging an empty one.
@@ -194,8 +248,11 @@ $suite->test('an empty or non-string message is reported as no message at all', 
     strictAssertSame('', RuTrackerFetchError::classify(0), 'integer zero');
     strictAssertSame('', RuTrackerFetchError::classify(111), 'a bare errno');
     strictAssertSame('', RuTrackerFetchError::classify(1.5), 'a float');
-    strictAssertSame('', RuTrackerFetchError::classify(['connection failed (0)']),
-        'an array is not unwrapped');
+    strictAssertSame(
+        '',
+        RuTrackerFetchError::classify(['connection failed (0)']),
+        'an array is not unwrapped',
+    );
     strictAssertSame('', RuTrackerFetchError::classify(new stdClass()), 'an object');
 });
 
@@ -220,8 +277,11 @@ $suite->test('an unrecognised message classifies rather than echoing', function 
         'invalid--protocol "gopher"',
     ];
     foreach ($unknown as $message) {
-        strictAssertSame('unclassified', RuTrackerFetchError::classify($message),
-            'unrecognised message ' . var_export($message, true));
+        strictAssertSame(
+            'unclassified',
+            RuTrackerFetchError::classify($message),
+            'unrecognised message ' . var_export($message, true),
+        );
     }
 });
 
@@ -245,13 +305,17 @@ $suite->test('no input produces anything but a token from the fixed vocabulary',
     ];
     foreach ($inputs as $input) {
         $token = RuTrackerFetchError::classify($input);
-        strictAssertTrue(in_array($token, $vocabulary, true),
+        strictAssertTrue(
+            in_array($token, $vocabulary, true),
             'the answer is one of the plugin own tokens for ' . var_export($input, true)
-                . ', got ' . var_export($token, true));
-        strictAssertTrue(strpos($token, 'AbCdEf0123456789AbCdEf0123456789') === false
+                . ', got ' . var_export($token, true),
+        );
+        strictAssertTrue(
+            strpos($token, 'AbCdEf0123456789AbCdEf0123456789') === false
                 && strpos($token, 'deadbeefcafe') === false
                 && strpos($token, 'hunter2') === false,
-            'no credential fragment survives into the answer: ' . var_export($token, true));
+            'no credential fragment survives into the answer: ' . var_export($token, true),
+        );
     }
 });
 
@@ -260,15 +324,22 @@ $suite->test('no input produces anything but a token from the fixed vocabulary',
 // write ` error=<token>` unquoted at the end of a record.
 $suite->test('every token is one plain-ASCII word with no whitespace', function () {
     foreach (fetchErrorTokenVocabulary() as $token) {
-        if ($token === '') { continue; }
-        strictAssertSame(1, preg_match('/^[a-z][a-z-]*[a-z]$/', $token),
-            'the token is lower-case ASCII with no separator to break a log record: ' . $token);
+        if ($token === '') {
+            continue;
+        }
+        strictAssertSame(
+            1,
+            preg_match('/^[a-z][a-z-]*[a-z]$/', $token),
+            'the token is lower-case ASCII with no separator to break a log record: ' . $token,
+        );
     }
     // And the vocabulary is the whole vocabulary: every token the corpus and
     // Snoopy messages produce is in it.
     foreach (fetchErrorParityCases() as $case) {
-        strictAssertTrue(in_array($case[1], fetchErrorTokenVocabulary(), true),
-            'the corpus expects only tokens the vocabulary lists: ' . $case[1]);
+        strictAssertTrue(
+            in_array($case[1], fetchErrorTokenVocabulary(), true),
+            'the corpus expects only tokens the vocabulary lists: ' . $case[1],
+        );
     }
 });
 
@@ -276,11 +347,17 @@ $suite->test('every token is one plain-ASCII word with no whitespace', function 
 $suite->test('challenge routing needs interstitial evidence, not prose or JavaScript Detections', function () {
     foreach (['Please wait just a moment', '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>',
         '<p>cf-chl challenge-platform</p>'] as $body) {
-        strictAssertSame(false, RuTrackerFetchError::isChallenge([], $body), 'ordinary body is not a routing signal'); }
+        strictAssertSame(false, RuTrackerFetchError::isChallenge([], $body), 'ordinary body is not a routing signal');
+    }
     strictAssertSame(true, RuTrackerFetchError::isChallenge([' CF-Mitigated: challenge '], ''), 'explicit header');
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(['cf-mitigated: challenge'],
-        '<title>Подождите</title><script src="/cdn-cgi/changed.js"></script>'),
-        'the documented header routes a changed or localised body');
+    strictAssertSame(
+        true,
+        RuTrackerFetchError::isChallenge(
+            ['cf-mitigated: challenge'],
+            '<title>Подождите</title><script src="/cdn-cgi/changed.js"></script>',
+        ),
+        'the documented header routes a changed or localised body',
+    );
     strictAssertSame(true, RuTrackerFetchError::isChallenge([], '<title>Just a moment...</title>'), 'interstitial title');
     strictAssertSame(true, RuTrackerFetchError::isChallenge([], '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'), 'interstitial script');
 });
@@ -307,7 +384,8 @@ $suite->test('repeated challenge path prefixes preserve signals with bounded wor
         $elapsed = microtime(true) - $start;
         if ($actual !== $case[1] || preg_last_error() !== PREG_NO_ERROR || $elapsed > 2.0) {
             $failures[] = $case[2] . ' jit=' . ini_get('pcre.jit') . ' answer=' . (int) $actual
-                . ' pcre=' . preg_last_error() . ' elapsed=' . $elapsed; }
+                . ' pcre=' . preg_last_error() . ' elapsed=' . $elapsed;
+        }
     }
     strictAssertSame([], $failures, 'signals and negative control remain readable within two seconds');
 });

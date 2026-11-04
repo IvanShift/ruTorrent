@@ -15,13 +15,13 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
  */
 class AdditionCommandSettings extends rTorrentSettings
 {
-	use PermissiveDirectorySettings;
+    use PermissiveDirectorySettings;
 
 
-	public function maxContentSize()
-	{
-		return 1048576;
-	}
+    public function maxContentSize()
+    {
+        return 1048576;
+    }
 }
 
 /**
@@ -55,326 +55,385 @@ class AdditionCommandSettings extends rTorrentSettings
  */
 class TorrentAdditionCommandTest extends TestCase
 {
-	use TorrentSequenceFixtures;
+    use TorrentSequenceFixtures;
 
-	/** A 40 character info hash, as a magnet carries one. */
-	public const MAGNET = 'magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567';
+    /** A 40 character info hash, as a magnet carries one. */
+    public const MAGNET = 'magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567';
 
-	private $base;
-	private $logFile;
-	private $torrentFile;
-	private $previousSettings;
-	private $daemon;
+    private $base;
+    private $logFile;
+    private $torrentFile;
+    private $previousSettings;
+    private $daemon;
 
-	public function setUp()
-	{
-		$this->base = $_ENV['RU_PROFILE_PATH'];
-		@mkdir($this->base, 0700, true);
-		$this->logFile = $this->base . '/rpc.log';
-		$this->torrentFile = $this->base . '/fixture.torrent';
-		file_put_contents($this->torrentFile, $this->announceOnlyTorrent());
+    public function setUp()
+    {
+        $this->base = $_ENV['RU_PROFILE_PATH'];
+        @mkdir($this->base, 0700, true);
+        $this->logFile = $this->base . '/rpc.log';
+        $this->torrentFile = $this->base . '/fixture.torrent';
+        file_put_contents($this->torrentFile, $this->announceOnlyTorrent());
 
-		$reflection = new ReflectionClass('AdditionCommandSettings');
-		$settings = $reflection->newInstanceWithoutConstructor();
-		$settings->iVersion = 0x904;
-		$settings->apiVersion = 0;
-		$settings->aliases = [];
-		$settings->directory = $this->base;
+        $reflection = new ReflectionClass('AdditionCommandSettings');
+        $settings = $reflection->newInstanceWithoutConstructor();
+        $settings->iVersion = 0x904;
+        $settings->apiVersion = 0;
+        $settings->aliases = [];
+        $settings->directory = $this->base;
 
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		$this->previousSettings = $property->getValue();
-		$property->setValue(null, $settings);
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        self::makeAccessible($property);
+        $this->previousSettings = $property->getValue();
+        $property->setValue(null, $settings);
 
-		// Named so that a payload this test manages to send goes to a closed
-		// port on the loopback rather than anywhere real.
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['scgi_port'] = 1;
-		$GLOBALS['rpcTimeOut'] = 1;
-		$GLOBALS['rpcLogCalls'] = true;
-		$GLOBALS['rpcLogFaults'] = false;
-		$GLOBALS['log_file'] = $this->logFile;
-		$GLOBALS['profileMask'] = 0600;
-		$GLOBALS['saveUploadedTorrents'] = true;
-		$GLOBALS['topDirectory'] = '/';
-	}
+        // Named so that a payload this test manages to send goes to a closed
+        // port on the loopback rather than anywhere real.
+        $GLOBALS['scgi_host'] = '127.0.0.1';
+        $GLOBALS['scgi_port'] = 1;
+        $GLOBALS['rpcTimeOut'] = 1;
+        $GLOBALS['rpcLogCalls'] = true;
+        $GLOBALS['rpcLogFaults'] = false;
+        $GLOBALS['log_file'] = $this->logFile;
+        $GLOBALS['profileMask'] = 0600;
+        $GLOBALS['saveUploadedTorrents'] = true;
+        $GLOBALS['topDirectory'] = '/';
+    }
 
-	public function tearDown()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		$property->setValue(null, $this->previousSettings);
+    public function tearDown()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+            $this->daemon = null;
+        }
+        $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+        self::makeAccessible($property);
+        $property->setValue(null, $this->previousSettings);
 
-		// The settings cache writes settings/ under the profile as well.
-		if (is_dir($this->base)) {
-			$entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->base,
-				FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-			foreach ($entries as $entry) {
-				if ($entry->isDir() && !$entry->isLink()) { @rmdir($entry->getPathname()); }
-				else { @unlink($entry->getPathname()); }
-			}
-			@rmdir($this->base);
-		}
-	}
+        // The settings cache writes settings/ under the profile as well.
+        if (is_dir($this->base)) {
+            $entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+                $this->base,
+                FilesystemIterator::SKIP_DOTS,
+            ), RecursiveIteratorIterator::CHILD_FIRST);
+            foreach ($entries as $entry) {
+                if ($entry->isDir() && !$entry->isLink()) {
+                    @rmdir($entry->getPathname());
+                } else {
+                    @unlink($entry->getPathname());
+                }
+            }
+            @rmdir($this->base);
+        }
+    }
 
-	// ---- the mechanism ---------------------------------------------------
+    // ---- the mechanism ---------------------------------------------------
 
-	/**
-	 * The premise the rest of this file rests on: a trailing parameter of a
-	 * load call is a command, and php/rtorrent.php sends the approved
-	 * directory as one. Without this the other tests would be asserting
-	 * against a payload shape nobody uses.
-	 */
-	public function testTheApprovedDirectoryTravelsAsATrailingLoadParameter()
-	{
-		// A reload: a new download's directory is made first, in a request of
-		// its own, and with no daemon here that mkdir fails and nothing more is
-		// built. A reload sends the mkdir and the load together, and its load
-		// carries the directory the way a new one's does.
-		$payload = $this->addTorrentWith(null, '/downloads/approved', false);
+    /**
+     * The premise the rest of this file rests on: a trailing parameter of a
+     * load call is a command, and php/rtorrent.php sends the approved
+     * directory as one. Without this the other tests would be asserting
+     * against a payload shape nobody uses.
+     */
+    public function testTheApprovedDirectoryTravelsAsATrailingLoadParameter()
+    {
+        // A reload: a new download's directory is made first, in a request of
+        // its own, and with no daemon here that mkdir fails and nothing more is
+        // built. A reload sends the mkdir and the load together, and its load
+        // carries the directory the way a new one's does.
+        $payload = $this->addTorrentWith(null, '/downloads/approved', false);
 
-		$this->assertTrue(strpos($payload, 'load_raw_start') !== false,
-			'the add builds a load call');
-		$this->assertTrue(strpos($payload, 'd.set_directory="/downloads/approved"') !== false,
-			'the directory rides along as a parameter of that call, i.e. as a command');
-	}
+        $this->assertTrue(
+            strpos($payload, 'load_raw_start') !== false,
+            'the add builds a load call',
+        );
+        $this->assertTrue(
+            strpos($payload, 'd.set_directory="/downloads/approved"') !== false,
+            'the directory rides along as a parameter of that call, i.e. as a command',
+        );
+    }
 
-	// ---- what an addition could do ---------------------------------------
+    // ---- what an addition could do ---------------------------------------
 
-	public function testAnExecuteAdditionNeverReachesThePayload()
-	{
-		$payload = $this->addTorrentWith(['execute=/bin/sh,-c,id > /tmp/pwned']);
+    public function testAnExecuteAdditionNeverReachesThePayload()
+    {
+        $payload = $this->addTorrentWith(['execute=/bin/sh,-c,id > /tmp/pwned']);
 
-		$this->assertTrue(strpos($payload, 'execute=') === false,
-			'an execute addition is not sent');
-		$this->assertTrue($payload === '',
-			'and the add is refused whole, rather than sent without it');
-	}
+        $this->assertTrue(
+            strpos($payload, 'execute=') === false,
+            'an execute addition is not sent',
+        );
+        $this->assertTrue(
+            $payload === '',
+            'and the add is refused whole, rather than sent without it',
+        );
+    }
 
-	public function testAnExecuteThrowAdditionNeverReachesThePayload()
-	{
-		$payload = $this->addTorrentWith(['execute.throw=/bin/sh,-c,id']);
+    public function testAnExecuteThrowAdditionNeverReachesThePayload()
+    {
+        $payload = $this->addTorrentWith(['execute.throw=/bin/sh,-c,id']);
 
-		$this->assertTrue($payload === '', 'execute.throw is refused too');
-	}
+        $this->assertTrue($payload === '', 'execute.throw is refused too');
+    }
 
-	/**
-	 * The addition list is appended after the directory, so a second
-	 * d.set_directory is the last one rtorrent reads -- and it is the one
-	 * correctDirectory() never saw.
-	 */
-	public function testAnAdditionCannotReplaceTheApprovedDirectory()
-	{
-		$payload = $this->addTorrentWith(['d.set_directory=/etc'],
-			'/downloads/approved');
+    /**
+     * The addition list is appended after the directory, so a second
+     * d.set_directory is the last one rtorrent reads -- and it is the one
+     * correctDirectory() never saw.
+     */
+    public function testAnAdditionCannotReplaceTheApprovedDirectory()
+    {
+        $payload = $this->addTorrentWith(
+            ['d.set_directory=/etc'],
+            '/downloads/approved',
+        );
 
-		$this->assertTrue(strpos($payload, 'd.set_directory=/etc') === false,
-			'an unchecked directory is not sent');
-		$this->assertTrue($payload === '', 'the add is refused');
-	}
+        $this->assertTrue(
+            strpos($payload, 'd.set_directory=/etc') === false,
+            'an unchecked directory is not sent',
+        );
+        $this->assertTrue($payload === '', 'the add is refused');
+    }
 
-	public function testAnImportAdditionNeverReachesThePayload()
-	{
-		$this->assertTrue($this->addTorrentWith(['import=/tmp/rc']) === '',
-			'import is refused');
-	}
+    public function testAnImportAdditionNeverReachesThePayload()
+    {
+        $this->assertTrue(
+            $this->addTorrentWith(['import=/tmp/rc']) === '',
+            'import is refused',
+        );
+    }
 
-	public function testAMagnetAdditionIsHeldToTheSameSet()
-	{
-		$payload = $this->addMagnetWith(['execute=/bin/sh,-c,id']);
+    public function testAMagnetAdditionIsHeldToTheSameSet()
+    {
+        $payload = $this->addMagnetWith(['execute=/bin/sh,-c,id']);
 
-		$this->assertTrue($payload === '',
-			'sendMagnet refuses the same addition sendTorrent refuses');
-	}
+        $this->assertTrue(
+            $payload === '',
+            'sendMagnet refuses the same addition sendTorrent refuses',
+        );
+    }
 
-	/** One bad entry refuses the batch, not just itself. */
-	public function testOneRefusedAdditionStopsTheWholeAdd()
-	{
-		$payload = $this->addTorrentWith([
-			getCmd('d.set_throttle_name=') . 'slow',
-			'execute=/bin/sh,-c,id',
-		]);
+    /** One bad entry refuses the batch, not just itself. */
+    public function testOneRefusedAdditionStopsTheWholeAdd()
+    {
+        $payload = $this->addTorrentWith([
+            getCmd('d.set_throttle_name=') . 'slow',
+            'execute=/bin/sh,-c,id',
+        ]);
 
-		$this->assertTrue($payload === '',
-			'a list holding one refused addition sends none of itself');
-	}
+        $this->assertTrue(
+            $payload === '',
+            'a list holding one refused addition sends none of itself',
+        );
+    }
 
-	public function testAnAdditionThatNamesNoCommandIsRefused()
-	{
-		$this->assertTrue($this->addTorrentWith(['d.set_throttle_name']) === '',
-			'an addition with no = names no command and is refused');
-	}
+    public function testAnAdditionThatNamesNoCommandIsRefused()
+    {
+        $this->assertTrue(
+            $this->addTorrentWith(['d.set_throttle_name']) === '',
+            'an addition with no = names no command and is refused',
+        );
+    }
 
-	public function testANonStringAdditionIsRefused()
-	{
-		$this->assertTrue($this->addTorrentWith([['execute=id']]) === '',
-			'an addition that is not a string is refused');
-	}
+    public function testANonStringAdditionIsRefused()
+    {
+        $this->assertTrue(
+            $this->addTorrentWith([['execute=id']]) === '',
+            'an addition that is not a string is refused',
+        );
+    }
 
-	// ---- what the shipped plugins build ----------------------------------
+    // ---- what the shipped plugins build ----------------------------------
 
-	/** plugins/rss/rss.php and plugins/rutracker_check/check.php. */
-	public function testTheThrottleAdditionIsSent()
-	{
-		$payload = $this->addTorrentWith([getCmd('d.set_throttle_name=') . 'slow']);
+    /** plugins/rss/rss.php and plugins/rutracker_check/check.php. */
+    public function testTheThrottleAdditionIsSent()
+    {
+        $payload = $this->addTorrentWith([getCmd('d.set_throttle_name=') . 'slow']);
 
-		$this->assertTrue(strpos($payload, 'throttle_name') !== false,
-			'the throttle addition the rss plugin builds still reaches the payload');
-	}
+        $this->assertTrue(
+            strpos($payload, 'throttle_name') !== false,
+            'the throttle addition the rss plugin builds still reaches the payload',
+        );
+    }
 
-	/** plugins/rss/rss.php and plugins/rutracker_check/check.php. */
-	public function testTheRatioViewAdditionIsSent()
-	{
-		$payload = $this->addTorrentWith([getCmd('view.set_visible=') . 'rat_1']);
+    /** plugins/rss/rss.php and plugins/rutracker_check/check.php. */
+    public function testTheRatioViewAdditionIsSent()
+    {
+        $payload = $this->addTorrentWith([getCmd('view.set_visible=') . 'rat_1']);
 
-		$this->assertTrue(strpos($payload, 'view.set_visible=rat_1') !== false,
-			'the ratio view addition still reaches the payload');
-	}
+        $this->assertTrue(
+            strpos($payload, 'view.set_visible=rat_1') !== false,
+            'the ratio view addition still reaches the payload',
+        );
+    }
 
-	/** plugins/rutracker_check/check.php. */
-	public function testThePushBackUniqueAdditionIsSent()
-	{
-		$payload = $this->addTorrentWith([getCmd('d.views.push_back_unique=') . 'rat_1']);
+    /** plugins/rutracker_check/check.php. */
+    public function testThePushBackUniqueAdditionIsSent()
+    {
+        $payload = $this->addTorrentWith([getCmd('d.views.push_back_unique=') . 'rat_1']);
 
-		$this->assertTrue(strpos($payload, 'd.views.push_back_unique=rat_1') !== false,
-			'the view membership addition still reaches the payload');
-	}
+        $this->assertTrue(
+            strpos($payload, 'd.views.push_back_unique=rat_1') !== false,
+            'the view membership addition still reaches the payload',
+        );
+    }
 
-	/** plugins/datadir/util_setdir.php. */
-	public function testTheConnectionSeedAdditionIsSent()
-	{
-		$payload = $this->addTorrentWith([getCmd('d.set_connection_seed=') . 'seed']);
+    /** plugins/datadir/util_setdir.php. */
+    public function testTheConnectionSeedAdditionIsSent()
+    {
+        $payload = $this->addTorrentWith([getCmd('d.set_connection_seed=') . 'seed']);
 
-		$this->assertTrue(strpos($payload, 'connection_seed') !== false ||
-			strpos($payload, 'connection.seed') !== false,
-			'the connection addition the datadir plugin builds still reaches the payload');
-	}
+        $this->assertTrue(
+            strpos($payload, 'connection_seed') !== false
+            || strpos($payload, 'connection.seed') !== false,
+            'the connection addition the datadir plugin builds still reaches the payload',
+        );
+    }
 
-	/** plugins/rss/rss.php builds both at once. */
-	public function testTheRssPluginsPairIsSent()
-	{
-		$payload = $this->addMagnetWith([
-			getCmd('d.set_throttle_name=') . 'slow',
-			getCmd('view.set_visible=') . 'rat_1',
-		]);
+    /** plugins/rss/rss.php builds both at once. */
+    public function testTheRssPluginsPairIsSent()
+    {
+        $payload = $this->addMagnetWith([
+            getCmd('d.set_throttle_name=') . 'slow',
+            getCmd('view.set_visible=') . 'rat_1',
+        ]);
 
-		$this->assertTrue(strpos($payload, 'throttle_name') !== false &&
-			strpos($payload, 'view.set_visible=rat_1') !== false,
-			'both additions of an rss filter reach the magnet payload');
-	}
+        $this->assertTrue(
+            strpos($payload, 'throttle_name') !== false
+            && strpos($payload, 'view.set_visible=rat_1') !== false,
+            'both additions of an rss filter reach the magnet payload',
+        );
+    }
 
-	/** An add with no addition at all is the common case and must still work. */
-	public function testAnAddWithNoAdditionIsSent()
-	{
-		$this->assertTrue($this->addTorrentWith(null) !== '',
-			'an add that passes no addition still builds a payload');
-	}
+    /** An add with no addition at all is the common case and must still work. */
+    public function testAnAddWithNoAdditionIsSent()
+    {
+        $this->assertTrue(
+            $this->addTorrentWith(null) !== '',
+            'an add that passes no addition still builds a payload',
+        );
+    }
 
-	/**
-	 * The reported vector end to end: addition[] in the POST body of a
-	 * request to php/addtorrent.php.
-	 */
-	public function testTheScriptDoesNotTakeAnAdditionFromTheRequest()
-	{
-		$payload = $this->runAddTorrentScript('url=' . rawurlencode(self::MAGNET) .
-			'&addition[]=' . rawurlencode('execute=/bin/sh,-c,id > /tmp/pwned'));
+    /**
+     * The reported vector end to end: addition[] in the POST body of a
+     * request to php/addtorrent.php.
+     */
+    public function testTheScriptDoesNotTakeAnAdditionFromTheRequest()
+    {
+        $payload = $this->runAddTorrentScript('url=' . rawurlencode(self::MAGNET)
+            . '&addition[]=' . rawurlencode('execute=/bin/sh,-c,id > /tmp/pwned'));
 
-		$this->assertTrue(strpos($payload, 'execute=') === false,
-			'an addition given in the request does not reach the payload');
-		$this->assertTrue(preg_match('~<methodName>load[._]start</methodName>~', $payload) === 1,
-			'and the magnet itself is sent in a load request');
-	}
+        $this->assertTrue(
+            strpos($payload, 'execute=') === false,
+            'an addition given in the request does not reach the payload',
+        );
+        $this->assertTrue(
+            preg_match('~<methodName>load[._]start</methodName>~', $payload) === 1,
+            'and the magnet itself is sent in a load request',
+        );
+    }
 
-	/** The positive control for the test above: the script does send a payload. */
-	public function testTheScriptStillAddsAMagnet()
-	{
-		$payload = $this->runAddTorrentScript('url=' . rawurlencode(self::MAGNET));
+    /** The positive control for the test above: the script does send a payload. */
+    public function testTheScriptStillAddsAMagnet()
+    {
+        $payload = $this->runAddTorrentScript('url=' . rawurlencode(self::MAGNET));
 
-		$this->assertTrue(preg_match('~<methodName>load[._]start</methodName>~', $payload) === 1
-			&& strpos($payload, self::MAGNET) !== false,
-			'the magnet reaches the daemon in a load request');
-	}
-	public function testEditCanPreserveTheExactStoredLabelAsAnAddition()
-	{
-		$label = 'raw%20label "q" \\bytes';
-		$addition = rTorrent::additionCommand('d.set_custom1', $label);
-		$this->assertTrue(rTorrent::isValidAddition($addition), 'the exact stored label is an admitted edit addition');
-		$this->assertSame('d.set_custom1='.rTorrent::quoteCommandArg($label), $addition,
-			'the shared command argument owner quotes the label without URL transcoding');
-	}
+        $this->assertTrue(
+            preg_match('~<methodName>load[._]start</methodName>~', $payload) === 1
+            && strpos($payload, self::MAGNET) !== false,
+            'the magnet reaches the daemon in a load request',
+        );
+    }
+    public function testEditCanPreserveTheExactStoredLabelAsAnAddition()
+    {
+        $label = 'raw%20label "q" \\bytes';
+        $addition = rTorrent::additionCommand('d.set_custom1', $label);
+        $this->assertTrue(rTorrent::isValidAddition($addition), 'the exact stored label is an admitted edit addition');
+        $this->assertSame(
+            'd.set_custom1=' . rTorrent::quoteCommandArg($label),
+            $addition,
+            'the shared command argument owner quotes the label without URL transcoding',
+        );
+    }
 
-	/** Everything php/xmlrpc.php logged since the last call to this. */
-	private function takeLog()
-	{
-		$log = file_exists($this->logFile) ? file_get_contents($this->logFile) : '';
-		@unlink($this->logFile);
-		return $log;
-	}
+    /** Everything php/xmlrpc.php logged since the last call to this. */
+    private function takeLog()
+    {
+        $log = file_exists($this->logFile) ? file_get_contents($this->logFile) : '';
+        @unlink($this->logFile);
+        return $log;
+    }
 
-	/** Run one add and return what it would have sent. */
-	private function addTorrentWith($addition, $directory = null, $isNew = true)
-	{
-		$this->takeLog();
-		rTorrent::sendTorrent(new Torrent($this->torrentFile), true, true,
-			$directory, null, true, false, $isNew, $addition);
-		return $this->takeLog();
-	}
+    /** Run one add and return what it would have sent. */
+    private function addTorrentWith($addition, $directory = null, $isNew = true)
+    {
+        $this->takeLog();
+        rTorrent::sendTorrent(
+            new Torrent($this->torrentFile),
+            true,
+            true,
+            $directory,
+            null,
+            true,
+            false,
+            $isNew,
+            $addition,
+        );
+        return $this->takeLog();
+    }
 
-	private function addMagnetWith($addition, $directory = null)
-	{
-		$this->takeLog();
-		rTorrent::sendMagnet(self::MAGNET, true, true, $directory, null, $addition);
-		return $this->takeLog();
-	}
+    private function addMagnetWith($addition, $directory = null)
+    {
+        $this->takeLog();
+        rTorrent::sendMagnet(self::MAGNET, true, true, $directory, null, $addition);
+        return $this->takeLog();
+    }
 
-	// ---- the request ------------------------------------------------------
+    // ---- the request ------------------------------------------------------
 
-	/**
-	 * php/addtorrent.php is a script, not a function: it reads $_REQUEST at the
-	 * top level and ends by calling header(). So it is driven where it lives, in
-	 * a process of its own, over the magnet branch -- the one branch that needs
-	 * neither an upload nor an outbound fetch.
-	 */
-	private function runAddTorrentScript($query)
-	{
-		$root = realpath(__DIR__ . '/../..');
-		$driver = $this->base . '/drive-addtorrent.php';
-		$this->daemon = new FakeRtorrentDaemon(
-			new FakeRtorrentAddTorrentReplies([], [], false),
-			$this->base . '/daemon.log');
-		// conf/config.php assigns the globals this test needs to control, so it
-		// is loaded first and the settings are written over it. addtorrent.php
-		// reaches it through the same require_once and finds it already loaded.
-		$code = "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base, true) . ";\n"
-			. 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
-			. '$_SERVER["REQUEST_METHOD"] = "POST";' . "\n"
-			. 'parse_str(' . var_export($query, true) . ", \$_POST); \$_REQUEST = \$_POST;\n"
-			. "\$scgi_host = '127.0.0.1';\n"
-			. '$scgi_port = ' . $this->daemon->port() . ";\n"
-			. "\$rpcTimeOut = 1;\n"
-			. "\$rpcLogCalls = true;\n"
-			. "\$log_file = " . var_export($this->logFile, true) . ";\n"
-			. 'set_include_path(' . var_export($root . '/php', true) . ");\n"
-			. 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n";
-		file_put_contents($driver, $code);
+    /**
+     * php/addtorrent.php is a script, not a function: it reads $_REQUEST at the
+     * top level and ends by calling header(). So it is driven where it lives, in
+     * a process of its own, over the magnet branch -- the one branch that needs
+     * neither an upload nor an outbound fetch.
+     */
+    private function runAddTorrentScript($query)
+    {
+        $root = realpath(__DIR__ . '/../..');
+        $driver = $this->base . '/drive-addtorrent.php';
+        $this->daemon = new FakeRtorrentDaemon(
+            new FakeRtorrentAddTorrentReplies([], [], false),
+            $this->base . '/daemon.log',
+        );
+        // conf/config.php assigns the globals this test needs to control, so it
+        // is loaded first and the settings are written over it. addtorrent.php
+        // reaches it through the same require_once and finds it already loaded.
+        $code = "<?php\n"
+            . '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base, true) . ";\n"
+            . 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
+            . '$_SERVER["REQUEST_METHOD"] = "POST";' . "\n"
+            . 'parse_str(' . var_export($query, true) . ", \$_POST); \$_REQUEST = \$_POST;\n"
+            . "\$scgi_host = '127.0.0.1';\n"
+            . '$scgi_port = ' . $this->daemon->port() . ";\n"
+            . "\$rpcTimeOut = 1;\n"
+            . "\$rpcLogCalls = true;\n"
+            . "\$log_file = " . var_export($this->logFile, true) . ";\n"
+            . 'set_include_path(' . var_export($root . '/php', true) . ");\n"
+            . 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n";
+        file_put_contents($driver, $code);
 
-		$this->takeLog();
-		$output = [];
-		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
-			escapeshellarg($driver) . ' 2>&1', $output, $status);
-		@unlink($driver);
-		$payload = implode("\n", $this->daemon->bodies());
-		$this->daemon->stop();
-		$this->daemon = null;
-		if ($status !== 0) {
-			throw new RuntimeException('addtorrent child failed: exit=' . $status
-				. ' output=' . implode("\n", $output)); }
-		return $payload;
-	}
+        $this->takeLog();
+        $output = [];
+        exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 '
+            . escapeshellarg($driver) . ' 2>&1', $output, $status);
+        @unlink($driver);
+        $payload = implode("\n", $this->daemon->bodies());
+        $this->daemon->stop();
+        $this->daemon = null;
+        if ($status !== 0) {
+            throw new RuntimeException('addtorrent child failed: exit=' . $status
+                . ' output=' . implode("\n", $output));
+        }
+        return $payload;
+    }
 
 }

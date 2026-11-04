@@ -1,4 +1,5 @@
 <?php
+
 require_once(__DIR__ . '/TestCase.php');
 
 class SourceExportActionTest extends TestCase
@@ -14,9 +15,12 @@ class SourceExportActionTest extends TestCase
 
     public function tearDown()
     {
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->directory,
-            FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) as $entry) {
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
+        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+            $this->directory,
+            FilesystemIterator::SKIP_DOTS,
+        ), RecursiveIteratorIterator::CHILD_FIRST) as $entry) {
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        }
         rmdir($this->directory);
     }
 
@@ -31,12 +35,18 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'source export has no PHP warnings');
         $archive = json_decode($out, true);
         $this->assertTrue(is_array($archive), 'source ZIP fixture captures entries: ' . $out);
-        $this->assertSame(['seed.bin-1.torrent'], array_keys($archive),
-            'metadata source is named after torrent content');
+        $this->assertSame(
+            ['seed.bin-1.torrent'],
+            array_keys($archive),
+            'metadata source is named after torrent content',
+        );
         $encoded = is_array($archive) && count($archive) ? reset($archive) : '';
         $bytes = base64_decode($encoded, true);
-        $this->assertSame('d4:info' . $raw . 'e', $bytes,
-            'archive carries the validated info dictionary in a full metainfo envelope');
+        $this->assertSame(
+            'd4:info' . $raw . 'e',
+            $bytes,
+            'archive carries the validated info dictionary in a full metainfo envelope',
+        );
     }
 
     public function testMultiSourceZipKeepsOrdinaryMetainfoFileBytes()
@@ -50,48 +60,66 @@ class SourceExportActionTest extends TestCase
         $this->assertSame(0, $status, 'ordinary source export exits cleanly: ' . $err);
         $this->assertSame('', $err, 'ordinary source export emits no warning');
         $archive = json_decode($out, true);
-        $this->assertSame(['seed.bin-1.torrent'], array_keys($archive),
-            'ordinary source retains the torrent-content name');
-        $this->assertSame($bytes, base64_decode($archive['seed.bin-1.torrent'], true),
-            'ordinary source ZIP preserves the original full metainfo bytes');
+        $this->assertSame(
+            ['seed.bin-1.torrent'],
+            array_keys($archive),
+            'ordinary source retains the torrent-content name',
+        );
+        $this->assertSame(
+            $bytes,
+            base64_decode($archive['seed.bin-1.torrent'], true),
+            'ordinary source ZIP preserves the original full metainfo bytes',
+        );
     }
 
     public function testSourceZipUsesTheMetadataAliasOnlyForTheArchiveLabel()
     {
         $raw = "cp\xFF %41";
         $alias = 'серия "q" \\b %41';
-        $info = 'd6:lengthi1e4:name'.strlen($raw).':'.$raw
-            .'10:name.utf-8'.strlen($alias).':'.$alias.'12:piece lengthi16384e6:pieces20:'.str_repeat('x',20).'e';
-        $bytes = 'd4:info'.$info.'e';
-        $path = $this->directory.'/'.self::INFO_HASH.'.torrent';
+        $info = 'd6:lengthi1e4:name' . strlen($raw) . ':' . $raw
+            . '10:name.utf-8' . strlen($alias) . ':' . $alias . '12:piece lengthi16384e6:pieces20:' . str_repeat('x', 20) . 'e';
+        $bytes = 'd4:info' . $info . 'e';
+        $path = $this->directory . '/' . self::INFO_HASH . '.torrent';
         file_put_contents($path, $bytes);
         list($status, $out, $err) = $this->request($path);
-        $this->assertSame(0, $status, 'legacy source ZIP exits cleanly: '.$err);
+        $this->assertSame(0, $status, 'legacy source ZIP exits cleanly: ' . $err);
         $this->assertSame('', $err, 'legacy source ZIP emits no PHP warning');
         $archive = json_decode($out, true);
         $label = 'серия "q" _b %41-1.torrent';
-        $this->assertSame([$label], is_array($archive) ? array_keys($archive) : null,
-            'the ZIP member uses Unicode and literal percent text while remaining one path component');
-        $this->assertSame($bytes, isset($archive[$label]) ? base64_decode($archive[$label], true) : null,
-            'the archive payload keeps the source torrent bytes and raw legacy name');
+        $this->assertSame(
+            [$label],
+            is_array($archive) ? array_keys($archive) : null,
+            'the ZIP member uses Unicode and literal percent text while remaining one path component',
+        );
+        $this->assertSame(
+            $bytes,
+            isset($archive[$label]) ? base64_decode($archive[$label], true) : null,
+            'the archive payload keeps the source torrent bytes and raw legacy name',
+        );
     }
 
     public function testSourceZipAliasesCannotCreateParentTraversalEntries()
     {
-        foreach([["cp\xFF", '..\\outside\\name'], ['../outside/name', 'ignored']] as $names) {
+        foreach ([["cp\xFF", '..\\outside\\name'], ['../outside/name', 'ignored']] as $names) {
             list($raw, $alias) = $names;
-            $info = 'd6:lengthi1e4:name'.strlen($raw).':'.$raw
-                .'10:name.utf-8'.strlen($alias).':'.$alias.'12:piece lengthi16384e6:pieces20:'.str_repeat('x',20).'e';
-            $bytes = 'd4:info'.$info.'e';
-            $path = $this->directory.'/'.self::INFO_HASH.'.torrent';
+            $info = 'd6:lengthi1e4:name' . strlen($raw) . ':' . $raw
+                . '10:name.utf-8' . strlen($alias) . ':' . $alias . '12:piece lengthi16384e6:pieces20:' . str_repeat('x', 20) . 'e';
+            $bytes = 'd4:info' . $info . 'e';
+            $path = $this->directory . '/' . self::INFO_HASH . '.torrent';
             file_put_contents($path, $bytes);
             list($status, $out, $err) = $this->request($path);
             $archive = json_decode($out, true);
-            $this->assertSame(0, $status, 'a traversal-shaped label does not stop source export: '.$err);
-            $this->assertSame(['.._outside_name-1.torrent'], is_array($archive) ? array_keys($archive) : null,
-                'a metadata label cannot traverse directories on either slash convention');
-            $this->assertSame($bytes, isset($archive['.._outside_name-1.torrent']) ? base64_decode($archive['.._outside_name-1.torrent'], true) : null,
-                'safe archive labels leave the torrent payload unchanged');
+            $this->assertSame(0, $status, 'a traversal-shaped label does not stop source export: ' . $err);
+            $this->assertSame(
+                ['.._outside_name-1.torrent'],
+                is_array($archive) ? array_keys($archive) : null,
+                'a metadata label cannot traverse directories on either slash convention',
+            );
+            $this->assertSame(
+                $bytes,
+                isset($archive['.._outside_name-1.torrent']) ? base64_decode($archive['.._outside_name-1.torrent'], true) : null,
+                'safe archive labels leave the torrent payload unchanged',
+            );
         }
     }
 
@@ -107,8 +135,11 @@ class SourceExportActionTest extends TestCase
         $this->assertSame(0, $status, 'partial source ZIP exits cleanly: ' . $err);
         $this->assertSame('', $err, 'partial source ZIP emits no warning');
         $archive = json_decode($out, true);
-        $this->assertSame(['seed.bin-1.torrent'], array_keys($archive),
-            'a malformed source does not enter the ZIP');
+        $this->assertSame(
+            ['seed.bin-1.torrent'],
+            array_keys($archive),
+            'a malformed source does not enter the ZIP',
+        );
         $log = file_get_contents($this->directory . '/source.log');
         $this->assertTrue(strpos($log, 'source: ZIP entry refused: ' . str_repeat('A', 40)
             . ' source-invalid') !== false, 'the omitted hash and reason are visible in the journal');
@@ -142,15 +173,26 @@ class SourceExportActionTest extends TestCase
             list($status, $out, $err) = $this->request($path, 'source', null, null, null, null, $mode);
             $this->assertSame(0, $status, $mode . ' refusal exits without fatal: ' . $err);
             $this->assertSame('', $err, $mode . ' refusal emits no PHP warning');
-            $this->assertSame('noty("Could not export source ZIP archive.","error");', $out,
-                $mode . ' refusal is visible without a partial download');
+            $this->assertSame(
+                'noty("Could not export source ZIP archive.","error");',
+                $out,
+                $mode . ' refusal is visible without a partial download',
+            );
             $log = file_get_contents($this->directory . '/source.log');
-            $this->assertTrue(strpos($log, 'source: ZIP export failed: ' . $reason) !== false,
-                $mode . ' refusal has a classified journal reason');
-            $this->assertSame([], glob($this->directory . '/zip-temp/*.zip'),
-                $mode . ' refusal removes the partial ZIP');
-            $this->assertSame($mode === 'send', file_exists($this->directory . '/send.called'),
-                $mode . ' sends only after a complete archive');
+            $this->assertTrue(
+                strpos($log, 'source: ZIP export failed: ' . $reason) !== false,
+                $mode . ' refusal has a classified journal reason',
+            );
+            $this->assertSame(
+                [],
+                glob($this->directory . '/zip-temp/*.zip'),
+                $mode . ' refusal removes the partial ZIP',
+            );
+            $this->assertSame(
+                $mode === 'send',
+                file_exists($this->directory . '/send.called'),
+                $mode . ' sends only after a complete archive',
+            );
         }
     }
 
@@ -163,15 +205,25 @@ class SourceExportActionTest extends TestCase
         list($status, $out, $err) = $this->request($path, 'source', null, null, null, null, 'add-string');
         $this->assertSame(0, $status, 'raw metadata add refusal exits without fatal: ' . $err);
         $this->assertSame('', $err, 'raw metadata add refusal emits no warning');
-        $this->assertSame('noty("Could not export source ZIP archive.","error");', $out,
-            'raw metadata add refusal is visible without partial output');
+        $this->assertSame(
+            'noty("Could not export source ZIP archive.","error");',
+            $out,
+            'raw metadata add refusal is visible without partial output',
+        );
         $log = file_get_contents($this->directory . '/source.log');
-        $this->assertTrue(strpos($log, 'source: ZIP export failed: add-string-failed') !== false,
-            'raw metadata add refusal has a classified journal reason');
-        $this->assertSame([], glob($this->directory . '/zip-temp/*.zip'),
-            'raw metadata add refusal removes the partial ZIP');
-        $this->assertTrue(!file_exists($this->directory . '/send.called'),
-            'raw metadata add refusal never starts a download');
+        $this->assertTrue(
+            strpos($log, 'source: ZIP export failed: add-string-failed') !== false,
+            'raw metadata add refusal has a classified journal reason',
+        );
+        $this->assertSame(
+            [],
+            glob($this->directory . '/zip-temp/*.zip'),
+            'raw metadata add refusal removes the partial ZIP',
+        );
+        $this->assertTrue(
+            !file_exists($this->directory . '/send.called'),
+            'raw metadata add refusal never starts a download',
+        );
     }
 
     public function testRequestConditionalsCannotSuppressFreshSourceZip()
@@ -186,11 +238,17 @@ class SourceExportActionTest extends TestCase
             $this->assertSame(0, $status, $mode . ' request exits cleanly: ' . $err);
             $this->assertSame('', $err, $mode . ' request emits no warning');
             $archive = json_decode($out, true);
-            $this->assertSame($bytes, is_array($archive) && isset($archive['seed.bin-1.torrent'])
+            $this->assertSame(
+                $bytes,
+                is_array($archive) && isset($archive['seed.bin-1.torrent'])
                 ? base64_decode($archive['seed.bin-1.torrent'], true) : null,
-                $mode . ' request receives the complete new ZIP entry');
-            $this->assertSame([], glob($this->directory . '/zip-temp/*.zip'),
-                $mode . ' request cleans up the completed ZIP');
+                $mode . ' request receives the complete new ZIP entry',
+            );
+            $this->assertSame(
+                [],
+                glob($this->directory . '/zip-temp/*.zip'),
+                $mode . ' request cleans up the completed ZIP',
+            );
         }
     }
 
@@ -204,12 +262,18 @@ class SourceExportActionTest extends TestCase
         $this->assertSame(0, $status, 'dump action exits cleanly: ' . $err);
         $this->assertSame('', $err, 'dump action emits no warning');
         $result = json_decode($out, true);
-        $this->assertTrue(is_array($result) && isset($result['commands'][0]),
-            'dump starts its external task');
-        $this->assertTrue(strpos($result['commands'][0], escapeshellarg($path)) !== false,
-            'dump keeps the original raw path for its external inspector');
-        $this->assertTrue(strpos($result['commands'][0], ' -d ') !== false,
-            'raw magnet metadata uses the inspector mode that does not require announce');
+        $this->assertTrue(
+            is_array($result) && isset($result['commands'][0]),
+            'dump starts its external task',
+        );
+        $this->assertTrue(
+            strpos($result['commands'][0], escapeshellarg($path)) !== false,
+            'dump keeps the original raw path for its external inspector',
+        );
+        $this->assertTrue(
+            strpos($result['commands'][0], ' -d ') !== false,
+            'raw magnet metadata uses the inspector mode that does not require announce',
+        );
     }
 
     public function testDumpPreservesVerboseModeForOrdinaryTorrent()
@@ -221,8 +285,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'ordinary dump action emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'ordinary dump starts its external task');
-        $this->assertTrue(strpos($result['commands'][0], ' -v -w 4 ') !== false,
-            'ordinary metainfo retains all configured inspector arguments');
+        $this->assertTrue(
+            strpos($result['commands'][0], ' -v -w 4 ') !== false,
+            'ordinary metainfo retains all configured inspector arguments',
+        );
     }
 
     public function testDumpPreservesAdditionalConfiguredArgumentsForRawMetadata()
@@ -236,8 +302,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'configured raw dump emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'configured raw dump starts');
-        $this->assertTrue(strpos($result['commands'][0], ' -d -w 4 ') !== false,
-            'raw mode replaces only the verbose flag and retains other configured flags');
+        $this->assertTrue(
+            strpos($result['commands'][0], ' -d -w 4 ') !== false,
+            'raw mode replaces only the verbose flag and retains other configured flags',
+        );
     }
 
     public function testDumpAddsRawModeWhenConfiguredArgumentsHaveNoVerboseFlag()
@@ -251,8 +319,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'nonverbose raw dump emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'nonverbose raw dump starts');
-        $this->assertTrue(strpos($result['commands'][0], ' -w 4 -d ') !== false,
-            'raw mode is appended when no standalone verbose flag exists');
+        $this->assertTrue(
+            strpos($result['commands'][0], ' -w 4 -d ') !== false,
+            'raw mode is appended when no standalone verbose flag exists',
+        );
     }
 
     public function testDumpAcceptsExplicitRawArgumentsForAlternateInspector()
@@ -266,8 +336,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'alternate raw dump emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'alternate raw dump starts');
-        $this->assertTrue(strpos($result['commands'][0], ' --inspect-raw ') !== false,
-            'explicit raw arguments replace the dumptorrent-specific mode');
+        $this->assertTrue(
+            strpos($result['commands'][0], ' --inspect-raw ') !== false,
+            'explicit raw arguments replace the dumptorrent-specific mode',
+        );
     }
 
     public function testDumpInspectsThePathItActuallyValidated()
@@ -285,10 +357,14 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'changing-source dump emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'changing-source dump starts');
-        $this->assertTrue(strpos($result['commands'][0], escapeshellarg($second)) !== false,
-            'the task inspects the source returned by the validating lookup');
-        $this->assertTrue(strpos($result['commands'][0], escapeshellarg($first)) === false,
-            'the earlier unvalidated path is not inspected');
+        $this->assertTrue(
+            strpos($result['commands'][0], escapeshellarg($second)) !== false,
+            'the task inspects the source returned by the validating lookup',
+        );
+        $this->assertTrue(
+            strpos($result['commands'][0], escapeshellarg($first)) === false,
+            'the earlier unvalidated path is not inspected',
+        );
     }
 
     public function testDumpRefusesUnavailableSourceWithClassifiedLog()
@@ -301,9 +377,12 @@ class SourceExportActionTest extends TestCase
         $this->assertSame(255, $result['status'], 'unavailable source does not start a task');
         // The merged dump action reports its refusal as the classified reason
         // and the file it looked for (upstream #3384), not a fixed sentence.
-        $this->assertSame([['reason' => 'dumpErrorNoFile',
-            'file' => $this->directory . '/' . self::INFO_HASH . '.torrent', 'user' => '']], $result['errors'],
-            'unavailable-source refusal is visible to the requester');
+        $this->assertSame(
+            [['reason' => 'dumpErrorNoFile',
+                'file' => $this->directory . '/' . self::INFO_HASH . '.torrent', 'user' => '']],
+            $result['errors'],
+            'unavailable-source refusal is visible to the requester',
+        );
         $log = file_get_contents($this->directory . '/source.log');
         $this->assertTrue(strpos($log, 'dump: source refused: ' . self::INFO_HASH
             . ' source-unavailable') !== false, 'unavailable-source refusal reaches the journal');
@@ -321,8 +400,10 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'dump of a stub-like name emits no warning');
         $result = json_decode($out, true);
         $this->assertTrue(isset($result['commands'][0]), 'the ordinary dump starts: ' . $out);
-        $this->assertTrue(strpos($result['commands'][0], ' -v -w 4 ' . escapeshellarg($path)) !== false,
-            'a name in another case keeps the ordinary inspector arguments');
+        $this->assertTrue(
+            strpos($result['commands'][0], ' -v -w 4 ' . escapeshellarg($path)) !== false,
+            'a name in another case keeps the ordinary inspector arguments',
+        );
     }
 
     public function testDumpRefusesUnverifiedRawMetadata()
@@ -334,8 +415,11 @@ class SourceExportActionTest extends TestCase
         $this->assertSame('', $err, 'invalid dump action emits no warning');
         $result = json_decode($out, true);
         $this->assertSame(255, $result['status'], 'invalid raw metadata is refused before task start');
-        $this->assertSame(['Magnet metadata is missing or invalid'], $result['errors'],
-            'invalid raw metadata refusal explains why the task did not start');
+        $this->assertSame(
+            ['Magnet metadata is missing or invalid'],
+            $result['errors'],
+            'invalid raw metadata refusal explains why the task did not start',
+        );
         $log = file_get_contents($this->directory . '/source.log');
         $this->assertTrue(strpos($log, 'dump: source refused: ' . self::INFO_HASH
             . ' source-invalid') !== false, 'invalid raw metadata refusal reaches the journal');
@@ -350,10 +434,15 @@ class SourceExportActionTest extends TestCase
         static $command = null;
         if ($command === null) {
             $command = [PHP_BINARY, '-n'];
-            $probe = proc_open([PHP_BINARY, '-n', '-r',
-                'exit(function_exists("json_encode") ? 0 : 1);'],
-                [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
-            if (!is_resource($probe)) { throw new RuntimeException('PHP probe did not start'); }
+            $probe = proc_open(
+                [PHP_BINARY, '-n', '-r',
+                    'exit(function_exists("json_encode") ? 0 : 1);'],
+                [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+                $pipes,
+            );
+            if (!is_resource($probe)) {
+                throw new RuntimeException('PHP probe did not start');
+            }
             if (proc_close($probe) !== 0) {
                 $command[] = '-d';
                 $command[] = 'extension=json';
@@ -369,16 +458,32 @@ class SourceExportActionTest extends TestCase
             'SOURCE_EXPORT_HASH' => self::INFO_HASH,
             'SOURCE_EXPORT_ROUTE' => $route, 'RU_PROFILE_PATH' => $this->directory . '/profile',
             'SOURCE_EXPORT_LOG' => $this->directory . '/source.log'];
-        if ($dumpArguments !== null) { $env['SOURCE_EXPORT_DUMP_ARGS'] = $dumpArguments; }
-        if ($rawMetadataArguments !== null) { $env['SOURCE_EXPORT_RAW_ARGS'] = $rawMetadataArguments; }
-        if ($secondPath !== null) { $env['SOURCE_EXPORT_SECOND_PATH'] = $secondPath; }
-        if ($revalidatedPath !== null) { $env['SOURCE_EXPORT_REVALIDATED_PATH'] = $revalidatedPath; }
-        if ($zipCase !== null) { $env['SOURCE_EXPORT_CASE'] = $zipCase; }
-        $process = proc_open(array_merge(self::isolatedPhp(), ['-d', 'display_errors=stderr',
-            __DIR__ . '/SourceExportFixture.php']),
+        if ($dumpArguments !== null) {
+            $env['SOURCE_EXPORT_DUMP_ARGS'] = $dumpArguments;
+        }
+        if ($rawMetadataArguments !== null) {
+            $env['SOURCE_EXPORT_RAW_ARGS'] = $rawMetadataArguments;
+        }
+        if ($secondPath !== null) {
+            $env['SOURCE_EXPORT_SECOND_PATH'] = $secondPath;
+        }
+        if ($revalidatedPath !== null) {
+            $env['SOURCE_EXPORT_REVALIDATED_PATH'] = $revalidatedPath;
+        }
+        if ($zipCase !== null) {
+            $env['SOURCE_EXPORT_CASE'] = $zipCase;
+        }
+        $process = proc_open(
+            array_merge(self::isolatedPhp(), ['-d', 'display_errors=stderr',
+                __DIR__ . '/SourceExportFixture.php']),
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, null, $env);
-        if (!is_resource($process)) { throw new RuntimeException('source export fixture did not start'); }
+            $pipes,
+            null,
+            $env,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('source export fixture did not start');
+        }
         fclose($pipes[0]);
         $out = stream_get_contents($pipes[1]);
         $err = stream_get_contents($pipes[2]);

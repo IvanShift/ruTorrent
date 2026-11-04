@@ -1,70 +1,74 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
-	$path = dirname(realpath($argv[0]));
-	if(chdir($path))
-	{
-		// Older registered hooks pass the user at 13 and no marker. New
-		// hooks tag the user at 14; newer ones append captured source paths.
-		$hasMarker = count( $argv ) > 14;
-		if( $hasMarker )
-		{
-			if( strncmp((string) $argv[14], 'u:', 2) !== 0 )
-			{
-				require_once( './history.php' );
-				FileUtil::toLog('history: malformed event hook user argument');
-				return;
-			}
-			$_SERVER['REMOTE_USER'] = substr($argv[14], 2);
-		}
-		elseif( count( $argv ) > 13 ) {
-			$_SERVER['REMOTE_USER'] = $argv[13]; }
-		require_once( './history.php' );
-		$hst = rHistoryData::load();
-		$mgr = rHistory::load();
-		$action = intval($argv[1]);
-		$actions = 
-		[
-			1 => 'addition',
-			2 => 'finish',
-			3 => 'deletion',
-		];
-		$tracker = '';
-		$pos = strpos( $argv[10], '#' );
-		if($pos!==false) {
-			$tracker = substr( $argv[10], 0, $pos ); }
-		$data = 
-		[
-			"action"=>$action,
-			"name"=>$argv[2],
-			"size"=>floatval($argv[3]),
-			"downloaded"=>floatval($argv[4]),
-			"uploaded"=>floatval($argv[5]),
-			"ratio"=>floatval($argv[6]),
-			"creation"=>intval($argv[7]),
-			"added"=>intval($argv[8]),
-			"finished"=>intval($argv[9]),
-			"tracker"=>$tracker,
-			"label"=>rawurldecode($argv[11]),
-		];
-		// A magnet placeholder or a plugin's service download is not the
-		// user's own event: neither record it nor notify about it. The
-		// notification is skipped for the same reason the row is -- the
-		// push would report an event the user never performed.
-		if(!rHistoryData::isServiceEntry($data["name"], $data["label"],
-			$hasMarker ? $argv[13] : '', $hasMarker))
-		{
-			if(isset($argv[15])) {
-				$data = rHistoryData::captureTorrentName($data, $argv[15],
-					isset($argv[16], $argv[17]) ? [$argv[16], $argv[17]] : false); }
-			if($mgr->log[$actions[$action]])
-			{
-				$hst->add( $data, $mgr->log["limit"] );
-			}
-			if($mgr->log['pushbullet_enabled'] && $mgr->log['pushbullet_'.$actions[$action]] && !$argv[12])
-			{
-				$mgr->pushBulletNotify( $data );
-			}
-		}
-	}
+$path = dirname(realpath($argv[0]));
+if (chdir($path)) {
+    // Older registered hooks pass the user at 13 and no marker. New
+    // hooks tag the user at 14; newer ones append captured source paths.
+    $hasMarker = count($argv) > 14;
+    if ($hasMarker) {
+        if (strncmp((string) $argv[14], 'u:', 2) !== 0) {
+            require_once('./history.php');
+            FileUtil::toLog('history: malformed event hook user argument');
+            return;
+        }
+        $_SERVER['REMOTE_USER'] = substr($argv[14], 2);
+    } elseif (count($argv) > 13) {
+        $_SERVER['REMOTE_USER'] = $argv[13];
+    }
+    require_once('./history.php');
+    $hst = rHistoryData::load();
+    $mgr = rHistory::load();
+    $action = intval($argv[1]);
+    $actions
+    = [
+        1 => 'addition',
+        2 => 'finish',
+        3 => 'deletion',
+    ];
+    $tracker = '';
+    $pos = strpos($argv[10], '#');
+    if ($pos !== false) {
+        $tracker = substr($argv[10], 0, $pos);
+    }
+    $data
+    = [
+        "action" => $action,
+        "name" => $argv[2],
+        "size" => floatval($argv[3]),
+        "downloaded" => floatval($argv[4]),
+        "uploaded" => floatval($argv[5]),
+        "ratio" => floatval($argv[6]),
+        "creation" => intval($argv[7]),
+        "added" => intval($argv[8]),
+        "finished" => intval($argv[9]),
+        "tracker" => $tracker,
+        "label" => rawurldecode($argv[11]),
+    ];
+    // A magnet placeholder or a plugin's service download is not the
+    // user's own event: neither record it nor notify about it. The
+    // notification is skipped for the same reason the row is -- the
+    // push would report an event the user never performed.
+    if (!rHistoryData::isServiceEntry(
+        $data["name"],
+        $data["label"],
+        $hasMarker ? $argv[13] : '',
+        $hasMarker,
+    )) {
+        if (isset($argv[15])) {
+            $data = rHistoryData::captureTorrentName(
+                $data,
+                $argv[15],
+                isset($argv[16], $argv[17]) ? [$argv[16], $argv[17]] : false,
+            );
+        }
+        if ($mgr->log[$actions[$action]]) {
+            $hst->add($data, $mgr->log["limit"]);
+        }
+        if ($mgr->log['pushbullet_enabled'] && $mgr->log['pushbullet_' . $actions[$action]] && !$argv[12]) {
+            $mgr->pushBulletNotify($data);
+        }
+    }
+}

@@ -30,8 +30,14 @@ $redactedOrigin = 'https://redacted.example';
 class ProbeHttpSiteAccount extends commonAccount
 {
     public $url = 'http://http-only.example';
-    protected function isOK($client) { return true; }
-    protected function login($c, $l, $p, &$u, &$m, &$ct, &$b, &$f) { return false; }
+    protected function isOK($client)
+    {
+        return true;
+    }
+    protected function login($c, $l, $p, &$u, &$m, &$ct, &$b, &$f)
+    {
+        return false;
+    }
 }
 
 // Selection and download preparation read the host the same way. The host
@@ -52,8 +58,14 @@ class ProbeRuTrackerDownload extends ruTrackerAccount
 class ProbeStoredData
 {
     public $loaded;
-    public function __construct($loaded) { $this->loaded = $loaded; }
-    public function store($client) { return true; }
+    public function __construct($loaded)
+    {
+        $this->loaded = $loaded;
+    }
+    public function store($client)
+    {
+        return true;
+    }
     public function remove() {}
 }
 
@@ -89,7 +101,7 @@ $tests = [
     },
     'a rutracker download url in either spelling of the host is prepared as a download' => function () {
         foreach (['https://rutracker.org/forum/dl.php?t=12345', 'https://rutracker.org./forum/dl.php?t=12345',
-                       'https://RUTRACKER.ORG/forum/dl.php?t=12345'] as $url) {
+            'https://RUTRACKER.ORG/forum/dl.php?t=12345'] as $url) {
             $account = new ProbeRuTrackerDownload();
             $client = new ProbeRecordingTransport();
             testAssertSame(true, $account->test($url), $url . ' is claimed');
@@ -127,7 +139,7 @@ $tests = [
     'the bb_dl cookie names the topic the forum will read from the query' => function () {
         $account = new ProbeRuTrackerDownload();
         foreach ([
-            'https://rutracker.org/forum/dl.php?t=111&t=222'   => '222',
+            'https://rutracker.org/forum/dl.php?t=111&t=222' => '222',
             'https://rutracker.org/forum/dl.php?t=111&%74=222' => '222',
         ] as $url => $id) {
             $client = new ProbeRecordingTransport();
@@ -140,7 +152,7 @@ $tests = [
     'an nnmclub url in either spelling of the host reaches the account, and login.php never does' => function () {
         $account = new NNMClubAccount();
         foreach ([
-            'https://nnmclub.to/forum/viewtopic.php?t=1'  => true,
+            'https://nnmclub.to/forum/viewtopic.php?t=1' => true,
             'https://nnmclub.to/forum/' => true,
             'https://nnmclub.to/forum/x/..' => true,
             'https://nnmclub.to/forum' => false,
@@ -154,17 +166,17 @@ $tests = [
             'https://nnmclub.to/forum/login.phpx' => false,
             'https://nnmclub.to/forum/login.ph' => true,
             'https://nnmclub.to/x/nnmclub.to/forum/a' => false,
-            'https://NNM-CLUB.ME/forum/dl.php?t=1'        => true,
-            'https://nnmclub.to/forum/login.php'          => false,
-            'https://nnmclub.to/forum//login.php'         => false,
-            'https://nnmclub.to/forum/./login.php'        => false,
-            'https://nnmclub.to/forum/x/../login.php'   => false,
+            'https://NNM-CLUB.ME/forum/dl.php?t=1' => true,
+            'https://nnmclub.to/forum/login.php' => false,
+            'https://nnmclub.to/forum//login.php' => false,
+            'https://nnmclub.to/forum/./login.php' => false,
+            'https://nnmclub.to/forum/x/../login.php' => false,
             'https://nnmclub.to/forum/%2e%2e/forum/login.php' => false,
-            'https://nnmclub.to/forum/../dl.php?id=1'   => false,
-            'https://nnmclub.to/forum/login%2Ephp'        => false,
-            'https://nnmclub.to./forum/login.php?x=1'     => false,
-            'https://nnmclub.to/other/viewtopic.php?t=1'  => false,
-            'https://evil.test/nnmclub.to/forum/dl.php'   => false,
+            'https://nnmclub.to/forum/../dl.php?id=1' => false,
+            'https://nnmclub.to/forum/login%2Ephp' => false,
+            'https://nnmclub.to./forum/login.php?x=1' => false,
+            'https://nnmclub.to/other/viewtopic.php?t=1' => false,
+            'https://evil.test/nnmclub.to/forum/dl.php' => false,
         ] as $url => $expected) {
             testAssertSame($expected, (bool) $account->test($url), $url);
         }
@@ -179,8 +191,11 @@ $tests = [
         $account = new ABTorrentsAccount();
         testAssertSame(true, $account->test('https://ABTORRENTS.EXAMPLE/x'), 'a host has no case');
         testAssertSame(true, $account->test('https://abtorrents.example./x'), 'the root dot names the same host');
-        testAssertSame(false, $account->test('https://abtorrents.example.evil.test./x'),
-            'and the root dot does not rescue a look-alike');
+        testAssertSame(
+            false,
+            $account->test('https://abtorrents.example.evil.test./x'),
+            'and the root dot does not rescue a look-alike',
+        );
     },
     'only the configured Kinozal mirrors receive the account session' => function () {
         // $kinozalHosts withdraws a mirror whose free-DNS name changed hands:
@@ -189,11 +204,17 @@ $tests = [
         try {
             KinozalResponse::resetCycle();
             $account = new KinozalTVAccount();
-            testAssertSame(false, $account->test('https://kinozal.jumpingcrab.com/download.php?id=1'),
-                'a mirror left out of the setting is not selected');
+            testAssertSame(
+                false,
+                $account->test('https://kinozal.jumpingcrab.com/download.php?id=1'),
+                'a mirror left out of the setting is not selected',
+            );
             testAssertSame(true, $account->test('https://kinozal.cloudns.nz/download.php?id=1'), 'a listed one is');
-            testAssertSame(true, $account->test('https://kinozal.guru/download.php?id=1'),
-                'and the site\'s own domains always are');
+            testAssertSame(
+                true,
+                $account->test('https://kinozal.guru/download.php?id=1'),
+                'and the site\'s own domains always are',
+            );
         } finally {
             unset($GLOBALS['kinozalHosts']);
             KinozalResponse::resetCycle();
@@ -266,8 +287,11 @@ $tests = [
         ] as $case) {
             list($class, $url) = $case;
             $account = new $class();
-            testAssertSame(false, (bool) $account->test($url),
-                $class . ' must not claim the http form of an https site');
+            testAssertSame(
+                false,
+                (bool) $account->test($url),
+                $class . ' must not claim the http form of an https site',
+            );
         }
     },
 
@@ -301,11 +325,17 @@ $tests = [
             testAssertSame(false, $manager->getAccount($url), 'HTTP URL receives no loginmgr session');
             testAssertSame(false, $manager->getAccount($url), 'repeat HTTP URL still receives no session');
             $log = file_get_contents($log_file);
-            testAssertSame(1, substr_count($log, 'loginmgr: http-url-not-authenticated: RUTracker rutracker.org'),
-                'one host-only migration hint is logged');
+            testAssertSame(
+                1,
+                substr_count($log, 'loginmgr: http-url-not-authenticated: RUTracker rutracker.org'),
+                'one host-only migration hint is logged',
+            );
             testAssertSame(false, strpos($log, 'passkey') !== false, 'URL query stays out of the log');
-            testAssertSame('RUTracker', $manager->getAccount('https://rutracker.org/forum/dl.php?t=42'),
-                'HTTPS URL still selects its account');
+            testAssertSame(
+                'RUTracker',
+                $manager->getAccount('https://rutracker.org/forum/dl.php?t=42'),
+                'HTTPS URL still selects its account',
+            );
         } finally {
             unlink($log_file);
             $log_file = $previous;
@@ -325,13 +355,22 @@ $tests = [
             foreach (['http://unrelated.test/forum/dl.php?t=42',
                 'http://rutracker.org/other/?t=42'] as $url) {
                 $httpsAccount = 'stale';
-                testAssertSame(false, $manager->getAccount($url, $httpsAccount),
-                    'unrelated HTTP URL has no selected account');
-                testAssertSame(null, $httpsAccount,
-                    'unrelated HTTP URL has no HTTPS candidate');
+                testAssertSame(
+                    false,
+                    $manager->getAccount($url, $httpsAccount),
+                    'unrelated HTTP URL has no selected account',
+                );
+                testAssertSame(
+                    null,
+                    $httpsAccount,
+                    'unrelated HTTP URL has no HTTPS candidate',
+                );
             }
-            testAssertSame('', file_get_contents($log_file),
-                'unrelated HTTP URLs do not produce a migration hint');
+            testAssertSame(
+                '',
+                file_get_contents($log_file),
+                'unrelated HTTP URLs do not produce a migration hint',
+            );
         } finally {
             unlink($log_file);
             $log_file = $previous;
@@ -371,8 +410,11 @@ $tests = [
                 'https://' . $host . '.evil.test/forum/dl.php?t=1',
             ];
             foreach ($elsewhere as $url) {
-                testAssertSame(false, (bool) $account->test($url),
-                    $class . ' must not claim ' . var_export($url, true));
+                testAssertSame(
+                    false,
+                    (bool) $account->test($url),
+                    $class . ' must not claim ' . var_export($url, true),
+                );
             }
         }
         // The accounts are loaded by the glob at the top of this file, and the
@@ -388,8 +430,11 @@ $tests = [
             $asked++;
             $account = new $class();
             foreach (['', 'not a url', '/relative/path', 'javascript:alert(1)'] as $url) {
-                testAssertSame(false, (bool) $account->test($url),
-                    $class . ' must not claim ' . var_export($url, true));
+                testAssertSame(
+                    false,
+                    (bool) $account->test($url),
+                    $class . ' must not claim ' . var_export($url, true),
+                );
             }
         }
         testAssertSame(true, $asked > 0, 'accounts were found to ask');

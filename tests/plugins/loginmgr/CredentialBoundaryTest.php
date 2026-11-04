@@ -30,7 +30,10 @@ class BoundaryTransport extends Snoopy
     public $replyCookies = false;
     public $guest = false;
     public $queue = [];
-    public function connect() { return fopen('php://memory', 'r+'); }
+    public function connect()
+    {
+        return fopen('php://memory', 'r+');
+    }
     public function _httprequest($url, $fp, $URI, $method, $content_type = '', $body = '')
     {
         return $this->_httpsrequest($URI, $content_type, $body, $method);
@@ -62,44 +65,78 @@ class BoundaryData
     public $loaded;
     public $stored = 0;
     public $removed = 0;
-    public function __construct($loaded) { $this->loaded = $loaded; }
-    public function store($client) { $this->stored++; return true; }
-    public function remove() { $this->removed++; }
+    public function __construct($loaded)
+    {
+        $this->loaded = $loaded;
+    }
+    public function store($client)
+    {
+        $this->stored++;
+        return true;
+    }
+    public function remove()
+    {
+        $this->removed++;
+    }
 }
 class BoundaryYgg extends YggTorrentAccount
 {
     public $cached = false;
     public function directLogin($client, $url)
     {
-        $method = 'GET'; $contentType = ''; $body = ''; $fetched = false;
+        $method = 'GET';
+        $contentType = '';
+        $body = '';
+        $fetched = false;
         return $this->login($client, 'fake-user', 'fake-password', $url, $method, $contentType, $body, $fetched);
     }
     protected function loadData($client = null)
     {
-        if ($client && $this->cached) { $client->cookies = ['ygg_' => 'fake-session']; }
+        if ($client && $this->cached) {
+            $client->cookies = ['ygg_' => 'fake-session'];
+        }
         return new BoundaryData($this->cached);
     }
 }
 class BoundaryUnconfigured extends commonAccount
 {
     public $logins = 0;
-    protected function isOK($client) { return true; }
-    protected function loadData($client = null) { return new BoundaryData(false); }
-    protected function login($c, $l, $p, &$u, &$m, &$ct, &$b, &$f) { $this->logins++; return false; }
+    protected function isOK($client)
+    {
+        return true;
+    }
+    protected function loadData($client = null)
+    {
+        return new BoundaryData(false);
+    }
+    protected function login($c, $l, $p, &$u, &$m, &$ct, &$b, &$f)
+    {
+        $this->logins++;
+        return false;
+    }
 }
 class BoundaryUnconfiguredLogged extends BoundaryUnconfigured {}
 class BoundaryLostFilm extends LostFilmAccount
 {
-    public function recover($client, $url) { return $this->isOKPostFetch($client, $url, 'GET', '', ''); }
+    public function recover($client, $url)
+    {
+        return $this->isOKPostFetch($client, $url, 'GET', '', '');
+    }
 }
 
 class BoundaryKinozal extends KinozalTVAccount
 {
     public $data;
-    public function __construct() { parent::__construct(); $this->data = new BoundaryData(true); }
+    public function __construct()
+    {
+        parent::__construct();
+        $this->data = new BoundaryData(true);
+    }
     protected function loadData($client = null)
     {
-        if ($client) { $client->cookies = ['sid' => 'expired']; }
+        if ($client) {
+            $client->cookies = ['sid' => 'expired'];
+        }
         return $this->data;
     }
 }
@@ -117,15 +154,26 @@ function boundaryKinozalLoginForm()
 $tests = [
     'authenticated redirects never send cookies or credentials across origins' => function () {
         foreach (['https://evil.test/x', 'http://tracker.example/x', 'https://tracker.example:8443/x',
-                       'https://tracker.example@evil.test/x', 'https://tracker.example.evil.test/x'] as $target) {
+            'https://tracker.example@evil.test/x', 'https://tracker.example.evil.test/x'] as $target) {
             foreach (['jar', 'basic', 'raw-cookie', 'raw-auth', 'raw-proxy-auth'] as $source) {
                 $client = new BoundaryTransport();
                 $client->redirect = $target;
-                if ($source === 'jar') { $client->cookies = ['session' => 'fake-secret']; }
-                if ($source === 'basic') { $client->user = 'fake-user'; $client->pass = 'fake-pass'; }
-                if ($source === 'raw-cookie') { $client->rawheaders['cOoKiE'] = 'session=fake-secret'; }
-                if ($source === 'raw-auth') { $client->rawheaders['aUtHoRiZaTiOn'] = 'Bearer fake-secret'; }
-                if ($source === 'raw-proxy-auth') { $client->rawheaders['PrOxY-AuThOrIzAtIoN'] = 'Basic fake-secret'; }
+                if ($source === 'jar') {
+                    $client->cookies = ['session' => 'fake-secret'];
+                }
+                if ($source === 'basic') {
+                    $client->user = 'fake-user';
+                    $client->pass = 'fake-pass';
+                }
+                if ($source === 'raw-cookie') {
+                    $client->rawheaders['cOoKiE'] = 'session=fake-secret';
+                }
+                if ($source === 'raw-auth') {
+                    $client->rawheaders['aUtHoRiZaTiOn'] = 'Bearer fake-secret';
+                }
+                if ($source === 'raw-proxy-auth') {
+                    $client->rawheaders['PrOxY-AuThOrIzAtIoN'] = 'Basic fake-secret';
+                }
                 testAssertSame(true, $client->fetch('https://tracker.example/start'), $source . ' redirect to ' . $target);
                 testAssertSame(1, count($client->requests), 'no second request leaves the client');
                 testAssertSame(302, $client->status, 'the received HTTP response remains available');
@@ -144,8 +192,9 @@ $tests = [
             testAssertSame(['sid' => 'existing'], $client->requests[1][3], 'upgrade retains session');
         }
         foreach ([['http://tracker.example:8080/start', 'https://tracker.example/next'],
-                       ['http://tracker.example/start', 'https://tracker.example:8443/next']] as $pair) {
-            $client = new BoundaryTransport(); $client->cookies = ['sid' => 'existing'];
+            ['http://tracker.example/start', 'https://tracker.example:8443/next']] as $pair) {
+            $client = new BoundaryTransport();
+            $client->cookies = ['sid' => 'existing'];
             $client->redirect = $pair[1];
             $client->fetch($pair[0]);
             testAssertSame(1, count($client->requests), 'nondefault port is a separate trust decision');
@@ -172,23 +221,39 @@ $tests = [
                 return UrlHost::urlIsOneOf($url, ['scoped-log.test'], 'https');
             };
             $client->redirect = 'https://foreign-scoped-log.test/file?secret=private';
-            testAssertSame(true, $client->fetch('https://scoped-log.test/start'),
-                'original anonymous response remains available');
+            testAssertSame(
+                true,
+                $client->fetch('https://scoped-log.test/start'),
+                'original anonymous response remains available',
+            );
             testAssertSame(1, count($client->requests), 'foreign redirect target is not requested');
             testAssertSame([], $client->cookies, 'the refusal carried no session cookies');
             testAssertSame('credential-redirect-refused', $client->error, 'caller sees the refusal reason');
             $log = file_get_contents($log_file);
-            testAssertSame(true, strpos($log, 'redirect target not requested') !== false,
-                'operator log describes the blocked request');
-            testAssertSame(false, strpos($log, 'session not sent') !== false,
-                'operator log does not invent a session');
-            testAssertSame(false, strpos($log, 'private') !== false,
-                'operator log omits the remote query');
-        } finally { unlink($log_file); $log_file = $previous; }
+            testAssertSame(
+                true,
+                strpos($log, 'redirect target not requested') !== false,
+                'operator log describes the blocked request',
+            );
+            testAssertSame(
+                false,
+                strpos($log, 'session not sent') !== false,
+                'operator log does not invent a session',
+            );
+            testAssertSame(
+                false,
+                strpos($log, 'private') !== false,
+                'operator log omits the remote query',
+            );
+        } finally {
+            unlink($log_file);
+            $log_file = $previous;
+        }
     },
     'a refused redirect leaves response cookies explicit and never imports them on reuse' => function () {
         global $log_file;
-        $previous = $log_file; $log_file = tempnam(sys_get_temp_dir(), 'redirect-log-');
+        $previous = $log_file;
+        $log_file = tempnam(sys_get_temp_dir(), 'redirect-log-');
         try {
             $client = new BoundaryTransport();
             $client->rawheaders['Authorization'] = 'Bearer source-token';
@@ -211,7 +276,10 @@ $tests = [
             $client->queue = [[302, 'https://evil-refusal.test/again', [], '']];
             testAssertSame(true, $client->fetch('https://tracker.example/login', 'POST', '', 'password=private'), 'repeat refusal');
             testAssertSame($log, file_get_contents($log_file), 'same origin pair is logged once per PHP request');
-        } finally { unlink($log_file); $log_file = $previous; }
+        } finally {
+            unlink($log_file);
+            $log_file = $previous;
+        }
     },
     'an expired Kinozal session follows its trusted login redirect and downloads after relogin' => function () {
         $account = new BoundaryKinozal();
@@ -264,7 +332,9 @@ $tests = [
     'account redirect trust is restored on refusal and never follows a lookalike host' => function () {
         $account = new BoundaryKinozal();
         $client = new BoundaryTransport();
-        $previous = function ($url) { return true; };
+        $previous = function ($url) {
+            return true;
+        };
         $client->redirectTrust = $previous;
         $client->redirect = 'https://kinozal.guru.evil.test/login.php';
         testAssertSame(false, $account->fetch($client, 'https://dl.kinozal.guru/download.php?id=7', 'user', 'pass', 'GET', '', ''), 'untrusted redirect is not a guest verdict');
@@ -301,12 +371,12 @@ $tests = [
         $yggTorrentOrigin = 'https://www.ygg.re'; // Test configuration, not a claim about a current mirror.
         $account = new BoundaryYgg();
         foreach (['https://yggevil.example/engine/download_torrent?id=1',
-                       'http://www.ygg.re/engine/download_torrent?id=1',
-                       'https://www.ygg.re:8443/engine/download_torrent?id=1',
-                       'https://cdn.www.ygg.re/engine/download_torrent?id=1',
-                       'https://user@www.ygg.re/engine/download_torrent?id=1',
-                       'https://user:pass@www.ygg.re/engine/download_torrent?id=1',
-                       'https://@www.ygg.re/engine/download_torrent?id=1'] as $url) {
+            'http://www.ygg.re/engine/download_torrent?id=1',
+            'https://www.ygg.re:8443/engine/download_torrent?id=1',
+            'https://cdn.www.ygg.re/engine/download_torrent?id=1',
+            'https://user@www.ygg.re/engine/download_torrent?id=1',
+            'https://user:pass@www.ygg.re/engine/download_torrent?id=1',
+            'https://@www.ygg.re/engine/download_torrent?id=1'] as $url) {
             testAssertSame(false, $account->test($url), 'selector refuses ' . $url);
             foreach ([false, true] as $cached) {
                 $account->cached = $cached;
@@ -335,10 +405,16 @@ $tests = [
             [200, false, [], 'login accepted'],
         ];
         $url = 'https://trusted.example/engine/download_torrent?id=7';
-        testAssertSame(false, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''),
-            'an account does not authenticate after leaving its trusted origin');
-        testAssertSame([$url], array_column($client->requests, 0),
-            'the account never fetches the foreign landing or sends a password afterward');
+        testAssertSame(
+            false,
+            $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''),
+            'an account does not authenticate after leaving its trusted origin',
+        );
+        testAssertSame(
+            [$url],
+            array_column($client->requests, 0),
+            'the account never fetches the foreign landing or sends a password afterward',
+        );
         testAssertSame([], $client->cookies, 'the foreign Set-Cookie never enters the flat jar');
         testAssertSame('credential-redirect-refused', $client->error, 'the refusal remains visible');
     },
@@ -373,8 +449,11 @@ $tests = [
             $account->check(new BoundaryTransport(), 'fake-user', 'fake-pass', 0);
             $account->check(new BoundaryTransport(), 'fake-user', 'fake-pass', 0);
             $log = file_get_contents($log_file);
-            testAssertSame(1, substr_count($log, 'loginmgr: missing-origin: BoundaryUnconfiguredLogged'),
-                'unconfigured account explains skipped automatic refresh only once');
+            testAssertSame(
+                1,
+                substr_count($log, 'loginmgr: missing-origin: BoundaryUnconfiguredLogged'),
+                'unconfigured account explains skipped automatic refresh only once',
+            );
             testAssertSame(0, $account->logins, 'diagnostic sends no credentials');
         } finally {
             unlink($log_file);

@@ -9,8 +9,14 @@ class RuTrackerState
     public static $readSnapshot;
     public static $lockedSnapshot;
 
-    public static function daemonKey() { return 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; }
-    public static function load($name) { return self::$readSnapshot; }
+    public static function daemonKey()
+    {
+        return 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    }
+    public static function load($name)
+    {
+        return self::$readSnapshot;
+    }
     public static function update($name, $mutator, &$failure = null)
     {
         self::$lockedSnapshot = $mutator(self::$lockedSnapshot);
@@ -18,8 +24,10 @@ class RuTrackerState
     }
 }
 
-eval(loadClassDefinition(testFindRepoRoot() . '/plugins/rutracker_check/state.php',
-    'RuTrackerReplacementBackoff'));
+eval(loadClassDefinition(
+    testFindRepoRoot() . '/plugins/rutracker_check/state.php',
+    'RuTrackerReplacementBackoff',
+));
 
 $suite = new StrictTestSuite();
 $suite->test('a concurrent clear can retire the whole map before this clear gets its lock', function () {
@@ -31,10 +39,16 @@ $suite->test('a concurrent clear can retire the whole map before this clear gets
             $hash => ['until' => 1800003600, 'length' => 3600],
         ]]];
         RuTrackerState::$lockedSnapshot = $newer;
-        strictAssertSame(false, RuTrackerReplacementBackoff::clear($hash, 1800000000),
-            'no matching refusal remains under the lock');
-        strictAssertSame($newer, RuTrackerState::$lockedSnapshot,
-            'a newer absent, malformed or unrelated daemon map is preserved');
+        strictAssertSame(
+            false,
+            RuTrackerReplacementBackoff::clear($hash, 1800000000),
+            'no matching refusal remains under the lock',
+        );
+        strictAssertSame(
+            $newer,
+            RuTrackerState::$lockedSnapshot,
+            'a newer absent, malformed or unrelated daemon map is preserved',
+        );
     }
 });
 

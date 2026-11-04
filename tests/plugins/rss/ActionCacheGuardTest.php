@@ -37,9 +37,13 @@ SCRIPT;
 
     public function tearDown()
     {
-        if (!is_dir($this->root)) { return; }
-        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->root,
-            FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        if (!is_dir($this->root)) {
+            return;
+        }
+        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+            $this->root,
+            FilesystemIterator::SKIP_DOTS,
+        ), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($files as $entry) {
             $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
         }
@@ -53,11 +57,17 @@ SCRIPT;
             'RU_LOG_FILE' => $this->root . '/rss.log',
             'RSS_PLUGIN_DIR' => realpath(__DIR__ . '/../../../plugins/rss'),
         ];
-        $process = proc_open([PHP_BINARY, $this->root . '/request.php'],
+        $process = proc_open(
+            [PHP_BINARY, $this->root . '/request.php'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, null, $env);
+            $pipes,
+            null,
+            $env,
+        );
         $this->assertTrue(is_resource($process), 'the local RSS action child starts');
-        if (!is_resource($process)) { return; }
+        if (!is_resource($process)) {
+            return;
+        }
         fclose($pipes[0]);
         $out = stream_get_contents($pipes[1]);
         $errors = stream_get_contents($pipes[2]);
@@ -69,11 +79,18 @@ SCRIPT;
         $this->assertTrue($out !== '', 'the RSS action returns its regular response');
         $log = @file_get_contents($this->root . '/rss.log');
         $this->assertTrue(is_string($log), 'dry-run records the action in the local log');
-        $this->assertEquals(1, substr_count((string) $log, 'Load torrent ['),
-            'only one cache-backed feed reaches the load path');
-        $this->assertTrue(strpos((string) $log, 'magnet:?known') !== false,
-            'the registered feed still reaches the load path');
-        $this->assertTrue(strpos((string) $log, 'magnet:?orphan') === false,
-            'an unregistered cache file cannot be selected by rss=');
+        $this->assertEquals(
+            1,
+            substr_count((string) $log, 'Load torrent ['),
+            'only one cache-backed feed reaches the load path',
+        );
+        $this->assertTrue(
+            strpos((string) $log, 'magnet:?known') !== false,
+            'the registered feed still reaches the load path',
+        );
+        $this->assertTrue(
+            strpos((string) $log, 'magnet:?orphan') === false,
+            'an unregistered cache file cannot be selected by rss=',
+        );
     }
 }

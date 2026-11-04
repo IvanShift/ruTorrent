@@ -23,7 +23,9 @@ class ScriptedCurlFixture
     public function __construct($root)
     {
         $this->root = $root;
-        file_put_contents($root . '/curl.php', <<<'PHP'
+        file_put_contents(
+            $root . '/curl.php',
+            <<<'PHP'
 <?php
 $root = getenv('SCRIPTED_CURL_ROOT');
 $request = array('method' => 'GET', 'url' => end($argv), 'cookie' => '', 'body' => '');
@@ -70,7 +72,7 @@ if ($writeOut !== null) {
         array(sprintf('%03d', $code), sprintf('%03d', $connect)), $writeOut);
 }
 if (isset($reply['exit'])) exit($reply['exit']);
-PHP
+PHP,
         );
         file_put_contents($root . '/curl', "#!/bin/sh\nexec " . escapeshellarg(PHP_BINARY) . ' -c '
             . escapeshellarg(__DIR__ . '/../php-test.ini') . ' ' . escapeshellarg($root . '/curl.php') . ' "$@"' . "\n");
@@ -91,10 +93,16 @@ PHP
     public function restore()
     {
         global $pathToExternals;
-        if ($this->previousCurl === null) { unset($pathToExternals['curl']); }
-        else { $pathToExternals['curl'] = $this->previousCurl; }
-        if ($this->previousRoot === false) { putenv('SCRIPTED_CURL_ROOT'); }
-        else { putenv('SCRIPTED_CURL_ROOT=' . $this->previousRoot); }
+        if ($this->previousCurl === null) {
+            unset($pathToExternals['curl']);
+        } else {
+            $pathToExternals['curl'] = $this->previousCurl;
+        }
+        if ($this->previousRoot === false) {
+            putenv('SCRIPTED_CURL_ROOT');
+        } else {
+            putenv('SCRIPTED_CURL_ROOT=' . $this->previousRoot);
+        }
     }
 
     public static function reply($method, $url, $status, $body = '', $headers = [])

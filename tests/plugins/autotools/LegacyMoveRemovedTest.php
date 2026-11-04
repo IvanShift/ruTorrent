@@ -1,4 +1,5 @@
 <?php
+
 require_once __DIR__ . '/../rutracker_check/TestLib.php';
 $suite = new StrictTestSuite();
 $suite->test('only current Move implementation ships without importer or compatibility adapters', function () {
@@ -12,13 +13,20 @@ $suite->test('only current Move implementation ships without importer or compati
     // Scan every shipped file, including unstaged candidates and assets. The
     // same inventory applies to a checkout and to an archive without Git.
     foreach (['plugins','php','tools','js','conf'] as $directory) {
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/' . $directory,
-            FilesystemIterator::SKIP_DOTS)) as $entry) {
+        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+            $root . '/' . $directory,
+            FilesystemIterator::SKIP_DOTS,
+        )) as $entry) {
             if ($entry->isFile()) {
-                $files[] = substr($entry->getPathname(), strlen($root) + 1); } } }
+                $files[] = substr($entry->getPathname(), strlen($root) + 1);
+            }
+        }
+    }
     foreach (array_unique($files) as $relative) {
         $file = $root . '/' . $relative;
-        if (!is_file($file)) { continue; }
+        if (!is_file($file)) {
+            continue;
+        }
         $source = file_get_contents($file);
         // Generic PHP ownership symbols and parser calls in other plugins are
         // unrelated; the old Move identifiers are forbidden in every owner.
@@ -27,7 +35,8 @@ $suite->test('only current Move implementation ships without importer or compati
         $words = array_merge($words, ['x-autotools-move-job', '.move-request.json', 'move_adopt',
             'move_migrate.php', 'autotools-move-migrate.php', 'AutoToolsMoveMigration']);
         if (strpos($relative, 'plugins/autotools/') === 0) {
-            $words = array_merge($words, ['completion_recorded', 'job_id']); }
+            $words = array_merge($words, ['completion_recorded', 'job_id']);
+        }
         foreach ($words as $word) {
             $at = strpos($source, $word);
             $line = $at === false ? 0 : substr_count(substr($source, 0, $at), "\n") + 1;
@@ -36,7 +45,8 @@ $suite->test('only current Move implementation ships without importer or compati
     }
     foreach (['plugins/autotools/move_migrate.php', 'tools/autotools-move-migrate.php',
         'plugins/autotools/move_tx.php', 'plugins/autotools/move_tx_lib.php'] as $removed) {
-        strictAssertSame(false, file_exists($root . '/' . $removed), 'removed entrypoint: ' . $removed); }
+        strictAssertSame(false, file_exists($root . '/' . $removed), 'removed entrypoint: ' . $removed);
+    }
     strictAssertSame(false, strpos('.nonmove-request.json', '.move-request.json'), 'current NonMove is not a retired Move request');
     $source = file_get_contents($root . '/plugins/autotools/autotools.php');
     strictAssertSame(2, substr_count($source, 'd.autotools.move_enqueue'), 'capability plus exactly one native hook');

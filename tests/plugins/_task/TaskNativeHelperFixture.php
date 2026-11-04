@@ -1,16 +1,20 @@
 <?php
-require_once(__DIR__.'/../../../php/nativehelpers.php');
+
+require_once(__DIR__ . '/../../../php/nativehelpers.php');
 
 function taskNativeHelperFixture($testHook = false)
 {
     $source = NativeHelpers::source('rutorrent-task-kill-pidfd');
-    $directory = sys_get_temp_dir().'/rutorrent-task-pidfd-'.getmypid().'-'.bin2hex(random_bytes(4));
+    $directory = sys_get_temp_dir() . '/rutorrent-task-pidfd-' . getmypid() . '-' . bin2hex(random_bytes(4));
     if (!mkdir($directory, 0700) || !is_file($source)) {
         throw new RuntimeException('Could not prepare the native task killer fixture');
     }
-    $binary = $directory.'/kill-verified';
-    $command = NativeHelpers::compilerCommand('rutorrent-task-kill-pidfd', $binary,
-        $testHook ? ['-DRTASK_KILL_TEST_HOOK=1'] : []);
+    $binary = $directory . '/kill-verified';
+    $command = NativeHelpers::compilerCommand(
+        'rutorrent-task-kill-pidfd',
+        $binary,
+        $testHook ? ['-DRTASK_KILL_TEST_HOOK=1'] : [],
+    );
     $process = proc_open($command, [
         0 => ['file', '/dev/null', 'r'],
         1 => ['pipe', 'w'],
@@ -23,9 +27,9 @@ function taskNativeHelperFixture($testHook = false)
     $errors = stream_get_contents($pipes[2]);
     fclose($pipes[2]);
     if (proc_close($process) !== 0) {
-        throw new RuntimeException('Could not compile the native task killer: '.$errors);
+        throw new RuntimeException('Could not compile the native task killer: ' . $errors);
     }
-    register_shutdown_function(function() use ($binary, $directory) {
+    register_shutdown_function(function () use ($binary, $directory) {
         @unlink($binary);
         @rmdir($directory);
     });

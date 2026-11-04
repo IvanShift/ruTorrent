@@ -14,14 +14,21 @@ class InitLockoutTest extends TestCase
         mkdir($this->fixture . '/plugins/retrackers', 0700, true);
         $root = realpath(__DIR__ . '/../../..');
         foreach (['init.php', 'done.php'] as $file) {
-            copy($root . '/plugins/retrackers/' . $file,
-                $this->fixture . '/plugins/retrackers/' . $file); }
+            copy(
+                $root . '/plugins/retrackers/' . $file,
+                $this->fixture . '/plugins/retrackers/' . $file,
+            );
+        }
         copy($root . '/php/doneplugins.php', $this->fixture . '/php/doneplugins.php');
         file_put_contents($this->fixture . '/php/rtorrent.php', '<?php');
         file_put_contents($this->fixture . '/php/xmlrpc.php', '<?php');
-        file_put_contents($this->fixture . '/plugins/retrackers/retrackers.php',
-            '<?php class rRetrackers { public static function load() { return new self(); } public function get() { return ""; } }');
-        file_put_contents($this->fixture . '/plugins/retrackers/update.php', <<<'STUB'
+        file_put_contents(
+            $this->fixture . '/plugins/retrackers/retrackers.php',
+            '<?php class rRetrackers { public static function load() { return new self(); } public function get() { return ""; } }',
+        );
+        file_put_contents(
+            $this->fixture . '/plugins/retrackers/update.php',
+            <<<'STUB'
 <?php
 class RetrackersLifecycleRpcAdapter {}
 function retrackersRunLifecycleInit($user, $script, $php, &$js, &$failure, $adapter = null)
@@ -39,10 +46,12 @@ function retrackersRunLifecycleDone($user, &$js, &$failure)
     $js .= "noty('retrackers: hook-teardown-pending','error');";
     return false;
 }
-STUB
+STUB,
         );
         // The notice must read through the adapter that init just attested.
-        file_put_contents($this->fixture . '/plugins/retrackers/retryreset.php', <<<'STUB'
+        file_put_contents(
+            $this->fixture . '/plugins/retrackers/retryreset.php',
+            <<<'STUB'
 <?php
 final class RetrackersRetryReset
 {
@@ -52,11 +61,15 @@ final class RetrackersRetryReset
             ($adapter instanceof RetrackersLifecycleRpcAdapter && $adapter === $GLOBALS['initAdapter'] ? 'true' : 'false') . '};';
     }
 }
-STUB
+STUB,
         );
-        file_put_contents($this->fixture . '/plugins/retrackers/applyexisting.php',
-            '<?php class RetrackersApplyExisting { public static function sessionNotice($adapter, $user) { return ""; } }');
-        file_put_contents($this->fixture . '/php/settings.php', <<<'STUB'
+        file_put_contents(
+            $this->fixture . '/plugins/retrackers/applyexisting.php',
+            '<?php class RetrackersApplyExisting { public static function sessionNotice($adapter, $user) { return ""; } }',
+        );
+        file_put_contents(
+            $this->fixture . '/php/settings.php',
+            <<<'STUB'
 <?php
 class rTorrentSettings
 {
@@ -84,9 +97,11 @@ class rTorrentSettings
         file_put_contents(getenv('RT_LOCKOUT_STATE'), json_encode($this->plugins));
     }
 }
-STUB
+STUB,
         );
-        file_put_contents($this->fixture . '/php/run-init.php', <<<'RUNNER'
+        file_put_contents(
+            $this->fixture . '/php/run-init.php',
+            <<<'RUNNER'
 <?php
 chdir(__DIR__);
 require_once('settings.php');
@@ -103,9 +118,11 @@ echo json_encode(array(
     'registered_before' => $theSettings->isPluginRegistered('retrackers'),
     'init_output' => $jResult,
 ));
-RUNNER
+RUNNER,
         );
-        file_put_contents($this->fixture . '/php/run-done.php', <<<'RUNNER'
+        file_put_contents(
+            $this->fixture . '/php/run-done.php',
+            <<<'RUNNER'
 <?php
 chdir(__DIR__);
 require_once('settings.php');
@@ -123,19 +140,28 @@ echo json_encode(array(
     'done_calls' => $GLOBALS['doneCalls'],
     'done_output' => isset($GLOBALS['doneOutput']) ? $GLOBALS['doneOutput'] : null,
 ));
-RUNNER
+RUNNER,
         );
     }
 
     public function tearDown()
     {
-        if (!is_dir($this->fixture)) { return; }
+        if (!is_dir($this->fixture)) {
+            return;
+        }
         $files = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->fixture,
-                FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+            new RecursiveDirectoryIterator(
+                $this->fixture,
+                FilesystemIterator::SKIP_DOTS,
+            ),
+            RecursiveIteratorIterator::CHILD_FIRST,
+        );
         foreach ($files as $file) {
-            if ($file->isDir() && !$file->isLink()) { rmdir($file->getPathname()); }
-            else { unlink($file->getPathname()); }
+            if ($file->isDir() && !$file->isLink()) {
+                rmdir($file->getPathname());
+            } else {
+                unlink($file->getPathname());
+            }
         }
         rmdir($this->fixture);
     }
@@ -143,74 +169,113 @@ RUNNER
     public function testSuccessfulInitKeepsShutdownAvailableAfterLateRemoteFailure()
     {
         $init = $this->runFixture('run-init.php', ['RT_LOCKOUT_INIT_OK' => '1']);
-        if ($init === false) { return; }
-        $this->assertTrue($init['registered_before'] === true &&
-            strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false &&
-            strpos($init['init_output'], 'plugin.disable()') === false,
-            'successful init prepares shutdown before a later remote check can disable the plugin');
-        $this->assertTrue(substr_count($init['init_output'], 'plugin.terminalJobs = ') === 1 &&
-            strpos($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') !== false,
-            'a successful session init asks once for the terminal-jobs notice through its own attested adapter');
+        if ($init === false) {
+            return;
+        }
+        $this->assertTrue(
+            $init['registered_before'] === true
+            && strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false
+            && strpos($init['init_output'], 'plugin.disable()') === false,
+            'successful init prepares shutdown before a later remote check can disable the plugin',
+        );
+        $this->assertTrue(
+            substr_count($init['init_output'], 'plugin.terminalJobs = ') === 1
+            && strpos($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') !== false,
+            'a successful session init asks once for the terminal-jobs notice through its own attested adapter',
+        );
 
         $info = file_get_contents(__DIR__ . '/../../../plugins/retrackers/plugin.info');
-        $this->assertTrue(strpos($info, 'rtorrent.external.error: php') !== false,
-            'retrackers requires the daemon PHP probe that can run after init');
+        $this->assertTrue(
+            strpos($info, 'rtorrent.external.error: php') !== false,
+            'retrackers requires the daemon PHP probe that can run after init',
+        );
         $source = file_get_contents(__DIR__ . '/../../../php/getplugins.php');
-        $initAt = strpos($source, 'require_once( $plugin["php"] );');
-        $remoteAt = strpos($source, '$jResult.=testRemoteRequests($remoteRequests);');
-        $this->assertTrue($initAt !== false && $remoteAt !== false && $initAt < $remoteAt &&
-            strpos($source, '$remoteStr.="thePlugins.get(') !== false,
-            'getplugins can append a remote-check disable after successful PHP init');
+        $initAt = strpos($source, 'require_once($plugin["php"]);');
+        $remoteAt = strpos($source, '$jResult .= testRemoteRequests($remoteRequests);');
+        $this->assertTrue(
+            $initAt !== false && $remoteAt !== false && $initAt < $remoteAt
+            && strpos($source, '$remoteStr .= "thePlugins.get(') !== false,
+            'getplugins can append a remote-check disable after successful PHP init',
+        );
 
         $done = $this->runFixture('run-done.php');
-        if ($done === false) { return; }
-        $this->assertTrue($done['done_calls'] === 1 && $done['registered_after'] === true &&
-            strpos($done['done_output'], 'hook-teardown-pending') !== false &&
-            strpos($done['done_output'], '.remove()') === false,
-            'late-disabled plugin can retry done and keeps the path on refusal');
+        if ($done === false) {
+            return;
+        }
+        $this->assertTrue(
+            $done['done_calls'] === 1 && $done['registered_after'] === true
+            && strpos($done['done_output'], 'hook-teardown-pending') !== false
+            && strpos($done['done_output'], '.remove()') === false,
+            'late-disabled plugin can retry done and keeps the path on refusal',
+        );
     }
 
     public function testJobsInFlightPostponeInitWithoutDisablingThePlugin()
     {
         $init = $this->runFixture('run-init.php', ['RT_LOCKOUT_INIT_FAILURE' => 'recovery-in-flight']);
-        if ($init === false) { return; }
-        $this->assertTrue($init['registered_before'] === true &&
-            strpos($init['init_output'], 'plugin.disable()') === false &&
-            strpos($init['init_output'], 'retrackers: recovery-in-flight') !== false,
-            'jobs in flight only postpone a lifecycle change; the session keeps the plugin after the notice');
-        $this->assertTrue(substr_count($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') === 1,
-            'a session that keeps the plugin still reports exhausted queue jobs');
+        if ($init === false) {
+            return;
+        }
+        $this->assertTrue(
+            $init['registered_before'] === true
+            && strpos($init['init_output'], 'plugin.disable()') === false
+            && strpos($init['init_output'], 'retrackers: recovery-in-flight') !== false,
+            'jobs in flight only postpone a lifecycle change; the session keeps the plugin after the notice',
+        );
+        $this->assertTrue(
+            substr_count($init['init_output'], 'plugin.terminalJobs = {"user":"alice","sameAdapter":true};') === 1,
+            'a session that keeps the plugin still reports exhausted queue jobs',
+        );
     }
 
     public function testFailedInitKeepsAReachableDoneAttemptAndItsRefusalRetryable()
     {
         $init = $this->runFixture('run-init.php');
-        if ($init === false) { return; }
-        $this->assertTrue($init['registered_before'] === true &&
-            strpos($init['init_output'], 'plugin.disable()') !== false &&
-            strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false,
-            'failed init registers a disabled plugin and exposes its shutdown retry');
-        $this->assertTrue(strpos($init['init_output'], 'plugin.terminalJobs') === false,
-            'a disabled plugin pays no terminal-jobs read and shows no notice');
+        if ($init === false) {
+            return;
+        }
+        $this->assertTrue(
+            $init['registered_before'] === true
+            && strpos($init['init_output'], 'plugin.disable()') !== false
+            && strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false,
+            'failed init registers a disabled plugin and exposes its shutdown retry',
+        );
+        $this->assertTrue(
+            strpos($init['init_output'], 'plugin.terminalJobs') === false,
+            'a disabled plugin pays no terminal-jobs read and shows no notice',
+        );
 
         $done = $this->runFixture('run-done.php');
-        if ($done === false) { return; }
-        $this->assertEquals(1, $done['done_calls'],
-            'doneplugins invokes retrackers done after failed init');
-        $this->assertTrue($done['registered_after'] === true &&
-            strpos($done['done_output'], 'hook-teardown-pending') !== false &&
-            strpos($done['done_output'], '.remove()') === false,
-            'a refused cancellation preserves registration and a visible retry path');
+        if ($done === false) {
+            return;
+        }
+        $this->assertEquals(
+            1,
+            $done['done_calls'],
+            'doneplugins invokes retrackers done after failed init',
+        );
+        $this->assertTrue(
+            $done['registered_after'] === true
+            && strpos($done['done_output'], 'hook-teardown-pending') !== false
+            && strpos($done['done_output'], '.remove()') === false,
+            'a refused cancellation preserves registration and a visible retry path',
+        );
     }
 
     private function runFixture($name, $options = [])
     {
-        $process = proc_open([PHP_BINARY, '-f', $this->fixture . '/php/' . $name],
+        $process = proc_open(
+            [PHP_BINARY, '-f', $this->fixture . '/php/' . $name],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
-                2 => ['pipe', 'w']], $pipes, $this->fixture . '/php',
-            array_merge($_ENV, ['RT_LOCKOUT_STATE' => $this->fixture . '/state.json'], $options));
+                2 => ['pipe', 'w']],
+            $pipes,
+            $this->fixture . '/php',
+            array_merge($_ENV, ['RT_LOCKOUT_STATE' => $this->fixture . '/state.json'], $options),
+        );
         $this->assertTrue(is_resource($process), 'the shipped ' . $name . ' entrypoint starts');
-        if (!is_resource($process)) { return false; }
+        if (!is_resource($process)) {
+            return false;
+        }
         fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]);
         $error = stream_get_contents($pipes[2]);
@@ -218,8 +283,10 @@ RUNNER
         fclose($pipes[2]);
         $status = proc_close($process);
         $result = json_decode($output, true);
-        $this->assertTrue($status === 0 && $error === '' && is_array($result),
-            $name . ' returns a clean inspectable result: ' . $error);
+        $this->assertTrue(
+            $status === 0 && $error === '' && is_array($result),
+            $name . ' returns a clean inspectable result: ' . $error,
+        );
         return $result;
     }
 }

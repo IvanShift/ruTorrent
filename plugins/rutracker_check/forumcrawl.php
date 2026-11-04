@@ -1,22 +1,26 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
-if( count( $argv ) > 1 ) {
-	$_SERVER['REMOTE_USER'] = $argv[1]; }
+if (count($argv) > 1) {
+    $_SERVER['REMOTE_USER'] = $argv[1];
+}
 
-if( !chdir( dirname( __FILE__) ) ) {
-	exit(); }
+if (!chdir(dirname(__FILE__))) {
+    exit();
+}
 
-require_once( "check.php" );
-require_once( "forumindex.php" );
+require_once("check.php");
+require_once("forumindex.php");
 
 // The whole transaction lives in RuTrackerForumIndex::runCrawl(), extracted
 // so that its decisions -- hand the queue back when the fleet scan fails,
 // requeue everything on a failed crawl, record misses only on a completed one
 // -- are testable. This driver supplies only the process
 // boilerplate and the log.
-$line = RuTrackerForumIndex::runCrawl( time() );
-if( $line !== null ) {
-	ruTrackerChecker::logDebug( "forumcrawl: " . $line ); }
+$line = RuTrackerForumIndex::runCrawl(time());
+if ($line !== null) {
+    ruTrackerChecker::logDebug("forumcrawl: " . $line);
+}

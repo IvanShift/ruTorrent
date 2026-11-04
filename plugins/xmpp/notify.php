@@ -1,70 +1,65 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
-if( !chdir( dirname( __FILE__) ) ) {
-	exit(); }
+if (!chdir(dirname(__FILE__))) {
+    exit();
+}
 
-if( count( $argv ) > 2 ) {
-	$_SERVER['REMOTE_USER'] = $argv[2]; }
+if (count($argv) > 2) {
+    $_SERVER['REMOTE_USER'] = $argv[2];
+}
 
-require_once( dirname(__FILE__)."/../../php/settings.php");
-require_once( "./XMPPHP/XMPP.php" );
-require_once( "xmpp.php" );
+require_once(dirname(__FILE__) . "/../../php/settings.php");
+require_once("./XMPPHP/XMPP.php");
+require_once("xmpp.php");
 
 $name = $argv[1];
 $at = rXmpp::load();
-if ( $at->message !== '' && isset($at->jabberServer) && isset($at->jabberLogin) && isset($at->jabberPasswd) && isset($at->jabberFor))
-{
+if ($at->message !== '' && isset($at->jabberServer) && isset($at->jabberLogin) && isset($at->jabberPasswd) && isset($at->jabberFor)) {
     $useEncryption = true;
     $jabberHost = $at->jabberServer;
     $jabberPort = 5222;
-    if ($at->advancedSettings)
-    {
-	$useEncryption = $at->useEncryption;
-	if ($at->jabberHost)
-	{
-	    $jabberHost = $at->jabberHost;
-	}
+    if ($at->advancedSettings) {
+        $useEncryption = $at->useEncryption;
+        if ($at->jabberHost) {
+            $jabberHost = $at->jabberHost;
+        }
 
-	if ($at->jabberPort)
-	{
-	    $jabberPort = $at->jabberPort;
-	}
+        if ($at->jabberPort) {
+            $jabberPort = $at->jabberPort;
+        }
     }
     $conn = new XMPPHP_XMPP($jabberHost, $jabberPort ? $jabberPort : 5222, $at->jabberLogin, $at->jabberPasswd, 'xmpphp', $at->jabberServer);
-    if ($useEncryption)
-    {
-	$conn->useEncryption(true);
-	$opts = [
-	    'ssl' => [
-	    'verify_peer' => true,
-	    'allow_self_signed' => true,
-	]];
-	if ($at->jabberHost != $at->jabberServer)
-	{
-	    $opts['ssl']['CN_match'] = $at->jabberServer;
-	}
-	$conn->set_context($opts);
+    if ($useEncryption) {
+        $conn->useEncryption(true);
+        $opts = [
+            'ssl' => [
+                'verify_peer' => true,
+                'allow_self_signed' => true,
+            ]];
+        if ($at->jabberHost != $at->jabberServer) {
+            $opts['ssl']['CN_match'] = $at->jabberServer;
+        }
+        $conn->set_context($opts);
+    } else {
+        $conn->useEncryption(false);
     }
-    else
-    {
-	$conn->useEncryption(false);
-    }
-    try
-    {
-	// Appended arguments keep previously installed two-argument hooks usable.
-	// Missing source paths mean byte escapes, never an extra daemon lookup.
-	$message = $at->notificationMessage($name, $argv[3] ?? '',
-		isset($argv[4], $argv[5]) ? [$argv[4], $argv[5]] : false);
-	$conn->connect();
-	$conn->processUntil('session_start');
-	$conn->presence();
-	$conn->message($at->jabberFor, $message);
-	$conn->disconnect();
-    }
-    catch(XMPPHP_Exception $e)
-    {
-	die($e->getMessage());
+    try {
+        // Appended arguments keep previously installed two-argument hooks usable.
+        // Missing source paths mean byte escapes, never an extra daemon lookup.
+        $message = $at->notificationMessage(
+            $name,
+            $argv[3] ?? '',
+            isset($argv[4], $argv[5]) ? [$argv[4], $argv[5]] : false,
+        );
+        $conn->connect();
+        $conn->processUntil('session_start');
+        $conn->presence();
+        $conn->message($at->jabberFor, $message);
+        $conn->disconnect();
+    } catch (XMPPHP_Exception $e) {
+        die($e->getMessage());
     }
 }

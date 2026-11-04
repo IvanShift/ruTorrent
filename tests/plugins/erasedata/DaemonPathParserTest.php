@@ -33,355 +33,380 @@ require_once(__DIR__ . '/RealParserDriver.php');
  */
 class DaemonPathParserTest extends TestCase
 {
-	public const HASH = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
-	public const OLD = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-	public const SUCCESSOR = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
-	public const MARKER = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-	// A directory and file names with a quote, a backslash, a backslash-quote
-	// and a backslash-backslash (bytes: aud "q" \\b 'a' &c, odd \"name\" \x,
-	// say "one" \\ \"two\".bin).
-	public const DIRECTORY = 'aud "q" \\\\b \'a\' &c';
-	public const NAME = 'odd \\"name\\" \\x';
-	public const SINGLE = 'say "one" \\\\ \\"two\\".bin';
+    public const HASH = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
+    public const OLD = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    public const SUCCESSOR = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+    public const MARKER = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    // A directory and file names with a quote, a backslash, a backslash-quote
+    // and a backslash-backslash (bytes: aud "q" \\b 'a' &c, odd \"name\" \x,
+    // say "one" \\ \"two\".bin).
+    public const DIRECTORY = 'aud "q" \\\\b \'a\' &c';
+    public const NAME = 'odd \\"name\\" \\x';
+    public const SINGLE = 'say "one" \\\\ \\"two\\".bin';
 
-	private $base;
-	private $driver;
-	// The multi-file download's directory and the single-file download's
-	// file, both on disk.
-	private $dir;
-	private $file;
+    private $base;
+    private $driver;
+    // The multi-file download's directory and the single-file download's
+    // file, both on disk.
+    private $dir;
+    private $file;
 
-	public function setUp()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-path-parser-' . getmypid() . '-' . uniqid();
-		mkdir($this->base, 0700);
-		$this->driver = new ErasedataRealParserDriver($this->base);
-		$this->dir = $this->base . '/dl/' . self::DIRECTORY;
-		mkdir($this->dir . '/sub', 0700, true);
-		file_put_contents($this->dir . '/' . self::NAME, 'abc');
-		file_put_contents($this->dir . '/sub/b.bin', 'abcd');
-		$this->file = $this->base . '/dl/' . self::SINGLE;
-		file_put_contents($this->file, 'abcde');
-		// The neighbours, spelled as one unescape of each name reads.
-		$neighbour = $this->base . '/dl/' . self::unescapedOnce(self::DIRECTORY);
-		mkdir($neighbour . '/sub', 0700, true);
-		file_put_contents($neighbour . '/' . self::unescapedOnce(self::NAME), 'neighbour');
-		file_put_contents($neighbour . '/sub/b.bin', 'neighbour');
-		file_put_contents($this->dir . '/' . self::unescapedOnce(self::NAME), 'neighbour');
-		file_put_contents($this->base . '/dl/' . self::unescapedOnce(self::SINGLE), 'neighbour');
-		mkdir($this->base . '/session', 0700);
-	}
+    public function setUp()
+    {
+        $this->base = sys_get_temp_dir() . '/rutorrent-path-parser-' . getmypid() . '-' . uniqid();
+        mkdir($this->base, 0700);
+        $this->driver = new ErasedataRealParserDriver($this->base);
+        $this->dir = $this->base . '/dl/' . self::DIRECTORY;
+        mkdir($this->dir . '/sub', 0700, true);
+        file_put_contents($this->dir . '/' . self::NAME, 'abc');
+        file_put_contents($this->dir . '/sub/b.bin', 'abcd');
+        $this->file = $this->base . '/dl/' . self::SINGLE;
+        file_put_contents($this->file, 'abcde');
+        // The neighbours, spelled as one unescape of each name reads.
+        $neighbour = $this->base . '/dl/' . self::unescapedOnce(self::DIRECTORY);
+        mkdir($neighbour . '/sub', 0700, true);
+        file_put_contents($neighbour . '/' . self::unescapedOnce(self::NAME), 'neighbour');
+        file_put_contents($neighbour . '/sub/b.bin', 'neighbour');
+        file_put_contents($this->dir . '/' . self::unescapedOnce(self::NAME), 'neighbour');
+        file_put_contents($this->base . '/dl/' . self::unescapedOnce(self::SINGLE), 'neighbour');
+        mkdir($this->base . '/session', 0700);
+    }
 
-	public function tearDown()
-	{
-		$this->driver->stop();
-		$this->remove($this->base);
-	}
+    public function tearDown()
+    {
+        $this->driver->stop();
+        $this->remove($this->base);
+    }
 
-	public function testRemovalPathsAreTheDaemonsOwnBytes()
-	{
-		$dir = $this->dir;
-		$multi = ['base' => $dir, 'multi' => '1',
-			'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin']];
-		$single = ['base' => $this->file, 'multi' => '0', 'files' => [$this->file]];
-		$cases = [
-			// An opened download answers its frozen paths.
-			'opened multi-file' => [[[$dir, 1, $dir . '/' . self::NAME, $dir . '/sub/b.bin']], $multi],
-			// One not opened since rTorrent started answers d.directory and f.path.
-			'unopened multi-file' => [[['', 1, '', ''], [$dir, 1, self::NAME, 'sub/b.bin']], $multi],
-			'opened single-file' => [[[$this->file, 0, $this->file]], $single],
-			'unopened single-file' => [[['', 0, ''],
-				[dirname($this->file), 0, self::SINGLE]], $single],
-		];
-		foreach ($cases as $case => $plan)
-		{
-			list($replies, $expected) = $plan;
-			$answer = $this->collect($replies);
-			$this->assertSame($expected, $answer['paths'], 'the deletion manifest names the download in the'
-				. ' daemon\'s own bytes (' . $case . '): ' . self::show($answer['paths']));
-			$missing = [];
-			foreach ($expected['files'] as $file) {
-				if (!is_file($file)) {
-					$missing[] = $file; } }
-			$this->assertSame([], $missing, 'and those are the files on disk (' . $case . ')');
-		}
-	}
+    public function testRemovalPathsAreTheDaemonsOwnBytes()
+    {
+        $dir = $this->dir;
+        $multi = ['base' => $dir, 'multi' => '1',
+            'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin']];
+        $single = ['base' => $this->file, 'multi' => '0', 'files' => [$this->file]];
+        $cases = [
+            // An opened download answers its frozen paths.
+            'opened multi-file' => [[[$dir, 1, $dir . '/' . self::NAME, $dir . '/sub/b.bin']], $multi],
+            // One not opened since rTorrent started answers d.directory and f.path.
+            'unopened multi-file' => [[['', 1, '', ''], [$dir, 1, self::NAME, 'sub/b.bin']], $multi],
+            'opened single-file' => [[[$this->file, 0, $this->file]], $single],
+            'unopened single-file' => [[['', 0, ''],
+                [dirname($this->file), 0, self::SINGLE]], $single],
+        ];
+        foreach ($cases as $case => $plan) {
+            list($replies, $expected) = $plan;
+            $answer = $this->collect($replies);
+            $this->assertSame($expected, $answer['paths'], 'the deletion manifest names the download in the'
+                . ' daemon\'s own bytes (' . $case . '): ' . self::show($answer['paths']));
+            $missing = [];
+            foreach ($expected['files'] as $file) {
+                if (!is_file($file)) {
+                    $missing[] = $file;
+                }
+            }
+            $this->assertSame([], $missing, 'and those are the files on disk (' . $case . ')');
+        }
+    }
 
-	// The manifest a removal publishes from that answer: the daemon's bytes,
-	// marked as such because they hold a backslash, decoded unambiguous, and
-	// naming no neighbour. The collector deletes exactly what a marked
-	// manifest names (ManifestPathBytesTest).
-	public function testTheRemovalManifestCarriesTheDaemonsBytesAndItsMark()
-	{
-		$dir = $this->dir;
-		$answer = $this->driver->drive([[$dir, 1, $dir . '/' . self::NAME, $dir . '/sub/b.bin']],
-			'require_once(' . var_export($this->plugin(), true) . ");\n"
-			. '$h = ' . var_export(self::HASH, true) . '; $paths = erasedataCollectPaths($h);'
-			. ' $bytes = is_array($paths) ? ErasedataManifestCodec::encode($h, $paths, 1) : false;'
-			. ' $record = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $h) : false;'
-			. ' echo json_encode(array("marked" => is_string($bytes)'
-			. ' && strpos($bytes, \'"path_bytes":"daemon"\') !== false, "record" => is_array($record)'
-			. ' ? array("base" => $record["base"], "files" => $record["files"],'
-			. ' "ambiguous" => $record["paths_ambiguous"]) : $record));');
-		$this->assertSame(true, $answer['marked'], 'the manifest says its paths are the daemon\'s own bytes');
-		$this->assertSame(['base' => $dir, 'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin'],
-			'ambiguous' => false], $answer['record'], 'it names exactly the download\'s files, unambiguous: '
-			. self::show($answer['record']));
-	}
+    // The manifest a removal publishes from that answer: the daemon's bytes,
+    // marked as such because they hold a backslash, decoded unambiguous, and
+    // naming no neighbour. The collector deletes exactly what a marked
+    // manifest names (ManifestPathBytesTest).
+    public function testTheRemovalManifestCarriesTheDaemonsBytesAndItsMark()
+    {
+        $dir = $this->dir;
+        $answer = $this->driver->drive(
+            [[$dir, 1, $dir . '/' . self::NAME, $dir . '/sub/b.bin']],
+            'require_once(' . var_export($this->plugin(), true) . ");\n"
+            . '$h = ' . var_export(self::HASH, true) . '; $paths = erasedataCollectPaths($h);'
+            . ' $bytes = is_array($paths) ? ErasedataManifestCodec::encode($h, $paths, 1) : false;'
+            . ' $record = is_string($bytes) ? ErasedataManifestCodec::decodeBytes($bytes, $h) : false;'
+            . ' echo json_encode(array("marked" => is_string($bytes)'
+            . ' && strpos($bytes, \'"path_bytes":"daemon"\') !== false, "record" => is_array($record)'
+            . ' ? array("base" => $record["base"], "files" => $record["files"],'
+            . ' "ambiguous" => $record["paths_ambiguous"]) : $record));',
+        );
+        $this->assertSame(true, $answer['marked'], 'the manifest says its paths are the daemon\'s own bytes');
+        $this->assertSame(['base' => $dir, 'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin'],
+            'ambiguous' => false], $answer['record'], 'it names exactly the download\'s files, unambiguous: '
+            . self::show($answer['record']));
+    }
 
-	// What cannot be resolved is false, which admission refuses visibly and
-	// recovery and the collector retain, rather than a manifest that names
-	// something other than the download's files.
-	public function testUnresolvableRemovalAnswersNameNothing()
-	{
-		$dir = $this->dir;
-		$cases = [
-			'a multi-file path outside the base' => [[$dir, 1, $dir . '/' . self::NAME,
-				dirname($dir) . '/b.bin']],
-			'a multi-file path that is the base itself' => [[$dir, 1, $dir]],
-			'a path that climbs out of the base' => [[$dir, 1, $dir . '/../' . self::NAME]],
-			'a single file that is not the base' => [[$dir . '/a', 0, $dir . '/b']],
-			'a relative base' => [[self::DIRECTORY, 1, self::DIRECTORY . '/' . self::NAME]],
-			'the root as base' => [['/', 1, '/' . self::NAME]],
-			'a relative directory' => [['', 1, ''], [self::DIRECTORY, 1, self::NAME]],
-			'two files of a single-file download' => [['', 0, '', ''],
-				[$dir, 0, self::NAME, 'sub/b.bin']],
-		];
-		foreach ($cases as $case => $replies)
-		{
-			$answer = $this->collect($replies);
-			$this->assertSame(false, $answer['paths'], 'an answer that does not describe one download'
-				. ' names nothing: ' . $case . ': ' . self::show($answer['paths']));
-		}
-	}
+    // What cannot be resolved is false, which admission refuses visibly and
+    // recovery and the collector retain, rather than a manifest that names
+    // something other than the download's files.
+    public function testUnresolvableRemovalAnswersNameNothing()
+    {
+        $dir = $this->dir;
+        $cases = [
+            'a multi-file path outside the base' => [[$dir, 1, $dir . '/' . self::NAME,
+                dirname($dir) . '/b.bin']],
+            'a multi-file path that is the base itself' => [[$dir, 1, $dir]],
+            'a path that climbs out of the base' => [[$dir, 1, $dir . '/../' . self::NAME]],
+            'a single file that is not the base' => [[$dir . '/a', 0, $dir . '/b']],
+            'a relative base' => [[self::DIRECTORY, 1, self::DIRECTORY . '/' . self::NAME]],
+            'the root as base' => [['/', 1, '/' . self::NAME]],
+            'a relative directory' => [['', 1, ''], [self::DIRECTORY, 1, self::NAME]],
+            'two files of a single-file download' => [['', 0, '', ''],
+                [$dir, 0, self::NAME, 'sub/b.bin']],
+        ];
+        foreach ($cases as $case => $replies) {
+            $answer = $this->collect($replies);
+            $this->assertSame(false, $answer['paths'], 'an answer that does not describe one download'
+                . ' names nothing: ' . $case . ': ' . self::show($answer['paths']));
+        }
+    }
 
-	// AUD-ESC S4: a backslash is an ordinary byte of a POSIX name, so a
-	// metainfo component holding one is a name below the download; only what
-	// cannot be one such component is refused.
-	public function testAMetainfoComponentMayHoldABackslashButNotASeparatorOrADotName()
-	{
-		$cases = [
-			'a backslash' => [['a\\b'], 'a\\b'],
-			'a backslash-quote and a backslash-backslash' => [[self::DIRECTORY, self::NAME],
-				self::DIRECTORY . '/' . self::NAME],
-			'a trailing backslash' => [['dir\\', 'x'], 'dir\\/x'],
-			'a lone backslash' => [['\\'], '\\'],
-			'an empty component' => [['a', ''], false],
-			'a dot' => [['.', 'a'], false],
-			'a dot-dot' => [['a', '..'], false],
-			'a slash inside a component' => [['a/b'], false],
-			'a NUL' => [["a\0b"], false],
-			'no component at all' => [[], false],
-			'a component that is not a string' => [[1], false],
-		];
-		$inputs = [];
-		foreach ($cases as $case => $plan) {
-			$inputs[$case] = $plan[0]; }
-		$answer = $this->driver->drive([], 'require_once(' . var_export($this->plugin(), true) . ");\n"
-			. '$out = array(); foreach (' . var_export($inputs, true) . ' as $case => $components)'
-			. ' $out[$case] = erasedataPhysicalRelativePath($components);'
-			. ' echo json_encode(array("paths" => $out));');
-		foreach ($cases as $case => $plan) {
-			$this->assertSame($plan[1], array_key_exists($case, $answer['paths']) ? $answer['paths'][$case] : null,
-				'the components with ' . $case . ' give ' . self::show($plan[1])); }
-	}
+    // AUD-ESC S4: a backslash is an ordinary byte of a POSIX name, so a
+    // metainfo component holding one is a name below the download; only what
+    // cannot be one such component is refused.
+    public function testAMetainfoComponentMayHoldABackslashButNotASeparatorOrADotName()
+    {
+        $cases = [
+            'a backslash' => [['a\\b'], 'a\\b'],
+            'a backslash-quote and a backslash-backslash' => [[self::DIRECTORY, self::NAME],
+                self::DIRECTORY . '/' . self::NAME],
+            'a trailing backslash' => [['dir\\', 'x'], 'dir\\/x'],
+            'a lone backslash' => [['\\'], '\\'],
+            'an empty component' => [['a', ''], false],
+            'a dot' => [['.', 'a'], false],
+            'a dot-dot' => [['a', '..'], false],
+            'a slash inside a component' => [['a/b'], false],
+            'a NUL' => [["a\0b"], false],
+            'no component at all' => [[], false],
+            'a component that is not a string' => [[1], false],
+        ];
+        $inputs = [];
+        foreach ($cases as $case => $plan) {
+            $inputs[$case] = $plan[0];
+        }
+        $answer = $this->driver->drive([], 'require_once(' . var_export($this->plugin(), true) . ");\n"
+            . '$out = array(); foreach (' . var_export($inputs, true) . ' as $case => $components)'
+            . ' $out[$case] = erasedataPhysicalRelativePath($components);'
+            . ' echo json_encode(array("paths" => $out));');
+        foreach ($cases as $case => $plan) {
+            $this->assertSame(
+                $plan[1],
+                array_key_exists($case, $answer['paths']) ? $answer['paths'][$case] : null,
+                'the components with ' . $case . ' give ' . self::show($plan[1]),
+            );
+        }
+    }
 
-	public function testTheExactPayloadPlanNamesTheDaemonsOwnBytes()
-	{
-		$dir = $this->dir;
-		$multiHash = $this->sessionCopy($this->multiInfo());
-		$singleHash = $this->sessionCopy(['length' => 5, 'name' => self::SINGLE,
-			'piece length' => 16384, 'pieces' => str_repeat("\x02", 20)]);
-		$stored = ErasedataRealParserDriver::physicalPathReply($dir, 1,
-			[self::NAME, '.pad/0', 'sub/b.bin']);
-		$multi = ['base' => $dir, 'multi' => '1',
-			'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin']];
-		$cases = [
-			'opened multi-file' => [$multiHash, [$this->sourceReply(),
-				ErasedataRealParserDriver::physicalPathReply($dir, 1,
-					[$dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin']), $stored], $multi],
-			'unopened multi-file' => [$multiHash, [$this->sourceReply(),
-				ErasedataRealParserDriver::physicalPathReply('', 1, ['', '', '']), $stored], $multi],
-			'single-file' => [$singleHash, [$this->sourceReply(),
-				ErasedataRealParserDriver::physicalPathReply($this->file, 0, [$this->file]),
-				ErasedataRealParserDriver::physicalPathReply(dirname($this->file), 0, [self::SINGLE])],
-				['base' => $this->file, 'multi' => '0', 'files' => [$this->file]]],
-		];
-		foreach ($cases as $case => $plan)
-		{
-			list($hash, $replies, $expected) = $plan;
-			$answer = $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
-				. '$failure = null; $paths = erasedataCollectPhysicalPaths(' . var_export($hash, true) . ', $failure);'
-				. ' echo json_encode(array("paths" => $paths, "failure" => $failure));');
-			$this->assertSame($expected, $answer['paths'], 'the session copy and the daemon agree, and the'
-				. ' payload is named in the daemon\'s own bytes (' . $case . '): ' . self::show($answer));
-		}
-	}
+    public function testTheExactPayloadPlanNamesTheDaemonsOwnBytes()
+    {
+        $dir = $this->dir;
+        $multiHash = $this->sessionCopy($this->multiInfo());
+        $singleHash = $this->sessionCopy(['length' => 5, 'name' => self::SINGLE,
+            'piece length' => 16384, 'pieces' => str_repeat("\x02", 20)]);
+        $stored = ErasedataRealParserDriver::physicalPathReply(
+            $dir,
+            1,
+            [self::NAME, '.pad/0', 'sub/b.bin'],
+        );
+        $multi = ['base' => $dir, 'multi' => '1',
+            'files' => [$dir . '/' . self::NAME, $dir . '/sub/b.bin']];
+        $cases = [
+            'opened multi-file' => [$multiHash, [$this->sourceReply(),
+                ErasedataRealParserDriver::physicalPathReply(
+                    $dir,
+                    1,
+                    [$dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'],
+                ), $stored], $multi],
+            'unopened multi-file' => [$multiHash, [$this->sourceReply(),
+                ErasedataRealParserDriver::physicalPathReply('', 1, ['', '', '']), $stored], $multi],
+            'single-file' => [$singleHash, [$this->sourceReply(),
+                ErasedataRealParserDriver::physicalPathReply($this->file, 0, [$this->file]),
+                ErasedataRealParserDriver::physicalPathReply(dirname($this->file), 0, [self::SINGLE])],
+                ['base' => $this->file, 'multi' => '0', 'files' => [$this->file]]],
+        ];
+        foreach ($cases as $case => $plan) {
+            list($hash, $replies, $expected) = $plan;
+            $answer = $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
+                . '$failure = null; $paths = erasedataCollectPhysicalPaths(' . var_export($hash, true) . ', $failure);'
+                . ' echo json_encode(array("paths" => $paths, "failure" => $failure));');
+            $this->assertSame($expected, $answer['paths'], 'the session copy and the daemon agree, and the'
+                . ' payload is named in the daemon\'s own bytes (' . $case . '): ' . self::show($answer));
+        }
+    }
 
-	public function testAPresentCopyWithSuchNamesIsClaimedThroughItsExactPlan()
-	{
-		$dir = $this->dir;
-		$hash = $this->sessionCopy($this->multiInfo());
-		$answer = $this->ownerSnapshot([
-			[$hash, '', '', '', ''],
-			$this->sourceReply(),
-			ErasedataRealParserDriver::physicalPathReply($dir, 1,
-				[$dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin']),
-			ErasedataRealParserDriver::physicalPathReply($dir, 1, [self::NAME, '.pad/0', 'sub/b.bin'])]);
-		$this->assertSame($this->claims([$dir . '/' . self::NAME, $dir . '/sub/b.bin']), $answer['snapshot'],
-			'its payload files are claimed as they are on disk, and its padding is not: '
-			. self::show($answer['snapshot']));
-		$this->assertSame([], $this->driver->logLines(), 'a copy that is there is not reported as'
-			. ' unreadable: ' . self::show($this->driver->logLines()));
-		$this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
-	}
+    public function testAPresentCopyWithSuchNamesIsClaimedThroughItsExactPlan()
+    {
+        $dir = $this->dir;
+        $hash = $this->sessionCopy($this->multiInfo());
+        $answer = $this->ownerSnapshot([
+            [$hash, '', '', '', ''],
+            $this->sourceReply(),
+            ErasedataRealParserDriver::physicalPathReply(
+                $dir,
+                1,
+                [$dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'],
+            ),
+            ErasedataRealParserDriver::physicalPathReply($dir, 1, [self::NAME, '.pad/0', 'sub/b.bin'])]);
+        $this->assertSame(
+            $this->claims([$dir . '/' . self::NAME, $dir . '/sub/b.bin']),
+            $answer['snapshot'],
+            'its payload files are claimed as they are on disk, and its padding is not: '
+            . self::show($answer['snapshot']),
+        );
+        $this->assertSame([], $this->driver->logLines(), 'a copy that is there is not reported as'
+            . ' unreadable: ' . self::show($this->driver->logLines()));
+        $this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
+    }
 
-	// A copy that is this download's own -- its info hash matches -- but whose
-	// layout gives no exact plan (here a single-file length beside a file
-	// list) is claimed through the daemon's file list as before. It is named
-	// for what it is, without a save: the daemon would write the same info
-	// dictionary again.
-	public function testAReadableCopyWithoutAUsableLayoutIsNamedSoWithoutASave()
-	{
-		$dir = $this->dir;
-		$hash = $this->sessionCopy([
-			'files' => [['length' => 3, 'path' => [self::NAME]]],
-			'length' => 3,
-			'name' => self::DIRECTORY,
-			'piece length' => 16384,
-			'pieces' => str_repeat("\x03", 20)]);
-		$answer = $this->ownerSnapshot([
-			[$hash, '', '', '', ''],
-			// The plan reads the copy, then the metadata-stub check reads it again.
-			$this->sourceReply(),
-			$this->sourceReply(),
-			// d.directory, then f.path and f.frozen_path of each file.
-			[$dir, self::NAME, $dir . '/' . self::NAME],
-			// The answer to a session save, should one be requested.
-			[0]]);
-		$this->assertSame($this->claims([$dir . '/' . self::NAME]), $answer['snapshot'],
-			'its daemon file list is claimed: ' . self::show($answer['snapshot']));
-		$this->assertSame(['erasedata: cleanup owner ' . $hash . ' metainfo-paths-unusable; its daemon file'
-			. ' list is claimed instead'], $this->driver->logLines(), 'the log says the copy is there and its'
-			. ' layout unusable: ' . self::show($this->driver->logLines()));
-		$this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
-	}
+    // A copy that is this download's own -- its info hash matches -- but whose
+    // layout gives no exact plan (here a single-file length beside a file
+    // list) is claimed through the daemon's file list as before. It is named
+    // for what it is, without a save: the daemon would write the same info
+    // dictionary again.
+    public function testAReadableCopyWithoutAUsableLayoutIsNamedSoWithoutASave()
+    {
+        $dir = $this->dir;
+        $hash = $this->sessionCopy([
+            'files' => [['length' => 3, 'path' => [self::NAME]]],
+            'length' => 3,
+            'name' => self::DIRECTORY,
+            'piece length' => 16384,
+            'pieces' => str_repeat("\x03", 20)]);
+        $answer = $this->ownerSnapshot([
+            [$hash, '', '', '', ''],
+            // The plan reads the copy, then the metadata-stub check reads it again.
+            $this->sourceReply(),
+            $this->sourceReply(),
+            // d.directory, then f.path and f.frozen_path of each file.
+            [$dir, self::NAME, $dir . '/' . self::NAME],
+            // The answer to a session save, should one be requested.
+            [0]]);
+        $this->assertSame(
+            $this->claims([$dir . '/' . self::NAME]),
+            $answer['snapshot'],
+            'its daemon file list is claimed: ' . self::show($answer['snapshot']),
+        );
+        $this->assertSame(['erasedata: cleanup owner ' . $hash . ' metainfo-paths-unusable; its daemon file'
+            . ' list is claimed instead'], $this->driver->logLines(), 'the log says the copy is there and its'
+            . ' layout unusable: ' . self::show($this->driver->logLines()));
+        $this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
+    }
 
-	// What rXMLRPCRequest::unescapeValue(), now kept only for the deprecated
-	// $escapeForScript flag, makes of a string: a backslash before a backslash
-	// or a double quote dropped.
-	private static function unescapedOnce($value)
-	{
-		return preg_replace('/\\\\([\\\\"])/', '$1', $value);
-	}
+    // What rXMLRPCRequest::unescapeValue(), now kept only for the deprecated
+    // $escapeForScript flag, makes of a string: a backslash before a backslash
+    // or a double quote dropped.
+    private static function unescapedOnce($value)
+    {
+        return preg_replace('/\\\\([\\\\"])/', '$1', $value);
+    }
 
-	private function remove($path)
-	{
-		if (is_dir($path) && !is_link($path))
-		{
-			foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
-				$this->remove($path . '/' . $entry); }
-			@rmdir($path);
-		}
-		else {
-			@unlink($path); }
-	}
+    private function remove($path)
+    {
+        if (is_dir($path) && !is_link($path)) {
+            foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+                $this->remove($path . '/' . $entry);
+            }
+            @rmdir($path);
+        } else {
+            @unlink($path);
+        }
+    }
 
-	private static function bencode($value)
-	{
-		if (is_int($value)) {
-			return 'i' . $value . 'e'; }
-		if (is_string($value)) {
-			return strlen($value) . ':' . $value; }
-		if (array_keys($value) === range(0, count($value) - 1))
-		{
-			$out = 'l';
-			foreach ($value as $item) {
-				$out .= self::bencode($item); }
-			return $out . 'e';
-		}
-		ksort($value, SORT_STRING);
-		$out = 'd';
-		foreach ($value as $key => $item) {
-			$out .= self::bencode((string) $key) . self::bencode($item); }
-		return $out . 'e';
-	}
+    private static function bencode($value)
+    {
+        if (is_int($value)) {
+            return 'i' . $value . 'e';
+        }
+        if (is_string($value)) {
+            return strlen($value) . ':' . $value;
+        }
+        if (array_keys($value) === range(0, count($value) - 1)) {
+            $out = 'l';
+            foreach ($value as $item) {
+                $out .= self::bencode($item);
+            }
+            return $out . 'e';
+        }
+        ksort($value, SORT_STRING);
+        $out = 'd';
+        foreach ($value as $key => $item) {
+            $out .= self::bencode((string) $key) . self::bencode($item);
+        }
+        return $out . 'e';
+    }
 
-	// Writes $info as the download's session copy and returns its hash.
-	private function sessionCopy(array $info)
-	{
-		$hash = strtoupper(sha1(self::bencode($info)));
-		file_put_contents($this->base . '/session/' . $hash . '.torrent', self::bencode(['info' => $info]));
-		return $hash;
-	}
+    // Writes $info as the download's session copy and returns its hash.
+    private function sessionCopy(array $info)
+    {
+        $hash = strtoupper(sha1(self::bencode($info)));
+        file_put_contents($this->base . '/session/' . $hash . '.torrent', self::bencode(['info' => $info]));
+        return $hash;
+    }
 
-	// A multi-file download: a payload file, a BEP-47 padding file and a
-	// payload file in a subdirectory.
-	private function multiInfo()
-	{
-		return [
-			'files' => [
-				['length' => 3, 'path' => [self::NAME]],
-				['attr' => 'p', 'length' => 5, 'path' => ['.pad', '0']],
-				['length' => 4, 'path' => ['sub', 'b.bin']]],
-			'name' => self::DIRECTORY,
-			'piece length' => 16384,
-			'pieces' => str_repeat("\x01", 20)];
-	}
+    // A multi-file download: a payload file, a BEP-47 padding file and a
+    // payload file in a subdirectory.
+    private function multiInfo()
+    {
+        return [
+            'files' => [
+                ['length' => 3, 'path' => [self::NAME]],
+                ['attr' => 'p', 'length' => 5, 'path' => ['.pad', '0']],
+                ['length' => 4, 'path' => ['sub', 'b.bin']]],
+            'name' => self::DIRECTORY,
+            'piece length' => 16384,
+            'pieces' => str_repeat("\x01", 20)];
+    }
 
-	// What rTorrent answers for the session copy: its session directory and
-	// no tied file.
-	private function sourceReply()
-	{
-		return [$this->base . '/session/', ''];
-	}
+    // What rTorrent answers for the session copy: its session directory and
+    // no tied file.
+    private function sourceReply()
+    {
+        return [$this->base . '/session/', ''];
+    }
 
-	private function plugin()
-	{
-		return realpath(__DIR__ . '/../../../plugins/erasedata/removewithdata.php');
-	}
+    private function plugin()
+    {
+        return realpath(__DIR__ . '/../../../plugins/erasedata/removewithdata.php');
+    }
 
-	private function collect(array $replies)
-	{
-		return $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
-			. 'echo json_encode(array("paths" => erasedataCollectPaths(' . var_export(self::HASH, true) . ')));');
-	}
+    private function collect(array $replies)
+    {
+        return $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
+            . 'echo json_encode(array("paths" => erasedataCollectPaths(' . var_export(self::HASH, true) . ')));');
+    }
 
-	// The replacement cleanup's owner scan, seen from a download that is
-	// neither side of the replacement.
-	private function ownerSnapshot(array $replies)
-	{
-		return $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
-			. '$s = erasedataCleanupOtherOwnerSnapshot(' . var_export(self::OLD, true) . ', '
-			. var_export(self::SUCCESSOR, true) . ', ' . var_export(self::MARKER, true) . ', '
-			. var_export(self::OLD . '-started-1787587200', true) . ");\n"
-			. 'echo json_encode(array("snapshot" => is_array($s) ? array("paths" => array_keys($s["paths"]),'
-			. ' "inodes" => array_keys($s["inodes"])) : $s));');
-	}
+    // The replacement cleanup's owner scan, seen from a download that is
+    // neither side of the replacement.
+    private function ownerSnapshot(array $replies)
+    {
+        return $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
+            . '$s = erasedataCleanupOtherOwnerSnapshot(' . var_export(self::OLD, true) . ', '
+            . var_export(self::SUCCESSOR, true) . ', ' . var_export(self::MARKER, true) . ', '
+            . var_export(self::OLD . '-started-1787587200', true) . ");\n"
+            . 'echo json_encode(array("snapshot" => is_array($s) ? array("paths" => array_keys($s["paths"]),'
+            . ' "inodes" => array_keys($s["inodes"])) : $s));');
+    }
 
-	private function claims(array $files)
-	{
-		$paths = [];
-		$inodes = [];
-		foreach ($files as $file)
-		{
-			$paths[] = "p\0" . realpath($file);
-			$stat = stat($file);
-			$inodes[] = 'i:' . $stat['dev'] . ':' . $stat['ino'];
-		}
-		return ['paths' => $paths, 'inodes' => $inodes];
-	}
+    private function claims(array $files)
+    {
+        $paths = [];
+        $inodes = [];
+        foreach ($files as $file) {
+            $paths[] = "p\0" . realpath($file);
+            $stat = stat($file);
+            $inodes[] = 'i:' . $stat['dev'] . ':' . $stat['ino'];
+        }
+        return ['paths' => $paths, 'inodes' => $inodes];
+    }
 
-	private function saveRequested()
-	{
-		foreach ($this->driver->daemon()->calls() as $call) {
-			if (strpos($call, 'save_full_session') !== false) {
-				return true; } }
-		return false;
-	}
+    private function saveRequested()
+    {
+        foreach ($this->driver->daemon()->calls() as $call) {
+            if (strpos($call, 'save_full_session') !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
 
-	private static function show($value)
-	{
-		return json_encode($value, JSON_UNESCAPED_SLASHES);
-	}
+    private static function show($value)
+    {
+        return json_encode($value, JSON_UNESCAPED_SLASHES);
+    }
 }

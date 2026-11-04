@@ -1,4 +1,5 @@
 <?php
+
 require_once(__DIR__ . '/TestCase.php');
 
 class MediaEmptyPathTaskTest extends TestCase
@@ -11,17 +12,23 @@ class MediaEmptyPathTaskTest extends TestCase
         $this->root = dirname(__DIR__, 2);
         $this->scratch = sys_get_temp_dir() . '/rt-media-empty-' . getmypid() . '-' . bin2hex(random_bytes(4));
         foreach (['php/utility', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo'] as $dir) {
-            mkdir($this->scratch . '/' . $dir, 0777, true); }
+            mkdir($this->scratch . '/' . $dir, 0777, true);
+        }
         foreach (['plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
             'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php'] as $file) {
-            copy($this->root . '/' . $file, $this->scratch . '/' . $file); }
+            copy($this->root . '/' . $file, $this->scratch . '/' . $file);
+        }
         foreach (['rtorrent.php', 'commandargs.php'] as $file) {
-            copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file); }
+            copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file);
+        }
         copy($this->root . '/php/utility/utility.php', $this->scratch . '/php/utility/utility.php');
         foreach (['util.php', 'xmlrpc.php', 'Torrent.php'] as $stub) {
-            file_put_contents($this->scratch . '/php/' . $stub, "<?php\n"); }
+            file_put_contents($this->scratch . '/php/' . $stub, "<?php\n");
+        }
         file_put_contents($this->scratch . '/php/settings.php', "<?php\n");
-        file_put_contents($this->scratch . '/plugins/_task/task.php', <<<'PHPSTUB'
+        file_put_contents(
+            $this->scratch . '/plugins/_task/task.php',
+            <<<'PHPSTUB'
 <?php
 class Requests { public static function requirePost() {} }
 class FileUtil {
@@ -59,15 +66,17 @@ class rTask {
         return $count;
     }
 }
-PHPSTUB
+PHPSTUB,
         );
-        file_put_contents($this->scratch . '/request.php', <<<'PHPREQUEST'
+        file_put_contents(
+            $this->scratch . '/request.php',
+            <<<'PHPREQUEST'
 <?php
 $_SERVER['REQUEST_METHOD'] = 'POST';
 $_POST = array('cmd' => getenv('ROUTE_CMD'), 'hash' => str_repeat('A', 40), 'no' => '0');
 $_REQUEST = $_POST;
 require getenv('ROUTE_FILE');
-PHPREQUEST
+PHPREQUEST,
         );
     }
 
@@ -78,7 +87,8 @@ PHPREQUEST
             RecursiveIteratorIterator::CHILD_FIRST,
         );
         foreach ($entries as $entry) {
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        }
         rmdir($this->scratch);
     }
 
@@ -94,8 +104,11 @@ PHPREQUEST
                 $this->assertSame('', $err, $label . ' emits no PHP warning');
                 $expected = $route[0] === 'mediainfo' ? 255 : [];
                 $actual = json_decode($out, true);
-                $this->assertSame($expected, $route[0] === 'mediainfo' ? $actual['status'] : $actual,
-                    $label . ' returns no task');
+                $this->assertSame(
+                    $expected,
+                    $route[0] === 'mediainfo' ? $actual['status'] : $actual,
+                    $label . ' returns no task',
+                );
                 $this->assertTrue(!is_file($this->scratch . '/task-started'), $label . ' never starts a task');
             }
         }
@@ -109,8 +122,10 @@ PHPREQUEST
             list($exit, $out, $err) = $this->request($route[0], $route[1], 'present');
             $this->assertSame(0, $exit, $route[1] . ' positive path exits cleanly: ' . $err);
             $this->assertSame('', $err, $route[1] . ' positive path emits no PHP warning');
-            $this->assertTrue((int)$out > 0 && (int)file_get_contents($this->scratch . '/task-started') > 0,
-                $route[1] . ' positive path still starts its task');
+            $this->assertTrue(
+                (int) $out > 0 && (int) file_get_contents($this->scratch . '/task-started') > 0,
+                $route[1] . ' positive path still starts its task',
+            );
         }
     }
 
@@ -122,11 +137,17 @@ PHPREQUEST
             'RPC_CASE' => $rpcCase,
             'TASK_TRACE' => $this->scratch . '/task-started',
         ];
-        $process = proc_open([PHP_BINARY, '-d', 'display_errors=stderr',
-            $this->scratch . '/request.php'],
+        $process = proc_open(
+            [PHP_BINARY, '-d', 'display_errors=stderr',
+                $this->scratch . '/request.php'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes, null, $env);
-        if (!is_resource($process)) { throw new RuntimeException('media route child did not start'); }
+            $pipes,
+            null,
+            $env,
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('media route child did not start');
+        }
         fclose($pipes[0]);
         $out = stream_get_contents($pipes[1]);
         $err = stream_get_contents($pipes[2]);

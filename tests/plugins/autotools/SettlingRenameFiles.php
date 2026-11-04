@@ -56,9 +56,11 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
     public function renameNoReplace($from, $to)
     {
         if (!preg_match($this->pattern, $to)) {
-            return $this->noReplace($from, $to); }
+            return $this->noReplace($from, $to);
+        }
         if (erasedataPathExists($to)) {
-            return false; }
+            return false;
+        }
         return $this->noReplace($from, self::hiddenName($to)) && $this->track($to);
     }
 
@@ -66,11 +68,13 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
     public function settle($path)
     {
         if (!isset($this->pending[$path])) {
-            return false; }
+            return false;
+        }
         unset($this->pending[$path]);
         $hidden = self::hiddenName($path);
         if (!$this->foreign) {
-            return @rename($hidden, $path); }
+            return @rename($hidden, $path);
+        }
         $stat = lstat($hidden);
         return file_put_contents($path, file_get_contents($hidden)) !== false
             && chmod($path, $stat['mode'] & 07777);
@@ -83,14 +87,16 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
             $this->flush();
         }
         if (isset($this->pending[$path]) && $this->lookups[$path] >= $this->revealAt) {
-            $this->settle($path); }
+            $this->settle($path);
+        }
         return parent::entryIdentity($path);
     }
 
     private function flush()
     {
         if ($this->countFile !== null) {
-            file_put_contents($this->countFile, json_encode($this->lookups)); }
+            file_put_contents($this->countFile, json_encode($this->lookups));
+        }
     }
 
     private function track($path)
@@ -104,7 +110,8 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
     private function noReplace($from, $to)
     {
         if (self::$helper !== null) {
-            return parent::renameNoReplace($from, $to); }
+            return parent::renameNoReplace($from, $to);
+        }
         return @lstat($to) === false && @rename($from, $to);
     }
 }

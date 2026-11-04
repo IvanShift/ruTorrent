@@ -1,14 +1,15 @@
 <?php
-require_once dirname(__DIR__, 2).'/php/cli-only.php';
+
+require_once dirname(__DIR__, 2) . '/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
-	$path = dirname(realpath($argv[0]));
-	if(chdir($path))
-	{
-		if( count( $argv ) > 1 ) {
-			$_SERVER['REMOTE_USER'] = $argv[1]; }
-		require_once( './ratio.php' );
+$path = dirname(realpath($argv[0]));
+if (chdir($path)) {
+    if (count($argv) > 1) {
+        $_SERVER['REMOTE_USER'] = $argv[1];
+    }
+    require_once('./ratio.php');
 
-		$rat = rRatio::load();
-		$rat->checkTimes();
-	}
+    $rat = rRatio::load();
+    $rat->checkTimes();
+}

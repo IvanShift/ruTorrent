@@ -17,145 +17,147 @@ require_once(__DIR__ . '/../../../plugins/unpack/unpack.php');
  */
 class UnpackQuotaTest extends TestCase
 {
-	use UnpackQuotaProbe;
+    use UnpackQuotaProbe;
 
-	private $created = false;
+    private $created = false;
 
-	public function setUp()
-	{
-		$this->beginProbe();
-	}
+    public function setUp()
+    {
+        $this->beginProbe();
+    }
 
-	public function tearDown()
-	{
-		$this->quotaspaceRegistered(false);
-		$this->endProbe();
-	}
+    public function tearDown()
+    {
+        $this->quotaspaceRegistered(false);
+        $this->endProbe();
+    }
 
-	public function setUpClass()
-	{
-		$file = $this->rquotaPath();
-		$dir = dirname($file);
-		if (!file_exists($dir) && !file_exists($file)) {
-			if (!mkdir($dir, 0777, true)) {
-				throw new RuntimeException('Could not create the quotaspace test directory'); }
-			$this->created = true;
-			// A process exit skips tearDownClass(), so register cleanup before
-			// the stub write can fail or be interrupted.
-			register_shutdown_function([$this, 'removePlugin']);
-			try {
-				if (file_put_contents($file, $this->pluginSource()) === false) {
-					throw new RuntimeException('Could not write the quotaspace test stub'); }
-			} catch (Throwable $e) {
-				$this->removePlugin();
-				throw $e;
-			}
-		}
-	}
+    public function setUpClass()
+    {
+        $file = $this->rquotaPath();
+        $dir = dirname($file);
+        if (!file_exists($dir) && !file_exists($file)) {
+            if (!mkdir($dir, 0777, true)) {
+                throw new RuntimeException('Could not create the quotaspace test directory');
+            }
+            $this->created = true;
+            // A process exit skips tearDownClass(), so register cleanup before
+            // the stub write can fail or be interrupted.
+            register_shutdown_function([$this, 'removePlugin']);
+            try {
+                if (file_put_contents($file, $this->pluginSource()) === false) {
+                    throw new RuntimeException('Could not write the quotaspace test stub');
+                }
+            } catch (Throwable $e) {
+                $this->removePlugin();
+                throw $e;
+            }
+        }
+    }
 
-	public function tearDownClass()
-	{
-		$this->removePlugin();
-	}
+    public function tearDownClass()
+    {
+        $this->removePlugin();
+    }
 
-	public function removePlugin()
-	{
-		if (!$this->created) {
-			return;
-		}
-		$this->created = false;
-		@unlink($this->rquotaPath());
-		@rmdir(dirname($this->rquotaPath()));
-	}
+    public function removePlugin()
+    {
+        if (!$this->created) {
+            return;
+        }
+        $this->created = false;
+        @unlink($this->rquotaPath());
+        @rmdir(dirname($this->rquotaPath()));
+    }
 
-	// Precondition. Every case below is about a quotaspace that is installed.
-	public function testThePluginWasPutInPlace()
-	{
-		$this->assertTrue($this->created, 'A stand-in quotaspace plugin was installed for this run');
-		$this->assertTrue(is_readable($this->rquotaPath()), 'plugins/quotaspace/rquota.php is readable');
-	}
+    // Precondition. Every case below is about a quotaspace that is installed.
+    public function testThePluginWasPutInPlace()
+    {
+        $this->assertTrue($this->created, 'A stand-in quotaspace plugin was installed for this run');
+        $this->assertTrue(is_readable($this->rquotaPath()), 'plugins/quotaspace/rquota.php is readable');
+    }
 
-	// Room left: the unpack is none of the quota's business.
-	public function testASatisfiedQuotaLetsTheSilentTaskRun()
-	{
-		$this->quota(true);
-		$this->assertTrue($this->silentTaskWasAllowed(), 'A satisfied quota lets the silent unpack proceed');
-		$this->assertTrue(class_exists('rQuota', false), 'rQuota was loaded from plugins/quotaspace/rquota.php');
-		$this->assertTrue($this->timesLoaded() > 0, 'The quota was actually consulted');
-	}
+    // Room left: the unpack is none of the quota's business.
+    public function testASatisfiedQuotaLetsTheSilentTaskRun()
+    {
+        $this->quota(true);
+        $this->assertTrue($this->silentTaskWasAllowed(), 'A satisfied quota lets the silent unpack proceed');
+        $this->assertTrue(class_exists('rQuota', false), 'rQuota was loaded from plugins/quotaspace/rquota.php');
+        $this->assertTrue($this->timesLoaded() > 0, 'The quota was actually consulted');
+    }
 
-	// Out of room: the autounpack returns before it starts a task.
-	public function testAnExceededQuotaStopsTheSilentTask()
-	{
-		$this->quota(false);
-		$this->assertTrue(!$this->silentTaskWasAllowed(), 'An exceeded quota stops the silent unpack');
-	}
+    // Out of room: the autounpack returns before it starts a task.
+    public function testAnExceededQuotaStopsTheSilentTask()
+    {
+        $this->quota(false);
+        $this->assertTrue(!$this->silentTaskWasAllowed(), 'An exceeded quota stops the silent unpack');
+    }
 
-	public function testASatisfiedQuotaLetsTheManualTaskRun()
-	{
-		$this->quota(true);
-		$this->assertTrue(
-			$this->startTaskErrors() != $this->quotaRefusal(),
-			'A satisfied quota is not reported as a refusal',
-		);
-	}
+    public function testASatisfiedQuotaLetsTheManualTaskRun()
+    {
+        $this->quota(true);
+        $this->assertTrue(
+            $this->startTaskErrors() != $this->quotaRefusal(),
+            'A satisfied quota is not reported as a refusal',
+        );
+    }
 
-	// The refusal the user sees, unchanged.
-	public function testAnExceededQuotaIsReportedToTheManualTask()
-	{
-		$this->quota(false);
-		$this->assertEquals(
-			$this->quotaRefusal(),
-			$this->startTaskErrors(),
-			'An exceeded quota is reported as "Quota limitation was reached. Unpack failed."',
-		);
-	}
+    // The refusal the user sees, unchanged.
+    public function testAnExceededQuotaIsReportedToTheManualTask()
+    {
+        $this->quota(false);
+        $this->assertEquals(
+            $this->quotaRefusal(),
+            $this->startTaskErrors(),
+            'An exceeded quota is reported as "Quota limitation was reached. Unpack failed."',
+        );
+    }
 
-	// The registration is what makes the quota authoritative. An operator who
-	// turned quotaspace off must stop being governed by it even though its files
-	// are still on disk.
-	public function testAnUnregisteredQuotaspaceIsNotConsulted()
-	{
-		$this->quotaspaceRegistered(false);
-		$GLOBALS['rutorrent_test_quota_has_room'] = false;
-		$before = $this->timesLoaded();
-		$this->assertTrue($this->silentTaskWasAllowed(), 'An unregistered quotaspace does not stop the silent unpack');
-		$this->assertEquals($before, $this->timesLoaded(), 'An unregistered quotaspace is never asked');
-	}
+    // The registration is what makes the quota authoritative. An operator who
+    // turned quotaspace off must stop being governed by it even though its files
+    // are still on disk.
+    public function testAnUnregisteredQuotaspaceIsNotConsulted()
+    {
+        $this->quotaspaceRegistered(false);
+        $GLOBALS['rutorrent_test_quota_has_room'] = false;
+        $before = $this->timesLoaded();
+        $this->assertTrue($this->silentTaskWasAllowed(), 'An unregistered quotaspace does not stop the silent unpack');
+        $this->assertEquals($before, $this->timesLoaded(), 'An unregistered quotaspace is never asked');
+    }
 
-	// The stand-in reads its answer at call time, so one loaded copy serves both
-	// the satisfied and the exceeded case.
-	private function pluginSource()
-	{
-		return "<?php\n\n" .
-			"// Written by tests/plugins/unpack/UnpackQuotaTest.php and removed again\n" .
-			"// when it finishes. It stands in for the third-party quotaspace plugin,\n" .
-			"// which ruTorrent does not ship.\n" .
-			"class rQuota\n" .
-			"{\n" .
-			"\tpublic static \$loads = 0;\n" .
-			"\tpublic static function load()\n" .
-			"\t{\n" .
-			"\t\tself::\$loads++;\n" .
-			"\t\treturn new rQuota();\n" .
-			"\t}\n" .
-			"\tpublic function check()\n" .
-			"\t{\n" .
-			"\t\treturn !empty(\$GLOBALS['rutorrent_test_quota_has_room']);\n" .
-			"\t}\n" .
-			"}\n";
-	}
+    // The stand-in reads its answer at call time, so one loaded copy serves both
+    // the satisfied and the exceeded case.
+    private function pluginSource()
+    {
+        return "<?php\n\n"
+            . "// Written by tests/plugins/unpack/UnpackQuotaTest.php and removed again\n"
+            . "// when it finishes. It stands in for the third-party quotaspace plugin,\n"
+            . "// which ruTorrent does not ship.\n"
+            . "class rQuota\n"
+            . "{\n"
+            . "\tpublic static \$loads = 0;\n"
+            . "\tpublic static function load()\n"
+            . "\t{\n"
+            . "\t\tself::\$loads++;\n"
+            . "\t\treturn new rQuota();\n"
+            . "\t}\n"
+            . "\tpublic function check()\n"
+            . "\t{\n"
+            . "\t\treturn !empty(\$GLOBALS['rutorrent_test_quota_has_room']);\n"
+            . "\t}\n"
+            . "}\n";
+    }
 
-	// The stand-in only exists once ruTorrent has loaded it, and a case that
-	// asks how often it was loaded must survive its never having been.
-	private function timesLoaded()
-	{
-		return class_exists('rQuota', false) ? rQuota::$loads : 0;
-	}
+    // The stand-in only exists once ruTorrent has loaded it, and a case that
+    // asks how often it was loaded must survive its never having been.
+    private function timesLoaded()
+    {
+        return class_exists('rQuota', false) ? rQuota::$loads : 0;
+    }
 
-	private function quota($hasRoom)
-	{
-		$this->quotaspaceRegistered(true);
-		$GLOBALS['rutorrent_test_quota_has_room'] = $hasRoom;
-	}
+    private function quota($hasRoom)
+    {
+        $this->quotaspaceRegistered(true);
+        $GLOBALS['rutorrent_test_quota_has_room'] = $hasRoom;
+    }
 }

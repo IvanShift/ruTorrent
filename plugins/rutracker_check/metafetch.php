@@ -89,9 +89,13 @@ class RuTrackerMetaFetch
                 return ruTrackerChecker::STE_CANT_REACH_TRACKER;
             }
             if ((string) $marker->val[0] === (string) $oldHash) {
-                return self::adoptStub($oldHash, $newHash, $topicId, $deadline); }
+                return self::adoptStub($oldHash, $newHash, $topicId, $deadline);
+            }
             $replacement = self::replacementOwnership(
-                $marker->val[1], $marker->val[2], $oldHash);
+                $marker->val[1],
+                $marker->val[2],
+                $oldHash,
+            );
             if ($replacement['status'] === self::REPLACEMENT_OWNED) {
                 // A replacement copy staged by a createTorrent() that died
                 // before committing. The sweep finishes those; declaring it a
@@ -153,7 +157,9 @@ class RuTrackerMetaFetch
         ];
 
         for ($attempt = 0; $attempt < self::WAIT_ATTEMPTS; $attempt++) {
-            if ($attempt) { usleep(self::WAIT_DELAY_US); }
+            if ($attempt) {
+                usleep(self::WAIT_DELAY_US);
+            }
             $poll = new rXMLRPCRequest([
                 new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, "chk-meta-old"]),
                 new rXMLRPCCommand(getCmd("d.get_custom"), [$newHash, "chk-meta-topic"]),
@@ -161,7 +167,9 @@ class RuTrackerMetaFetch
                 new rXMLRPCCommand(getCmd("d.is_meta"), $newHash),
             ]);
             $poll->important = false;
-            if (!$poll->run() || $poll->fault || !is_array($poll->val) || count($poll->val) < 4) { continue; }
+            if (!$poll->run() || $poll->fault || !is_array($poll->val) || count($poll->val) < 4) {
+                continue;
+            }
 
             if ((string) $poll->val[0] !== (string) $oldHash
                 || (string) $poll->val[1] !== (string) (int) $topicId
@@ -229,7 +237,8 @@ class RuTrackerMetaFetch
             ]);
             $read->important = false;
             if (!$read->success() || !isset($read->val[0], $read->val[1])) {
-                return ruTrackerChecker::STE_META_PENDING; }
+                return ruTrackerChecker::STE_META_PENDING;
+            }
             $rawNewHash = (string) $read->val[0];
             $rawDeadline = (string) $read->val[1];
         }
@@ -256,9 +265,11 @@ class RuTrackerMetaFetch
             // See ruTrackerChecker::logUnrepairable().
             $badKeys = [];
             if (preg_match('/^[0-9A-Fa-f]{40}$/D', $rawNewHash) !== 1) {
-                $badKeys[] = 'chk-meta-new'; }
+                $badKeys[] = 'chk-meta-new';
+            }
             if ($deadline === null || $deadline <= 0) {
-                $badKeys[] = 'chk-meta-until'; }
+                $badKeys[] = 'chk-meta-until';
+            }
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
                 . ' has a malformed durable fetch generation in ' . implode(', ', $badKeys)
                 . '; keeping it untouched for diagnosis, and nothing else will clear it');
@@ -283,30 +294,53 @@ class RuTrackerMetaFetch
         if (!$owner->success() || $owner->fault || !is_array($owner->val) || count($owner->val) !== 6) {
             $exists = ruTrackerChecker::torrentExists($newHash);
             if ($exists === false) {
-                return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER,
-                    $claim['hash'], $claim['until']); }
+                return self::clearMarks(
+                    $oldHash,
+                    ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                    $claim['hash'],
+                    $claim['until'],
+                );
+            }
             return self::stillPending($oldHash, null, $now, $deadline, $claim, false, 'unreadable owner');
         }
         if ((string) $owner->val[0] !== (string) $oldHash) {
             $replacement = self::replacementOwnership(
-                $owner->val[1], $owner->val[2], $oldHash);
+                $owner->val[1],
+                $owner->val[2],
+                $oldHash,
+            );
             if ($replacement['status'] === self::REPLACEMENT_OWNED) {
                 ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' stopped waiting: ' . $newHash
                     . ' is this transaction\'s own staged replacement, which the sweep will finish');
-                return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER,
-                    $claim['hash'], $claim['until']);
+                return self::clearMarks(
+                    $oldHash,
+                    ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                    $claim['hash'],
+                    $claim['until'],
+                );
             }
             if ($replacement['status'] === self::REPLACEMENT_UNPROVED) {
                 ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' keeps waiting: ' . $newHash
                     . ' has a plugin replacement marker without a strict matching record;'
                     . ' no ownership-changing action is safe');
-                return self::stillPending($oldHash, null, $now, $deadline, $claim, false,
-                    'replacement ownership never became provable before the deadline');
+                return self::stillPending(
+                    $oldHash,
+                    null,
+                    $now,
+                    $deadline,
+                    $claim,
+                    false,
+                    'replacement ownership never became provable before the deadline',
+                );
             }
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
                 . ' collision-foreign-occupant at ' . $newHash . '; retaining predecessor for retry');
-            return self::clearMarks($oldHash, ruTrackerChecker::STE_ERROR,
-                $claim['hash'], $claim['until']);
+            return self::clearMarks(
+                $oldHash,
+                ruTrackerChecker::STE_ERROR,
+                $claim['hash'],
+                $claim['until'],
+            );
         }
 
         $topicVal = (string) $owner->val[3];
@@ -351,7 +385,9 @@ class RuTrackerMetaFetch
             $failed = 0;
             $foreign = 0;
             foreach ($projection['rows'] as $row) {
-                if (empty($row['enabled'])) { continue; }   // a disabled row says nothing
+                if (empty($row['enabled'])) {
+                    continue;
+                }   // a disabled row says nothing
                 // The same canonical predicate classify() counts foreign rows
                 // with; messageSpeaksForTracker() reads both counts, so the two
                 // callers may not define this differently.
@@ -365,11 +401,23 @@ class RuTrackerMetaFetch
 
             if ($failed > 0 && RuTrackerDetector::messageSpeaksForTracker($foreign, $message)
                 && !RuTrackerDetector::isTransportFailure($message)) {
-                return self::dropStub($oldHash, $stubTuple, $claim,
-                    'the tracker rejected the new hash', 1); }
+                return self::dropStub(
+                    $oldHash,
+                    $stubTuple,
+                    $claim,
+                    'the tracker rejected the new hash',
+                    1,
+                );
+            }
             if ($now > $deadline) {
-                return self::dropStub($oldHash, $stubTuple, $claim,
-                    'metadata did not arrive before the deadline', 1); }
+                return self::dropStub(
+                    $oldHash,
+                    $stubTuple,
+                    $claim,
+                    'metadata did not arrive before the deadline',
+                    1,
+                );
+            }
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' still a metadata stub at ' . $newHash
                 . ', waiting (deadline ' . $deadline . ', ' . ($deadline - $now) . 's left)');
             return ruTrackerChecker::STE_META_PENDING;
@@ -406,7 +454,8 @@ class RuTrackerMetaFetch
         global $topDirectory;
         $base = (string) rTorrentSettings::get()->directory;
         if ($base === '') {
-            $base = (string) $topDirectory; }
+            $base = (string) $topDirectory;
+        }
         return FileUtil::addslash($base) . '.chk-meta';
     }
 
@@ -418,16 +467,27 @@ class RuTrackerMetaFetch
         $localId = ruTrackerChecker::activeRunLocalId($oldHash);
         $commands = [];
         if ($localId !== null) {
-            $commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-                [$oldHash, "chk-state", (string) ruTrackerChecker::STE_META_PENDING]); }
-        $commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-            [$oldHash, "chk-meta-new", $newHash]);
-        $commands[] = new rXMLRPCCommand(getCmd("d.set_custom"),
-            [$oldHash, "chk-meta-until", (string) $deadline]);
+            $commands[] = new rXMLRPCCommand(
+                getCmd("d.set_custom"),
+                [$oldHash, "chk-state", (string) ruTrackerChecker::STE_META_PENDING],
+            );
+        }
+        $commands[] = new rXMLRPCCommand(
+            getCmd("d.set_custom"),
+            [$oldHash, "chk-meta-new", $newHash],
+        );
+        $commands[] = new rXMLRPCCommand(
+            getCmd("d.set_custom"),
+            [$oldHash, "chk-meta-until", (string) $deadline],
+        );
         // A failed projection cannot be treated as a completed fetch. The
         // caller re-reads the state before choosing a retry verdict.
-        if (RuTrackerCustomProjection::write($oldHash, $commands, 'metafetch markOldTorrent',
-            $localId) !== true) {
+        if (RuTrackerCustomProjection::write(
+            $oldHash,
+            $commands,
+            'metafetch markOldTorrent',
+            $localId,
+        ) !== true) {
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash
                 . ' could not confirm the claim publication for ' . $newHash);
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash
@@ -444,14 +504,17 @@ class RuTrackerMetaFetch
     private static function unconfirmedMarkVerdict($oldHash)
     {
         $localId = ruTrackerChecker::activeRunLocalId($oldHash);
-        if ($localId === null) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+        if ($localId === null) {
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         $read = new rXMLRPCRequest(new rXMLRPCCommand(getCmd("d.get_local_id"), $oldHash));
         $read->important = false;
         if ($read->success() && !$read->fault && is_array($read->val)
             && count($read->val) === 1 && is_string($read->val[0])
             && preg_match('/^[0-9A-F]{40}$/D', $read->val[0]) === 1
             && $read->val[0] !== $localId) {
-            return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
+            return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+        }
         return ruTrackerChecker::STE_META_PENDING;
     }
 
@@ -543,8 +606,12 @@ class RuTrackerMetaFetch
         $topicNumber = RuTrackerRpcValue::canonicalNonnegativeInteger($stubTopic);
         $untilNumber = RuTrackerRpcValue::canonicalNonnegativeInteger($stubUntil);
         $badFields = [];
-        if ($topicNumber === null || $topicNumber <= 0) { $badFields[] = 'chk-meta-topic'; }
-        if ($untilNumber === null || $untilNumber <= 0) { $badFields[] = 'chk-meta-until'; }
+        if ($topicNumber === null || $topicNumber <= 0) {
+            $badFields[] = 'chk-meta-topic';
+        }
+        if ($untilNumber === null || $untilNumber <= 0) {
+            $badFields[] = 'chk-meta-until';
+        }
         if ($badFields) {
             ruTrackerChecker::logUnrepairable('metafetch: ' . $oldHash . ' cannot adopt stub '
                 . $newHash . ': malformed ' . implode(', ', $badFields)
@@ -607,7 +674,8 @@ class RuTrackerMetaFetch
         }
 
         if (!self::markOldTorrent($oldHash, $newHash, $deadline)) {
-            return self::unconfirmedMarkVerdict($oldHash); }
+            return self::unconfirmedMarkVerdict($oldHash);
+        }
 
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' adopted its own stub at '
             . $newHash . ' left by an earlier cycle, '
@@ -617,16 +685,29 @@ class RuTrackerMetaFetch
         return ruTrackerChecker::STE_META_PENDING;
     }
 
-    private static function stillPending($oldHash, $stubTuple, $now, $deadline, $claim, $owned = true,
-        $reason = 'metadata did not arrive before the deadline, and the stub can no longer be read', $isMeta = 1)
-    {
-        if ($now <= $deadline) { return ruTrackerChecker::STE_META_PENDING; }
+    private static function stillPending(
+        $oldHash,
+        $stubTuple,
+        $now,
+        $deadline,
+        $claim,
+        $owned = true,
+        $reason = 'metadata did not arrive before the deadline, and the stub can no longer be read',
+        $isMeta = 1
+    ) {
+        if ($now <= $deadline) {
+            return ruTrackerChecker::STE_META_PENDING;
+        }
         if (!$owned || $stubTuple === null) {
             ruTrackerChecker::setMessage($oldHash, '');
             ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' gave up'
                 . ': the deadline passed and the item could not be read, so it is left alone rather than erased unseen');
-            return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER,
-                $claim['hash'], $claim['until']);
+            return self::clearMarks(
+                $oldHash,
+                ruTrackerChecker::STE_CANT_REACH_TRACKER,
+                $claim['hash'],
+                $claim['until'],
+            );
         }
         return self::dropStub($oldHash, $stubTuple, $claim, $reason, $isMeta);
     }
@@ -666,11 +747,24 @@ class RuTrackerMetaFetch
                 // when its session bytes cannot be inspected at all.
                 ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
                     . ' outcome=deadline-timeout reason=session-unreadable');
-                return self::stillPending($oldHash, null, $now, $deadline, $claim, false,
-                    'the metadata arrived but its session copy could never be read', 0);
+                return self::stillPending(
+                    $oldHash,
+                    null,
+                    $now,
+                    $deadline,
+                    $claim,
+                    false,
+                    'the metadata arrived but its session copy could never be read',
+                    0,
+                );
             }
-            return self::dropStub($oldHash, $stubTuple, $claim,
-                'session-hash-timeout: the owned service item still had a stale session hash after the deadline', 0);
+            return self::dropStub(
+                $oldHash,
+                $stubTuple,
+                $claim,
+                'session-hash-timeout: the owned service item still had a stale session hash after the deadline',
+                0,
+            );
         }
 
         // Read BEFORE the setters below. announce() with no argument is the
@@ -698,13 +792,23 @@ class RuTrackerMetaFetch
                 ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
                     . ' deferred: the metadata carries no announce and the predecessor\'s copy could not be'
                     . ' read, so committing now would replace a working torrent with a trackerless one');
-                return self::stillPending($oldHash, $stubTuple, $now, $deadline, $claim, true,
-                    'the metadata carries no announce and the predecessor\'s copy could never be read', 0);
+                return self::stillPending(
+                    $oldHash,
+                    $stubTuple,
+                    $now,
+                    $deadline,
+                    $claim,
+                    true,
+                    'the metadata carries no announce and the predecessor\'s copy could never be read',
+                    0,
+                );
             }
 
             $torrent->announce((string) $old->announce());
             $tiers = $old->announce_list();
-            if (is_array($tiers) && count($tiers)) { $torrent->announce_list($tiers); }
+            if (is_array($tiers) && count($tiers)) {
+                $torrent->announce_list($tiers);
+            }
         }
         $torrent->comment('https://rutracker.org/forum/viewtopic.php?t=' . (int) $stubTuple['topic']);
         // Neither key is ours to write. Where touch() stamps a decoded torrent
@@ -731,15 +835,26 @@ class RuTrackerMetaFetch
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' harvest ' . $newHash
             . ' bytes=' . strlen($bytes) . ' service item erased=' . ($stubGone ? 'yes' : 'no'));
         if (!$stubGone) {
-            return self::stillPending($oldHash, $stubTuple, $now, $deadline, $claim, true,
-                'the service item could never be erased, so the replacement could not be committed', 0); }
+            return self::stillPending(
+                $oldHash,
+                $stubTuple,
+                $now,
+                $deadline,
+                $claim,
+                true,
+                'the service item could never be erased, so the replacement could not be committed',
+                0,
+            );
+        }
 
         $result = ruTrackerChecker::createTorrent($torrent, $oldHash);
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' replacement by ' . $newHash
             . ' returned ' . self::describeResult($result));
         // createTorrent owns activation and may retain the recovery keys when
         // cleanup publication is unconfirmed. Its caller must not close them.
-        if ($result === null) { return null; }
+        if ($result === null) {
+            return null;
+        }
         // A refusal leaves the predecessor in place, but the metadata stub
         // has been erased. Retire its exact marks before exposing a normal
         // verdict; an unconfirmed clear must remain META_PENDING for retry.
@@ -802,8 +917,11 @@ class RuTrackerMetaFetch
     /** Put one top-level key back as it was, where absent is also a value. */
     private static function restoreMeta($torrent, $key, $original)
     {
-        if ($original === null) { $torrent->clearMeta($key); }
-        else { $torrent->setMeta($key, $original); }
+        if ($original === null) {
+            $torrent->clearMeta($key);
+        } else {
+            $torrent->setMeta($key, $original);
+        }
     }
 
     /**
@@ -824,31 +942,43 @@ class RuTrackerMetaFetch
     private static function registrationTime($oldHash, $stubTuple)
     {
         $topicId = RuTrackerRpcValue::canonicalPositiveInt32($stubTuple['topic'] ?? null);
-        if ($topicId === null) { return null; }
+        if ($topicId === null) {
+            return null;
+        }
 
         // chk-forum on the PREDECESSOR: the replacement is not in rTorrent's
         // list yet under its own hash, so only the old row can name the forum.
         // Not important: a creation date nobody can read is a creation date
         // left unset, never a reason to fail the replacement around it.
         $req = new rXMLRPCRequest(new rXMLRPCCommand(
-            getCmd("d.get_custom"), [$oldHash, "chk-forum"]));
+            getCmd("d.get_custom"),
+            [$oldHash, "chk-forum"],
+        ));
         $req->important = false;
-        if (!$req->success() || !isset($req->val[0])) { return null; }
+        if (!$req->success() || !isset($req->val[0])) {
+            return null;
+        }
         // The same predicate RuTrackerCheckImpl::resolveForum() reads this
         // custom with. They once disagreed over one stored value, and
         // RuTrackerRpcValue::canonicalForumId() records what that cost.
         $forumId = RuTrackerRpcValue::canonicalForumId((string) $req->val[0]);
-        if ($forumId === null) { return null; }
+        if ($forumId === null) {
+            return null;
+        }
 
         $rows = RuTrackerForumIndex::cachedDump($forumId);
-        if (!is_array($rows) || !isset($rows[$topicId]) || !is_array($rows[$topicId])) { return null; }
+        if (!is_array($rows) || !isset($rows[$topicId]) || !is_array($rows[$topicId])) {
+            return null;
+        }
         // ?? null covers a document cached before parseDump() kept the column.
         return self::canonicalRegistrationTime($rows[$topicId]['reg_time'] ?? null);
     }
 
     private static function describeResult($result)
     {
-        if ($result === null) { return 'success'; }
+        if ($result === null) {
+            return 'success';
+        }
         $names = [
             ruTrackerChecker::STE_INPROGRESS => 'STE_INPROGRESS',
             ruTrackerChecker::STE_UPDATED => 'STE_UPDATED',
@@ -880,8 +1010,12 @@ class RuTrackerMetaFetch
         }
         ruTrackerChecker::setMessage($oldHash, '');
         ruTrackerChecker::logDebug('metafetch: ' . $oldHash . ' dropped stub ' . $newHash . ': ' . $reason);
-        return self::clearMarks($oldHash, ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            $claim['hash'], $claim['until']);
+        return self::clearMarks(
+            $oldHash,
+            ruTrackerChecker::STE_CANT_REACH_TRACKER,
+            $claim['hash'],
+            $claim['until'],
+        );
     }
 
     private static function clearMarks($oldHash, $state, $expectedNewHash, $expectedUntil)

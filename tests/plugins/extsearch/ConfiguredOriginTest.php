@@ -111,8 +111,11 @@ function extCoSearch($engine)
 // plugin configuration lands in the method's scope unless accounts.php
 // declares it global. That include evals plugins/loginmgr/conf.php, whose
 // defaults preserve configured globals; the cases configure them afterwards.
-extCoSame(false, class_exists('ABTorrentsAccount', false),
-    'nothing has loaded loginmgr before the first search');
+extCoSame(
+    false,
+    class_exists('ABTorrentsAccount', false),
+    'nothing has loaded loginmgr before the first search',
+);
 $extCoFirst = extCoProbe('ABTorrents');
 $extCoFirstResult = extCoSearch($extCoFirst);
 $extCoLoadedByEngine = class_exists('ABTorrentsAccount', false);
@@ -121,8 +124,11 @@ $tests = [
     'the engine reads loginmgr\'s setting, and the first search is what loads it' => function () {
         global $extCoLoadedByEngine, $extCoFirst, $extCoFirstResult, $extCoEngines;
         extCoSame(true, $extCoLoadedByEngine, 'the engine loads the loginmgr account it reads');
-        extCoSame(true, array_key_exists('abTorrentsOrigin', $GLOBALS),
-            'and the setting reaches the global scope from inside action()');
+        extCoSame(
+            true,
+            array_key_exists('abTorrentsOrigin', $GLOBALS),
+            'and the setting reaches the global scope from inside action()',
+        );
         extCoSame([], $extCoFirst->requests, 'the shipped configuration searches nothing');
         extCoSame([''], array_keys($extCoFirstResult), 'and returns one entry with no link');
     },
@@ -135,13 +141,22 @@ $tests = [
                 extCoConfigure($nfo[0], $configured);
                 $engine = extCoProbe($name);
                 $ret = extCoSearch($engine);
-                extCoSame([], $engine->requests,
-                    $name . ' searches nothing with ' . var_export($configured, true));
-                extCoSame([''], array_keys($ret),
-                    $name . ': one entry and no link with ' . var_export($configured, true));
+                extCoSame(
+                    [],
+                    $engine->requests,
+                    $name . ' searches nothing with ' . var_export($configured, true),
+                );
+                extCoSame(
+                    [''],
+                    array_keys($ret),
+                    $name . ': one entry and no link with ' . var_export($configured, true),
+                );
                 foreach ([$name . ':', '$' . $nfo[0], 'https origin', 'loginmgr'] as $part) {
-                    extCoSame(true, strpos($ret['']['name'], $part) !== false,
-                        $name . ': the entry names ' . $part . ': ' . $ret['']['name']);
+                    extCoSame(
+                        true,
+                        strpos($ret['']['name'], $part) !== false,
+                        $name . ': the entry names ' . $part . ': ' . $ret['']['name'],
+                    );
                 }
             }
         }
@@ -176,11 +191,17 @@ $tests = [
                 extCoConfigure($nfo[0], $configured);
                 $engine = extCoProbe($name);
                 extCoSearch($engine);
-                extCoSame(true, count($engine->requests) > 0,
-                    $name . ' searches once the origin is set');
+                extCoSame(
+                    true,
+                    count($engine->requests) > 0,
+                    $name . ' searches once the origin is set',
+                );
                 foreach ($engine->requests as $url) {
-                    extCoSame(0, strpos($url, $origin . $nfo[1]),
-                        $name . ': every request is built on the configured origin: ' . $url);
+                    extCoSame(
+                        0,
+                        strpos($url, $origin . $nfo[1]),
+                        $name . ': every request is built on the configured origin: ' . $url,
+                    );
                 }
             }
         }
@@ -195,11 +216,17 @@ $tests = [
             $class = $name . 'Account';
             $account = new $class();
             foreach ($engine->requests as $url) {
-                extCoSame(true, $account->test($url),
-                    $name . ': loginmgr claims the URL its engine searches: ' . $url);
+                extCoSame(
+                    true,
+                    $account->test($url),
+                    $name . ': loginmgr claims the URL its engine searches: ' . $url,
+                );
             }
-            extCoSame('https://tracker.example', $account->url,
-                $name . ': the account and the engine read one setting');
+            extCoSame(
+                'https://tracker.example',
+                $account->url,
+                $name . ': the account and the engine read one setting',
+            );
         }
     },
 
@@ -216,8 +243,11 @@ $tests = [
                     $named[] = $token[1];
                 }
             }
-            extCoSame([], $named,
-                $name . ' builds every URL on the configured origin, and names no host');
+            extCoSame(
+                [],
+                $named,
+                $name . ' builds every URL on the configured origin, and names no host',
+            );
         }
     },
 ];

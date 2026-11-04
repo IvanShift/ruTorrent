@@ -7,14 +7,26 @@ class FileUtil
     public static $settings;
     public static $profile;
     public static $logs = [];
-    public static function getSettingsPathEx($user = null) { return self::$settings; }
-    public static function getProfilePathEx($user = null) { return self::$profile; }
-    public static function toLog($message) { self::$logs[] = $message; }
+    public static function getSettingsPathEx($user = null)
+    {
+        return self::$settings;
+    }
+    public static function getProfilePathEx($user = null)
+    {
+        return self::$profile;
+    }
+    public static function toLog($message)
+    {
+        self::$logs[] = $message;
+    }
 }
 class User
 {
     public static $user = '';
-    public static function getUser() { return self::$user; }
+    public static function getUser()
+    {
+        return self::$user;
+    }
 }
 class DataDirMoveIntent
 {
@@ -27,9 +39,12 @@ class DataDirMoveJob
 {
     public static function journalDirectory($path)
     {
-        if (!file_exists($path) && !is_link($path)) { mkdir($path, 0700); }
+        if (!file_exists($path) && !is_link($path)) {
+            mkdir($path, 0700);
+        }
         if (!is_dir($path) || is_link($path) || (fileperms($path) & 0077) !== 0) {
-            throw new RuntimeException('job-directory-untrusted'); }
+            throw new RuntimeException('job-directory-untrusted');
+        }
         return realpath($path);
     }
 }
@@ -53,24 +68,39 @@ $suite->test('fresh Docker writable share uses its trusted parent for private jo
     User::$user = 'torrent';
     try {
         $journal = rtDataDirJournal();
-        strictAssertSame($root . '/datadir-jobs/torrent', $journal,
-            'journal authority is outside the group-writable profile share');
-        strictAssertSame(0700, fileperms($journal) & 0777,
-            'private profile journal remains owner-only');
-        strictAssertSame([], rtDataDirRecoveryProfiles(),
-            'empty protected journal does not start a recovery worker');
+        strictAssertSame(
+            $root . '/datadir-jobs/torrent',
+            $journal,
+            'journal authority is outside the group-writable profile share',
+        );
+        strictAssertSame(
+            0700,
+            fileperms($journal) & 0777,
+            'private profile journal remains owner-only',
+        );
+        strictAssertSame(
+            [],
+            rtDataDirRecoveryProfiles(),
+            'empty protected journal does not start a recovery worker',
+        );
         file_put_contents($journal . '/' . str_repeat('A', 40) . '.json', '{}');
         chmod($root . '/share', 0755);
         chmod($root . '/share/settings', 0755);
-        strictAssertSame(['torrent'], rtDataDirRecoveryProfiles(),
-            'permission repair must not hide a pending job in the existing root');
+        strictAssertSame(
+            ['torrent'],
+            rtDataDirRecoveryProfiles(),
+            'permission repair must not hide a pending job in the existing root',
+        );
         mkdir($root . '/share/settings/datadir-jobs', 0700);
         try {
             rtDataDirJournal();
             throw new RuntimeException('expected split roots refusal');
         } catch (RuntimeException $error) {
-            strictAssertSame('split-journal-roots', $error->getMessage(),
-                'two possible roots hold visibly rather than selecting one silently');
+            strictAssertSame(
+                'split-journal-roots',
+                $error->getMessage(),
+                'two possible roots hold visibly rather than selecting one silently',
+            );
         }
         rmdir($root . '/share/settings/datadir-jobs');
         chmod($root, 0775);
@@ -78,8 +108,11 @@ $suite->test('fresh Docker writable share uses its trusted parent for private jo
             rtDataDirJournal();
             throw new RuntimeException('expected untrusted parent refusal');
         } catch (RuntimeException $error) {
-            strictAssertSame('journal-parent-untrusted', $error->getMessage(),
-                'another UID with group write access cannot own the journal parent');
+            strictAssertSame(
+                'journal-parent-untrusted',
+                $error->getMessage(),
+                'another UID with group write access cannot own the journal parent',
+            );
         }
     } finally {
         User::$user = '';
@@ -110,15 +143,24 @@ $suite->test('untrusted legacy journal is held, then reused only when its parent
             rtDataDirJournal();
             throw new RuntimeException('expected untrusted legacy refusal');
         } catch (RuntimeException $error) {
-            strictAssertSame('legacy-journal-untrusted', $error->getMessage(),
-                'group-writable legacy authority is not adopted or hidden');
+            strictAssertSame(
+                'legacy-journal-untrusted',
+                $error->getMessage(),
+                'group-writable legacy authority is not adopted or hidden',
+            );
         }
-        strictAssertSame(false, file_exists($root . '/datadir-jobs'),
-            'no competing fallback root is created while legacy jobs are held');
+        strictAssertSame(
+            false,
+            file_exists($root . '/datadir-jobs'),
+            'no competing fallback root is created while legacy jobs are held',
+        );
         chmod($root . '/share', 0755);
         chmod($root . '/share/settings', 0755);
-        strictAssertSame($root . '/share/settings/datadir-jobs/alice', rtDataDirJournal(),
-            'a trusted existing legacy root keeps its prior jobs discoverable');
+        strictAssertSame(
+            $root . '/share/settings/datadir-jobs/alice',
+            rtDataDirJournal(),
+            'a trusted existing legacy root keeps its prior jobs discoverable',
+        );
     } finally {
         User::$user = '';
         @rmdir($root . '/share/settings/datadir-jobs/alice');
@@ -145,12 +187,21 @@ $suite->test('trusted settings symlink keeps existing journal despite untrusted 
     FileUtil::$settings = FileUtil::$profile . '/settings';
     User::$user = 'alice';
     try {
-        strictAssertSame($root . '/secure-settings/datadir-jobs/alice', rtDataDirJournal(),
-            'canonical trusted settings keep their existing journal');
-        strictAssertSame(['alice'], rtDataDirRecoveryProfiles(),
-            'global recovery still sees the pending job');
-        strictAssertSame(false, file_exists($root . '/profile-parent/datadir-jobs'),
-            'untrusted profile parent never receives a competing root');
+        strictAssertSame(
+            $root . '/secure-settings/datadir-jobs/alice',
+            rtDataDirJournal(),
+            'canonical trusted settings keep their existing journal',
+        );
+        strictAssertSame(
+            ['alice'],
+            rtDataDirRecoveryProfiles(),
+            'global recovery still sees the pending job',
+        );
+        strictAssertSame(
+            false,
+            file_exists($root . '/profile-parent/datadir-jobs'),
+            'untrusted profile parent never receives a competing root',
+        );
     } finally {
         User::$user = '';
         @unlink($job);
@@ -174,11 +225,17 @@ $suite->test('one canonical root is not mistaken for two roots', function () {
     User::$user = 'alice';
     try {
         $journal = rtDataDirJournal();
-        strictAssertSame($root . '/datadir-jobs/alice', $journal,
-            'identical legacy and private paths name one authority');
+        strictAssertSame(
+            $root . '/datadir-jobs/alice',
+            $journal,
+            'identical legacy and private paths name one authority',
+        );
         file_put_contents($journal . '/' . str_repeat('A', 40) . '.json', '{}');
-        strictAssertSame(['alice'], rtDataDirRecoveryProfiles(),
-            'scanner finds the single canonical journal');
+        strictAssertSame(
+            ['alice'],
+            rtDataDirRecoveryProfiles(),
+            'scanner finds the single canonical journal',
+        );
     } finally {
         User::$user = '';
         @unlink($root . '/datadir-jobs/alice/' . str_repeat('A', 40) . '.json');
@@ -204,8 +261,10 @@ $suite->test('empty and literal default users have distinct journal directories'
         $anonymous = rtDataDirJournal();
         User::$user = 'default';
         $named = rtDataDirJournal();
-        strictAssertTrue($anonymous !== $named,
-            'empty and literal default profiles cannot share a journal');
+        strictAssertTrue(
+            $anonymous !== $named,
+            'empty and literal default profiles cannot share a journal',
+        );
         strictAssertSame('default', basename($named), 'literal login keeps its name');
         strictAssertSame('~default', basename($anonymous), 'empty profile has reserved name');
     } finally {
@@ -244,12 +303,19 @@ $suite->test('global recovery selects only protected profiles that hold a real j
     FileUtil::$profile = $root . '/share';
     FileUtil::$logs = [];
     try {
-        strictAssertSame(['alice', 'default', 'orphan', '~default'], rtDataDirRecoveryProfiles(),
-            'only protected profile with a job gets a child worker');
-        strictAssertTrue(strpos(implode(' ', FileUtil::$logs), 'unsafe') !== false,
-            'unsafe profile is visibly skipped');
-        strictAssertTrue(strpos(implode(' ', FileUtil::$logs), 'foreign') !== false,
-            'symlink profile is visibly skipped');
+        strictAssertSame(
+            ['alice', 'default', 'orphan', '~default'],
+            rtDataDirRecoveryProfiles(),
+            'only protected profile with a job gets a child worker',
+        );
+        strictAssertTrue(
+            strpos(implode(' ', FileUtil::$logs), 'unsafe') !== false,
+            'unsafe profile is visibly skipped',
+        );
+        strictAssertTrue(
+            strpos(implode(' ', FileUtil::$logs), 'foreign') !== false,
+            'symlink profile is visibly skipped',
+        );
     } finally {
         @unlink($root . '/datadir-jobs/alice/' . str_repeat('A', 40) . '.json');
         @unlink($root . '/datadir-jobs/~default/' . str_repeat('D', 40) . '.json');

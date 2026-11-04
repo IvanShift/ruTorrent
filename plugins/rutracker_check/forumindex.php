@@ -1,8 +1,8 @@
 <?php
 
-require_once( __DIR__ . '/state.php' );
-require_once( __DIR__ . '/launcher.php' );
-require_once( __DIR__ . '/runstate.php' );
+require_once(__DIR__ . '/state.php');
+require_once(__DIR__ . '/launcher.php');
+require_once(__DIR__ . '/runstate.php');
 
 // Layer 3 of the post-API design: topic_id -> forum_id resolution and the
 // per-forum static dump (api.rutracker.cc/v1/static/pvc/f/{forum_id}).
@@ -76,18 +76,28 @@ class RuTrackerForumIndex
         // callers may persist an ETag only for the latter. Any malformed entry
         // rejects the complete map so a valid prefix cannot hide behind an ETag.
         $unreadable = true;
-        if (!is_string($xml) || $xml === '') { return []; }
-        if (!function_exists('simplexml_load_string')) { return []; }
+        if (!is_string($xml) || $xml === '') {
+            return [];
+        }
+        if (!function_exists('simplexml_load_string')) {
+            return [];
+        }
 
         $prevErrors = libxml_use_internal_errors(true);
         $doc = simplexml_load_string($xml);
         libxml_use_internal_errors($prevErrors);
-        if ($doc === false) { return []; }
-        if ($doc->getName() !== 'feed') { return []; }
+        if ($doc === false) {
+            return [];
+        }
+        if ($doc->getName() !== 'feed') {
+            return [];
+        }
         $atomNamespace = 'http://www.w3.org/2005/Atom';
         $doc->registerXPathNamespace('rutracker_atom', $atomNamespace);
         $root = $doc->xpath('self::rutracker_atom:feed');
-        if (!is_array($root) || count($root) !== 1) { return []; }
+        if (!is_array($root) || count($root) !== 1) {
+            return [];
+        }
         $atom = $doc->children($atomNamespace);
 
         $map = [];
@@ -96,25 +106,33 @@ class RuTrackerForumIndex
             foreach ($entry->link as $link) {
                 $href = (string) $link->attributes()->href;
                 $query = @parse_url($href, PHP_URL_QUERY);
-                if (!is_string($query)) { continue; }
+                if (!is_string($query)) {
+                    continue;
+                }
                 $parameters = [];
                 parse_str($query, $parameters);
                 if (isset($parameters['t'])) {
                     $topic = RuTrackerRpcValue::canonicalPositiveInt32($parameters['t']);
-                    if ($topic !== null) { break; }
+                    if ($topic !== null) {
+                        break;
+                    }
                 }
             }
             $forum = null;
             foreach ($entry->category as $category) {
                 if (preg_match('/^f-(.+)$/D', (string) $category->attributes()->term, $m)) {
                     $forum = RuTrackerRpcValue::canonicalPositiveInt32($m[1]);
-                    if ($forum !== null) { break; }
+                    if ($forum !== null) {
+                        break;
+                    }
                 }
             }
             // A partial feed is not a complete reading: publishing the valid
             // prefix would let this response's ETag hide the malformed entry.
             // Duplicate topic ID also rejects the whole response.
-            if ($topic === null || $forum === null || isset($map[$topic])) { return []; }
+            if ($topic === null || $forum === null || isset($map[$topic])) {
+                return [];
+            }
             $map[$topic] = ['forum' => $forum];
         }
         $unreadable = false;
@@ -130,15 +148,20 @@ class RuTrackerForumIndex
         $data = is_string($json) ? @json_decode($json, true) : null;
         if (!is_array($data) || !isset($data['result']) || !is_array($data['result'])
             || !isset($data['format']['topic_id']) || !is_array($data['format']['topic_id'])) {
-            return []; }
+            return [];
+        }
 
         $format = $data['format']['topic_id'];
         $columns = [];
         foreach ($format as $index => $column) {
-            if (!is_string($column) || $column === '' || isset($columns[$column])) { return []; }
+            if (!is_string($column) || $column === '' || isset($columns[$column])) {
+                return [];
+            }
             $columns[$column] = $index;
         }
-        if (!isset($columns['tor_status'], $columns['info_hash'])) { return []; }
+        if (!isset($columns['tor_status'], $columns['info_hash'])) {
+            return [];
+        }
 
         $rows = [];
         foreach ($data['result'] as $topicId => $row) {
@@ -198,7 +221,9 @@ class RuTrackerForumIndex
             $regTime = isset($columns['reg_time'])
                 ? RuTrackerRpcValue::canonicalNonnegativeInteger($row[$columns['reg_time']] ?? null)
                 : null;
-            if ($regTime !== null && $regTime <= 0) { $regTime = null; }
+            if ($regTime !== null && $regTime <= 0) {
+                $regTime = null;
+            }
             $rows[$parsedTopic] = [
                 'tor_status' => $parsedStatus,
                 'info_hash' => strtoupper($rawHash),
@@ -304,17 +329,23 @@ class RuTrackerForumIndex
             foreach (['dump_reservations', 'dump_generations', 'dump_gen'] as $book) {
                 $seen = self::storedCount($state[$book] ?? null, $forumId);
                 if ($seen === null) {
-                    if ($unreadable === null) { $unreadable = $book; }
+                    if ($unreadable === null) {
+                        $unreadable = $book;
+                    }
                     continue;
                 }
-                if ($seen > $floor) { $floor = $seen; }
+                if ($seen > $floor) {
+                    $floor = $seen;
+                }
             }
             // The published document NAMES its own generation, so it is a
             // fourth witness -- and the only one left when the reservation
             // book is itself the entry that will not read.
             $current = self::stateDumpDocument($state, $forumId);
             $named = self::documentGeneration($current, $forumId);
-            if ($named !== null && $named > $floor) { $floor = $named; }
+            if ($named !== null && $named > $floor) {
+                $floor = $named;
+            }
 
             if ($unreadable !== null) {
                 ruTrackerChecker::logDebug('forumindex: forumindex.json ' . $unreadable . '[' . $forumId
@@ -345,7 +376,9 @@ class RuTrackerForumIndex
                 // no longer republish anything -- the erased token above is
                 // what settles that -- but a generation names a document, and
                 // two bodies must never be able to share one name.
-                if ($floor > 0) { $state['dump_reservations'][$forumId] = $floor; }
+                if ($floor > 0) {
+                    $state['dump_reservations'][$forumId] = $floor;
+                }
                 return $state;
             }
             // Nothing can be counted past the ceiling: $floor + 1 leaves the
@@ -407,7 +440,8 @@ class RuTrackerForumIndex
             // that starts WRITING the hint here cannot reintroduce the hazard
             // by forgetting to.
             foreach (['dump_reservations', 'dump_tokens', 'etags'] as $book) {
-                self::seatBook($state, $book, 'forum ' . $forumId); }
+                self::seatBook($state, $book, 'forum ' . $forumId);
+            }
             $state['dump_reservations'][$forumId] = $reservation;
             $state['dump_tokens'][$forumId] = $token;
             $cachedEtag = is_string($state['etags'][$forumId] ?? null)
@@ -416,7 +450,9 @@ class RuTrackerForumIndex
         }, $stateFailure);
         // The retired body goes only once its bookkeeping is provably gone
         // from disk; a failed update leaves both exactly as they were.
-        if ($reserved && $retired !== null) { self::dropDocuments([$retired]); }
+        if ($reserved && $retired !== null) {
+            self::dropDocuments([$retired]);
+        }
         if (!$reserved || $reservation === null) {
             // A reservation nobody could write down and a reservation this
             // forum is not allowed to be issued are different faults, and the
@@ -440,7 +476,8 @@ class RuTrackerForumIndex
         if ($client === null) {
             $client = self::makeDumpClient();
             if ($cachedEtag !== '') {
-                $client->rawheaders = ['If-None-Match' => $cachedEtag]; }
+                $client->rawheaders = ['If-None-Match' => $cachedEtag];
+            }
         }
         $sent = is_array($client->rawheaders)
             ? (string) ($client->rawheaders['If-None-Match'] ?? '') : '';
@@ -490,7 +527,8 @@ class RuTrackerForumIndex
                     // not have to know that the guard is somewhere upstream.
                     self::seatBook($state, 'etags', 'forum ' . $forumId);
                     if (($state['etags'][$forumId] ?? null) === $sent) {
-                        unset($state['etags'][$forumId]); }
+                        unset($state['etags'][$forumId]);
+                    }
                     return $state;
                 });
                 $failureReason = 'cache-lost';
@@ -513,7 +551,9 @@ class RuTrackerForumIndex
                 // Keep only the old document identity. The full retry body
                 // may be large, and fallback reloads the durable rows anyway.
                 unset($doc['rows']);
-                if (!is_array($client->rawheaders)) { $client->rawheaders = []; }
+                if (!is_array($client->rawheaders)) {
+                    $client->rawheaders = [];
+                }
                 unset($client->rawheaders['If-None-Match']);
                 $refetched = @$client->fetchComplex(self::DUMP_URL . $forumId);
                 $refreshStatus = (int) $client->status;
@@ -521,7 +561,9 @@ class RuTrackerForumIndex
                     && $client->results !== '') {
                     $malformed = false;
                     $candidate = self::parseDump($client->results, $malformed);
-                    if (!$malformed) { $parsedRows = $candidate; }
+                    if (!$malformed) {
+                        $parsedRows = $candidate;
+                    }
                 }
                 if ($parsedRows === null) {
                     $dumpAbsent = $refetched && $refreshStatus !== 200
@@ -546,23 +588,32 @@ class RuTrackerForumIndex
                     &$dropDocuments
                 ) {
                     if (!self::holdsReservation($state, $forumId, $reservation, $token)) {
-                        return $state; }
+                        return $state;
+                    }
                     if (self::stateDumpDocument($state, $forumId) !== $doc['document']) {
-                        return $state; }
+                        return $state;
+                    }
                     $state = self::touchDump($state, $forumId, $dropDocuments);
                     // Keep the confirmed old rows for verdicts, but never
                     // re-present their ETag after the full refresh failed.
                     if ($needsFullDump && ($state['etags'][$forumId] ?? null) === $sent) {
-                        unset($state['etags'][$forumId]); }
+                        unset($state['etags'][$forumId]);
+                    }
                     return $state;
                 });
-                if ($touched) { self::dropDocuments($dropDocuments); }
+                if ($touched) {
+                    self::dropDocuments($dropDocuments);
+                }
                 $confirmed = self::durableDumpAnswer($forumId);
                 // The confirmation stands even when the retention touch above
                 // did not land; only the body going missing between the read
                 // and here makes this a non-answer.
-                if ($confirmed === null) { $failureReason = 'cache-lost'; }
-                if ($dumpAbsent) { $confirmed = null; }
+                if ($confirmed === null) {
+                    $failureReason = 'cache-lost';
+                }
+                if ($dumpAbsent) {
+                    $confirmed = null;
+                }
                 return self::remember($memoize, $forumId, $confirmed, $failureReason, $dumpAbsent);
             }
         }
@@ -579,7 +630,8 @@ class RuTrackerForumIndex
             $dumpAbsent = $status !== 200 && !self::dumpRefused($status);
             $failureReason = self::crawlFailureReason(
                 $status === 200 ? 'dump-empty' : ($dumpAbsent ? 'dump-absent' : 'dump-refused'),
-                [$client->status]);
+                [$client->status],
+            );
             return self::remember($memoize, $forumId, null, $failureReason, $dumpAbsent);
         }
 
@@ -647,7 +699,8 @@ class RuTrackerForumIndex
             // document name, and this request would then drop the file it
             // names as its own predecessor.
             foreach (['dump_documents', 'dump_generations', 'etags'] as $book) {
-                self::seatBook($state, $book, 'forum ' . $forumId); }
+                self::seatBook($state, $book, 'forum ' . $forumId);
+            }
             $oldDocument = self::stateDumpDocument($state, $forumId);
             if (!RuTrackerState::promote($stagedKey, $document)) {
                 $publishRefusal = 'document-unpromoted';
@@ -656,8 +709,11 @@ class RuTrackerForumIndex
             $promoted = true;
             $state['dump_documents'][$forumId] = $document;
             $state['dump_generations'][$forumId] = $reservation;
-            if ($etag !== '') { $state['etags'][$forumId] = $etag; }
-            else { unset($state['etags'][$forumId]); }
+            if ($etag !== '') {
+                $state['etags'][$forumId] = $etag;
+            } else {
+                unset($state['etags'][$forumId]);
+            }
             $state = self::touchDump($state, $forumId, $dropDocuments);
             $published = true;
             return $state;
@@ -668,7 +724,9 @@ class RuTrackerForumIndex
         // perfectly good cached dump -- so the reason describes what became of
         // THIS request, not the answer that came back.
         if (!$stored) {
-            if ($promoted) { RuTrackerState::drop($document); }
+            if ($promoted) {
+                RuTrackerState::drop($document);
+            }
             // 'unstored' is the same totality default as on the reservation
             // side above: update() names every false return of its own.
             $failureReason = 'publish-' . ($publishFailure !== null ? $publishFailure : 'unstored');
@@ -683,7 +741,8 @@ class RuTrackerForumIndex
         }
 
         if ($oldDocument !== null && $oldDocument !== $document) {
-            RuTrackerState::drop($oldDocument); }
+            RuTrackerState::drop($oldDocument);
+        }
         self::dropDocuments($dropDocuments, $document);
         return self::remember($memoize, $forumId, ['rows' => $rows, 'fresh' => true]);
     }
@@ -692,7 +751,9 @@ class RuTrackerForumIndex
     {
         foreach ((array) $headers as $header) {
             if (is_string($header) && preg_match('/^ETag:\s*(.+)$/i', trim($header), $m)) {
-                return trim($m[1]); } }
+                return trim($m[1]);
+            }
+        }
         return '';
     }
 
@@ -755,7 +816,9 @@ class RuTrackerForumIndex
         // is always a real (large) Unix timestamp, so this was never
         // caught by that arithmetic; an explicit first-run check is correct
         // either way.
-        if (!array_key_exists('last_sweep', $state)) { return true; }
+        if (!array_key_exists('last_sweep', $state)) {
+            return true;
+        }
         // A stamp nobody can read is not a lapsed cooldown -- but it is not a
         // reason to disable the tracker-wide crawl for the whole installation
         // for ever either, and REFUSING it did exactly that: markSweep() is
@@ -813,8 +876,10 @@ class RuTrackerForumIndex
                 if ($last === null) {
                     ruTrackerChecker::logDebug('forumcrawl: forumindex.json last_sweep is not a'
                         . ' readable timestamp; it is restamped to now, which rations the crawl'
-                        . ' from here on instead of disabling it for ever'); }
-                elseif ($now - $last <= $cooldown) { return $state; }
+                        . ' from here on instead of disabling it for ever');
+                } elseif ($now - $last <= $cooldown) {
+                    return $state;
+                }
             }
             $claimed = true;
             $state['last_sweep'] = $now;
@@ -822,7 +887,9 @@ class RuTrackerForumIndex
         }, $failure);
         // A claim nobody could write down is not a claim: the next process
         // would read the same free window and crawl too.
-        if ($claimed && $stored) { return true; }
+        if ($claimed && $stored) {
+            return true;
+        }
         // Whose answer to believe depends on whether the mutator ran at all,
         // and update()'s three failures split on exactly that (state.php):
         // 'unreadable' and 'unlockable' are decided BEFORE the mutator, so
@@ -864,7 +931,10 @@ class RuTrackerForumIndex
             }
             $retry = false;
             $stored = RuTrackerState::update('forumindex', function ($state) use (
-                $topicId, $now, $observedEvidence, &$retry
+                $topicId,
+                $now,
+                $observedEvidence,
+                &$retry
             ) {
                 // A changed topic has a newer answer. If its version was
                 // evicted, a changed global epoch is only uncertainty: leave
@@ -895,14 +965,16 @@ class RuTrackerForumIndex
                     // pruning it hands the topic a fresh tracker-wide crawl.
                     $missedAt = self::missedAt($record);
                     if ($missedAt !== null && (int) $now - $missedAt > self::missWindow($record)) {
-                        unset($misses[$id]); }
+                        unset($misses[$id]);
+                    }
                 }
                 $state['misses'] = $misses;
                 return $state;
             });
             if (!$stored) {
                 ruTrackerChecker::logUnrepairable('forumindex: forumindex.json miss for topic ' . (int) $topicId
-                    . ' could not be persisted; crawl result must be retried'); }
+                    . ' could not be persisted; crawl result must be retried');
+            }
             return $stored && !$retry;
         } finally {
             RuTrackerState::releaseScopedLock($topicLock);
@@ -938,7 +1010,9 @@ class RuTrackerForumIndex
             getCmd("d.get_custom=") . "chk-topic",
             getCmd("d.get_custom=") . "chk-forum"]));
         $req->important = false;
-        if (!$req->success()) { return null; }
+        if (!$req->success()) {
+            return null;
+        }
 
         $rows = [];
         for ($i = 0; $i + 3 <= count($req->val); $i += 3) {
@@ -947,9 +1021,13 @@ class RuTrackerForumIndex
             // names no topic either: this map decides which hash the crawl
             // writes chk-forum onto, and (int) made "007" the topic 7.
             $topic = RuTrackerRpcValue::canonicalPositiveInt32($req->val[$i + 1]);
-            if ($topic === null) { continue; }
+            if ($topic === null) {
+                continue;
+            }
             // Forum already known AND nobody asked about this topic.
-            if ((string) $req->val[$i + 2] !== '' && !isset($alsoWanted[$topic])) { continue; }
+            if ((string) $req->val[$i + 2] !== '' && !isset($alsoWanted[$topic])) {
+                continue;
+            }
             $rows[$topic][] = (string) $req->val[$i];
             $currentForum[(string) $req->val[$i]] = (string) $req->val[$i + 2];
         }
@@ -979,8 +1057,7 @@ class RuTrackerForumIndex
         $guard = null,
         $observedEvidence = null,
         &$committedEvidence = null
-    )
-    {
+    ) {
         $committedEvidence = null;
         // The id about to be WRITTEN, canonicalised HERE rather than trusted
         // from the caller: every caller already coerced its own copy, so the
@@ -1010,7 +1087,9 @@ class RuTrackerForumIndex
             // markMiss() still refuses absence while any intent is uncertain.
             self::reconcileForumMapping($topicId);
             $pendingAll = self::pendingForumMappings($topicId);
-            if ($pendingAll === false) { return self::FORUM_WRITE_FAILED; }
+            if ($pendingAll === false) {
+                return self::FORUM_WRITE_FAILED;
+            }
             $pending = $pendingAll[strtoupper($hash)] ?? null;
             if (!$authoritative) {
                 // The feed's topic decision covers every torrent carrying it.
@@ -1018,7 +1097,10 @@ class RuTrackerForumIndex
                 // setter is still uncertain, even if that sibling has no
                 // pending record of its own.
                 foreach ($pendingAll as $intent) {
-                    if ($intent['authoritative']) { return self::FORUM_WRITE_SUPERSEDED; } }
+                    if ($intent['authoritative']) {
+                        return self::FORUM_WRITE_SUPERSEDED;
+                    }
+                }
             }
             if (!$authoritative && $observedEvidence !== null) {
                 $readable = true;
@@ -1029,8 +1111,12 @@ class RuTrackerForumIndex
                     return self::FORUM_WRITE_FAILED;
                 }
                 $evidence = self::forumEvidenceStatus($observedEvidence, $state, $topicId);
-                if ($evidence === 'superseded') { return self::FORUM_WRITE_SUPERSEDED; }
-                if ($evidence === 'unknown') { return self::FORUM_WRITE_FAILED; }
+                if ($evidence === 'superseded') {
+                    return self::FORUM_WRITE_SUPERSEDED;
+                }
+                if ($evidence === 'unknown') {
+                    return self::FORUM_WRITE_FAILED;
+                }
             }
 
             // All writers of this topic take the topic lock first. The
@@ -1044,7 +1130,8 @@ class RuTrackerForumIndex
             }
             try {
                 if ($guard !== null && !call_user_func($guard)) {
-                    return self::FORUM_WRITE_SUPERSEDED; }
+                    return self::FORUM_WRITE_SUPERSEDED;
+                }
 
                 $read = self::readCurrentForum($hash);
                 if ($read === null) {
@@ -1057,7 +1144,8 @@ class RuTrackerForumIndex
                 // this mapping, even if its current forum happens to match.
                 $readTopic = $read['topic'];
                 if ($readTopic === null || $readTopic !== RuTrackerRpcValue::canonicalPositiveInt32($topicId)) {
-                    return self::FORUM_WRITE_OBSOLETE; }
+                    return self::FORUM_WRITE_OBSOLETE;
+                }
                 $current = $read['forum'];
                 if (strlen($current) > 32 || strpos($current, "\0") !== false) {
                     ruTrackerChecker::logUnrepairable('forumindex: topic ' . (int) $topicId
@@ -1065,7 +1153,8 @@ class RuTrackerForumIndex
                     return self::FORUM_WRITE_FAILED;
                 }
                 if (!$authoritative && $expectedForum !== null && $current !== (string) $expectedForum) {
-                    return self::FORUM_WRITE_SUPERSEDED; }
+                    return self::FORUM_WRITE_SUPERSEDED;
+                }
                 // A higher fence can supersede a lost earlier setter. If the
                 // old command executes after the new one, its daemon-side
                 // less= guard sees the newer marker and skips the write.
@@ -1076,24 +1165,30 @@ class RuTrackerForumIndex
                 if ($pending !== null && ($pending['to'] !== (string) $forumId
                     || ($authoritative && !$pending['authoritative']))) {
                     if (!self::stageForumMapping($topicId, $hash, $current, $forumId, $authoritative)) {
-                        return self::FORUM_WRITE_FAILED; }
+                        return self::FORUM_WRITE_FAILED;
+                    }
                     $pendingAll = self::pendingForumMappings($topicId);
                     $pending = is_array($pendingAll) ? ($pendingAll[strtoupper($hash)] ?? null) : null;
-                    if (!is_array($pending)) { return self::FORUM_WRITE_FAILED; }
+                    if (!is_array($pending)) {
+                        return self::FORUM_WRITE_FAILED;
+                    }
                 }
                 if ($current === (string) $forumId && $pending === null) {
                     // A feed replay is not fresh evidence. A crawl that found
                     // the topic here is, and may retire its older miss.
                     if (!$authoritative) {
                         $version = self::publishCurrentForumEvidence($topicId);
-                        if ($version === false) { return self::FORUM_WRITE_FAILED; }
+                        if ($version === false) {
+                            return self::FORUM_WRITE_FAILED;
+                        }
                         $committedEvidence = $version;
                     }
                     return self::FORUM_WRITE_CURRENT;
                 }
                 if ($pending === null) {
                     if (!self::stageForumMapping($topicId, $hash, $current, $forumId, $authoritative)) {
-                        return self::FORUM_WRITE_FAILED; }
+                        return self::FORUM_WRITE_FAILED;
+                    }
                     $pendingAll = self::pendingForumMappings($topicId);
                     $pending = is_array($pendingAll) ? ($pendingAll[strtoupper($hash)] ?? null) : null;
                     if (!is_array($pending)) {
@@ -1111,7 +1206,8 @@ class RuTrackerForumIndex
                 }
                 $previousEpoch = null;
                 if (!self::commitForumMapping($topicId, $pending, $previousEpoch)) {
-                    return self::FORUM_WRITE_FAILED; }
+                    return self::FORUM_WRITE_FAILED;
+                }
                 $committedEvidence = ['version' => $pending['version'],
                     'before' => $previousEpoch];
                 return self::FORUM_WRITE_WRITTEN;
@@ -1131,7 +1227,9 @@ class RuTrackerForumIndex
     // crawl it starts would filter it.
     public static function crawlWanted()
     {
-        if (count(self::takeQueuePeek())) { return true; }
+        if (count(self::takeQueuePeek())) {
+            return true;
+        }
         $wanted = self::collectWanted([], time());
         return is_array($wanted) && count($wanted) > 0;
     }
@@ -1145,7 +1243,9 @@ class RuTrackerForumIndex
     // crawl per click.
     public static function spawnCrawl($launcher = null)
     {
-        if (!self::sweepAllowed(time()) || !self::crawlWanted()) { return false; }
+        if (!self::sweepAllowed(time()) || !self::crawlWanted()) {
+            return false;
+        }
         $result = RuTrackerDetachedPhp::launch(
             (string) Utility::getPHP(),
             dirname(__FILE__) . '/forumcrawl.php',
@@ -1153,7 +1253,8 @@ class RuTrackerForumIndex
             $launcher,
         );
         if ($result === false) {
-            ruTrackerChecker::logDebug('forumcrawl: detached crawl command was not accepted by the shell'); }
+            ruTrackerChecker::logDebug('forumcrawl: detached crawl command was not accepted by the shell');
+        }
         return $result;
     }
 
@@ -1181,8 +1282,12 @@ class RuTrackerForumIndex
         $currentForum = [];
         $awaiting = null;
         $wanted = self::collectWanted($queued, $now, $awaiting, $currentForum);
-        if ($wanted === null) { return null; }
-        if (!count($wanted)) { return null; }
+        if ($wanted === null) {
+            return null;
+        }
+        if (!count($wanted)) {
+            return null;
+        }
 
         // Mark the cooldown before crawling, not after: a crawl that fails
         // partway through (dead endpoint, network outage) must not be
@@ -1194,7 +1299,9 @@ class RuTrackerForumIndex
         // sweeping the tracker a second time.
         $claimRefusal = null;
         if (!self::markSweep($now, $claimRefusal)) {
-            foreach ($wanted as $topic) { self::ensureQueued($topic); }
+            foreach ($wanted as $topic) {
+                self::ensureQueued($topic);
+            }
             return 'wanted ' . count($wanted) . ($claimRefusal === 'unwritten'
                 ? ', the crawl window could not be recorded'
                 : ', another crawl already holds this window');
@@ -1247,7 +1354,9 @@ class RuTrackerForumIndex
         }
 
         if ($outcome === null) {
-            foreach ($wanted as $topic) { self::ensureQueued($topic); }
+            foreach ($wanted as $topic) {
+                self::ensureQueued($topic);
+            }
             return 'wanted ' . count($wanted) . ', crawl failed'
                 . ($failureReason !== null ? ' reason=' . $failureReason
                     : ($threw ? ' reason=crawl-exception' : ''));
@@ -1263,9 +1372,16 @@ class RuTrackerForumIndex
             $complete = true;
             foreach (($awaiting[$topic] ?? []) as $hash) {
                 $writtenEvidence = null;
-                $status = self::writeForumMapping($hash, $topic, $forum,
-                    (string) ($currentForum[$hash] ?? ''), false, null,
-                    $crawlEvidence, $writtenEvidence);
+                $status = self::writeForumMapping(
+                    $hash,
+                    $topic,
+                    $forum,
+                    (string) ($currentForum[$hash] ?? ''),
+                    false,
+                    null,
+                    $crawlEvidence,
+                    $writtenEvidence,
+                );
                 if ($writtenEvidence !== null) {
                     $crawlEvidence['versions'][(int) $topic] = $writtenEvidence['version'];
                     // A later own write may acknowledge only the exact epoch
@@ -1274,9 +1390,10 @@ class RuTrackerForumIndex
                     // missing-topic comparisons fail-closed after that gap.
                     if ($crawlEvidence['complete']
                         && $crawlEvidence['epoch'] === $writtenEvidence['before']) {
-                        $crawlEvidence['epoch'] = $writtenEvidence['version']; }
-                    else {
-                        $crawlEvidence['complete'] = false; }
+                        $crawlEvidence['epoch'] = $writtenEvidence['version'];
+                    } else {
+                        $crawlEvidence['complete'] = false;
+                    }
                 }
                 if ($status === self::FORUM_WRITE_FAILED) {
                     $complete = false;
@@ -1314,12 +1431,15 @@ class RuTrackerForumIndex
                 if (!self::markMiss($topic, $now, $crawlEvidence)) {
                     $missRetries[] = (int) $topic;
                     self::ensureQueued($topic);
-                } }
+                }
+            }
             self::settleQueue($queueSnapshot, array_merge($requeued, $missRetries));
             return 'wanted ' . count($wanted) . ', resolved ' . count($resolved)
                 . (count($missRetries) ? ', ' . count($missRetries) . ' requeued: miss result unconfirmed' : '');
         }
-        foreach ($unresolved as $topic) { self::ensureQueued($topic); }
+        foreach ($unresolved as $topic) {
+            self::ensureQueued($topic);
+        }
         self::settleQueue($queueSnapshot, array_merge($requeued, $unresolved));
         return 'wanted ' . count($wanted) . ', resolved ' . count($resolved)
             . ', ' . count($unresolved) . ' requeued: some dumps went unread'
@@ -1350,7 +1470,9 @@ class RuTrackerForumIndex
         // at all -- a category container, an archive -- and RuTracker's tree is
         // full of them; reporting those as refusals is what used to abort a
         // crawl a handful of forums in. 410 says the same thing more firmly.
-        if ($status === 404 || $status === 410) { return false; }
+        if ($status === 404 || $status === 410) {
+            return false;
+        }
         return $status !== 200;
     }
 
@@ -1379,7 +1501,9 @@ class RuTrackerForumIndex
         if (!is_string($body) || $body === '') {
             // Only a 200 needs correcting here: for every other status
             // dumpRefused() has already said which side it is on.
-            if ($status === 200) { $refused = true; }
+            if ($status === 200) {
+                $refused = true;
+            }
             return null;
         }
         return $status === 200 ? $body : null;
@@ -1423,8 +1547,12 @@ class RuTrackerForumIndex
     {
         $failureReason = null;
         $wanted = [];
-        foreach ($wantedTopics as $topic) { $wanted[(int) $topic] = true; }
-        if (!count($wanted)) { return ['resolved' => [], 'complete' => true]; }
+        foreach ($wantedTopics as $topic) {
+            $wanted[(int) $topic] = true;
+        }
+        if (!count($wanted)) {
+            return ['resolved' => [], 'complete' => true];
+        }
 
         if ($fetcher === null) {
             $fetcher = function ($url, &$refused = null, &$status = null) {
@@ -1478,7 +1606,9 @@ class RuTrackerForumIndex
         $failureCodes = [];
         $failureStatuses = [];
         foreach ($validatedForumIds as $forumId) {
-            if (!count($wanted)) { break; }
+            if (!count($wanted)) {
+                break;
+            }
             $refused = false;
             $status = null;
             $body = $fetcher(self::DUMP_URL . $forumId, $refused, $status);
@@ -1505,7 +1635,9 @@ class RuTrackerForumIndex
                     $failureStatuses[] = $status;
                     if (++$failures >= self::SWEEP_FAILURE_ABORT) {
                         $failureReason = self::crawlFailureReason(
-                            implode('+', array_keys($failureCodes)), $failureStatuses);
+                            implode('+', array_keys($failureCodes)),
+                            $failureStatuses,
+                        );
                         return null;
                     }
                     $unread++;
@@ -1532,7 +1664,9 @@ class RuTrackerForumIndex
                 $failureStatuses[] = $status;
                 if (++$failures >= self::SWEEP_FAILURE_ABORT) {
                     $failureReason = self::crawlFailureReason(
-                        implode('+', array_keys($failureCodes)), $failureStatuses);
+                        implode('+', array_keys($failureCodes)),
+                        $failureStatuses,
+                    );
                     return null;
                 }
                 $unread++;
@@ -1548,7 +1682,9 @@ class RuTrackerForumIndex
         }
         if ($unread > 0) {
             $failureReason = self::crawlFailureReason(
-                implode('+', array_keys($failureCodes)), $failureStatuses);
+                implode('+', array_keys($failureCodes)),
+                $failureStatuses,
+            );
         }
         return ['resolved' => $resolved, 'complete' => $unread === 0];
     }
@@ -1562,9 +1698,15 @@ class RuTrackerForumIndex
     // a queue ordering guard restarted underneath a running crawl.
     private static function storedCount($container, $key)
     {
-        if ($container === null) { return 0; }
-        if (!is_array($container)) { return null; }
-        if (!array_key_exists($key, $container)) { return 0; }
+        if ($container === null) {
+            return 0;
+        }
+        if (!is_array($container)) {
+            return null;
+        }
+        if (!array_key_exists($key, $container)) {
+            return 0;
+        }
         return RuTrackerRpcValue::canonicalNonnegativeInteger($container[$key]);
     }
 
@@ -1597,8 +1739,12 @@ class RuTrackerForumIndex
     // forum going dark with nothing in the log at all.
     private static function seatBook(&$state, $book, $subject)
     {
-        if (!array_key_exists($book, $state)) { return; }
-        if ($state[$book] === null || is_array($state[$book])) { return; }
+        if (!array_key_exists($book, $state)) {
+            return;
+        }
+        if ($state[$book] === null || is_array($state[$book])) {
+            return;
+        }
         ruTrackerChecker::logDebug('forumindex: forumindex.json ' . $book . ' is not an array but a'
             . ' value of type ' . gettype($state[$book]) . ', so no entry in it can be read or'
             . ' written for ' . $subject
@@ -1653,7 +1799,8 @@ class RuTrackerForumIndex
     {
         $prefix = self::dumpDocument($forumId) . '-';
         if (!is_string($document) || strncmp($document, $prefix, strlen($prefix)) !== 0) {
-            return null; }
+            return null;
+        }
         return RuTrackerRpcValue::canonicalNonnegativeInteger(substr($document, strlen($prefix)));
     }
 
@@ -1690,11 +1837,14 @@ class RuTrackerForumIndex
     // The once-per-cycle guarantee is the memo's, not this function's.
     private static function remember($memoize, $forumId, $value, $reason = null, $dumpAbsent = false)
     {
-        if ($memoize) { self::$memo[$forumId] = [
-            'value' => $value, 'reason' => $reason, 'absent' => $dumpAbsent]; }
+        if ($memoize) {
+            self::$memo[$forumId] = [
+                'value' => $value, 'reason' => $reason, 'absent' => $dumpAbsent];
+        }
         if ($reason !== null) {
             ruTrackerChecker::logDebug('forumindex: forum ' . (int) $forumId
-                . ' produced no fresh dump this cycle; reason=' . $reason); }
+                . ' produced no fresh dump this cycle; reason=' . $reason);
+        }
         return $value;
     }
 
@@ -1706,7 +1856,9 @@ class RuTrackerForumIndex
     // than what is on disk at write time.
     private static function touchDump($state, $forumId, &$dropDocuments = null)
     {
-        if (!is_array($dropDocuments)) { $dropDocuments = []; }
+        if (!is_array($dropDocuments)) {
+            $dropDocuments = [];
+        }
         // Every book the stamp below writes into, and every book the prune
         // under it unsets an entry in. A scalar dump_touched is the sharpest
         // of them: the (array) cast turns it into a one-entry book whose stamp
@@ -1722,7 +1874,8 @@ class RuTrackerForumIndex
         // unsets an entry in it and the next caller of touchDump() should not
         // have to re-derive that argument to stay safe.
         foreach (['dump_touched', 'etags', 'dump_documents', 'dump_generations'] as $book) {
-            self::seatBook($state, $book, 'forum ' . $forumId); }
+            self::seatBook($state, $book, 'forum ' . $forumId);
+        }
         $now = time();
         $state['dump_touched'][$forumId] = $now;
         foreach ((array) $state['dump_touched'] as $id => $touchedAt) {
@@ -1770,11 +1923,17 @@ class RuTrackerForumIndex
         $forumId = (int) $forumId;
         $readable = true;
         $state = RuTrackerState::load('forumindex', $readable);
-        if (!$readable) { return null; }
+        if (!$readable) {
+            return null;
+        }
         $document = self::stateDumpDocument($state, $forumId);
         $doc = RuTrackerState::load($document, $readable);
-        if (!$readable) { return null; }
-        if (!isset($doc['rows']) || !is_array($doc['rows'])) { return null; }
+        if (!$readable) {
+            return null;
+        }
+        if (!isset($doc['rows']) || !is_array($doc['rows'])) {
+            return null;
+        }
         // The document must name the generation the state published, in the
         // one spelling that names it: "05" is not the generation 5, and
         // reading both sides through (int) made a body nothing ever published
@@ -1793,7 +1952,8 @@ class RuTrackerForumIndex
         $generation = self::storedCount($state['dump_generations'] ?? null, $forumId);
         if ($generation === null || $generation < 1
             || RuTrackerRpcValue::canonicalNonnegativeInteger($doc['generation'] ?? null) !== $generation) {
-            return null; }
+            return null;
+        }
         return [
             'rows' => $doc['rows'],
             'etag' => (string) ($doc['etag'] ?? ''),
@@ -1828,7 +1988,9 @@ class RuTrackerForumIndex
     {
         foreach (array_unique((array) $documents) as $document) {
             if (is_string($document) && $document !== '' && $document !== $keep) {
-                RuTrackerState::drop($document); } }
+                RuTrackerState::drop($document);
+            }
+        }
     }
 
     private static function forumEvidence($versions, $topicId)
@@ -1843,14 +2005,22 @@ class RuTrackerForumIndex
     private static function forumEvidenceStatus($observed, $state, $topicId)
     {
         if (!is_array($observed) || !array_key_exists('versions', $observed)
-            || !array_key_exists('epoch', $observed)) { return 'unknown'; }
+            || !array_key_exists('epoch', $observed)) {
+            return 'unknown';
+        }
         $before = self::forumEvidence($observed['versions'], $topicId);
         $after = self::forumEvidence($state['forum_evidence'] ?? null, $topicId);
         // A retained version can disappear through pruning alone. That is
         // uncertainty, not proof that another writer superseded this topic.
-        if ($before !== null && $after === null) { return 'unknown'; }
-        if ($before !== $after) { return 'superseded'; }
-        if ($before !== null) { return 'current'; }
+        if ($before !== null && $after === null) {
+            return 'unknown';
+        }
+        if ($before !== $after) {
+            return 'superseded';
+        }
+        if ($before !== null) {
+            return 'current';
+        }
         return !empty($observed['complete'])
             && $observed['epoch'] === ($state['forum_evidence_epoch'] ?? null)
             ? 'current' : 'unknown';
@@ -1866,7 +2036,9 @@ class RuTrackerForumIndex
             new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, 'chk-forum']),
         ]);
         $read->important = false;
-        if (!$read->success() || !isset($read->val[0], $read->val[1])) { return null; }
+        if (!$read->success() || !isset($read->val[0], $read->val[1])) {
+            return null;
+        }
         return ['topic' => RuTrackerRpcValue::canonicalPositiveInt32($read->val[0]),
             'forum' => (string) $read->val[1]];
     }
@@ -1893,8 +2065,13 @@ class RuTrackerForumIndex
         unset($state['forum_evidence'][(int) $topicId]);
         $state['forum_evidence'][(int) $topicId] = $version;
         if (count($state['forum_evidence']) > self::FORUM_EVIDENCE_LIMIT) {
-            $state['forum_evidence'] = array_slice($state['forum_evidence'],
-                -self::FORUM_EVIDENCE_LIMIT, null, true); }
+            $state['forum_evidence'] = array_slice(
+                $state['forum_evidence'],
+                -self::FORUM_EVIDENCE_LIMIT,
+                null,
+                true,
+            );
+        }
         $state['forum_evidence_epoch'] = $version;
         unset($state['misses'][(int) $topicId]);
         return $state;
@@ -1906,11 +2083,17 @@ class RuTrackerForumIndex
     {
         $readable = true;
         $state = RuTrackerState::load('forumindex', $readable);
-        if (!$readable) { return false; }
+        if (!$readable) {
+            return false;
+        }
         $pending = $state['forum_pending'] ?? [];
-        if (!is_array($pending)) { return false; }
+        if (!is_array($pending)) {
+            return false;
+        }
         $records = $pending[(int) $topicId] ?? [];
-        if (!is_array($records)) { return false; }
+        if (!is_array($records)) {
+            return false;
+        }
         foreach ($records as $hash => $record) {
             if (!is_string($hash) || !is_array($record)
                 || array_keys($record) !== ['hash', 'from', 'to', 'version', 'fence', 'authoritative']
@@ -1924,7 +2107,8 @@ class RuTrackerForumIndex
                 || !is_string($record['fence'])
                 || !preg_match('/^[0-9]{16}$/D', $record['fence'])
                 || !is_bool($record['authoritative'])) {
-                return false; }
+                return false;
+            }
         }
         return $records;
     }
@@ -1938,9 +2122,12 @@ class RuTrackerForumIndex
             if (!isset($state['forum_pending'][$topic])
                 || !is_array($state['forum_pending'][$topic])
                 || ($state['forum_pending'][$topic][$hash] ?? null) !== $record) {
-                return $state; }
+                return $state;
+            }
             unset($state['forum_pending'][$topic][$hash]);
-            if (!count($state['forum_pending'][$topic])) { unset($state['forum_pending'][$topic]); }
+            if (!count($state['forum_pending'][$topic])) {
+                unset($state['forum_pending'][$topic]);
+            }
             $removed = true;
             return $state;
         });
@@ -1950,16 +2137,28 @@ class RuTrackerForumIndex
     private static function stageForumMapping($topicId, $hash, $from, $to, $authoritative)
     {
         $version = self::newForumVersion($topicId);
-        if ($version === false) { return false; }
+        if ($version === false) {
+            return false;
+        }
         $staged = false;
         $stored = RuTrackerState::update('forumindex', function ($state) use (
-            $topicId, $hash, $from, $to, $version, $authoritative, &$staged
+            $topicId,
+            $hash,
+            $from,
+            $to,
+            $version,
+            $authoritative,
+            &$staged
         ) {
             $serial = self::storedCount($state, 'forum_serial');
-            if ($serial === null || $serial >= 9999999999999998) { return $state; }
+            if ($serial === null || $serial >= 9999999999999998) {
+                return $state;
+            }
             self::seatBook($state, 'forum_pending', 'topic ' . (int) $topicId);
             if (isset($state['forum_pending'][(int) $topicId])
-                && !is_array($state['forum_pending'][(int) $topicId])) { return $state; }
+                && !is_array($state['forum_pending'][(int) $topicId])) {
+                return $state;
+            }
             $serial++;
             $state['forum_serial'] = $serial;
             $state['forum_pending'][(int) $topicId][strtoupper($hash)] = [
@@ -1971,7 +2170,9 @@ class RuTrackerForumIndex
             $staged = true;
             return $state;
         });
-        if ($stored && $staged) { return true; }
+        if ($stored && $staged) {
+            return true;
+        }
         ruTrackerChecker::logUnrepairable('forumindex: forumindex.json forum_pending/forum_serial for topic '
             . (int) $topicId . ' could not be advanced; chk-forum write refused');
         return false;
@@ -1987,21 +2188,29 @@ class RuTrackerForumIndex
         $condition = 'and=' . RuTrackerAtomicOwnership::quoteRtorrentArgument($topic) . ','
             . RuTrackerAtomicOwnership::quoteRtorrentArgument($fence);
         $body = 'cat=' . RuTrackerAtomicOwnership::quoteRtorrentArgument(
-            '$' . getCmd('d.set_custom=') . 'chk-forum,' . $record['to']) . ','
+            '$' . getCmd('d.set_custom=') . 'chk-forum,' . $record['to'],
+        ) . ','
             . RuTrackerAtomicOwnership::quoteRtorrentArgument(
-                '$' . getCmd('d.set_custom=') . 'chk-forum-version,' . $record['fence']) . ',APPLIED';
-        $write = new rXMLRPCRequest(new rXMLRPCCommand('branch',
-            [$hash, $condition, $body, 'cat=SKIPPED']));
+                '$' . getCmd('d.set_custom=') . 'chk-forum-version,' . $record['fence'],
+            ) . ',APPLIED';
+        $write = new rXMLRPCRequest(new rXMLRPCCommand(
+            'branch',
+            [$hash, $condition, $body, 'cat=SKIPPED'],
+        ));
         $write->important = false;
         if (!$write->success() || !is_array($write->val) || count($write->val) !== 1
-            || !is_string($write->val[0])) { return null; }
+            || !is_string($write->val[0])) {
+            return null;
+        }
         return $write->val[0];
     }
 
     private static function readForumFence($hash)
     {
-        $read = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.get_custom'),
-            [$hash, 'chk-forum-version']));
+        $read = new rXMLRPCRequest(new rXMLRPCCommand(
+            getCmd('d.get_custom'),
+            [$hash, 'chk-forum-version'],
+        ));
         $read->important = false;
         return $read->success() && isset($read->val[0]) ? (string) $read->val[0] : null;
     }
@@ -2010,21 +2219,29 @@ class RuTrackerForumIndex
     {
         $committed = false;
         $stored = RuTrackerState::update('forumindex', function ($state) use (
-            $topicId, $record, &$committed, &$previousEpoch
+            $topicId,
+            $record,
+            &$committed,
+            &$previousEpoch
         ) {
             $topic = (int) $topicId;
             $hash = $record['hash'];
             if (!isset($state['forum_pending'][$topic])
                 || !is_array($state['forum_pending'][$topic])
                 || ($state['forum_pending'][$topic][$hash] ?? null) !== $record) {
-                return $state; }
+                return $state;
+            }
             $state = self::withForumEvidence($state, $topicId, $record['version'], $previousEpoch);
             unset($state['forum_pending'][$topic][$hash]);
-            if (!count($state['forum_pending'][$topic])) { unset($state['forum_pending'][$topic]); }
+            if (!count($state['forum_pending'][$topic])) {
+                unset($state['forum_pending'][$topic]);
+            }
             $committed = true;
             return $state;
         });
-        if ($stored && $committed) { return true; }
+        if ($stored && $committed) {
+            return true;
+        }
         ruTrackerChecker::logUnrepairable('forumindex: forumindex.json mapping commit for topic ' . (int) $topicId
             . ' could not be persisted; the correction remains pending');
         return false;
@@ -2047,9 +2264,13 @@ class RuTrackerForumIndex
             // Continue after an unknown hash so a different hash can still
             // confirm and retire its own intent. The aggregate still blocks
             // markMiss() until every uncertain writer has resolved.
-            if ($status === 'unknown') { $result = 'unknown'; }
-            elseif ($status === 'old' && $result !== 'unknown') { $result = 'old'; }
-            elseif ($result === 'none') { $result = $status; }
+            if ($status === 'unknown') {
+                $result = 'unknown';
+            } elseif ($status === 'old' && $result !== 'unknown') {
+                $result = 'old';
+            } elseif ($result === 'none') {
+                $result = $status;
+            }
         }
         return $result;
     }
@@ -2070,13 +2291,15 @@ class RuTrackerForumIndex
                 // the obligation for the next pass.
                 if (ruTrackerChecker::torrentExists($record['hash']) === false) {
                     return self::removePendingForumMapping($topicId, $record)
-                        ? 'retired' : 'unknown'; }
+                        ? 'retired' : 'unknown';
+                }
                 ruTrackerChecker::logUnrepairable('forumindex: pending mapping for topic ' . (int) $topicId
                     . ' could not be read from rTorrent; mapping and miss are deferred');
                 return 'unknown';
             }
             if ($read['topic'] !== (int) $topicId) {
-                return self::removePendingForumMapping($topicId, $record) ? 'retired' : 'unknown'; }
+                return self::removePendingForumMapping($topicId, $record) ? 'retired' : 'unknown';
+            }
             $current = $read['forum'];
             if ($current === $record['to']) {
                 $fence = self::readForumFence($record['hash']);
@@ -2086,7 +2309,8 @@ class RuTrackerForumIndex
                     return 'unknown';
                 }
                 if ($fence === $record['fence']) {
-                    return self::commitForumMapping($topicId, $record) ? 'committed' : 'unknown'; }
+                    return self::commitForumMapping($topicId, $record) ? 'committed' : 'unknown';
+                }
                 if ($fence !== '' && (!preg_match('/^[0-9]{16}$/D', $fence)
                     || strcmp($fence, $record['fence']) > 0)) {
                     ruTrackerChecker::logUnrepairable('forumindex: forumindex.json forum_pending for topic '
@@ -2101,13 +2325,16 @@ class RuTrackerForumIndex
             // that spelling differs only for a value another writer left. It
             // then misses this test and the fence below decides: 'old' for an
             // unchanged row, never a retirement or a confirmation.
-            if ($current === $record['from']) { return 'old'; }
+            if ($current === $record['from']) {
+                return 'old';
+            }
             // A superseded setter may land after this newer intent was staged.
             // Its smaller daemon fence still permits the newer branch to run.
             $fence = self::readForumFence($record['hash']);
             if ($fence !== null && ($fence === '' || preg_match('/^[0-9]{16}$/D', $fence))
                 && ($fence === '' || strcmp($fence, $record['fence']) < 0)) {
-                return 'old'; }
+                return 'old';
+            }
             ruTrackerChecker::logUnrepairable('forumindex: forumindex.json forum_pending for topic '
                 . (int) $topicId . ' has a third chk-forum without a lower daemon fence;'
                 . ' mapping and miss are deferred');
@@ -2123,16 +2350,21 @@ class RuTrackerForumIndex
     private static function publishCurrentForumEvidence($topicId)
     {
         $version = self::newForumVersion($topicId);
-        if ($version === false) { return false; }
+        if ($version === false) {
+            return false;
+        }
         $previousEpoch = null;
         $stored = RuTrackerState::update('forumindex', function ($state) use (
-            $topicId, $version, &$previousEpoch
+            $topicId,
+            $version,
+            &$previousEpoch
         ) {
             return self::withForumEvidence($state, $topicId, $version, $previousEpoch);
         });
         if (!$stored) {
             ruTrackerChecker::logUnrepairable('forumindex: forumindex.json crawl evidence for topic ' . (int) $topicId
-                . ' could not be persisted; the result must be retried'); }
+                . ' could not be persisted; the result must be retried');
+        }
         return $stored ? ['version' => $version, 'before' => $previousEpoch] : false;
     }
 
@@ -2154,7 +2386,9 @@ class RuTrackerForumIndex
             self::seatBook($state, 'misses', 'topic ' . $topicId);
             $repair = null;
             if (self::missSuppresses($state['misses'][$topicId] ?? null, $topicId, time(), $repair)) {
-                if ($repair !== null) { $state['misses'][$topicId] = $repair; }
+                if ($repair !== null) {
+                    $state['misses'][$topicId] = $repair;
+                }
                 return $state;
             }
 
@@ -2204,7 +2438,9 @@ class RuTrackerForumIndex
             $versions = isset($state['queue_versions']) && is_array($state['queue_versions'])
                 ? $state['queue_versions'] : [];
             $versions[$topicId] = $serial;
-            if (!$present) { $queue[] = $topicId; }
+            if (!$present) {
+                $queue[] = $topicId;
+            }
             $state['queue'] = $queue;
             $state['queue_serial'] = $serial;
             $state['queue_versions'] = $versions;
@@ -2228,7 +2464,9 @@ class RuTrackerForumIndex
         $stored = isset($state['queue_versions']) && is_array($state['queue_versions'])
             ? $state['queue_versions'] : [];
         $versions = [];
-        foreach ($topics as $topic) { $versions[(int) $topic] = self::queueVersion($stored, (int) $topic); }
+        foreach ($topics as $topic) {
+            $versions[(int) $topic] = self::queueVersion($stored, (int) $topic);
+        }
         return ['topics' => array_map('intval', $topics), 'versions' => $versions,
             'evidence' => [
                 'versions' => isset($state['forum_evidence']) && is_array($state['forum_evidence'])
@@ -2245,7 +2483,9 @@ class RuTrackerForumIndex
     // request it had never observed.
     private static function queueVersion($versions, $topic)
     {
-        if (!is_array($versions) || !array_key_exists($topic, $versions)) { return 0; }
+        if (!is_array($versions) || !array_key_exists($topic, $versions)) {
+            return 0;
+        }
         return RuTrackerRpcValue::canonicalNonnegativeInteger($versions[$topic]);
     }
 
@@ -2260,7 +2500,9 @@ class RuTrackerForumIndex
         $max = 0;
         foreach ($versions as $version) {
             $seen = RuTrackerRpcValue::canonicalNonnegativeInteger($version);
-            if ($seen !== null && $seen > $max) { $max = $seen; }
+            if ($seen !== null && $seen > $max) {
+                $max = $seen;
+            }
         }
         return $max;
     }
@@ -2311,7 +2553,9 @@ class RuTrackerForumIndex
         global $rutrackerSweepCooldown;
         $raw = isset($rutrackerSweepCooldown) ? $rutrackerSweepCooldown : 86400;
         $value = RuTrackerRpcValue::canonicalNonnegativeInteger($raw);
-        if ($value !== null) { return max(3600, $value); }
+        if ($value !== null) {
+            return max(3600, $value);
+        }
         if (!self::$invalidSweepCooldownReported) {
             self::$invalidSweepCooldownReported = true;
             // Ungated, because the effective value is safe but the
@@ -2320,7 +2564,8 @@ class RuTrackerForumIndex
             // the unit. The raw value is never printed -- it is whatever an
             // administrator typed, and a type dump would say no more.
             ruTrackerChecker::logUnrepairable(
-                'config: invalid rutrackerSweepCooldown; using-default=86400 unit=seconds');
+                'config: invalid rutrackerSweepCooldown; using-default=86400 unit=seconds',
+            );
         }
         return 86400;
     }
@@ -2350,9 +2595,13 @@ class RuTrackerForumIndex
     private static function missSuppresses($record, $topicId, $now, &$repair = null)
     {
         $repair = null;
-        if ($record === null) { return false; }
+        if ($record === null) {
+            return false;
+        }
         $missedAt = self::missedAt($record);
-        if ($missedAt !== null) { return $now - $missedAt <= self::missWindow($record); }
+        if ($missedAt !== null) {
+            return $now - $missedAt <= self::missWindow($record);
+        }
         ruTrackerChecker::logDebug('forumcrawl: forumindex.json misses[' . (int) $topicId
             . '] carries no readable stamp, so topic ' . (int) $topicId . ' could never be crawled'
             . ' for again; it is restamped to now under the count it does read');
@@ -2368,7 +2617,9 @@ class RuTrackerForumIndex
 
     private static function missCount($record)
     {
-        if (!is_array($record) || !array_key_exists('n', $record)) { return 1; }
+        if (!is_array($record) || !array_key_exists('n', $record)) {
+            return 1;
+        }
         $count = RuTrackerRpcValue::canonicalNonnegativeInteger($record['n']);
         return $count === null ? null : max(1, $count);
     }
@@ -2378,7 +2629,9 @@ class RuTrackerForumIndex
     // tracker is authorised.
     private static function missedAt($record)
     {
-        if (!is_array($record)) { return RuTrackerRpcValue::canonicalNonnegativeInteger($record); }
+        if (!is_array($record)) {
+            return RuTrackerRpcValue::canonicalNonnegativeInteger($record);
+        }
         return array_key_exists('at', $record)
             ? RuTrackerRpcValue::canonicalNonnegativeInteger($record['at']) : null;
     }
@@ -2407,7 +2660,9 @@ class RuTrackerForumIndex
     {
         $currentForum = [];
         $awaiting = self::topicsAwaitingForum(array_flip($queued), $currentForum);
-        if ($awaiting === null) { return null; }
+        if ($awaiting === null) {
+            return null;
+        }
 
         $state = RuTrackerState::load('forumindex');
         // Read through the same is_array() every other reader of this book
@@ -2418,12 +2673,16 @@ class RuTrackerForumIndex
         $misses = isset($state['misses']) && is_array($state['misses']) ? $state['misses'] : [];
         $now = (int) $now;
         $wanted = [];
-        foreach ($queued as $topic) { $wanted[(int) $topic] = true; }
+        foreach ($queued as $topic) {
+            $wanted[(int) $topic] = true;
+        }
         $missRepairs = [];
         foreach (array_keys($awaiting) as $topic) {
             $repair = null;
             if (self::missSuppresses($misses[(int) $topic] ?? null, $topic, $now, $repair)) {
-                if ($repair !== null) { $missRepairs[(int) $topic] = $repair; }
+                if ($repair !== null) {
+                    $missRepairs[(int) $topic] = $repair;
+                }
                 continue;
             }
             $wanted[(int) $topic] = true;
@@ -2450,9 +2709,12 @@ class RuTrackerForumIndex
                 self::seatBook($state, 'misses', 'the topics this crawl repaired');
                 foreach ($missRepairs as $topic => $repair) {
                     if (self::missedAt($state['misses'][$topic] ?? null) === null) {
-                        $state['misses'][$topic] = $repair; } }
+                        $state['misses'][$topic] = $repair;
+                    }
+                }
                 return $state;
-            }); }
+            });
+        }
         return array_keys($wanted);
     }
 
@@ -2461,7 +2723,9 @@ class RuTrackerForumIndex
         $details = [];
         foreach ((array) $statuses as $status) {
             $detail = ruTrackerChecker::fetchStatusDetail($status);
-            if ($detail !== '') { $details[$detail] = true; }
+            if ($detail !== '') {
+                $details[$detail] = true;
+            }
         }
         return $code . (count($details) ? ' statuses=' . implode('|', array_keys($details)) : '');
     }

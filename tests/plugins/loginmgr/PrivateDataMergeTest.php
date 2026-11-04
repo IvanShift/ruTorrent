@@ -117,8 +117,11 @@ $tests = [
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'theirs', PDM_A)]);
         pdmStore($ours, [pdmEntry('sid', 'ours', PDM_A)]);
-        testAssertSame(['sid=ours host kinozal.jumpingcrab.com/'], pdmStoredCookies(),
-            'This request\'s own change wins the conflict');
+        testAssertSame(
+            ['sid=ours host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'This request\'s own change wins the conflict',
+        );
     },
     'a value this request left alone takes the value another request stored' => function () {
         pdmWrite([pdmEntry('sid', 'base', PDM_A), pdmEntry('sid', 'base', PDM_B)]);
@@ -126,8 +129,11 @@ $tests = [
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'base', PDM_A), pdmEntry('sid', 'theirs', PDM_B)]);
         pdmStore($ours, [pdmEntry('sid', 'ours', PDM_A), pdmEntry('sid', 'base', PDM_B)]);
-        testAssertSame(['sid=ours host kinozal.jumpingcrab.com/', 'sid=theirs host kinozal.cloudns.nz/'],
-            pdmStoredCookies(), 'Each request keeps what it changed, and an unchanged value is not written back');
+        testAssertSame(
+            ['sid=ours host kinozal.jumpingcrab.com/', 'sid=theirs host kinozal.cloudns.nz/'],
+            pdmStoredCookies(),
+            'Each request keeps what it changed, and an unchanged value is not written back',
+        );
     },
     'a value this request dropped stays dropped unless another request renewed it' => function () {
         pdmWrite([pdmEntry('sid', 'base', PDM_A), pdmEntry('sid', 'base', PDM_B)]);
@@ -135,16 +141,22 @@ $tests = [
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'base', PDM_A), pdmEntry('sid', 'theirs', PDM_B)]);
         pdmStore($ours, [pdmEntry('sid', 'base', PDM_B)]);
-        testAssertSame(['sid=theirs host kinozal.cloudns.nz/'], pdmStoredCookies(),
-            'A value this request dropped is not brought back by another request that left it alone');
+        testAssertSame(
+            ['sid=theirs host kinozal.cloudns.nz/'],
+            pdmStoredCookies(),
+            'A value this request dropped is not brought back by another request that left it alone',
+        );
 
         pdmWrite([pdmEntry('sid', 'base', PDM_A), pdmEntry('sid', 'base', PDM_B)]);
         $ours = pdmLoad();
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'renewed', PDM_A), pdmEntry('sid', 'base', PDM_B)]);
         pdmStore($ours, [pdmEntry('sid', 'base', PDM_B)]);
-        testAssertSame(['sid=base host kinozal.cloudns.nz/', 'sid=renewed host kinozal.jumpingcrab.com/'],
-            pdmStoredCookies(), 'A value another request renewed is not dropped with the old one');
+        testAssertSame(
+            ['sid=base host kinozal.cloudns.nz/', 'sid=renewed host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'A value another request renewed is not dropped with the old one',
+        );
     },
     'entries another request added are kept beside this request\'s own additions' => function () {
         pdmWrite([pdmEntry('sid', 'base', PDM_A)]);
@@ -162,8 +174,11 @@ $tests = [
         pdmStore($theirs, [pdmEntry('sid', 'theirs', 'KINOZAL.JumpingCrab.com.'),
             pdmEntry('sid', 'forum', PDM_A, true, '/forum')]);
         pdmStore($ours, [pdmEntry('sid', 'ours', PDM_A)]);
-        testAssertSame(['sid=forum host kinozal.jumpingcrab.com/forum', 'sid=ours host kinozal.jumpingcrab.com/'],
-            pdmStoredCookies(), 'The entry is named by name, normalized domain and path');
+        testAssertSame(
+            ['sid=forum host kinozal.jumpingcrab.com/forum', 'sid=ours host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'The entry is named by name, normalized domain and path',
+        );
     },
     'a host-only and a domain cookie of one name, domain and path are two entries' => function () {
         // Snoopy's jar keys on the host-only flag too, so a merge must not fold them.
@@ -215,8 +230,13 @@ $tests = [
         ], ['uid' => 'stale', 'pass' => 'stale'], 'https://' . PDM_B);
         // The automatic refresh reads nothing: its login sends no stored cookie.
         $refresh = privateData::load(PDM_OWNER);
-        pdmStore($refresh, [pdmEntry('sid', 'fresh', PDM_A)], ['uid' => 'fresh'], 'https://' . PDM_A,
-            'https://' . PDM_A);
+        pdmStore(
+            $refresh,
+            [pdmEntry('sid', 'fresh', PDM_A)],
+            ['uid' => 'fresh'],
+            'https://' . PDM_A,
+            'https://' . PDM_A,
+        );
         testAssertSame([
             'sid=download host dl.kinozal.jumpingcrab.com/',
             'sid=fresh host kinozal.jumpingcrab.com/',
@@ -229,8 +249,13 @@ $tests = [
     },
     'a refresh into an absent document stores the fresh login as it is' => function () {
         $refresh = privateData::load(PDM_OWNER);
-        pdmStore($refresh, [pdmEntry('sid', 'fresh', PDM_A)], ['uid' => 'fresh'], 'https://' . PDM_A,
-            'https://' . PDM_A);
+        pdmStore(
+            $refresh,
+            [pdmEntry('sid', 'fresh', PDM_A)],
+            ['uid' => 'fresh'],
+            'https://' . PDM_A,
+            'https://' . PDM_A,
+        );
         testAssertSame(['sid=fresh host kinozal.jumpingcrab.com/'], pdmStoredCookies(), 'The fresh session is stored');
         testAssertSame(['uid' => 'fresh'], pdmFlat(), 'The fresh flat cookies are stored');
     },
@@ -259,8 +284,11 @@ $tests = [
         testAssertSame(true, pdmLoad()->forget(PDM_A_URL), 'forget succeeds');
         clearstatcache();
         $after = stat(pdmPath());
-        testAssertSame([$before['ino'], $before['mtime'], $before['size']],
-            [$after['ino'], $after['mtime'], $after['size']], 'The document keeps its inode and timestamp');
+        testAssertSame(
+            [$before['ino'], $before['mtime'], $before['size']],
+            [$after['ino'], $after['mtime'], $after['size']],
+            'The document keeps its inode and timestamp',
+        );
         testAssertSame($bytes, file_get_contents(pdmPath()), 'The document keeps its bytes');
         testAssertSame(false, file_exists(pdmPath() . '.lock'), 'No store was attempted under the key lock');
     },
@@ -284,16 +312,22 @@ $tests = [
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'dead', PDM_A), pdmEntry('sid', 'other', PDM_B)]);
         testAssertSame(true, $ours->forget(PDM_A_URL), 'forget succeeds');
-        testAssertSame(['sid=other host kinozal.cloudns.nz/'], pdmStoredCookies(),
-            'A session stored after this request read the document is kept');
+        testAssertSame(
+            ['sid=other host kinozal.cloudns.nz/'],
+            pdmStoredCookies(),
+            'A session stored after this request read the document is kept',
+        );
 
         pdmWrite([pdmEntry('sid', 'dead', PDM_A)]);
         $ours = pdmLoad();
         $theirs = pdmLoad();
         pdmStore($theirs, [pdmEntry('sid', 'renewed', PDM_A)]);
         testAssertSame(true, $ours->forget(PDM_A_URL), 'forget succeeds');
-        testAssertSame(['sid=renewed host kinozal.jumpingcrab.com/'], pdmStoredCookies(),
-            'A renewal stored after this request read the document was never shown stale');
+        testAssertSame(
+            ['sid=renewed host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'A renewal stored after this request read the document was never shown stale',
+        );
     },
     'forget keeps a referer another request stored meanwhile' => function () {
         pdmWrite([pdmEntry('sid', 'dead', PDM_A)], [], 'https://old.example');
@@ -312,8 +346,11 @@ $tests = [
         clearstatcache();
         testAssertSame(false, file_exists(pdmPath()), 'Its forget left nothing, so the document was removed');
         pdmStore($ours, [pdmEntry('sid', 'dead', PDM_B), pdmEntry('sid', 'fresh', PDM_A)]);
-        testAssertSame(['sid=fresh host kinozal.jumpingcrab.com/'], pdmStoredCookies(),
-            'Only what this request changed is stored; the forgotten session stays forgotten');
+        testAssertSame(
+            ['sid=fresh host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'Only what this request changed is stored; the forgotten session stays forgotten',
+        );
 
         pdmWrite([pdmEntry('sid', 'dead', PDM_B)]);
         $ours = pdmLoad();
@@ -330,10 +367,16 @@ $tests = [
         testAssertSame(false, file_exists(pdmPath()), 'No document is created');
         pdmWrite([pdmEntry('sid', 'live', PDM_A)]);
         testAssertSame(true, $missed->forget(PDM_A_URL), 'A request that read nothing has nothing to forget');
-        testAssertSame(true, privateData::load(PDM_OWNER)->forget(PDM_A_URL),
-            'A request that loaded without a client read nothing either');
-        testAssertSame(['sid=live host kinozal.jumpingcrab.com/'], pdmStoredCookies(),
-            'A session no request read is never shown stale');
+        testAssertSame(
+            true,
+            privateData::load(PDM_OWNER)->forget(PDM_A_URL),
+            'A request that loaded without a client read nothing either',
+        );
+        testAssertSame(
+            ['sid=live host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'A session no request read is never shown stale',
+        );
     },
     // fetch() forgets after any failure, its own store's included: what the
     // object holds then is the fresh login, which no request ever read.
@@ -373,10 +416,16 @@ $tests = [
         $theirs = privateData::load(PDM_OWNER, new PDMClient());
         pdmStore($theirs, [pdmEntry('sid', 'other', PDM_B)], ['uid' => 'legacy', 'lang' => 'ru']);
         testAssertSame(true, $data->forget(PDM_A_URL), 'forget succeeds');
-        testAssertSame(['sid=other host kinozal.cloudns.nz/'], pdmStoredCookies(),
-            'The document another request stored in place of the legacy one is kept');
-        testAssertSame(['lang' => 'ru'], pdmFlat(),
-            'Of its flat cookies, the legacy one carried over unchanged is dropped and the new one is kept');
+        testAssertSame(
+            ['sid=other host kinozal.cloudns.nz/'],
+            pdmStoredCookies(),
+            'The document another request stored in place of the legacy one is kept',
+        );
+        testAssertSame(
+            ['lang' => 'ru'],
+            pdmFlat(),
+            'Of its flat cookies, the legacy one carried over unchanged is dropped and the new one is kept',
+        );
     },
     'forget removes a legacy document that holds no flat cookie' => function () {
         new rCache('/accounts');
@@ -389,8 +438,11 @@ $tests = [
             testAssertSame(false, $data->loaded, 'A legacy document is refused, not loaded');
             testAssertSame(true, $data->forget(PDM_A_URL), 'forget succeeds');
             clearstatcache();
-            testAssertSame(false, file_exists(pdmPath()),
-                'A failed login removes a legacy document whose flat cookies are ' . $kind);
+            testAssertSame(
+                false,
+                file_exists(pdmPath()),
+                'A failed login removes a legacy document whose flat cookies are ' . $kind,
+            );
         }
 
         $legacy = new privateData(PDM_OWNER);
@@ -401,8 +453,11 @@ $tests = [
         $theirs = privateData::load(PDM_OWNER, new PDMClient());
         pdmStore($theirs, [pdmEntry('sid', 'other', PDM_B)]);
         testAssertSame(true, $data->forget(PDM_A_URL), 'forget succeeds');
-        testAssertSame(['sid=other host kinozal.cloudns.nz/'], pdmStoredCookies(),
-            'The document another request stored in place of the legacy one is kept');
+        testAssertSame(
+            ['sid=other host kinozal.cloudns.nz/'],
+            pdmStoredCookies(),
+            'The document another request stored in place of the legacy one is kept',
+        );
     },
     'isEmpty asks for no cookie of either kind and no referer' => function () {
         $data = new privateData(PDM_OWNER);
@@ -424,11 +479,17 @@ $tests = [
         pdmStore($data, [pdmEntry('sid', 'renewed', PDM_A)], [], '', 'https://' . PDM_A);
         foreach (['in memory' => serialize($data), 'on disk' => file_get_contents(pdmPath())] as $where => $bytes) {
             testAssertSame(1, preg_match('/^O:11:"privateData":6:\{/', $bytes), 'Six properties are serialized ' . $where);
-            testAssertSame(false, strpos($bytes, "\0privateData\0") !== false,
-                'No private bookkeeping is serialized ' . $where);
+            testAssertSame(
+                false,
+                strpos($bytes, "\0privateData\0") !== false,
+                'No private bookkeeping is serialized ' . $where,
+            );
         }
-        testAssertSame(['sid=renewed host kinozal.jumpingcrab.com/'], pdmStoredCookies(),
-            'The stored document reads back');
+        testAssertSame(
+            ['sid=renewed host kinozal.jumpingcrab.com/'],
+            pdmStoredCookies(),
+            'The stored document reads back',
+        );
     },
 ];
 

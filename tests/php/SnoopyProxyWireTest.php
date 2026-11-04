@@ -4,15 +4,20 @@ require_once(__DIR__ . '/TestCase.php');
 
 class SnoopyProxyWireTest extends TestCase
 {
-
     public function testHttpProxySeesCheckedIpAndOriginalHost()
     {
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico',
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
-        $this->assertTrue(strpos($wire, "GET http://93.184.216.34/favicon.ico HTTP/") === 0,
-            'proxy must receive the checked address in its absolute request URI: ' . $wire);
-        $this->assertTrue(strpos($wire, "\r\nHost: tracker.test\r\n") !== false,
-            'origin Host remains the public tracker');
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK",
+        );
+        $this->assertTrue(
+            strpos($wire, "GET http://93.184.216.34/favicon.ico HTTP/") === 0,
+            'proxy must receive the checked address in its absolute request URI: ' . $wire,
+        );
+        $this->assertTrue(
+            strpos($wire, "\r\nHost: tracker.test\r\n") !== false,
+            'origin Host remains the public tracker',
+        );
         $this->assertSame(true, $result['ok'], 'proxy-only public favicon fetch succeeds');
         $this->assertSame('OK', $result['body'], 'proxy response body reaches the caller');
         $this->assertSame(false, $extra, 'one favicon fetch makes one proxy request');
@@ -20,10 +25,14 @@ class SnoopyProxyWireTest extends TestCase
 
     public function testHttpsProxyConnectNamesCheckedIp()
     {
-        list($wire, $result) = $this->probe('https://tracker.test/favicon.ico',
-            "HTTP/1.1 502 Probe\r\nContent-Length: 0\r\n\r\n");
-        $this->assertTrue(strpos($wire, "CONNECT 93.184.216.34:443 HTTP/") === 0,
-            'proxy CONNECT must use the checked public address: ' . $wire);
+        list($wire, $result) = $this->probe(
+            'https://tracker.test/favicon.ico',
+            "HTTP/1.1 502 Probe\r\nContent-Length: 0\r\n\r\n",
+        );
+        $this->assertTrue(
+            strpos($wire, "CONNECT 93.184.216.34:443 HTTP/") === 0,
+            'proxy CONNECT must use the checked public address: ' . $wire,
+        );
         $this->assertSame(false, $result['ok'], 'synthetic 502 is not a successful fetch');
     }
 
@@ -37,23 +46,33 @@ class SnoopyProxyWireTest extends TestCase
 
     public function testReboundHostnameIsRefusedBeforeASecondProxyRequest()
     {
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico',
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
             "HTTP/1.1 302 Found\r\nLocation: http://tracker.test/secret\r\nContent-Length: 0\r\n\r\n",
-            true);
-        $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico') === 0,
-            'initial proxy target is the first checked address');
+            true,
+        );
+        $this->assertTrue(
+            strpos($wire, 'GET http://93.184.216.34/favicon.ico') === 0,
+            'initial proxy target is the first checked address',
+        );
         $this->assertSame(false, $extra, 'rebound private address never reaches proxy');
         $this->assertSame(false, $result['ok'], 'rebound redirect is refused');
-        $this->assertTrue(strpos($result['error'], 'non-public') !== false,
-            'rebound refusal reports the classified address decision');
+        $this->assertTrue(
+            strpos($result['error'], 'non-public') !== false,
+            'rebound refusal reports the classified address decision',
+        );
     }
 
     public function testPrivateRedirectNeverMakesSecondProxyRequest()
     {
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico',
-            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/secret\r\nContent-Length: 0\r\n\r\n");
-        $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico') === 0,
-            'first request pins the public target');
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/secret\r\nContent-Length: 0\r\n\r\n",
+        );
+        $this->assertTrue(
+            strpos($wire, 'GET http://93.184.216.34/favicon.ico') === 0,
+            'first request pins the public target',
+        );
         $this->assertSame(false, $extra, 'private redirect never reaches proxy');
         $this->assertSame(false, $result['ok'], 'private redirect is refused');
     }
@@ -64,33 +83,56 @@ class SnoopyProxyWireTest extends TestCase
             "HTTP/1.1 302 Found\r\nLocation: //tracker.test/landing\r\nSet-Cookie: sid=probe; Path=/\r\nContent-Length: 0\r\n\r\n",
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"], false, ['deadline' => 2]);
         $this->assertSame(2, count($wires), 'the HTTP redirect stays in the same two-request chain');
-        if (count($wires) !== 2) { return; }
-        $this->assertTrue(strpos($wires[1], 'GET http://93.184.216.34/landing HTTP/1.0') === 0,
-            'the redirect inherits HTTP and retains the checked proxy target');
-        $this->assertTrue(strpos($wires[1], "\r\nHost: tracker.test\r\n") !== false,
-            'the original Host has the HTTP default port');
-        $this->assertTrue(strpos($wires[1], "\r\nCookie: sid=probe\r\n") !== false,
-            'the existing cookie owner imports only the same-origin response cookie');
+        if (count($wires) !== 2) {
+            return;
+        }
+        $this->assertTrue(
+            strpos($wires[1], 'GET http://93.184.216.34/landing HTTP/1.0') === 0,
+            'the redirect inherits HTTP and retains the checked proxy target',
+        );
+        $this->assertTrue(
+            strpos($wires[1], "\r\nHost: tracker.test\r\n") !== false,
+            'the original Host has the HTTP default port',
+        );
+        $this->assertTrue(
+            strpos($wires[1], "\r\nCookie: sid=probe\r\n") !== false,
+            'the existing cookie owner imports only the same-origin response cookie',
+        );
         $this->assertSame(true, $result['ok'], 'the opt-in HTTP curl chain succeeds');
         $this->assertSame('OK', $result['body'], 'the final response body reaches the caller');
-        $this->assertSame('http://tracker.test/landing', $result['responseURL'],
-            'response metadata retains the original host instead of the transfer address');
-        $this->assertSame('http://tracker.test/landing', $result['redirectURL'],
-            'the redirect owner retains the original HTTP origin');
+        $this->assertSame(
+            'http://tracker.test/landing',
+            $result['responseURL'],
+            'response metadata retains the original host instead of the transfer address',
+        );
+        $this->assertSame(
+            'http://tracker.test/landing',
+            $result['redirectURL'],
+            'the redirect owner retains the original HTTP origin',
+        );
         $this->assertSame(false, $extra, 'the chain makes no extra request');
     }
 
     public function testDeadlineProxyPinsIpv6WithOriginalPortQueryAndMetadata()
     {
         $url = 'http://tracker.test:8080/favicon.ico?version=1';
-        list($wire, $result, $extra) = $this->probe($url,
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK", false,
-            ['deadline' => 2, 'addresses' => ['2001:4860:4860::8888']]);
-        $this->assertTrue(strpos($wire,
-            'GET http://[2001:4860:4860::8888]:8080/favicon.ico?version=1 HTTP/1.0') === 0,
-            'the proxy sees a bracketed checked IPv6 target with the original port and query');
-        $this->assertTrue(strpos($wire, "\r\nHost: tracker.test:8080\r\n") !== false,
-            'the Host header retains the original authority');
+        list($wire, $result, $extra) = $this->probe(
+            $url,
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK",
+            false,
+            ['deadline' => 2, 'addresses' => ['2001:4860:4860::8888']],
+        );
+        $this->assertTrue(
+            strpos(
+                $wire,
+                'GET http://[2001:4860:4860::8888]:8080/favicon.ico?version=1 HTTP/1.0',
+            ) === 0,
+            'the proxy sees a bracketed checked IPv6 target with the original port and query',
+        );
+        $this->assertTrue(
+            strpos($wire, "\r\nHost: tracker.test:8080\r\n") !== false,
+            'the Host header retains the original authority',
+        );
         $this->assertSame(true, $result['ok'], 'the IPv6 target succeeds through the local proxy');
         $this->assertSame('OK', $result['body'], 'the proxy returns the expected response');
         $this->assertSame($url, $result['responseURL'], 'the published response URL retains the original authority');
@@ -103,15 +145,25 @@ class SnoopyProxyWireTest extends TestCase
         $this->assertSame(null, $wire, 'a deadline does not bypass literal target admission');
         $this->assertSame(false, $extra, 'a private literal opens no proxy connection');
         $this->assertSame(false, $result['ok'], 'private literal is refused before curl');
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico', null, false,
-            ['deadline' => 2, 'addresses' => ['93.184.216.34', '127.0.0.1']]);
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            null,
+            false,
+            ['deadline' => 2, 'addresses' => ['93.184.216.34', '127.0.0.1']],
+        );
         $this->assertSame(null, $wire, 'a public answer does not conceal a private sibling address');
         $this->assertSame(false, $extra, 'a mixed address set opens no proxy connection');
         $this->assertSame(false, $result['ok'], 'every resolved address must pass target admission');
-        $this->assertTrue(strpos($result['error'], 'non-public') !== false,
-            'the mixed address refusal retains its classification');
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico',
-            "HTTP/1.1 302 Found\r\nLocation: //tracker.test/secret\r\nContent-Length: 0\r\n\r\n", true, ['deadline' => 2]);
+        $this->assertTrue(
+            strpos($result['error'], 'non-public') !== false,
+            'the mixed address refusal retains its classification',
+        );
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            "HTTP/1.1 302 Found\r\nLocation: //tracker.test/secret\r\nContent-Length: 0\r\n\r\n",
+            true,
+            ['deadline' => 2],
+        );
         $this->assertTrue(strpos($wire, 'GET http://93.184.216.34/favicon.ico') === 0, 'the first proxy target was checked');
         $this->assertSame(false, $extra, 'the rebound redirect opens no second connection');
         $this->assertSame(false, $result['ok'], 'the private rebound is refused');
@@ -120,8 +172,12 @@ class SnoopyProxyWireTest extends TestCase
 
     public function testExpiredDnsAdmissionDoesNotStartAnotherTransfer()
     {
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico', null, false,
-            ['deadline' => 0.05, 'dnsDelay' => 100000]);
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            null,
+            false,
+            ['deadline' => 0.05, 'dnsDelay' => 100000],
+        );
         $this->assertSame(null, $wire, 'the delayed resolver is the only operation');
         $this->assertSame(false, $extra, 'elapsed DNS admission cannot restart the transfer budget');
         $this->assertSame(false, $result['ok'], 'an exhausted preflight budget refuses the request');
@@ -130,8 +186,12 @@ class SnoopyProxyWireTest extends TestCase
 
     public function testSubMillisecondBudgetIsRefusedBeforeStartingCurl()
     {
-        list($wire, $result, $extra) = $this->probe('http://tracker.test/favicon.ico', null, false,
-            ['deadline' => 0.0005]);
+        list($wire, $result, $extra) = $this->probe(
+            'http://tracker.test/favicon.ico',
+            null,
+            false,
+            ['deadline' => 0.0005],
+        );
         $this->assertSame(null, $wire, 'a sub-millisecond budget is refused before transfer');
         $this->assertSame(false, $extra, 'curl never receives a timeout that rounds to unlimited zero');
         $this->assertSame(false, $result['ok'], 'an unrepresentable remaining budget refuses the request');
@@ -141,7 +201,7 @@ class SnoopyProxyWireTest extends TestCase
     {
         $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
         $this->assertTrue($server !== false, 'synthetic proxy listens: ' . $error);
-        $port = (int)substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
+        $port = (int) substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
         $code = <<<'PHP_CODE'
 $_ENV['RU_LOG_FILE'] = sys_get_temp_dir() . '/snoopy-proxy-wire-child-' . getmypid() . '.log';
 putenv('NO_PROXY=tracker.test');
@@ -171,9 +231,12 @@ echo json_encode(array('ok' => $client->fetch($argv[3]), 'status' => $client->st
     'error' => $client->error, 'body' => $client->results,
     'responseURL' => $client->lastResponseURL, 'redirectURL' => $client->lastredirectaddr));
 PHP_CODE;
-        $proc = proc_open([PHP_BINARY, '-r', $code,
-            __DIR__ . '/../../php/Snoopy.class.inc', (string)$port, $url, $rebind ? '1' : '0', json_encode($options)],
-            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $proc = proc_open(
+            [PHP_BINARY, '-r', $code,
+                __DIR__ . '/../../php/Snoopy.class.inc', (string) $port, $url, $rebind ? '1' : '0', json_encode($options)],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+        );
         $this->assertTrue(is_resource($proc), 'synthetic proxy client starts');
         fclose($pipes[0]);
         $wire = null;
@@ -182,12 +245,16 @@ PHP_CODE;
             foreach ($reply === null ? [] : (is_array($reply) ? $reply : [$reply]) as $answer) {
                 $peer = stream_socket_accept($server, 3);
                 $this->assertTrue($peer !== false, 'client reaches the configured proxy');
-                if ($peer === false) { break; }
+                if ($peer === false) {
+                    break;
+                }
                 stream_set_timeout($peer, 2);
                 $wire = '';
                 while (strpos($wire, "\r\n\r\n") === false && strlen($wire) < 8192) {
                     $piece = fread($peer, 4096);
-                    if ($piece === false || $piece === '') { break; }
+                    if ($piece === false || $piece === '') {
+                        break;
+                    }
                     $wire .= $piece;
                 }
                 $wires[] = $wire;
@@ -203,7 +270,9 @@ PHP_CODE;
                 $out .= stream_get_contents($pipes[1]);
                 $err .= stream_get_contents($pipes[2]);
                 $state = proc_get_status($proc);
-                if (!$state['running']) { break; }
+                if (!$state['running']) {
+                    break;
+                }
                 if ($reply === null) {
                     // Admission regressions must fail instead of deadlocking this
                     // no-request fixture while an unexpected curl waits for a reply.
@@ -217,7 +286,9 @@ PHP_CODE;
                 usleep(10000);
             } while (microtime(true) < $deadline);
             $this->assertSame(false, $state['running'], 'the proxy client finishes within the fixture budget');
-            if ($state['running']) { proc_terminate($proc, 9); }
+            if ($state['running']) {
+                proc_terminate($proc, 9);
+            }
             $out .= stream_get_contents($pipes[1]);
             $err .= stream_get_contents($pipes[2]);
             fclose($pipes[1]);
@@ -226,12 +297,16 @@ PHP_CODE;
             $exit = $state['exitcode'] >= 0 ? $state['exitcode'] : $closed;
             stream_set_blocking($server, false);
             $extra = @stream_socket_accept($server, 0);
-            if ($extra !== false) { fclose($extra); }
+            if ($extra !== false) {
+                fclose($extra);
+            }
             $this->assertSame(0, $exit, 'proxy client exits: ' . $err);
             return [$wire, json_decode($out, true), $unexpected || $extra !== false, $wires];
         } finally {
             fclose($server);
-            if (is_resource($proc)) { proc_terminate($proc); }
+            if (is_resource($proc)) {
+                proc_terminate($proc);
+            }
         }
     }
 }

@@ -68,8 +68,12 @@ class YggTorrentAccount extends commonAccount
         if ($client->fetch($url) && $client->status >= 200 && $client->status < 300) {
             $client->setcookies();
             $client->referer = $url;
-            if ($client->fetch($this->url . '/user/login', 'POST', 'application/x-www-form-urlencoded',
-                'id=' . rawurlencode($login) . '&pass=' . rawurlencode($password) . '&submit=')) {
+            if ($client->fetch(
+                $this->url . '/user/login',
+                'POST',
+                'application/x-www-form-urlencoded',
+                'id=' . rawurlencode($login) . '&pass=' . rawurlencode($password) . '&submit=',
+            )) {
                 $client->setcookies();
                 return true;
             }

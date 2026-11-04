@@ -18,7 +18,9 @@ final class TorrentTrackerTiers
                 $tier = [];
             }
         }
-        if (count($tier)) { $tiers[] = $tier; }
+        if (count($tier)) {
+            $tiers[] = $tier;
+        }
         return(['tiers' => $tiers, 'count' => $count]);
     }
 

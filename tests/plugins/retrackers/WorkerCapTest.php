@@ -2,7 +2,10 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 
-function getCmd($command) { return $command; }
+function getCmd($command)
+{
+    return $command;
+}
 
 class rTorrentSettings
 {
@@ -10,7 +13,10 @@ class rTorrentSettings
     public static function get()
     {
         return new class {
-            public function maxContentSize() { return rTorrentSettings::$cap; }
+            public function maxContentSize()
+            {
+                return rTorrentSettings::$cap;
+            }
         };
     }
 }
@@ -34,11 +40,16 @@ class rXMLRPCRequest
     public $val = [];
     private $command;
 
-    public function __construct($command) { $this->command = $command; }
+    public function __construct($command)
+    {
+        $this->command = $command;
+    }
     public function success()
     {
         self::$calls[] = [$this->command->command, $this->command->params];
-        if (self::$reply === false) { return false; }
+        if (self::$reply === false) {
+            return false;
+        }
         $this->val = [self::$reply];
         return true;
     }
@@ -55,17 +66,29 @@ class WorkerCapTest extends TestCase
         rXMLRPCRequest::$calls = [];
         rXMLRPCRequest::$reply = 4096;
         $failure = null;
-        $this->assertEquals(4096, $adapter->maxContentSize($failure),
-            'a lowered live XMLRPC limit bounds the commit wire below the API cap');
+        $this->assertEquals(
+            4096,
+            $adapter->maxContentSize($failure),
+            'a lowered live XMLRPC limit bounds the commit wire below the API cap',
+        );
         $this->assertEquals(null, $failure, 'a valid measured cap is accepted');
-        $this->assertEquals([['get_xmlrpc_size_limit', []]], rXMLRPCRequest::$calls,
-            'the worker reads the daemon limit with one standalone getter');
+        $this->assertEquals(
+            [['get_xmlrpc_size_limit', []]],
+            rXMLRPCRequest::$calls,
+            'the worker reads the daemon limit with one standalone getter',
+        );
         rXMLRPCRequest::$reply = '4096';
-        $this->assertEquals(4096, $adapter->maxContentSize($failure),
-            'a canonical decimal RPC scalar is accepted when a daemon returns text');
+        $this->assertEquals(
+            4096,
+            $adapter->maxContentSize($failure),
+            'a canonical decimal RPC scalar is accepted when a daemon returns text',
+        );
         rXMLRPCRequest::$reply = 33554432;
-        $this->assertEquals(16777216, $adapter->maxContentSize($failure),
-            'the known API ceiling still bounds an oversized daemon setting');
+        $this->assertEquals(
+            16777216,
+            $adapter->maxContentSize($failure),
+            'the known API ceiling still bounds an oversized daemon setting',
+        );
     }
 
     public function testUnreadableOrMalformedDaemonCapRefusesCommit()
@@ -74,18 +97,30 @@ class WorkerCapTest extends TestCase
         foreach ([false, '4096garbage', '04096', 0] as $reply) {
             rXMLRPCRequest::$reply = $reply;
             $failure = null;
-            $this->assertEquals(false, $adapter->maxContentSize($failure),
-                'an unproved daemon limit cannot authorize a commit');
-            $this->assertEquals('commit-request-limit-invalid', $failure,
-                'the refusal uses the existing classified reason');
+            $this->assertEquals(
+                false,
+                $adapter->maxContentSize($failure),
+                'an unproved daemon limit cannot authorize a commit',
+            );
+            $this->assertEquals(
+                'commit-request-limit-invalid',
+                $failure,
+                'the refusal uses the existing classified reason',
+            );
         }
         rTorrentSettings::$cap = '16777216';
         rXMLRPCRequest::$reply = 4096;
         $failure = null;
-        $this->assertEquals(false, $adapter->maxContentSize($failure),
-            'a malformed API ceiling is also refused');
-        $this->assertEquals('commit-request-limit-invalid', $failure,
-            'the malformed ceiling uses the existing classified reason');
+        $this->assertEquals(
+            false,
+            $adapter->maxContentSize($failure),
+            'a malformed API ceiling is also refused',
+        );
+        $this->assertEquals(
+            'commit-request-limit-invalid',
+            $failure,
+            'the malformed ceiling uses the existing classified reason',
+        );
         rTorrentSettings::$cap = 16777216;
     }
 }

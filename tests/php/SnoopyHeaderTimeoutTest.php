@@ -35,13 +35,17 @@ PHP;
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes,
     );
-    if (!is_resource($process)) { throw new RuntimeException('Could not start the HTTP peer'); }
+    if (!is_resource($process)) {
+        throw new RuntimeException('Could not start the HTTP peer');
+    }
     $socket = false;
     try {
         fclose($pipes[0]);
         stream_set_timeout($pipes[1], 5);
         $address = fgets($pipes[1]);
-        if ($address === false) { throw new RuntimeException('The HTTP peer did not announce its address'); }
+        if ($address === false) {
+            throw new RuntimeException('The HTTP peer did not announce its address');
+        }
         $client->read_timeout = 1;
         $client->host = '127.0.0.1';
         if ($publicFetch) {
@@ -57,7 +61,9 @@ PHP;
             }
         } else {
             $socket = stream_socket_client('tcp://' . trim($address), $errno, $error, 5);
-            if ($socket === false) { throw new RuntimeException('Could not connect to the HTTP peer: ' . $error); }
+            if ($socket === false) {
+                throw new RuntimeException('Could not connect to the HTTP peer: ' . $error);
+            }
             $fetched = $client->_httprequest('/', $socket, 'http://' . trim($address) . '/', 'GET');
             fclose($socket);
             $socket = false;
@@ -68,14 +74,21 @@ PHP;
         $exit = proc_close($process);
         $process = null;
         if ($exit !== 0 || $stderr !== '') {
-            throw new RuntimeException('HTTP peer exited ' . $exit . ': ' . $stderr); }
+            throw new RuntimeException('HTTP peer exited ' . $exit . ': ' . $stderr);
+        }
         return ['fetched' => $fetched, 'status' => $client->status,
             'timed_out' => $client->timed_out, 'body' => $client->results, 'error' => $client->error];
     } finally {
-        if (is_resource($socket)) { fclose($socket); }
+        if (is_resource($socket)) {
+            fclose($socket);
+        }
         if (is_resource($process)) {
             proc_terminate($process);
-            foreach ($pipes as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
+            }
             proc_close($process);
         }
     }
@@ -84,7 +97,11 @@ PHP;
 class SnoopyTimeoutThrottleClient extends Snoopy
 {
     public $transfers = 0;
-    public function connect() { ++$this->transfers; return parent::connect(); }
+    public function connect()
+    {
+        ++$this->transfers;
+        return parent::connect();
+    }
     public function _httpsrequest($url, $content_type = '', $body = '', $http_method = 'GET')
     {
         ++$this->transfers;
@@ -129,13 +146,15 @@ foreach ($cases as $name => $case) {
             $seedExpected = ['fetched' => true, 'status' => '200', 'timed_out' => false,
                 'body' => 'previous', 'error' => ''];
             if ($seed !== $seedExpected) {
-                throw new RuntimeException('The first response must seed a real successful body: ' . json_encode($seed)); }
+                throw new RuntimeException('The first response must seed a real successful body: ' . json_encode($seed));
+            }
         }
         list($first, $late, $delay, $want) = $case;
         $seen = snoopyTimeoutResponse($client, $first, $late, $delay);
         $expected = array_combine(['fetched', 'status', 'timed_out', 'body', 'error'], $want);
         if ($seen !== $expected) {
-            throw new RuntimeException('expected ' . json_encode($expected) . ', got ' . json_encode($seen)); }
+            throw new RuntimeException('expected ' . json_encode($expected) . ', got ' . json_encode($seen));
+        }
         echo 'ok - ', $name, "\n";
     } catch (Throwable $error) {
         $failures++;
@@ -174,51 +193,77 @@ foreach ($throttleCases as $name => $case) {
         $client->proxy_host = $client->proxy_port = '';
         $client->proxy_proto = $curl ? 'https' : 'http';
         $first = "HTTP/1.0 429 Too Many Requests\r\nRetry-After: 10\r\n";
-        if ($complete) { $first .= $chunked ? "Transfer-Encoding: chunked\r\n\r\n8\r\ncomp" : "\r\ncomp"; }
-        if (!empty($case[3])) { $first = "HTTP/1.1 103 Early Hints\r\nRetry-After: 3\r\n\r\n"; }
+        if ($complete) {
+            $first .= $chunked ? "Transfer-Encoding: chunked\r\n\r\n8\r\ncomp" : "\r\ncomp";
+        }
+        if (!empty($case[3])) {
+            $first = "HTTP/1.1 103 Early Hints\r\nRetry-After: 3\r\n\r\n";
+        }
         $proxy = !empty($case[4]);
         $path = FileUtil::getSettingsPathEx('') . '/throttle-' . $group . '.json';
         if ($proxy) {
-            if (!is_dir(dirname($path))) { mkdir(dirname($path), 0700, true); }
+            if (!is_dir(dirname($path))) {
+                mkdir(dirname($path), 0700, true);
+            }
             file_put_contents($path, json_encode(['next' => 0, 'ended' => 0, 'until' => 0, 'strikes' => 2]));
             $first = "HTTP/1.1 200 Arbitrary successful tunnel phrase\r\n\r\n";
         }
         $late = $chunked ? "lete\r\n0\r\n\r\n" : 'lete';
         $seen = snoopyTimeoutResponse($client, $first, $late, 1300000, true, $proxy);
         if ($seen['fetched'] !== false || $seen['status'] !== ($curl ? 28 : -100)) {
-            throw new RuntimeException('The real peer must cause the transport timeout: ' . json_encode($seen)); }
+            throw new RuntimeException('The real peer must cause the transport timeout: ' . json_encode($seen));
+        }
         $state = json_decode(file_get_contents($path), true);
         if ($state['strikes'] !== ($proxy ? 2 : ($complete ? 1 : 0))) {
-            throw new RuntimeException('Only a completed final header block counts as a strike: ' . json_encode($state)); }
+            throw new RuntimeException('Only a completed final header block counts as a strike: ' . json_encode($state));
+        }
         if ($complete) {
             if ($state['until'] - $state['ended'] < 9.9) {
-                throw new RuntimeException('Retry-After must outlast the shorter base pause'); }
+                throw new RuntimeException('Retry-After must outlast the shorter base pause');
+            }
             if ($client->fetch('http://127.0.0.1:1/next') !== false
                 || $client->error !== Snoopy::REQUEST_THROTTLED || $client->transfers !== 1) {
-                throw new RuntimeException('The next request must refuse before another transport'); }
+                throw new RuntimeException('The next request must refuse before another transport');
+            }
         } elseif ($state['until'] != 0) {
             throw new RuntimeException('Incomplete response headers cannot publish a pause');
         }
         if ($client->headers !== [] || $client->response_code !== '' || $client->results !== '') {
-            throw new RuntimeException('A timeout must still discard all consumer response data'); }
+            throw new RuntimeException('A timeout must still discard all consumer response data');
+        }
         echo 'ok - ', $name, "\n";
     } catch (Throwable $error) {
         ++$failures;
         echo 'not ok - ', $name, ': ', $error->getMessage(), "\n";
     } finally {
         Snoopy::throttleHosts($group, [], 0, 0, 0);
-        if ($previousProfile === null) { unset($_ENV['RU_PROFILE_PATH']); }
-        else { $_ENV['RU_PROFILE_PATH'] = $previousProfile; }
-        if ($previousLog === null) { unset($_ENV['RU_LOG_FILE']); }
-        else { $_ENV['RU_LOG_FILE'] = $previousLog; }
-        if ($previousProfilePath === null) { unset($GLOBALS['profilePath']); }
-        else { $GLOBALS['profilePath'] = $previousProfilePath; }
-        if ($previousLogFile === null) { unset($GLOBALS['log_file']); }
-        else { $GLOBALS['log_file'] = $previousLogFile; }
-        $entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($profile,
-            FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        if ($previousProfile === null) {
+            unset($_ENV['RU_PROFILE_PATH']);
+        } else {
+            $_ENV['RU_PROFILE_PATH'] = $previousProfile;
+        }
+        if ($previousLog === null) {
+            unset($_ENV['RU_LOG_FILE']);
+        } else {
+            $_ENV['RU_LOG_FILE'] = $previousLog;
+        }
+        if ($previousProfilePath === null) {
+            unset($GLOBALS['profilePath']);
+        } else {
+            $GLOBALS['profilePath'] = $previousProfilePath;
+        }
+        if ($previousLogFile === null) {
+            unset($GLOBALS['log_file']);
+        } else {
+            $GLOBALS['log_file'] = $previousLogFile;
+        }
+        $entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+            $profile,
+            FilesystemIterator::SKIP_DOTS,
+        ), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($entries as $entry) {
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        }
         rmdir($profile);
     }
 }

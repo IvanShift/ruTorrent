@@ -25,87 +25,112 @@ require_once(__DIR__ . '/../../../plugins/rss/rss.php');
  */
 final class RSSMagnetConfirmationTest extends TestCase
 {
-	public const HASH = '4444444444444444444444444444444444444444';
+    public const HASH = '4444444444444444444444444444444444444444';
 
-	private $daemon;
-	private $base;
-	private $settingsProperty;
-	private $settingsBefore;
-	private $globalsBefore = [];
+    private $daemon;
+    private $base;
+    private $settingsProperty;
+    private $settingsBefore;
+    private $globalsBefore = [];
 
-	public function setUp()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-rss-magnet-' . getmypid();
-		@mkdir($this->base, 0700, true);
-		$this->settingsProperty = self::makeAccessible(
-			new ReflectionProperty('rTorrentSettings', 'theSettings'));
-		$this->settingsBefore = $this->settingsProperty->getValue();
-		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$settings->iVersion = 0x1018;
-		$settings->aliases = [];
-		$settings->directory = '/';
-		$settings->linkExist = true;
-		$this->settingsProperty->setValue(null, $settings);
-		foreach (['scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut'] as $name) {
-			$this->globalsBefore[$name] = array_key_exists($name, $GLOBALS) ? $GLOBALS[$name] : null; }
-		$GLOBALS['log_file'] = $this->base . '/app.log';
-		$GLOBALS['rpcTimeOut'] = 10;
-	}
+    public function setUp()
+    {
+        $this->base = sys_get_temp_dir() . '/rutorrent-rss-magnet-' . getmypid();
+        @mkdir($this->base, 0700, true);
+        $this->settingsProperty = self::makeAccessible(
+            new ReflectionProperty('rTorrentSettings', 'theSettings'),
+        );
+        $this->settingsBefore = $this->settingsProperty->getValue();
+        $settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+        $settings->iVersion = 0x1018;
+        $settings->aliases = [];
+        $settings->directory = '/';
+        $settings->linkExist = true;
+        $this->settingsProperty->setValue(null, $settings);
+        foreach (['scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut'] as $name) {
+            $this->globalsBefore[$name] = array_key_exists($name, $GLOBALS) ? $GLOBALS[$name] : null;
+        }
+        $GLOBALS['log_file'] = $this->base . '/app.log';
+        $GLOBALS['rpcTimeOut'] = 10;
+    }
 
-	public function tearDown()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-		foreach ($this->globalsBefore as $name => $value) {
-			if ($value === null) { unset($GLOBALS[$name]); }
-			else { $GLOBALS[$name] = $value; }
-		}
-		foreach (glob($this->base . '/*') ?: [] as $entry) {
-			@unlink($entry); }
-		@rmdir($this->base);
-		$this->settingsProperty->setValue(null, $this->settingsBefore);
-	}
+    public function tearDown()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+            $this->daemon = null;
+        }
+        foreach ($this->globalsBefore as $name => $value) {
+            if ($value === null) {
+                unset($GLOBALS[$name]);
+            } else {
+                $GLOBALS[$name] = $value;
+            }
+        }
+        foreach (glob($this->base . '/*') ?: [] as $entry) {
+            @unlink($entry);
+        }
+        @rmdir($this->base);
+        $this->settingsProperty->setValue(null, $this->settingsBefore);
+    }
 
-	public function testADroppedMagnetIsPendingAndCanBeRetriedLater(): void
-	{
-		$magnet = 'magnet:?xt=urn:btih:' . self::HASH . '&dn';
-		$history = $this->load($magnet, ['dropMagnets' => [self::HASH]])->history;
-		$this->assertSame('Pending', $history->getHash($magnet),
-			'a magnet whose stub never shows is not recorded as loaded: ' . json_encode($history->lst));
-		$this->assertTrue($history->wasLoaded($magnet, 'item-magnet', function () { return 'missing'; }),
-			'it is not sent again at once');
-		$history->lst[$magnet]['submittedAt'] = time() - rRSSHistory::PENDING_RETRY_AFTER - 1;
-		$this->assertTrue(!$history->wasLoaded($magnet, 'item-magnet', function () { return 'missing'; }),
-			'and it can be retried after the pending timeout');
-		$this->assertTrue(strpos((string)@file_get_contents($this->base . '/app.log'),
-			'rss: magnet unconfirmed: ' . self::HASH) !== false,
-			'the unconfirmed magnet is named in the log');
-	}
+    public function testADroppedMagnetIsPendingAndCanBeRetriedLater(): void
+    {
+        $magnet = 'magnet:?xt=urn:btih:' . self::HASH . '&dn';
+        $history = $this->load($magnet, ['dropMagnets' => [self::HASH]])->history;
+        $this->assertSame(
+            'Pending',
+            $history->getHash($magnet),
+            'a magnet whose stub never shows is not recorded as loaded: ' . json_encode($history->lst),
+        );
+        $this->assertTrue(
+            $history->wasLoaded($magnet, 'item-magnet', function () {
+                return 'missing';
+            }),
+            'it is not sent again at once',
+        );
+        $history->lst[$magnet]['submittedAt'] = time() - rRSSHistory::PENDING_RETRY_AFTER - 1;
+        $this->assertTrue(
+            !$history->wasLoaded($magnet, 'item-magnet', function () {
+                return 'missing';
+            }),
+            'and it can be retried after the pending timeout',
+        );
+        $this->assertTrue(
+            strpos(
+                (string) @file_get_contents($this->base . '/app.log'),
+                'rss: magnet unconfirmed: ' . self::HASH,
+            ) !== false,
+            'the unconfirmed magnet is named in the log',
+        );
+    }
 
-	public function testAMagnetWithAStubIsRecordedAsLoaded(): void
-	{
-		$magnet = 'magnet:?xt=urn:btih:' . strtolower(self::HASH) . '&dn=item';
-		$history = $this->load($magnet, ['stubAfter' => 2])->history;
-		$this->assertSame(self::HASH, $history->getHash($magnet),
-			'a stub that shows within the window is recorded as loaded: ' . json_encode($history->lst));
-	}
+    public function testAMagnetWithAStubIsRecordedAsLoaded(): void
+    {
+        $magnet = 'magnet:?xt=urn:btih:' . strtolower(self::HASH) . '&dn=item';
+        $history = $this->load($magnet, ['stubAfter' => 2])->history;
+        $this->assertSame(
+            self::HASH,
+            $history->getHash($magnet),
+            'a stub that shows within the window is recorded as loaded: ' . json_encode($history->lst),
+        );
+    }
 
-	/** Load one magnet item of a feed against a daemon described by $daemon. */
-	private function load(string $magnet, array $daemon = []): rRSSManager
-	{
-		$this->daemon = new FakeRtorrentDaemon(
-			new FakeRtorrentAddTorrentReplies([], [], false, $daemon),
-			$this->base . '/calls.log');
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['scgi_port'] = $this->daemon->port();
-		$feed = new rRSS('https://tracker.example/rss');
-		$feed->items[$magnet] = ['timestamp' => 100, 'guid' => 'item-magnet'];
-		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
-		$manager->rssList = new rRSSMetaList();
-		$manager->history = new rRSSHistory();
-		$manager->getTorrents($feed, $magnet, true, true, '', '', '', '', false);
-		return $manager;
-	}
+    /** Load one magnet item of a feed against a daemon described by $daemon. */
+    private function load(string $magnet, array $daemon = []): rRSSManager
+    {
+        $this->daemon = new FakeRtorrentDaemon(
+            new FakeRtorrentAddTorrentReplies([], [], false, $daemon),
+            $this->base . '/calls.log',
+        );
+        $GLOBALS['scgi_host'] = '127.0.0.1';
+        $GLOBALS['scgi_port'] = $this->daemon->port();
+        $feed = new rRSS('https://tracker.example/rss');
+        $feed->items[$magnet] = ['timestamp' => 100, 'guid' => 'item-magnet'];
+        $manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
+        $manager->rssList = new rRSSMetaList();
+        $manager->history = new rRSSHistory();
+        $manager->getTorrents($feed, $magnet, true, true, '', '', '', '', false);
+        return $manager;
+    }
 }

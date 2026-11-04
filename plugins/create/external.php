@@ -8,7 +8,8 @@ class CreateExternalConfiguration
         // a creator-only override must not inherit another program's binary.
         if (empty($configuredPath) && $creator === 'mktorrent'
             && is_executable('/usr/local/bin/mktorrent')) {
-            return '/usr/local/bin/mktorrent'; }
+            return '/usr/local/bin/mktorrent';
+        }
         return $configuredPath;
     }
 }

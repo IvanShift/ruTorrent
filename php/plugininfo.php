@@ -26,10 +26,16 @@ final class PluginInfo
 
         foreach ($lines as $line) {
             $fields = explode(':', $line, 2);
-            if (count($fields) !== 2) { continue; }
+            if (count($fields) !== 2) {
+                continue;
+            }
             $field = trim($fields[0]);
-            if (isset($aliases[$field])) { $field = $aliases[$field]; }
-            if ($field !== 'plugin.version' && !array_key_exists($field, $info)) { continue; }
+            if (isset($aliases[$field])) {
+                $field = $aliases[$field];
+            }
+            if ($field !== 'plugin.version' && !array_key_exists($field, $info)) {
+                continue;
+            }
             $value = addcslashes(trim($fields[1]), "\\'\"\n\r\t");
             if (in_array($field, $strings, true)) {
                 $info[$field] = $value;
@@ -39,9 +45,9 @@ final class PluginInfo
                 $info[$field] = floatval($value);
             } elseif (in_array($field, $versions, true)) {
                 $parts = explode('.', $value);
-                $info[$field] = (intval($parts[0]) << 16) +
-                    (intval(isset($parts[1]) ? $parts[1] : 0) << 8) +
-                    intval(isset($parts[2]) ? $parts[2] : 0);
+                $info[$field] = (intval($parts[0]) << 16)
+                    + (intval(isset($parts[1]) ? $parts[1] : 0) << 8)
+                    + intval(isset($parts[2]) ? $parts[2] : 0);
                 $info[$field . '.readable'] = $value;
             } elseif (in_array($field, $lists, true)) {
                 $info[$field] = explode(',', $value);
@@ -52,10 +58,14 @@ final class PluginInfo
 
     public static function compare($leftLevel, $leftName, $rightLevel, $rightName)
     {
-        $leftLevel = (float)$leftLevel;
-        $rightLevel = (float)$rightLevel;
-        if ($leftLevel > $rightLevel) { return(1); }
-        if ($leftLevel < $rightLevel) { return(-1); }
+        $leftLevel = (float) $leftLevel;
+        $rightLevel = (float) $rightLevel;
+        if ($leftLevel > $rightLevel) {
+            return(1);
+        }
+        if ($leftLevel < $rightLevel) {
+            return(-1);
+        }
         return(strcmp($leftName, $rightName));
     }
 }

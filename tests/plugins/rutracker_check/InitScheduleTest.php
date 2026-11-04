@@ -6,21 +6,40 @@ eval(loadClassDefinition(testFindRepoRoot() . '/php/rtorrent.php', 'rTorrent'));
 class FileUtil
 {
     public static $log = [];
-    public static function getPluginConf($plugin) { return $plugin === 'rutracker_check' ? '$updateInterval = 30;' : ''; }
-    public static function addslash($path) { return rtrim($path, '/') . '/'; }
-    public static function toLog($message) { self::$log[] = $message; }
+    public static function getPluginConf($plugin)
+    {
+        return $plugin === 'rutracker_check' ? '$updateInterval = 30;' : '';
+    }
+    public static function addslash($path)
+    {
+        return rtrim($path, '/') . '/';
+    }
+    public static function toLog($message)
+    {
+        self::$log[] = $message;
+    }
 }
-require_once(testFindRepoRoot().'/php/utility/utility.php');
+require_once(testFindRepoRoot() . '/php/utility/utility.php');
 $pathToExternals = ['php' => "/opt/o'neil/php"];
-class User { public static function getUser() { return "alice';touch forbidden;'"; } }
+class User
+{
+    public static function getUser()
+    {
+        return "alice';touch forbidden;'";
+    }
+}
 class InitScheduleSettings
 {
     public $registered = [];
-    public function getScheduleCommand($name, $interval, $command, &$startAt = null, $now = null, $daemonClock = false) {
+    public function getScheduleCommand($name, $interval, $command, &$startAt = null, $now = null, $daemonClock = false)
+    {
         strictAssertSame(true, $daemonClock, 'the real init protects its aligned slot from stale daemon registration time');
         return new rXMLRPCCommand('schedule', [$name, $interval, $command]);
     }
-    public function registerPlugin($name, $perms) { $this->registered[] = $name; }
+    public function registerPlugin($name, $perms)
+    {
+        $this->registered[] = $name;
+    }
 }
 function rpcMethodCapability($required)
 {
@@ -37,8 +56,11 @@ mkdir($tree . '/php/utility', 0700);
 file_put_contents($tree . '/php/utility/utility.php', '<?php require_once '
     . var_export(testFindRepoRoot() . '/php/utility/utility.php', true) . ';');
 foreach (['init.php', 'launcher.php'] as $file) {
-    copy(testFindRepoRoot() . '/plugins/rutracker_check/' . $file, $tree . '/plugins/rutracker_check/' . $file); }
-foreach (['xmlrpc.php', 'rtorrent.php'] as $file) { file_put_contents($tree . '/php/' . $file, '<?php'); }
+    copy(testFindRepoRoot() . '/plugins/rutracker_check/' . $file, $tree . '/plugins/rutracker_check/' . $file);
+}
+foreach (['xmlrpc.php', 'rtorrent.php'] as $file) {
+    file_put_contents($tree . '/php/' . $file, '<?php');
+}
 file_put_contents($tree . '/php/commandargs.php', '<?php require_once ' . var_export(testFindRepoRoot() . '/php/commandargs.php', true) . ';');
 file_put_contents($tree . '/plugins/erasedata/removewithdata.php', '<?php
 function erasedataInitializationQueueReady() { return true; }
@@ -70,12 +92,18 @@ $suite->test('unconfirmed checker launch remains visible and preserves the indep
     list($settings, $ui) = initScheduleRun($tree, 'unconfirmed');
     strictAssertSame([], $settings->registered, 'the checker is not registered as ready');
     strictAssertTrue(strpos($ui, 'plugin.disable()') !== false, 'the failed admission is visible');
-    strictAssertSame(['rutracker_check: checker schedule refused reason=rpc-unknown'], FileUtil::$log,
-        'the log contains a classified reason and no path or account bytes');
+    strictAssertSame(
+        ['rutracker_check: checker schedule refused reason=rpc-unknown'],
+        FileUtil::$log,
+        'the log contains a classified reason and no path or account bytes',
+    );
     strictAssertSame(1, $GLOBALS['initCapabilityCalls'], 'capability is sampled only once');
     strictAssertSame(1, $GLOBALS['initDrainRearms'], 'the independent drain is rearmed');
-    strictAssertSame(['collector.schedule'], array_column(rXMLRPCRequest::$requests, 'key'),
-        'checker refusal still submits the independent collector schedule');
+    strictAssertSame(
+        ['collector.schedule'],
+        array_column(rXMLRPCRequest::$requests, 'key'),
+        'checker refusal still submits the independent collector schedule',
+    );
 });
 $suite->test('confirmed capability selects a detached command and registers after schedule success', function () use ($tree) {
     foreach (['available', 'unsupported'] as $capability) {
@@ -85,10 +113,17 @@ $suite->test('confirmed capability selects a detached command and registers afte
         strictAssertSame([], FileUtil::$log, 'successful init does not log account bytes');
         strictAssertSame(1, $GLOBALS['initCapabilityCalls'], 'the capability probe is not replayed');
         $command = rXMLRPCRequest::$requests[0]['commands'][1]->params[2];
-        strictAssertSame(RuTrackerDetachedPhp::scheduleCommand(Utility::getPHP(), $tree . '/plugins/rutracker_check/update.php',
-            [User::getUser()], $capability), $command, 'the real init passes the launcher command unchanged');
+        strictAssertSame(RuTrackerDetachedPhp::scheduleCommand(
+            Utility::getPHP(),
+            $tree . '/plugins/rutracker_check/update.php',
+            [User::getUser()],
+            $capability,
+        ), $command, 'the real init passes the launcher command unchanged');
     }
 });
-try { $status = $suite->run(); }
-finally { strictRemoveTree($tree); }
+try {
+    $status = $suite->run();
+} finally {
+    strictRemoveTree($tree);
+}
 exit($status);

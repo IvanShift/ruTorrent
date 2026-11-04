@@ -18,7 +18,9 @@ function payloadTrustRoot()
     $root = realpath(getenv('TMPDIR') ?: sys_get_temp_dir()) . '/payload-trust-' . bin2hex(random_bytes(6));
     foreach (['', '/top', '/top/win', '/top/win/sub', '/outside'] as $directory) {
         if (!mkdir($root . $directory, 0755)) {
-            throw new RuntimeException('fixture directory was not created'); } }
+            throw new RuntimeException('fixture directory was not created');
+        }
+    }
     chmod($root, 0700);
     return $root;
 }
@@ -36,27 +38,47 @@ $suite->test('below the top an Explorer-like group/other-writable tree is truste
     try {
         chmod($root . '/top/win', 0777);
         chmod($root . '/top/win/sub', 0777);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top/'),
-            'the daemon already depends on the permissions of the top subtree');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top/'),
+            'the daemon already depends on the permissions of the top subtree',
+        );
         chmod($root . '/top', 0777);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
-            'a 0777 top, like a drvfs bind-mount root, is itself inside the boundary');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
+            'a 0777 top, like a drvfs bind-mount root, is itself inside the boundary',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('above the top the strict rule stays', function () {
     $root = payloadTrustRoot();
     try {
         chmod($root . '/outside', 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/outside', $root . '/top'),
-            'a writable directory outside the top refuses');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/outside', $root . '/top'),
+            'a writable directory outside the top refuses',
+        );
         chmod($root, 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
-            'a writable ancestor above the top refuses every path below it');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
+            'a writable ancestor above the top refuses every path below it',
+        );
         chmod($root, 01777);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
-            'a sticky ancestor keeps its 2026-09-28 admission');
-    } finally { chmod($root, 0700); payloadTrustClean($root); }
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
+            'a sticky ancestor keeps its 2026-09-28 admission',
+        );
+    } finally {
+        chmod($root, 0700);
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('without a resolvable top every component is strict', function () {
@@ -65,10 +87,15 @@ $suite->test('without a resolvable top every component is strict', function () {
         chmod($root . '/top/win', 0777);
         foreach ([null, '', 'relative/top', $root . '/absent'] as $top) {
             unset($GLOBALS['topDirectory']);
-            strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
-                'no relaxed region for top ' . var_export($top, true));
+            strictAssertSame(
+                false,
+                ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
+                'no relaxed region for top ' . var_export($top, true),
+            );
         }
-    } finally { payloadTrustClean($root); }
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 // '/' is the conf/config.php default outside Docker. The daemon does not
@@ -81,17 +108,31 @@ $suite->test('a top of / is no boundary: every component stays strict', function
         chmod($root . '/top/win/payload', 0666);
         symlink('/', $root . '/root-alias');
         foreach (['/', '/.', '//', $root . '/root-alias'] as $top) {
-            strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
-                'a writable directory refuses with top ' . var_export($top, true));
-            strictAssertSame(false, ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win/payload', $top),
-                'a writable file refuses with top ' . var_export($top, true));
+            strictAssertSame(
+                false,
+                ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
+                'a writable directory refuses with top ' . var_export($top, true),
+            );
+            strictAssertSame(
+                false,
+                ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win/payload', $top),
+                'a writable file refuses with top ' . var_export($top, true),
+            );
         }
         $GLOBALS['topDirectory'] = '/';
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
-            'the configured default top relaxes nothing');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
-            'a real top still relaxes its own subtree');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
+            'the configured default top relaxes nothing',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $root . '/top'),
+            'a real top still relaxes its own subtree',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('the configured top directory is the default boundary', function () {
@@ -99,12 +140,20 @@ $suite->test('the configured top directory is the default boundary', function ()
     try {
         chmod($root . '/top/win', 0777);
         $GLOBALS['topDirectory'] = $root . '/top/';
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
-            '$topDirectory names the boundary');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
+            '$topDirectory names the boundary',
+        );
         $GLOBALS['topDirectory'] = $root . '/outside/';
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
-            'a path outside the configured top stays strict');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
+            'a path outside the configured top stays strict',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('a symlink component, a non-physical path or a non-directory refuses inside the top', function () {
@@ -115,12 +164,21 @@ $suite->test('a symlink component, a non-physical path or a non-directory refuse
         file_put_contents($root . '/top/file', 'x');
         foreach ([$root . '/top/escape', $root . '/top/alias', $root . '/top/alias/sub',
             $root . '/top/win/../win', $root . '/top/file', 'top/win', ''] as $path) {
-            strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($path, $root . '/top'),
-                'refused: ' . $path); }
+            strictAssertSame(
+                false,
+                ErasedataFilesystemOps::payloadDirectoryTrusted($path, $root . '/top'),
+                'refused: ' . $path,
+            );
+        }
         chmod($root . '/outside', 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted(realpath($root . '/top/escape'), $root . '/top'),
-            'an escape target outside the top keeps the strict rule');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted(realpath($root . '/top/escape'), $root . '/top'),
+            'an escape target outside the top keeps the strict rule',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('payload files follow the same boundary', function () {
@@ -130,16 +188,30 @@ $suite->test('payload files follow the same boundary', function () {
         chmod($root . '/top/win/payload', 0666);
         file_put_contents($root . '/outside/payload', 'x');
         chmod($root . '/outside/payload', 0666);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win/payload', $root . '/top'),
-            'a drvfs-like 0666 file below the top is trusted');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadFileTrusted($root . '/outside/payload', $root . '/top'),
-            'the same file outside the top is not');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win', $root . '/top'),
-            'a directory is not a payload file');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win/payload', $root . '/top'),
+            'a drvfs-like 0666 file below the top is trusted',
+        );
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadFileTrusted($root . '/outside/payload', $root . '/top'),
+            'the same file outside the top is not',
+        );
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win', $root . '/top'),
+            'a directory is not a payload file',
+        );
         symlink($root . '/top/win/payload', $root . '/top/link');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadFileTrusted($root . '/top/link', $root . '/top'),
-            'a symlink is not a payload file');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadFileTrusted($root . '/top/link', $root . '/top'),
+            'a symlink is not a payload file',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 // R4-FS-03: a path as a configuration spells it is checked along every
@@ -152,22 +224,44 @@ $suite->test('a spelled path through a link is checked where the spelling goes',
         symlink($top . '/win', $root . '/shared/fin');
         symlink('win/sub', $top . '/relative');
         symlink('../shared/fin', $top . '/via-shared');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($root . '/shared/fin/sub', $top),
-            'a protected spelling through an own link is trusted');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($top . '/relative', $top),
-            'a relative link target is resolved from the directory of the link');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($top . '/via-shared/sub', $top),
-            'a chain of own links through protected directories is trusted');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/shared/fin/sub', $top),
+            'a protected spelling through an own link is trusted',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($top . '/relative', $top),
+            'a relative link target is resolved from the directory of the link',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($top . '/via-shared/sub', $top),
+            'a chain of own links through protected directories is trusted',
+        );
         chmod($root . '/shared', 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/shared/fin/sub', $top),
-            'a writable directory above the top in the spelling refuses though the link leads below the top');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted(realpath($root . '/shared/fin/sub'), $top),
-            'while the physical path alone is trusted');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($top . '/via-shared/sub', $top),
-            'a link target that passes the writable directory refuses as well');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/shared/fin/sub', $top),
+            'a writable directory above the top in the spelling refuses though the link leads below the top',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted(realpath($root . '/shared/fin/sub'), $top),
+            'while the physical path alone is trusted',
+        );
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($top . '/via-shared/sub', $top),
+            'a link target that passes the writable directory refuses as well',
+        );
         foreach ([$root . '/shared/../top/win', $root . '/./top/win', 'top/win', '', "$top/win\0"] as $path) {
-            strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top), 'refused: ' . $path); }
-    } finally { chmod($root . '/shared', 0700); payloadTrustClean($root); }
+            strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top), 'refused: ' . $path);
+        }
+    } finally {
+        chmod($root . '/shared', 0700);
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('a missing name is accepted only as the tail the caller creates', function () {
@@ -176,17 +270,32 @@ $suite->test('a missing name is accepted only as the tail the caller creates', f
         $top = $root . '/top';
         symlink($root . '/absent', $top . '/dangling');
         symlink('loop', $top . '/loop');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($top . '/win/new/deeper', $top),
-            'a missing directory is not trusted by default');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($top . '/win/new/deeper', $top, true),
-            'a missing tail under a trusted prefix is');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($top . '/win/new/deeper', $top),
+            'a missing directory is not trusted by default',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($top . '/win/new/deeper', $top, true),
+            'a missing tail under a trusted prefix is',
+        );
         foreach ([$top . '/dangling', $top . '/dangling/new', $top . '/loop', $top . '/loop/new'] as $path) {
-            strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top, true),
-                'a name a link leads to must exist: ' . $path); }
+            strictAssertSame(
+                false,
+                ErasedataFilesystemOps::payloadPathTrusted($path, $top, true),
+                'a name a link leads to must exist: ' . $path,
+            );
+        }
         chmod($root . '/outside', 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/new', $top, true),
-            'the existing prefix of a missing tail is still checked');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/new', $top, true),
+            'the existing prefix of a missing tail is still checked',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 // R4-FS-09: the strict form, for datadir's own state, has no relaxed region.
@@ -196,12 +305,17 @@ $suite->test('the strict state rule refuses a writable component even below the 
         $GLOBALS['topDirectory'] = $root . '/top/';
         strictAssertSame(true, ErasedataFilesystemOps::stateDirectoryTrusted($root . '/top/win'), 'a private tree');
         chmod($root . '/top/win', 0777);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
-            'the payload form accepts a writable directory below the top');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win'),
+            'the payload form accepts a writable directory below the top',
+        );
         strictAssertSame(false, ErasedataFilesystemOps::stateDirectoryTrusted($root . '/top/win'), 'the state form does not');
         chmod($root . '/top/win', 01777);
         strictAssertSame(true, ErasedataFilesystemOps::stateDirectoryTrusted($root . '/top/win'), 'a sticky one is trusted');
-    } finally { payloadTrustClean($root); }
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 // Only root can create a component of another owner; run this file as root
@@ -215,14 +329,25 @@ $suite->test('a link of another owner refuses even inside the top', function () 
     try {
         chmod($root . '/top/win', 0777);
         symlink($root . '/outside', $root . '/top/win/link');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link', $root . '/top'),
-            'a root link in a writable directory below the top is followed');
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link', $root . '/top'),
+            'a root link in a writable directory below the top is followed',
+        );
         lchown($root . '/top/win/link', 12345);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link', $root . '/top'),
-            'the same link of another owner refuses');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link/new', $root . '/top', true),
-            'and nothing may be created through it');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link', $root . '/top'),
+            'the same link of another owner refuses',
+        );
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/link/new', $root . '/top', true),
+            'and nothing may be created through it',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('a component of another owner refuses even inside the top', function () {
@@ -233,13 +358,21 @@ $suite->test('a component of another owner refuses even inside the top', functio
     $root = payloadTrustRoot();
     try {
         chown($root . '/top/win', 12345);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top'),
-            'a foreign-owned component refuses whatever its mode');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top'),
+            'a foreign-owned component refuses whatever its mode',
+        );
         chown($root . '/top/win', 0);
         chmod($root . '/top/win', 0777);
-        strictAssertSame(true, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top'),
-            'a root:root 0777 Explorer-like folder is trusted inside the top');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win/sub', $root . '/top'),
+            'a root:root 0777 Explorer-like folder is trusted inside the top',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 $suite->test('payload refusal identifies the failing ancestor and clears on a later admission', function () {
@@ -247,19 +380,36 @@ $suite->test('payload refusal identifies the failing ancestor and clears on a la
     try {
         mkdir($root . '/outside/sub', 0700);
         chmod($root . '/outside', 0777);
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/sub', $root . '/top'),
-            'an unsafe ancestor blocks the requested descendant');
-        strictAssertSame($root . '/outside', ErasedataFilesystemOps::lastPayloadRefusalPath(),
-            'the shared walk names the first failing component');
-        strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/new', $root . '/top', true),
-            'an allowed missing suffix remains admitted');
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/sub', $root . '/top'),
+            'an unsafe ancestor blocks the requested descendant',
+        );
+        strictAssertSame(
+            $root . '/outside',
+            ErasedataFilesystemOps::lastPayloadRefusalPath(),
+            'the shared walk names the first failing component',
+        );
+        strictAssertSame(
+            true,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/top/win/new', $root . '/top', true),
+            'an allowed missing suffix remains admitted',
+        );
         strictAssertSame('', ErasedataFilesystemOps::lastPayloadRefusalPath(), 'success leaves no stale refusal');
         symlink($root . '/outside/sub', $root . '/top/link');
-        strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/top/link', $root . '/top'),
-            'a symlink target traverses the same unsafe ancestor');
-        strictAssertSame($root . '/outside', ErasedataFilesystemOps::lastPayloadRefusalPath(),
-            'the actual physical component is reported through links');
-    } finally { payloadTrustClean($root); }
+        strictAssertSame(
+            false,
+            ErasedataFilesystemOps::payloadPathTrusted($root . '/top/link', $root . '/top'),
+            'a symlink target traverses the same unsafe ancestor',
+        );
+        strictAssertSame(
+            $root . '/outside',
+            ErasedataFilesystemOps::lastPayloadRefusalPath(),
+            'the actual physical component is reported through links',
+        );
+    } finally {
+        payloadTrustClean($root);
+    }
 });
 
 exit($suite->run());

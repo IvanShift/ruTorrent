@@ -12,15 +12,19 @@ require_once __DIR__ . '/movejob.php';
 require_once __DIR__ . '/apply.php';
 
 if (!defined('DATADIR_START_CHECK_SECONDS')) {
-    define('DATADIR_START_CHECK_SECONDS', 3.0); }
+    define('DATADIR_START_CHECK_SECONDS', 3.0);
+}
 
 function rtDataDirClaimRpc($method, $hash, $args)
 {
-    $request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd($method),
-        array_merge([$hash], $args)));
+    $request = new rXMLRPCRequest(new rXMLRPCCommand(
+        getCmd($method),
+        array_merge([$hash], $args),
+    ));
     $request->important = false;
     if (!$request->success() || $request->fault || count($request->val) !== 1) {
-        return null; }
+        return null;
+    }
     return $request->val[0];
 }
 
@@ -54,7 +58,8 @@ function rtDataDirFilesystem()
 {
     static $files = null;
     if ($files === null) {
-        $files = new ErasedataFilesystemOps(); }
+        $files = new ErasedataFilesystemOps();
+    }
     return $files;
 }
 
@@ -67,24 +72,26 @@ function rtDataDirLock($nonBlocking)
 {
     $path = rtDataDirJournal() . '/.lock';
     if (!function_exists('posix_geteuid')) {
-        throw new RuntimeException('lock-owner-unavailable'); }
+        throw new RuntimeException('lock-owner-unavailable');
+    }
     if (is_link($path)) {
-        throw new RuntimeException('lock-path-untrusted'); }
+        throw new RuntimeException('lock-path-untrusted');
+    }
     $handle = @fopen($path, 'c');
     if ($handle === false) {
-        throw new RuntimeException('lock-unavailable'); }
+        throw new RuntimeException('lock-unavailable');
+    }
     $stat = @fstat($handle);
     if (!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000
-        || $stat['uid'] !== posix_geteuid() || !@chmod($path, 0600))
-    {
+        || $stat['uid'] !== posix_geteuid() || !@chmod($path, 0600)) {
         @fclose($handle);
         throw new RuntimeException('lock-path-untrusted');
     }
-    if (!@flock($handle, LOCK_EX | ($nonBlocking ? LOCK_NB : 0)))
-    {
+    if (!@flock($handle, LOCK_EX | ($nonBlocking ? LOCK_NB : 0))) {
         @fclose($handle);
         if ($nonBlocking) {
-            return false; }
+            return false;
+        }
         throw new RuntimeException('lock-unavailable');
     }
     return $handle;
@@ -92,8 +99,7 @@ function rtDataDirLock($nonBlocking)
 
 function rtDataDirUnlock($handle)
 {
-    if (is_resource($handle))
-    {
+    if (is_resource($handle)) {
         @flock($handle, LOCK_UN);
         @fclose($handle);
     }
@@ -103,7 +109,8 @@ function rtDataDirJournalParent()
 {
     $profile = @realpath(FileUtil::getProfilePathEx(''));
     if ($profile === false || !is_dir($profile)) {
-        throw new RuntimeException('journal-parent-unavailable'); }
+        throw new RuntimeException('journal-parent-unavailable');
+    }
     // The profile share may be group-writable; use its canonical parent only
     // when that parent is a trusted journal authority.
     return dirname($profile);
@@ -113,7 +120,8 @@ function rtDataDirJournalRoot($create)
 {
     $settings = @realpath(FileUtil::getSettingsPathEx(''));
     if ($settings === false || !is_dir($settings)) {
-        throw new RuntimeException('journal-parent-unavailable'); }
+        throw new RuntimeException('journal-parent-unavailable');
+    }
     $parent = rtDataDirJournalParent();
     $private = $parent . '/datadir-jobs';
     $legacy = $settings . '/datadir-jobs';
@@ -122,22 +130,28 @@ function rtDataDirJournalRoot($create)
     $hasPrivate = file_exists($private) || is_link($private);
     $hasLegacy = file_exists($legacy) || is_link($legacy);
     if ($private !== $legacy && $hasPrivate && $hasLegacy) {
-        throw new RuntimeException('split-journal-roots'); }
+        throw new RuntimeException('split-journal-roots');
+    }
     if ($hasLegacy && !$settingsTrusted) {
-        throw new RuntimeException('legacy-journal-untrusted'); }
+        throw new RuntimeException('legacy-journal-untrusted');
+    }
     if ($hasPrivate && !$parentTrusted) {
-        throw new RuntimeException('journal-parent-untrusted'); }
+        throw new RuntimeException('journal-parent-untrusted');
+    }
     if ($hasLegacy || (!$hasPrivate && $settingsTrusted)) {
-        $root = $legacy; }
-    elseif ($hasPrivate || $parentTrusted) {
-        $root = $private; }
-    else {
-        throw new RuntimeException('journal-parent-untrusted'); }
+        $root = $legacy;
+    } elseif ($hasPrivate || $parentTrusted) {
+        $root = $private;
+    } else {
+        throw new RuntimeException('journal-parent-untrusted');
+    }
     if (!$create && !file_exists($root) && !is_link($root)) {
-        return ''; }
+        return '';
+    }
     $root = DataDirMoveJob::journalDirectory($root);
     if (!DataDirMoveIntent::trustedDirectory($root)) {
-        throw new RuntimeException('journal-path-untrusted'); }
+        throw new RuntimeException('journal-path-untrusted');
+    }
     return $root;
 }
 
@@ -146,10 +160,12 @@ function rtDataDirJournal()
     $journal = rtDataDirJournalRoot(true);
     $user = User::getUser();
     if (!is_string($user) || preg_match('/^[a-z0-9_-]*$/D', $user) !== 1) {
-        throw new RuntimeException('journal-user-invalid'); }
+        throw new RuntimeException('journal-user-invalid');
+    }
     $journal = DataDirMoveJob::journalDirectory($journal . '/' . ($user === '' ? '~default' : $user));
     if (!DataDirMoveIntent::trustedDirectory($journal)) {
-        throw new RuntimeException('journal-path-untrusted'); }
+        throw new RuntimeException('journal-path-untrusted');
+    }
     return $journal;
 }
 
@@ -157,15 +173,17 @@ function rtDataDirRecoveryProfiles()
 {
     $root = rtDataDirJournalRoot(false);
     if ($root === '') {
-        return []; }
+        return [];
+    }
     $names = @scandir($root);
     if (!is_array($names)) {
-        throw new RuntimeException('profile-scan-failed'); }
+        throw new RuntimeException('profile-scan-failed');
+    }
     $profiles = [];
-    foreach ($names as $name)
-    {
+    foreach ($names as $name) {
         if ($name === '.' || $name === '..') {
-            continue; }
+            continue;
+        }
         $path = $root . '/' . $name;
         try {
             if (($name !== '~default' && preg_match('/^[a-z0-9_-]+$/D', $name) !== 1)
@@ -173,16 +191,18 @@ function rtDataDirRecoveryProfiles()
                 || !is_dir($path)
                 || DataDirMoveJob::journalDirectory($path) !== $path
                 || !DataDirMoveIntent::trustedDirectory($path)) {
-                throw new RuntimeException('profile-journal-untrusted'); }
+                throw new RuntimeException('profile-journal-untrusted');
+            }
             $entries = @scandir($path);
             if (!is_array($entries)) {
-                throw new RuntimeException('profile-journal-unreadable'); }
+                throw new RuntimeException('profile-journal-unreadable');
+            }
             foreach ($entries as $entry) {
-                if ($entry !== '.' && $entry !== '..' && $entry !== '.lock')
-                {
+                if ($entry !== '.' && $entry !== '..' && $entry !== '.lock') {
                     $profiles[] = $name;
                     break;
-                } }
+                }
+            }
         } catch (RuntimeException $e) {
             FileUtil::toLog('datadir: global recovery skipped path=' . $root . '/'
                 . rawurlencode($name) . ' reason=' . $e->getMessage()
@@ -201,7 +221,8 @@ function rtDataDirRecover($payloadMoves = true)
         $journal = rtDataDirJournal();
         $names = scandir($journal);
         if (!is_array($names)) {
-            throw new RuntimeException('job-scan-failed'); }
+            throw new RuntimeException('job-scan-failed');
+        }
     } catch (RuntimeException $e) {
         FileUtil::toLog('datadir: recovery refused: ' . $e->getMessage());
         return false;
@@ -219,7 +240,8 @@ function rtDataDirRecover($payloadMoves = true)
             continue;
         }
         if ($name === '.' || $name === '..' || $name === '.lock') {
-            continue; }
+            continue;
+        }
         if (!preg_match('/^[0-9A-F]{40}\.json$/D', $name)) {
             FileUtil::toLog('datadir: recovery refused: unexpected-job-entry path='
                 . $journal . '/' . rawurlencode($name) . ' consequence=recovery-held');
@@ -228,10 +250,15 @@ function rtDataDirRecover($payloadMoves = true)
         }
         $hash = substr($name, 0, 40);
         try {
-            $job = DataDirMoveJob::load($journal . '/' . $name,
-                'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
+            $job = DataDirMoveJob::load(
+                $journal . '/' . $name,
+                'rtDataDirClaimRpc',
+                'rtDataDirMoveNoReplace',
+                'rtDataDirTorrentPresence',
+            );
             if (!$payloadMoves && $job->movesPayload()) {
-                continue; }
+                continue;
+            }
             $job->run();
             FileOperationOutcome::clear('datadir', $hash);
         } catch (DataDirMoveRefused $e) {
@@ -259,9 +286,14 @@ function rtDataDirHeld($hash, $reason, $path)
         . ' consequence=claim-retained-start-and-move-blocked';
     FileUtil::toLog('datadir: recovery held hash=' . strtoupper($hash)
         . ' reason=' . $reason . ' ' . $context);
-    FileOperationOutcome::record('datadir', $hash, (string) $reason,
+    FileOperationOutcome::record(
+        'datadir',
+        $hash,
+        (string) $reason,
         'datadir: ' . $reason . '; ' . $context
-        . '; preserve the document and payload; see plugins/datadir/RECOVERY.md, then run recover.php --retry', true);
+        . '; preserve the document and payload; see plugins/datadir/RECOVERY.md, then run recover.php --retry',
+        true,
+    );
 }
 
 function rtDataDirOwnership($hash)
@@ -269,18 +301,21 @@ function rtDataDirOwnership($hash)
     $keys = RuTrackerAtomicOwnership::ownershipKeys();
     $commands = [new rXMLRPCCommand(getCmd('d.get_custom1'), $hash)];
     foreach ($keys as $key) {
-        $commands[] = new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, $key]); }
+        $commands[] = new rXMLRPCCommand(getCmd('d.get_custom'), [$hash, $key]);
+    }
     $request = new rXMLRPCRequest($commands);
     $request->important = false;
     if (!$request->success() || $request->fault || !is_array($request->val)
         || count($request->val) !== count($commands)
         || count(array_filter($request->val, 'is_string')) !== count($commands)) {
-        throw new RuntimeException('unreadable-checker-ownership'); }
+        throw new RuntimeException('unreadable-checker-ownership');
+    }
     $markers = array_combine($keys, array_slice($request->val, 1));
     unset($markers['chk-revived']);
     if (rawurldecode($request->val[0]) === '.chk-meta'
         || count(array_filter($markers, 'strlen')) !== 0) {
-        throw new RuntimeException('active-checker-transaction-or-service-label'); }
+        throw new RuntimeException('active-checker-transaction-or-service-label');
+    }
 }
 
 function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOnly = false)
@@ -290,10 +325,12 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
         || !in_array((string) $request->val[0], ['0', '1'], true)
         || !is_string($request->val[1]) || $request->val[1] === ''
         || !is_string($request->val[2]) || $request->val[2] === '') {
-        throw new RuntimeException('unreadable-torrent-state'); }
+        throw new RuntimeException('unreadable-torrent-state');
+    }
     $wasOpen = (string) $request->val[0] === '1';
     if ($readOnly && !$wasOpen) {
-        return null; }
+        return null;
+    }
     $localId = $request->val[1];
     $previousDirectory = $request->val[2];
     $source = '';
@@ -301,19 +338,19 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
     $files = [];
     // Both metadata-only and payload moves must bind the setter to a physical root.
     $physicalDestination = @realpath($destPath);
-    if ($physicalDestination === false && $readOnly)
-    {
+    if ($physicalDestination === false && $readOnly) {
         // The worker creates a new destination. Preflight probes its existing
         // ancestor and must not reject the canonical requested suffix.
         $reason = DataDirMoveIntent::destinationReason($destPath);
         if ($reason !== '') {
-            throw new RuntimeException($reason); }
+            throw new RuntimeException($reason);
+        }
         $physicalDestination = $destPath;
+    } elseif ($physicalDestination === false || !is_dir($physicalDestination)) {
+        throw new RuntimeException('destination-root-unavailable');
+    } elseif (!ErasedataFilesystemOps::payloadDirectoryTrusted($physicalDestination)) {
+        throw new RuntimeException('destination-root-untrusted');
     }
-    elseif ($physicalDestination === false || !is_dir($physicalDestination)) {
-        throw new RuntimeException('destination-root-unavailable'); }
-    elseif (!ErasedataFilesystemOps::payloadDirectoryTrusted($physicalDestination)) {
-        throw new RuntimeException('destination-root-untrusted'); }
     $destPath = rtAddTailSlash($physicalDestination);
     if ($moveFiles) {
         $info = ['d.get_name', 'd.get_base_path', 'd.get_base_filename', 'd.is_multi_file'];
@@ -324,7 +361,8 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
         $request = rtExec($info, $hash, $dbg);
         if (!$request || !is_array($request->val) || count($request->val) !== count($info)
             || (!$wasOpen && (string) end($request->val) !== '0')) {
-            throw new RuntimeException('unreadable-payload-metadata'); }
+            throw new RuntimeException('unreadable-payload-metadata');
+        }
         $offset = $wasOpen ? 0 : 1;
         $name = $request->val[$offset];
         $basePath = $request->val[$offset + 1];
@@ -336,32 +374,40 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
                 || strpos($name, '/') !== false || strpos($name, "\0") !== false))
             || $baseFile === '.' || $baseFile === '..'
             || strpos($baseFile, '/') !== false || strpos($baseFile, "\0") !== false) {
-            throw new RuntimeException('invalid-payload-path'); }
+            throw new RuntimeException('invalid-payload-path');
+        }
         $parent = dirname(rtrim($basePath, '/'));
         $source = $multi ? $parent . '/' . $baseFile : $parent;
         $destination = $multi && $addPath ? rtrim($destPath, '/') . '/' . $name
             : rtrim($destPath, '/');
         if (!is_dir($source)) {
-            throw new RuntimeException('source-root-unavailable'); }
+            throw new RuntimeException('source-root-unavailable');
+        }
         $destinationAncestor = $destination;
         while (!is_dir($destinationAncestor) && dirname($destinationAncestor) !== $destinationAncestor) {
-            $destinationAncestor = dirname($destinationAncestor); }
+            $destinationAncestor = dirname($destinationAncestor);
+        }
         $sourceStat = @stat($source);
         $destinationStat = @stat($destinationAncestor);
         if (!is_array($sourceStat) || !is_array($destinationStat)) {
-            throw new RuntimeException('unreadable-move-root'); }
+            throw new RuntimeException('unreadable-move-root');
+        }
         if ($sourceStat['dev'] !== $destinationStat['dev']) {
-            throw new RuntimeException('cross-filesystem'); }
+            throw new RuntimeException('cross-filesystem');
+        }
         $request = rtExec('f.multicall', [$hash, '', getCmd('f.get_path=')], $dbg);
         if (!$request || !is_array($request->val) || count($request->val) > DataDirMoveIntent::MAX_FILES) {
-            throw new RuntimeException('unreadable-file-list'); }
+            throw new RuntimeException('unreadable-file-list');
+        }
         foreach ($request->val as $file) {
             if (!is_string($file) || $file === '') {
-                throw new RuntimeException('invalid-file-list'); }
+                throw new RuntimeException('invalid-file-list');
+            }
             $files[] = $file;
         }
         if (realpath($source) === realpath($destination)) {
-            $moveFiles = false; }
+            $moveFiles = false;
+        }
     }
     return ['hash' => strtoupper($hash), 'directory' => $destPath,
         'local_id' => $localId, 'previous_directory' => $previousDirectory,
@@ -374,33 +420,37 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
 function rtDataDirCollision($hash, $destPath, $addPath, $dbg = false)
 {
     $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, true, $dbg, true);
-    if ($snapshot === null)
-    {
+    if ($snapshot === null) {
         // A closed torrent has no readable file list. Its destination mount
         // can still be checked without opening it or creating directories.
         rtDataDirProbeRename(null, $destPath, []);
         return '';
     }
     if (!$snapshot['move']) {
-        return ''; }
+        return '';
+    }
     rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']);
     $root = @realpath($snapshot['destination']);
     if ($root === false) {
-        return ''; }
+        return '';
+    }
     foreach ($snapshot['files'] as $file) {
         if (!is_string($file) || $file === '' || $file[0] === '/'
             || strpos($file, "\0") !== false
             || in_array('', explode('/', $file), true)
             || in_array('.', explode('/', $file), true)
             || in_array('..', explode('/', $file), true)) {
-            continue; }
+            continue;
+        }
         $path = $root . '/' . $file;
         $parent = @realpath(dirname($path));
         if ($parent === false || ($parent !== $root
             && strpos($parent, $root . '/') !== 0)) {
-            continue; }
+            continue;
+        }
         if (@lstat($path) !== false) {
-            return $path; }
+            return $path;
+        }
     }
     return '';
 }
@@ -418,7 +468,8 @@ function rtDataDirProbeRename($source, $destination, $files)
     foreach ($files as $relative) {
         if (!is_string($relative) || $relative === '' || $relative[0] === '/'
             || strpos($relative, "\0") !== false || in_array('..', explode('/', $relative), true)) {
-            throw new RuntimeException('invalid-file-list'); }
+            throw new RuntimeException('invalid-file-list');
+        }
         $sources[] = dirname($source . '/' . $relative);
         $destinations[] = dirname($destination . '/' . $relative);
     }
@@ -427,12 +478,13 @@ function rtDataDirProbeRename($source, $destination, $files)
     // existing ancestor, which is what preflightParents() probes (R4-FS-02).
     foreach ($sources as $parent) {
         if (!is_dir($parent)) {
-            throw new RuntimeException('rename-noreplace-source-parent-unavailable path=' . erasedataLogPath($parent)); } }
+            throw new RuntimeException('rename-noreplace-source-parent-unavailable path=' . erasedataLogPath($parent));
+        }
+    }
     $probed = [];
     $filesystem = rtDataDirFilesystem();
     if (($source !== null && !$filesystem->preflightParents($sources, $probed, $source))
-        || !$filesystem->preflightParents($destinations, $probed, $destination))
-    {
+        || !$filesystem->preflightParents($destinations, $probed, $destination)) {
         $context = ErasedataFilesystemOps::lastRenameRefusalContext();
         throw new RuntimeException($context !== '' ? $context : 'rename-noreplace-preflight-refused');
     }
@@ -442,9 +494,16 @@ function rtDataDirProbeRename($source, $destination, $files)
 // has already validated the request and confirmed the claim ABI once; the
 // zero-job state probe below still binds admission to this torrent. One line
 // is logged per refusal. $warning names what a successful change left behind.
-function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg = false,
-    &$failure = null, &$warning = null)
-{
+function rtSetDataDir(
+    $hash,
+    $destPath,
+    $addPath,
+    $moveFiles,
+    $fastResume,
+    $dbg = false,
+    &$failure = null,
+    &$warning = null
+) {
     $failure = null;
     $warning = '';
     if (!is_string($destPath) || $destPath === '' || !is_string($hash)
@@ -462,26 +521,40 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         $journal = rtDataDirJournal();
         $path = $journal . '/' . $hash . '.json';
         if (file_exists($path) || is_link($path)) {
-            throw new RuntimeException('prior-job-pending'); }
+            throw new RuntimeException('prior-job-pending');
+        }
         if ($moveFiles && !rtDataDirFilesystem()->probeRenameParent(null)) {
-            throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusalContext()); }
+            throw new RuntimeException(ErasedataFilesystemOps::lastRenameRefusalContext());
+        }
         rtDataDirOwnership($hash);
-        $probe = rtDataDirClaimRpc('d.stop_close_claim_state', $hash,
-            [str_repeat('0', 32)]);
+        $probe = rtDataDirClaimRpc(
+            'd.stop_close_claim_state',
+            $hash,
+            [str_repeat('0', 32)],
+        );
         if ($probe !== 'absent') {
-            throw new RuntimeException('daemon-claim-unconfirmed'); }
+            throw new RuntimeException('daemon-claim-unconfirmed');
+        }
         $snapshot = rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg);
         if ($snapshot['move']) {
-            rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']); }
+            rtDataDirProbeRename($snapshot['source'], $snapshot['destination'], $snapshot['files']);
+        }
         if ($fastResume) {
             FileUtil::toLog('datadir: ' . $hash
-                . ' fast resume disabled: changing directory in place'); }
-        $job = DataDirMoveJob::create($journal, $snapshot,
-            'rtDataDirClaimRpc', 'rtDataDirMoveNoReplace', 'rtDataDirTorrentPresence');
+                . ' fast resume disabled: changing directory in place');
+        }
+        $job = DataDirMoveJob::create(
+            $journal,
+            $snapshot,
+            'rtDataDirClaimRpc',
+            'rtDataDirMoveNoReplace',
+            'rtDataDirTorrentPresence',
+        );
         $job->run();
         $jobCompleted = true;
         if ($job->restoredStart()) {
-            $warning = rtDataDirStartOutcome($hash, rtrim($snapshot['directory'], '/')); }
+            $warning = rtDataDirStartOutcome($hash, rtrim($snapshot['directory'], '/'));
+        }
         return true;
     } catch (DataDirMoveRefused $e) {
         $failure = $e->getMessage();
@@ -494,9 +567,10 @@ function rtSetDataDir($hash, $destPath, $addPath, $moveFiles, $fastResume, $dbg 
         $pending = ($job !== null && !$jobCompleted)
             || ($path !== null && (file_exists($path) || is_link($path)));
         if ($pending) {
-            rtDataDirHeld($hash, $failure, $path); }
-        else {
-            FileUtil::toLog('datadir: change refused hash=' . $hash . ' reason=' . $failure); }
+            rtDataDirHeld($hash, $failure, $path);
+        } else {
+            FileUtil::toLog('datadir: change refused hash=' . $hash . ' reason=' . $failure);
+        }
         return false;
     }
 }
@@ -518,15 +592,19 @@ function rtDataDirStartOutcome($hash, $directory)
             new rXMLRPCCommand(getCmd('d.state'), $hash)]);
         $request->important = false;
         if (!$request->success() || !is_array($request->val) || count($request->val) !== 2) {
-            return ''; }
+            return '';
+        }
         if ((string) $request->val[0] === '0') {
-            break; }
+            break;
+        }
         if (hrtime(true) / 1e9 >= $deadline) {
-            return ''; }
+            return '';
+        }
         usleep(100000);
     }
     if ((string) $request->val[1] !== '0') {
-        return ''; }
+        return '';
+    }
     $warning = 'stopped-after-hash-check';
     FileOperationOutcome::record('datadir', $hash, $warning, 'datadir: ' . $warning . ' directory='
         . $directory . '; rTorrent did not find the complete data there and stopped the download;'
@@ -554,5 +632,6 @@ function rtDataDirWorkerRefusal($hash, $failure)
     }
     if (!FileOperationOutcome::record('datadir', $hash, (string) $failure, 'datadir: move refused: '
         . $failure . '; the data was not moved; resolve the cause, then set the directory again')) {
-        FileUtil::toLog('datadir: worker refusal not shown on the torrent hash=' . $hash); }
+        FileUtil::toLog('datadir: worker refusal not shown on the torrent hash=' . $hash);
+    }
 }

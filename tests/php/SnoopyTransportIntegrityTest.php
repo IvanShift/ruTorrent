@@ -4,19 +4,27 @@
 // No tracker, DNS lookup, account or scripted curl response is involved.
 if (($argv[1] ?? '') === '--peer') {
     $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-    if ($server === false) { exit(2); }
+    if ($server === false) {
+        exit(2);
+    }
     fwrite(STDOUT, stream_socket_get_name($server, false) . "\n");
     fflush(STDOUT);
     $socket = @stream_socket_accept($server, 5);
-    if ($socket === false) { exit(3); }
+    if ($socket === false) {
+        exit(3);
+    }
     stream_set_timeout($socket, 5);
     $headers = '';
-    while (($line = fgets($socket)) !== false && $line !== "\r\n") { $headers .= $line; }
-    $length = preg_match('/^Content-Length: *([0-9]+)\r?$/mi', $headers, $match) ? (int)$match[1] : 0;
+    while (($line = fgets($socket)) !== false && $line !== "\r\n") {
+        $headers .= $line;
+    }
+    $length = preg_match('/^Content-Length: *([0-9]+)\r?$/mi', $headers, $match) ? (int) $match[1] : 0;
     $body = '';
     while (strlen($body) < $length) {
         $part = fread($socket, $length - strlen($body));
-        if ($part === false || $part === '') { exit(4); }
+        if ($part === false || $part === '') {
+            exit(4);
+        }
         $body .= $part;
     }
     $answer = $argv[2] === 'zero' ? '0' : 'ok';
@@ -34,8 +42,11 @@ require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 
 function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
 {
-    $process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', __FILE__, '--peer', $response],
-        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    $process = proc_open(
+        [PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', __FILE__, '--peer', $response],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+    );
     testAssertTrue(is_resource($process), 'The isolated HTTP peer starts');
     try {
         stream_set_timeout($pipes[1], 5);
@@ -46,7 +57,9 @@ function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
         $client->private_allowlist = ['127.0.0.1'];
         $client->proxy_host = $client->proxy_port = '';
         $client->read_timeout = 3;
-        if ($curl) { $client->setRequestDeadline(3); }
+        if ($curl) {
+            $client->setRequestDeadline(3);
+        }
         $ok = $client->fetch('http://' . $address . '/body', $method, 'text/plain', $body);
         $capture = stream_get_contents($pipes[1]);
         fclose($pipes[1]);
@@ -63,7 +76,11 @@ function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
         $request['body'] = base64_decode($request['body'], true);
         return [$ok, $client, $request];
     } finally {
-        foreach ($pipes as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
         if (is_resource($process)) {
             proc_terminate($process);
             proc_close($process);
