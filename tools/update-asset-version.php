@@ -2,7 +2,7 @@
 // Stamp the assembled deployment once, including third-party plugin/theme assets.
 if (PHP_SAPI !== 'cli') {
     http_response_code(403);
-    exit;
+    exit(1);
 }
 
 function asset_version_index($contents, $version)

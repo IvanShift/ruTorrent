@@ -110,4 +110,28 @@ class AssetVersionTest extends TestCase
         $this->assertEquals($changed, $this->stamp(), 'HTML assets retain an idempotent deployment key');
     }
 
+    public function testARunOutsideTheCliFailsWithoutStamping()
+    {
+        // php-cgi run from a shell is not the CLI SAPI, and a deployment
+        // script reads only its exit status.
+        $dir = dirname(PHP_BINARY);
+        $cgi = null;
+        foreach (array($dir . '/php-cgi', $dir . '/php-cgi' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION) as $candidate) {
+            if (is_file($candidate) && is_executable($candidate)) {
+                $cgi = $candidate;
+                break;
+            }
+        }
+        if ($cgi === null) {
+            echo "NOT CHECKED: a run outside the CLI; no php-cgi beside " . PHP_BINARY . "\n";
+            return;
+        }
+        copy(dirname(__DIR__, 2) . '/tools/update-asset-version.php', $this->tree . '/tools/update-asset-version.php');
+        $index = file_get_contents($this->tree . '/index.html');
+        $output = [];
+        $status = null;
+        exec(escapeshellarg($cgi) . ' -n -f ' . escapeshellarg($this->tree . '/tools/update-asset-version.php') . ' 2>&1', $output, $status);
+        $this->assertEquals(1, $status, 'a run outside the CLI fails, status ' . json_encode($status) . ': ' . implode("\n", $output));
+        $this->assertEquals($index, file_get_contents($this->tree . '/index.html'), 'and stamps nothing');
+    }
 }
