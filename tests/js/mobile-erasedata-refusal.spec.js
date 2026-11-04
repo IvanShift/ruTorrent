@@ -5,7 +5,8 @@ window.jQuery = window.$;
 
 test("mobile keeps the deletion visible and displays a classified HTTP refusal", () => {
   document.body.innerHTML = '<div id="deleteWithData"><input type="checkbox" checked></div><div id="alert_placeholder"></div>';
-  window.plugin = { disable: jest.fn() };
+  window.plugin = { disable: jest.fn(), loadLang: jest.fn() };
+  window.theDialogManager = { addHandler: jest.fn() };
   window.theWebUI = {
     getTrackerName: () => "",
     requestWithTimeout: jest.fn(),

@@ -15,7 +15,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   document.body.innerHTML = '<div id="detailsFilesPage"></div>';
-  window.plugin = { disable: jest.fn() };
+  window.plugin = { disable: jest.fn(), loadLang: jest.fn() };
+  window.theDialogManager = { addHandler: jest.fn() };
   window.theWebUI = { getTrackerName: () => "", sizeDecimalPlaces: () => 1 };
   const script = document.createElement("script");
   script.textContent = readFileSync("../plugins/mobile/init.js", "utf8");

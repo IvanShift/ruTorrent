@@ -68,7 +68,8 @@ describe("mobile label identity", () => {
     window.theConverter = { bytes: String, speed: String, round: String, time: String };
     window.dStatus = { started: 1, paused: 2, checking: 4, hashing: 8, error: 16 };
     window.rTorrentStub = function() { this.content = "transport"; this.commands = []; };
-    window.__labelMobile = { disable: jest.fn() };
+    window.__labelMobile = { disable: jest.fn(), loadLang: jest.fn() };
+    window.theDialogManager = { addHandler: jest.fn() };
     load("plugins/mobile/init.js", "(function(){ const plugin=window.__labelMobile;", "})();");
     mobile = window.__labelMobile;
     mobile.torrent = torrent("");

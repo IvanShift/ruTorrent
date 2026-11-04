@@ -279,6 +279,82 @@ class TaskSupervisorTest extends TestCase
         }
     }
 
+    // Upstream f707df7a1 makes its pgrep-based kill reach a task's whole
+    // process tree. Here the supervisor is the subreaper of the task, so a
+    // cancel reaches every descendant without pgrep. Starts a task, records
+    // the processes named by $markers, cancels it and checks they are gone.
+    // Cleanup signals only through the identity-bound helper, never a bare pid.
+    private function assertCancelReachesEveryProcess($commands, $markers)
+    {
+        $profile = $_ENV['RU_PROFILE_PATH'];
+        $task = new rTask(array('name'=>'process tree'));
+        $task->start($commands, rTask::FLG_RUN_AS_WEB);
+        $dir = rTask::formatPath($task->id);
+        $witnesses = array();
+        try {
+            foreach ($markers as $name => $marker) {
+                $pid = $this->waitForPid($marker, 1000);
+                $this->assertEquals(true, $pid > 1, 'The '.$name.' started');
+                if ($pid <= 1) return;
+                $witnesses[$name] = array($pid, file_get_contents('/proc/sys/kernel/random/boot_id').
+                    file_get_contents('/proc/'.$pid.'/stat'));
+            }
+            $this->assertEquals(true, rTask::kill($task->id),
+                'Cancellation is acknowledged after complete-tree proof');
+            $this->assertEquals(false, is_dir($dir), 'The cancelled task record is removed');
+            foreach ($witnesses as $name => $witness)
+                $this->assertEquals(false, is_dir('/proc/'.$witness[0]), 'The '.$name.' is gone');
+        } finally {
+            // A case that stopped early still cancels the whole tree first.
+            if (is_dir($dir)) rTask::kill($task->id);
+            foreach ($witnesses as $witness) $this->stopWitness($witness[0], $witness[1], $profile);
+            if (is_dir($dir) && is_file($dir.'/pid') && is_file($dir.'/pid.identity')) {
+                $pid = (int)trim(file_get_contents($dir.'/pid'));
+                $this->stopWitness($pid, file_get_contents($dir.'/pid.identity'), $profile);
+            }
+            foreach ($markers as $marker) @unlink($marker);
+        }
+    }
+
+    public function testKillStopsEveryChildOfTheTask()
+    {
+        // A task shell with three children, as a pipeline has. Each command
+        // gets the task's log redirection appended, so the shell's own
+        // marker is written inside a group.
+        $base = $_ENV['RU_PROFILE_PATH'].'/every-child-'.bin2hex(random_bytes(4));
+        $markers = array('task shell' => $base.'-shell');
+        $stages = array();
+        foreach (array(31, 32, 33) as $index => $seconds) {
+            $markers['pipeline command '.($index + 1)] = $base.'-'.$seconds;
+            $stages[] = 'sh -c '.escapeshellarg('printf "%s\n" "$$" > "$0"; exec sleep '.$seconds).
+                ' '.escapeshellarg($base.'-'.$seconds);
+        }
+        $this->assertCancelReachesEveryProcess(array(
+            '{ printf "%s\n" "$$" > '.escapeshellarg($markers['task shell']).'; }',
+            implode(' | ', $stages)), $markers);
+    }
+
+    public function testKillStopsTheProgramsAPluginScriptStarts()
+    {
+        // A task shell running a plugin script, which runs the program that
+        // does the work as its own child, as createtorrent.sh runs the
+        // torrent creator or unrar_file.sh runs unrar.
+        $base = $_ENV['RU_PROFILE_PATH'].'/plugin-script-'.bin2hex(random_bytes(4));
+        $markers = array('task shell' => $base.'-shell', 'plugin script' => $base.'-script',
+            'program the script started' => $base.'-program');
+        file_put_contents($base.'.sh', '#!/bin/sh'."\n".
+            'printf "%s\n" "$$" > "$1-script"'."\n".
+            'sh -c '.escapeshellarg('printf "%s\n" "$$" > "$0-program"; exec sleep 34').' "$1"'."\n");
+        chmod($base.'.sh', 0755);
+        try {
+            $this->assertCancelReachesEveryProcess(array(
+                '{ printf "%s\n" "$$" > '.escapeshellarg($markers['task shell']).'; }',
+                escapeshellarg($base.'.sh').' '.escapeshellarg($base)), $markers);
+        } finally {
+            @unlink($base.'.sh');
+        }
+    }
+
     public function testUnavailableSupervisorRefusesStartWithVisibleReason()
     {
         $binary = RTASK_SUPERVISOR_HELPER;

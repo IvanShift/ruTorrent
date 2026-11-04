@@ -138,7 +138,8 @@ test("aud mobile datadir is prefilled with the raw save path and posts the edite
     '<button id="showGetDirDataDir"></button></div>' +
     '<input id="datadir_not_add_path" type="checkbox">' +
     '<input id="datadir_move" type="checkbox"><button id="dataDirOk"></button>';
-  window.plugin = { disable: jest.fn() };
+  window.plugin = { disable: jest.fn(), loadLang: jest.fn() };
+  window.theDialogManager = { addHandler: jest.fn() };
   window.theWebUI = { getTrackerName: () => "" };
   window.$type = value => typeof value;
   inject("../plugins/mobile/init.js");

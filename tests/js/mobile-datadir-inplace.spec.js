@@ -22,7 +22,8 @@ test("mobile DataDir omits the removed fast option while add-torrent keeps its o
     '<input id="datadir_not_add_path" type="checkbox">' +
     '<input id="datadir_move" type="checkbox" checked>' +
     '<button id="dataDirOk"></button>';
-  window.plugin = { disable: jest.fn() };
+  window.plugin = { disable: jest.fn(), loadLang: jest.fn() };
+  window.theDialogManager = { addHandler: jest.fn() };
   window.theWebUI = { getTrackerName: () => "" };
   window.$type = value => typeof value;
   const script = document.createElement("script");
@@ -70,7 +71,8 @@ describe("mobile DataDir answer (R3FS-02)", () => {
       datadirSetDirFail: "DataDir plugin: Operation failed",
       datadirStoppedAfterCheck: "DataDir plugin: the directory was changed, but rTorrent stopped the download because its hash check did not find the complete data there",
     };
-    window.plugin = { disable: jest.fn() };
+    window.plugin = { disable: jest.fn(), loadLang: jest.fn() };
+    window.theDialogManager = { addHandler: jest.fn() };
     window.theWebUI = { getTrackerName: () => "" };
     window.$type = value => typeof value;
     const script = document.createElement("script");
