@@ -147,9 +147,10 @@ class CleanupRenamePreflightTest extends TestCase
 				$filesystem->refused = dirname($this->payload);
 			};
 			$reason = 'stale';
+			// The child parses this file and its fixtures first; the wait ends at its acknowledgement.
 			$this->assertTrue(!erasedataArmObsoleteCleanupRun(array('listPath' => $this->queue,
 				'user' => User::getUser(), 'filesystem' => $filesystem, 'log' => array('FileUtil', 'toLog'),
-				'ackTimeout' => 0.5, 'ackPoll' => 0.01), $job, $reason),
+				'ackTimeout' => 30, 'ackPoll' => 0.01), $job, $reason),
 				'cleanup arm refuses a changed parent before predecessor erase');
 			$this->assertEquals('cleanup-rename-unconfirmed', $reason, 'an unresolved parent does not establish a lasting capability failure');
 			$this->assertTrue(in_array(dirname($this->payload), $filesystem->parents, true),
