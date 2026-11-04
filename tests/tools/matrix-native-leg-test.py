@@ -3,6 +3,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,6 +173,62 @@ os.execvp('cc', ['cc', *args[index+1:]])
         command = runner.test_command(Path("/w"), Path("/mtmp"), (), tree, 6)[-1]
         self.assertIn("env PHP_TEST_JOBS=6 PHP_TEST_TIMINGS=/mtmp/php-test-timings bash tests/php-test.sh",
                       command)
+
+    def launch_leg(self, leg):
+        """Run run_leg up to docker run; return its argv, command and the mounted files' contents."""
+        directory = self.root / ("leg-" + leg)
+        self.declare_rename_helper(directory / "tree", "rutorrent-fixture-rename")
+        launched = {}
+        def capture(args, **kwargs):
+            volumes = [args[i + 1] for i, value in enumerate(args) if value == "-v"]
+            launched["args"] = args
+            launched["files"] = {volume.split(":")[1]: Path(volume.split(":")[0]).read_text()
+                                 for volume in volumes if volume.endswith(".ini:ro")}
+        with patch.object(runner, "compile_helpers", return_value=(self.root, [])), \
+             patch.object(runner.subprocess, "run", side_effect=capture), \
+             patch.object(runner, "remove_owned_container"):
+            runner.run_leg(directory, leg, "leg", os.getuid(), os.getgid(), jobs=6)
+        return launched["args"], launched["args"][-1], launched["files"]
+
+    def test_jit_leg_runs_the_81_image_with_hosted_ci_tracing_jit_checked_before_the_suite(self):
+        args, command, files = self.launch_leg("8.1-jit")
+        self.assertIn("php:8.1-cli", args)
+        ini = files[str(runner.JIT_INI_PATH)]
+        for line in ("opcache.enable=1", "opcache.enable_cli=1",
+                     "opcache.jit_buffer_size=256M", "opcache.jit=1235"):
+            self.assertIn(line + "\n", ini)
+        check = command.index("matrix 8.1-jit: tracing JIT is off")
+        self.assertLess(command.index("rename-noreplace-test.sh"), check)
+        self.assertLess(check, command.index("bash tests/php-test.sh"))
+        self.assertIn("php -c tests/php-test.ini -r", command)
+        plain_args, plain_command, plain_files = self.launch_leg("8.1")
+        self.assertIn("php:8.1-cli", plain_args)
+        self.assertEqual({}, plain_files)
+        self.assertNotIn("opcache", plain_command)
+
+    def test_jit_check_passes_only_when_the_jit_is_on(self):
+        php = shutil.which("php")
+        if php is None:
+            self.skipTest("no host PHP to run the check")
+        # -n reads no ini file, as a leg whose JIT file went missing. Before
+        # PHP 8.5 opcache is a shared extension that -n leaves unloaded.
+        load = []
+        if subprocess.run([php, "-n", "-r", 'echo (int) function_exists("opcache_get_status");'],
+                          capture_output=True, text=True).stdout != "1":
+            load = ["-d", "zend_extension=opcache"]
+        def run(code, *settings):
+            result = subprocess.run([php, "-n", *load, *settings, "-r", code], capture_output=True, text=True)
+            return result.returncode, result.stdout, result.stderr
+        status = 'var_export(opcache_get_status(false)["jit"]["on"] ?? null);'
+        cli = ("-d", "opcache.enable=1", "-d", "opcache.enable_cli=1")
+        jit_off = (*cli, "-d", "opcache.jit=off")
+        jit_on = (*cli, "-d", "opcache.jit=1235", "-d", "opcache.jit_buffer_size=16M")
+        if run(status, *jit_off) != (0, "false", "") or run(status, *jit_on) != (0, "true", ""):
+            self.skipTest("host PHP cannot switch the opcache JIT")
+        refused = (1, "", "matrix 8.1-jit: tracing JIT is off\n")
+        self.assertEqual(refused, run(runner.JIT_CHECK))
+        self.assertEqual(refused, run(runner.JIT_CHECK, *jit_off))
+        self.assertEqual((0, "matrix 8.1-jit: opcache.jit=1235\n", ""), run(runner.JIT_CHECK, *jit_on))
 
     def test_durations_round_trip_through_the_leg_tmpdir(self):
         directory = self.root / "durations"

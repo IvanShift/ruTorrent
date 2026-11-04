@@ -156,12 +156,19 @@ esac
 exit 0
 DOCKER_GREEN
 chmod +x "$scratch/bin-green/docker"
-HOME="$short_home" PATH="$scratch/bin-green:$PATH" MATRIX_PHP_JOBS=64 "$scratch/tools/matrix.sh" > "$short_home/jobs-full.log" 2>&1 || {
+HOME="$short_home" PATH="$scratch/bin-green:$PATH" MATRIX_PHP_JOBS=64 MATRIX_TEST_JOBS_LOG="$short_home/jobs-full-legs.log" \
+    "$scratch/tools/matrix.sh" > "$short_home/jobs-full.log" 2>&1 || {
     cat "$short_home/jobs-full.log" >&2
     echo 'the stand-in full run was not green' >&2; exit 1
 }
+# The default run includes the tracing-JIT leg of hosted CI's PHP 8.1 job,
+# with its own durations file beside the plain 8.1 leg's.
+[ "$(LC_ALL=C sort "$short_home/jobs-full-legs.log")" = "$(printf '7.4 64 php-timings-7.4\n8.1 64 php-timings-8.1\n8.1-jit 64 php-timings-8.1-jit\nlocal 64 php-timings-local')" ] || {
+    cat "$short_home/jobs-full-legs.log" >&2
+    echo 'the default run did not start every suite leg, the 8.1-jit leg included' >&2; exit 1
+}
 [ "$(HOME="$short_home" "$scratch/tools/matrix.sh" last | sed -n 4p)" = jobs=64 ] \
-    && grep -q '^green on local 8.1 7.4 prod-kinozal with jobs=64 in ' "$short_home/jobs-full.log" || {
+    && grep -q '^green on local 8.1 8.1-jit 7.4 prod-kinozal with jobs=64 in ' "$short_home/jobs-full.log" || {
     cat "$short_home/jobs-full.log" >&2
     HOME="$short_home" "$scratch/tools/matrix.sh" last >&2
     echo 'the green marker or summary did not name jobs=64' >&2; exit 1
@@ -686,7 +693,7 @@ exit 0
 DOCKER_RED
 chmod +x "$scratch/bin/docker"
 full_marker="$(fingerprint_digest)"
-printf '%s\n2026-09-25T00:00:00Z\nlocal 8.1 7.4 prod-kinozal\n' "$full_marker" \
+printf '%s\n2026-09-25T00:00:00Z\nlocal 8.1 8.1-jit 7.4 prod-kinozal\n' "$full_marker" \
     > "$short_home/.cache/rtm/last-green"
 if HOME="$short_home" PATH="$short_home/php-bin:$scratch/bin:$PATH" MATRIX_TEST_IMAGE_ID="$short_home/image-id" \
     MATRIX_TEST_PHP_INI="$short_home/php-ini" MATRIX_TEST_PHP_EXTENSION="$short_home/php-extension" \

@@ -3,7 +3,8 @@
 # its own copy of the tree, and remember the tree that came out green so the
 # pre-commit hook can skip a run it has already seen.
 #
-#   tools/matrix.sh                 all legs: local PHP, php:8.1-cli, php:7.4-cli,
+#   tools/matrix.sh                 all legs: local PHP, php:8.1-cli, php:8.1-cli with
+#                                   hosted CI's tracing JIT (8.1-jit), php:7.4-cli,
 #                                   plus no-iconv tracker suites and packaged creator and unpack smokes in the shipped image
 #   tools/matrix.sh local 7.4       only these legs
 #   tools/matrix.sh prod-kinozal    shipped-image no-iconv tracker suites, creator and unpack smokes
@@ -21,7 +22,7 @@
 #
 # Why legs run in parallel on separate exports: the local PHP leg was about
 # 90 s on 2026-09-15, mostly in two files (AGENTS.md, "PHP Suite Timing and the
-# Matrix"). Four legs run side by side, but two runs
+# Matrix"). The legs run side by side, but two runs
 # over ONE tree corrupt each other (AGENTS.md, "This Machine Will Lie To You"),
 # and a default container could write as root. So every leg gets `git ls-files` of the
 # working tree (staged and unstaged edits, untracked new files) exported to a
@@ -56,7 +57,7 @@ base="$(cd "$base" && pwd -P)" || exit 1
 marker="${base}/last-green"
 prod_image="${RUTORRENT_MATRIX_PROD_IMAGE:-ivanshift/rutorrent:latest}"
 tmpdir_budget=58  # 58 + the 49-byte socket suffix fits the 107-byte sun_path limit.
-# Three suite legs run side by side, so 6 files per leg keep 18 PHP processes
+# Four suite legs run side by side, so 6 files per leg keep 24 PHP processes
 # and their fixtures within this machine's 24 cores.
 php_jobs="${MATRIX_PHP_JOBS:-6}"
 
@@ -187,7 +188,7 @@ fi
 legs=("$@")
 record_green=0
 if [ "${#legs[@]}" -eq 0 ]; then
-	legs=(local 8.1 7.4 prod-kinozal)
+	legs=(local 8.1 8.1-jit 7.4 prod-kinozal)
 	record_green=1
 fi
 
@@ -195,7 +196,7 @@ stamp="$(date -u +%y%m%d%H%M%S)"
 declare -A seen_legs=()
 for leg in "${legs[@]}"; do
     case "$leg" in
-        local|7.4|8.1|prod-kinozal) ;;
+        local|7.4|8.1|8.1-jit|prod-kinozal) ;;
         *) echo "matrix.sh: unknown leg: $leg" >&2; exit 2 ;;
     esac
     if [ -n "${seen_legs[$leg]+set}" ]; then

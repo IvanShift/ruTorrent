@@ -18,6 +18,23 @@ spec = importlib.util.spec_from_file_location(
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 LOCAL_LAUNCHER = "php:8.1-cli"
+LEG_IMAGES = {"7.4": "php:7.4-cli", "8.1": "php:8.1-cli", "8.1-jit": "php:8.1-cli"}
+# Hosted CI's PHP 8.1 job runs setup-php's tracing JIT without Xdebug, and
+# PHP 8.1.34 miscompiled a loop under it (UTF::characterLength, 2026-10-31)
+# that the plain 8.1 leg cannot see. The image already loads opcache; this
+# file in its conf.d enables it for the CLI. -c tests/php-test.ini replaces
+# only php.ini, so every suite process and child that keeps the default scan
+# directory runs with the JIT.
+JIT_LEG = "8.1-jit"
+JIT_INI = ("opcache.enable=1\nopcache.enable_cli=1\n"
+           "opcache.jit_buffer_size=256M\nopcache.jit=1235\n")
+JIT_INI_PATH = Path("/usr/local/etc/php/conf.d/99-matrix-jit.ini")
+# A JIT that silently stays off would turn the leg into a second plain 8.1
+# run, so the leg refuses before the suite unless the JIT is on. The image
+# always loads opcache; without it this call fails the leg as well.
+JIT_CHECK = ('if (empty(opcache_get_status(false)["jit"]["on"])) { '
+             'fwrite(STDERR, "matrix 8.1-jit: tracing JIT is off\n"); exit(1); } '
+             'echo "matrix 8.1-jit: opcache.jit=", ini_get("opcache.jit"), "\n";')
 # A parallel php-test.sh keeps its per-file durations here, in the leg's
 # TMPDIR; run_leg carries them to and from the file named by --timings.
 TIMINGS_NAME = "php-test-timings"
@@ -73,7 +90,7 @@ def compile_helpers(tree, native, image, name, uid, gid, owner):
     return output, names
 
 
-def test_command(tree, temporary, test_files, source_tree=None, jobs=1):
+def test_command(tree, temporary, test_files, source_tree=None, jobs=1, require_jit=False):
     source_tree = tree if source_tree is None else source_tree
     _, helpers = setup.read_manifest(source_tree)
     rename_source = (source_tree / "plugins/erasedata/rename-noreplace.c").resolve(strict=True)
@@ -83,6 +100,8 @@ def test_command(tree, temporary, test_files, source_tree=None, jobs=1):
     probe = ["bash", "tests/plugins/erasedata/rename-noreplace-test.sh",
              "/usr/local/bin/" + rename_names[0]]
     commands = [shlex.join(probe)]
+    if require_jit:
+        commands.append(shlex.join(["php", "-c", "tests/php-test.ini", "-r", JIT_CHECK]))
     if test_files:
         for test_file in test_files:
             relative = Path(test_file)
@@ -148,7 +167,7 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None, jobs=1, t
     native = directory / "native"
     native.mkdir(mode=0o700)
     try:
-        image = LOCAL_LAUNCHER if leg == "local" else "php:" + leg + "-cli"
+        image = LOCAL_LAUNCHER if leg == "local" else LEG_IMAGES[leg]
         output, names = compile_helpers(tree, native, None if leg == "local" else image,
                                         name, uid, gid, owner)
         if leg == "local":
@@ -170,10 +189,16 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None, jobs=1, t
             args = docker_run(name, image, uid, gid, mounts, command, owner=owner, local=True,
                               groups=sorted(set([gid, *os.getgroups()])))
         else:
-            command = test_command(Path("/w"), Path("/mtmp"), test_files, tree, jobs)
+            command = test_command(Path("/w"), Path("/mtmp"), test_files, tree, jobs,
+                                   require_jit=leg == JIT_LEG)
             mounts = [(tree, Path("/w"), False), (temporary, Path("/mtmp"), False)]
             mounts += [(output / helper, Path("/usr/local/bin") / helper, True)
                        for helper in names]
+            if leg == JIT_LEG:
+                jit_ini = native / "jit.ini"
+                jit_ini.write_text(JIT_INI)
+                jit_ini.chmod(0o644)
+                mounts.append((jit_ini, JIT_INI_PATH, True))
             args = docker_run(name, image, uid, gid, mounts, command, owner=owner)
         print("matrix native helpers: " + leg + ": " + ", ".join(names), flush=True)
         subprocess.run(args, check=True)
@@ -188,7 +213,7 @@ def run_leg(directory, leg, name, uid, gid, test_files=(), owner=None, jobs=1, t
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
-    parser.add_argument("--leg", choices=("local", "7.4", "8.1"), required=True)
+    parser.add_argument("--leg", choices=("local", *LEG_IMAGES), required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--owner", help="Private run ownership token used by interrupt cleanup")
     parser.add_argument("--uid", type=int, default=os.getuid())
