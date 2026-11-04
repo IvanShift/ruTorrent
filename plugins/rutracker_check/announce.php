@@ -467,7 +467,7 @@ class RuTrackerAnnounce
     }
 
     // Ungated, and deliberately not the same channel as the write failure in
-    // reserveProbe() below. Nothing here ever rewrites an entry it could not
+    // reserveProbe(). Nothing here ever rewrites an entry it could not
     // read -- the reservation returns the document untouched, releaseProbe()
     // and recordOutcome() both bail on this same null -- so the host is
     // refused every probe from now to the end of time and no cycle repairs

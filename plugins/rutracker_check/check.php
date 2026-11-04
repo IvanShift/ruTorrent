@@ -3066,7 +3066,7 @@ class ruTrackerChecker
     /**
      * THE ungated channel, and the only one in this plugin.
      *
-     * logDebug() below is gated on $rutrackerCheckDebug, which conf.php ships
+     * logDebug() is gated on $rutrackerCheckDebug, which conf.php ships
      * as false, so everything reported there says nothing at all at the
      * shipped default. That is RIGHT for a refusal that repairs itself: a line
      * per cycle for every corrupt value would be noise in ruTorrent's shared

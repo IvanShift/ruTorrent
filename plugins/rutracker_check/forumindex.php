@@ -1223,7 +1223,7 @@ class RuTrackerForumIndex
     // The persistent queue is the durable trigger for explicit work such as
     // correcting a moved topic, and it short-circuits: a queued topic is
     // wanted by definition, so noticing it costs no fleet scan. Everything
-    // else is the fleet half of collectWanted() above, filtered exactly as the
+    // else is the fleet half of collectWanted(), filtered exactly as the
     // crawl it starts would filter it.
     public static function crawlWanted()
     {
@@ -2644,7 +2644,7 @@ class RuTrackerForumIndex
     // (a deleted one, the very case the backoff exists for) is re-added from
     // the fleet every time and makes each sweep a full crawl of the tracker.
     //
-    // It is shared with crawlWanted() below because the two definitions drifted
+    // It is shared with crawlWanted() because the two definitions drifted
     // and cost a process per cycle: the launcher counted the fleet half
     // unfiltered, so a suppressed topic still answered "there is work", while
     // runCrawl() -- which does the filtering -- then found none and returned
