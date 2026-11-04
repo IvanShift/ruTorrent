@@ -30,6 +30,21 @@ jobs:
           done < <(find . -type f -name '*.php' -not -path '*/node_modules/*')
           exit $fail
 
+  php-cs-fixer:
+    # Blocking: PHP follows PER Coding Style 3.0, configured in
+    # .php-cs-fixer.dist.php. The fixer is pinned so a new release cannot
+    # change what passes without a commit. The fork's configuration also
+    # leaves out five files that wait to be formatted; see its notPath lines.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.3'
+          tools: php-cs-fixer:3.95.27
+      - name: php-cs-fixer
+        run: php-cs-fixer fix --dry-run --diff --using-cache=no
+
   editorconfig:
     # Advisory for now: the existing tree has a backlog of whitespace issues.
     # The plan is to clear it in small per-file PRs, then make this blocking.
