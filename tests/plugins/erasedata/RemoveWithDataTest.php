@@ -721,6 +721,13 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($this->dir.'/erasedata/'.$name, $content);
 	}
 
+	// A force-1 multi-file manifest under the name the retired direct producer
+	// published, <HASH>.<pid>.<uniqid>.list, as an older install leaves it.
+	private function writeProducedManifest($hash, $base, $file)
+	{
+		$this->writeManifestLines($hash.'.'.getmypid().'.'.uniqid('', true).'.list', array($file), $base, 1, 1);
+	}
+
 	private function writeLegacyManifestLines($name, $files, $base, $multi, $force)
 	{
 		$lines = array_merge($files, array($base, (string)$multi, (string)$force));
@@ -759,8 +766,6 @@ class RemoveWithDataTest extends TestCase
 			@mkdir($erasedataDir, 0777, true);
 			copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $erasedataDir.'/manifest.php');
 			file_put_contents($erasedataDir.'/removewithdata.php', '<?php require_once(dirname(__FILE__)."/manifest.php"); '
-				.'function erasedataRemoveWithData($hashes,$force) { rXMLRPCRequest::$commands[]="helper:".'
-				.'(is_string($force)?$force:gettype($force)); return array(); }'
 				// The shared admission door both public doors now enter. It
 				// records the exact PHP type it was handed, so a door that
 				// forwarded the wire spelling instead of the integer force is
@@ -1187,9 +1192,9 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin", "/d/name/sub/b.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name/sub/b.bin", "/d/name", "1", "1"), $this->listFor($hash), 'multi-file list from frozen paths');
-		$this->assertEquals(array("d.get_base_path", "d.set_custom5"), rXMLRPCRequest::$requested, 'no fallback request when frozen paths exist');
+		$this->assertTrue(!in_array("d.get_directory", rXMLRPCRequest::$requested, true), 'no fallback request when frozen paths exist');
 	}
 
 	// -- stored paths available (a download not yet opened) -----------------
@@ -1200,7 +1205,7 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array("/d/a.bin", 0, "/d/a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/a.bin", "/d/a.bin", "0", "1"), $this->listFor($hash), 'single-file list from frozen paths');
 	}
 
@@ -1211,9 +1216,9 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, "", ""));
 		$this->stored(true, array("/d/name", 1, "a.bin", "sub/b.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name/sub/b.bin", "/d/name", "1", "1"), $this->listFor($hash), 'multi-file list rebuilt from d.directory + f.path');
-		$this->assertEquals(array("d.get_base_path", "d.get_directory", "d.set_custom5"), rXMLRPCRequest::$requested, 'fallback request issued');
+		$this->assertTrue(in_array("d.get_directory", rXMLRPCRequest::$requested, true), 'fallback request issued');
 	}
 
 	public function testFallsBackToStoredPathsForSingleFile()
@@ -1223,7 +1228,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 0, ""));
 		$this->stored(true, array("/d", 0, "movie.mkv"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/movie.mkv", "/d/movie.mkv", "0", "1"), $this->listFor($hash), 'single-file base path is the file, not its directory');
 	}
 
@@ -1234,7 +1239,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, ""));
 		$this->stored(true, array("/d/name/", 1, "a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name", "1", "1"), $this->listFor($hash), 'no doubled separator from a trailing slash');
 	}
 
@@ -1245,7 +1250,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(false, array());
 		$this->stored(true, array("/d/name", 1, "a.bin"));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertEquals(array("/d/name/a.bin", "/d/name", "1", "1"), $this->listFor($hash), 'a failed frozen request also falls back');
 	}
 
@@ -1343,7 +1348,7 @@ class RemoveWithDataTest extends TestCase
 			$hash = $this->hash('D');
 			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
 			$this->eraseOk();
-			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+			$this->assertTrue($this->admit(array($hash), 1) === false,
 				'absence of the legacy queue does not attest its history');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased,
 				'no erase follows an unproved first-use claim');
@@ -1379,7 +1384,7 @@ class RemoveWithDataTest extends TestCase
 			$hash = $this->hash('D');
 			$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
 			$this->eraseOk();
-			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+			$this->assertTrue($this->admit(array($hash), 1) === false,
 				'the new root does not shadow a visible legacy obligation');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased,
 				'no destructive RPC follows a split legacy state');
@@ -1615,7 +1620,7 @@ class RemoveWithDataTest extends TestCase
 		$this->eraseOk();
 		for($pass = 1; $pass <= 2; $pass++)
 		{
-			$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+			$this->assertTrue($this->admit(array($hash), 1) === false,
 				'an old private queue under a writable parent is held on pass '.$pass);
 			$this->assertEquals(array(), rXMLRPCRequest::$erased,
 				'no erase follows a parent-name provenance gap');
@@ -1634,7 +1639,7 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
 		$this->eraseOk();
-		$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+		$this->assertTrue($this->admit(array($hash), 1) === false,
 			'a previously writable queue with old contents must be held');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased,
 			'no torrent is erased while old queue contents lack provenance');
@@ -1645,7 +1650,7 @@ class RemoveWithDataTest extends TestCase
 		}), 'the hold is visible in the log');
 	}
 
-	public function testLegacyProducerHoldsWritableQueueUntilOperatorAttests()
+	public function testAdmissionHoldsWritableLegacyQueueUntilOperatorAttests()
 	{
 		$this->reset();
 		$queue = $this->dir.'/erasedata';
@@ -1656,7 +1661,7 @@ class RemoveWithDataTest extends TestCase
 		$hash = $this->hash();
 		$this->frozen(true, array('/d/name', 1, '/d/name/a.bin'));
 		$this->eraseOk();
-		$this->assertTrue(erasedataRemoveWithData(array($hash), 1) === false,
+		$this->assertTrue($this->admit(array($hash), 1) === false,
 			'a writable legacy chain holds even when it contains only inert locks');
 		$this->assertEquals(0777, fileperms($this->dir) & 07777,
 			'the parent stays visibly unsealed for operator review');
@@ -1670,19 +1675,6 @@ class RemoveWithDataTest extends TestCase
 			'operator-sealed legacy paths can be admitted on a later attempt');
 	}
 
-	public function testForceDeleteFlagRecorded()
-	{
-		$this->reset();
-		$hash = $this->hash();
-		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
-		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 2);
-		$lines = $this->listFor($hash);
-		$this->assertTrue(is_array($lines) && count($lines) > 0,
-			'integer force 2 is admitted and publishes a manifest');
-		$this->assertEquals("2", is_array($lines) && count($lines) ? end($lines) : null,
-			'delete-path mode recorded as the last line');
-	}
 
 	// -- unresolvable download ----------------------------------------------
 
@@ -1693,29 +1685,13 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("", 1, "", ""));
 		$this->stored(true, array("", 1, "", ""));
 		$this->eraseOk();
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'no list written when no path resolves');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'torrent must not be erased when its files are unknown');
 		$this->assertTrue($result === false, 'caller is told the removal did not happen');
 		$this->assertTrue(count(FileUtil::$log) > 0, 'the refusal is logged');
 	}
 
-	public function testResolvableHashesStillErasedInAMixedBatch()
-	{
-		$this->reset();
-		$hashA = $this->hash('A');
-		$hashB = $this->hash('B');
-		$this->frozen(true, array("", 1, ""));
-		$this->stored(true, array("/d/name", 1, "a.bin"));
-		rXMLRPCRequest::$responses['d.get_directory']['byHash'][$hashB] = array('ok' => false);
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hashA, $hashB), 1);
-		$this->assertEquals(array($hashA), rXMLRPCRequest::$erased, 'only the resolvable hash is erased');
-		$this->assertTrue(is_array($this->listFor($hashA)), 'the accepted member has a published manifest');
-		$this->assertSame(false, $this->listFor($hashB), 'the refused member has no deletion authority');
-		$this->assertTrue(strpos(implode("\n", FileUtil::$log), 'could not determine the files of '.$hashB) !== false,
-			'the unresolved member is identified in the refusal');
-	}
 
 	public function testTorrentNotErasedWhenManifestWriteFails()
 	{
@@ -1729,7 +1705,7 @@ class RemoveWithDataTest extends TestCase
 		@chmod($this->dir.'/erasedata', 0555);
 		FileUtil::$denyDirectoryRepair = true;
 		try {
-			$result = erasedataRemoveWithData(array($hash), 1);
+			$result = $this->admit(array($hash), 1);
 			$this->assertTrue($result === false, 'removal must return false when manifest cannot be written');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased, 'torrent must not be erased when manifest write fails');
 			$this->assertTrue(count(FileUtil::$log) > 0, 'the manifest write failure is logged');
@@ -1746,8 +1722,9 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		rXMLRPCRequest::$responses["d.hash"] = array("ok"=>true, "val"=>array($hash));
-		$result = erasedataRemoveWithData(array($hash), 1);
-		$this->assertTrue($result === false, 'removal must return false when RPC erase fails');
+		$result = $this->admit(array($hash), 1);
+		$this->assertTrue(is_array($result) && $result['published'] === array() && $result['retained'] === array($hash),
+			'the caller is told the failed erase retained the torrent');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'list manifest must not exist when torrent still exists in rTorrent');
 		$tmpFiles = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
 		$this->assertEquals(1, count($tmpFiles),
@@ -1762,8 +1739,9 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(true, true, array(), 'invalid parameters: info-hash not found');
-		$result = erasedataRemoveWithData(array($hash), 1);
-		$this->assertTrue($result === false, 'removal returns false on RPC failure');
+		$result = $this->admit(array($hash), 1);
+		$this->assertTrue(is_array($result) && $result['published'] === array($hash) && $result['retained'] === array(),
+			'the caller is told the torrent that is gone was removed');
 		$this->assertEquals(1, count($this->manifestFiles($hash)),
 			'one list manifest must be published after exact missing-hash confirmation');
 		$tmpFiles = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
@@ -1777,8 +1755,9 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(true, false, array(""));
-		$result = erasedataRemoveWithData(array($hash), 1);
-		$this->assertTrue($result === false, 'removal returns false on RPC failure');
+		$result = $this->admit(array($hash), 1);
+		$this->assertTrue(is_array($result) && $result['published'] === array() && $result['retained'] === array($hash),
+			'the caller is told the unconfirmed erase retained the torrent');
 		$this->assertEquals(0, count($this->manifestFiles($hash)),
 			'clean empty uncertainty must not publish a deletion manifest');
 		$tmpFiles = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
@@ -1793,7 +1772,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, false, array());
-		erasedataRemoveWithData(array($hash), 1);
+		$this->admit(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'transport failure must not be treated as confirmed absence');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'unknown result retains staging for recovery');
 	}
@@ -1805,7 +1784,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, true, array());
-		erasedataRemoveWithData(array($hash), 1);
+		$this->admit(array($hash), 1);
 		$this->assertTrue($this->listFor($hash) === false, 'daemon fault must not be treated as confirmed absence');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'faulted probe retains staging for recovery');
 	}
@@ -1833,7 +1812,7 @@ class RemoveWithDataTest extends TestCase
 				@mkdir(substr($tmp[0], 0, -4).'.list');
 			@mkdir($this->dir.'/erasedata/'.$hash.'.list');
 		});
-		$result = erasedataRemoveWithData(array($hash), 1);
+		$result = $this->admit(array($hash), 1);
 		$this->assertTrue($result === false, 'publication failure is reported to the caller');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'failed rename does not publish a partial list file');
 		$this->assertEquals(1, count(glob($this->dir.'/erasedata/'.$hash.'.*.tmp')), 'failed rename retains complete staging for recovery');
@@ -1843,11 +1822,11 @@ class RemoveWithDataTest extends TestCase
 	{
 		$this->reset();
 		@rmdir($this->dir.'/erasedata');
-		$result = erasedataRemoveWithData(array($this->hash(), '../outside'), 1);
-		$this->assertTrue($result === false, 'the shared producer rejects a non-SHA-1 hash');
+		$result = $this->admit(array('../outside'), 1);
+		$this->assertTrue($result === false, 'the admission door rejects a non-SHA-1 hash');
 		$this->assertTrue(!file_exists($this->dir.'/erasedata'), 'invalid input cannot create the manifest directory');
 		$this->assertTrue(!file_exists($this->dir.'/OUTSIDE.lock'), 'path traversal cannot create an artifact outside the manifest directory');
-		$this->assertEquals(array(), rXMLRPCRequest::$requested, 'the complete batch is validated before any path lookup or erase RPC');
+		$this->assertEquals(array(), rXMLRPCRequest::$requested, 'an invalid hash reaches no path lookup or erase RPC');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'invalid input cannot reach d.erase');
 	}
 
@@ -1858,7 +1837,7 @@ class RemoveWithDataTest extends TestCase
 		$upper = strtoupper($lower);
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($lower), 1);
+		$this->admit(array($lower), 1);
 		$this->assertTrue(is_file($this->dir.'/erasedata/'.$upper.'.lock'), 'the lock uses the canonical uppercase hash');
 		$this->assertEquals(1, count($this->manifestFiles($upper)), 'the live manifest uses the canonical uppercase hash');
 		$this->assertEquals(array($upper), rXMLRPCRequest::$erased, 'RPC commands receive the canonical uppercase hash');
@@ -1875,7 +1854,7 @@ class RemoveWithDataTest extends TestCase
 		chmod($lock, 0600);
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
+		$this->admit(array($hash), 1);
 		$this->assertEquals(0660, $this->modeOf($lock), 'an existing persistent hash lock is repaired to the shared profile mode');
 		$this->assertEquals(0660, $this->modeOf($this->onlyManifest($hash)), 'the published manifest has the shared profile mode');
 	}
@@ -1889,7 +1868,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseFail();
 		$this->probe(false, false, array());
-		erasedataRemoveWithData(array($hash), 1);
+		$this->admit(array($hash), 1);
 		$tmp = glob($this->dir.'/erasedata/'.$hash.'.*.tmp');
 		$this->assertEquals(1, count($tmp), 'the unknown erase result retains one complete staging manifest');
 		$this->assertEquals(0660, count($tmp) ? $this->modeOf($tmp[0]) : null, 'completed staging has the shared profile mode');
@@ -1908,7 +1887,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
 		try {
-			erasedataRemoveWithData(array($hash), 1);
+			$this->admit(array($hash), 1);
 			$this->assertEquals(0666, $this->modeOf($this->dir.'/erasedata/'.$hash.'.lock'), 'the lock fallback also strips execute bits');
 			$this->assertEquals(0666, $this->modeOf($this->onlyManifest($hash)), 'focused harnesses without profileMask retain the historical permissive fallback');
 		} finally {
@@ -2833,12 +2812,7 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($oldFile, 'old');
 		file_put_contents($newFile, 'active');
 
-		$this->frozen(true, array($oldBase, 1, $oldFile));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
-		$first = $this->onlyManifest($hash);
-		$this->assertTrue(is_string($first) && basename($first) !== $hash.'.list',
-			'a produced obligation has staging-derived generation identity');
+		$this->writeProducedManifest($hash, $oldBase, $oldFile);
 
 		$owned = array('base'=>$newBase, 'multi'=>1, 'files'=>array($newFile));
 		list($status, $output) = $this->runCollector(array('val' => array($hash), 'owned' => $owned));
@@ -2847,17 +2821,14 @@ class RemoveWithDataTest extends TestCase
 		$this->assertTrue(is_file($newFile), 'the active generation data is untouched');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'the non-overlapping old obligation is complete');
 
-		$this->frozen(true, array($newBase, 1, $newFile));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
-		$this->assertEquals(1, count($this->manifestFiles($hash)), 'the second erase publishes its own generation');
+		$this->writeProducedManifest($hash, $newBase, $newFile);
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'post-second-erase collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($newFile), 'the second generation is collected after confirmed absence');
 		$this->assertEquals(array(), $this->manifestFiles($hash), 'the second obligation is consumed');
 	}
 
-	public function testSameHashDifferentDirectoryKeepsBothGenerationsUntilAbsent()
+	public function testSameHashDifferentDirectoryCollectsBothGenerationsWhenAbsent()
 	{
 		$this->reset();
 		$hash = $this->hash('7');
@@ -2870,14 +2841,9 @@ class RemoveWithDataTest extends TestCase
 		file_put_contents($oldFile, 'old');
 		file_put_contents($newFile, 'new');
 
-		$this->frozen(true, array($oldBase, 1, $oldFile));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
-		$this->frozen(true, array($newBase, 1, $newFile));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
+		$this->writeProducedManifest($hash, $oldBase, $oldFile);
+		$this->writeProducedManifest($hash, $newBase, $newFile);
 
-		$this->assertEquals(2, count($this->manifestFiles($hash)), 'a second erase never overwrites an older pending generation');
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'multi-generation absent collection exits normally: '.$output);
 		$this->assertTrue(!file_exists($oldFile), 'the older generation is collected after absence');
@@ -2894,9 +2860,7 @@ class RemoveWithDataTest extends TestCase
 		mkdir($base);
 		file_put_contents($file, 'active');
 
-		$this->frozen(true, array($base, 1, $file));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
+		$this->writeProducedManifest($hash, $base, $file);
 		$first = $this->onlyManifest($hash);
 		$exact = is_file($first) ? file_get_contents($first) : null;
 
@@ -2908,10 +2872,7 @@ class RemoveWithDataTest extends TestCase
 		$this->assertEquals($exact, is_file($first) ? file_get_contents($first) : null,
 			'the overlapping manifest remains exact while active');
 
-		$this->frozen(true, array($base, 1, $file));
-		$this->eraseOk();
-		erasedataRemoveWithData(array($hash), 1);
-		$this->assertEquals(2, count($this->manifestFiles($hash)), 'the overlapping second erase has a distinct generation');
+		$this->writeProducedManifest($hash, $base, $file);
 		list($status, $output) = $this->runCollector(array());
 		$this->assertEquals(0, $status, 'overlapping generations collect after absence: '.$output);
 		$this->assertTrue(!file_exists($file), 'the overlapping data is deleted after the live generation is absent');
@@ -3222,7 +3183,7 @@ class RemoveWithDataTest extends TestCase
 			foreach(array_merge($this->manifestFiles($hash, 'tmp'),
 				$this->manifestFiles($hash, 'list')) as $residue)
 				@unlink($residue);
-			$res = erasedataRemoveWithData(array($hash), $inv);
+			$res = $this->admit(array($hash), $inv);
 			$this->assertTrue($res === false, 'invalid force parameter must be rejected before staging/erase');
 			$this->assertEquals(array(), rXMLRPCRequest::$erased, 'd.erase must not be called for invalid force');
 			$this->assertEquals(array(), $this->manifestFiles($hash, 'tmp'), 'staging must not be published for invalid force');
@@ -3237,14 +3198,16 @@ class RemoveWithDataTest extends TestCase
 			'a refused force reaches no RPC at all');
 	}
 
-	// The shared admission API and retained compatibility producer both accept
-	// the exact wire spellings. The HTTP RPC and direct doors now enter the
-	// admission API, which normalizes force before writing the marker, journal
-	// and staging record. This case also pins the producer's legacy contract.
+	// The shared admission API accepts the exact wire spellings. The HTTP RPC
+	// and direct doors enter it, and it normalizes force before writing the
+	// marker, journal and staging record.
 	public function testWireForceSpellingsAreAcceptedAtThePublicDoorsAsIntegers()
 	{
 		$invariant = 'the exact wire spellings "1" and "2" are accepted at the'
 			.' public doors and normalized once into the integer force';
+		if(!$this->requireApi(array('erasedataAdmitRemoval()',
+			'erasedataReadDrainState()', 'erasedataDecodePendingMarker()'), $invariant))
+			return;
 		// A pair list, never an array key: PHP casts a decimal-string key to
 		// an integer, so array("1" => 1) would hand this loop the very
 		// integer the case exists to stop testing.
@@ -3252,33 +3215,9 @@ class RemoveWithDataTest extends TestCase
 		{
 			list($wire, $expected) = $pair;
 			$this->assertTrue($wire === (string)$expected,
-				'the case really hands the doors the STRING "'.$expected.'"');
-			// (a) The retained compatibility producer.
-			$this->reset();
-			$hash = $this->hash();
-			$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
-			$this->eraseOk();
-			$result = erasedataRemoveWithData(array($hash), $wire);
-			$this->assertTrue($result !== false,
-				'the producer accepts the wire force "'.$wire.'" rather than failing closed');
-			$this->assertEquals(array($hash), rXMLRPCRequest::$erased,
-				'and really erases the requested download for wire force "'.$wire.'"');
-			$record = $this->manifestRecordFor($hash);
-			$this->assertTrue(is_array($record) && array_key_exists('force', $record)
-				&& $record['force'] === $expected,
-				'the published manifest carries the integer force '.$expected
-					.' for wire force "'.$wire.'"');
-		}
-		if(!$this->requireApi(array('erasedataAdmitRemoval()',
-			'erasedataReadDrainState()', 'erasedataDecodePendingMarker()'), $invariant))
-			return;
-		foreach(array(array("1", 1), array("2", 2)) as $pair)
-		{
-			list($wire, $expected) = $pair;
-			$this->assertTrue($wire === (string)$expected,
-				'the case really hands the doors the STRING "'.$expected.'"');
-			// (b) The shared admission door, whose internal runner below it
-			// takes the integer and nothing else.
+				'the case really hands the door the STRING "'.$expected.'"');
+			// The shared admission door, whose internal runner below it takes
+			// the integer and nothing else.
 			$this->reset();
 			$hash = $this->hash();
 			$queue = $this->queuePath();
@@ -3341,19 +3280,10 @@ class RemoveWithDataTest extends TestCase
 				'the manifest the admission published carries the integer force '
 					.$expected.' for wire force "'.$wire.'"');
 		}
-		// Both callable boundaries accept the wire spelling themselves.
-		$producer = $this->productionFunctionBody('removewithdata.php',
-			'function erasedataRemoveWithData($hashes, $forceDelete)');
-		$this->assertTrue(is_string($producer)
-			&& strpos($producer, 'ErasedataManifestCodec::normalizeForce($forceDelete)') !== false,
-			'the producer normalizes its own force argument');
-		$this->assertTrue(is_string($producer)
-			&& strpos($producer, '$forceDelete !== 1 && $forceDelete !== 2') === false,
-			'and carries no integer-only type guard in front of that normalization');
-		// The door is not the last function in the file, and every function in
-		// it is nested inside an if(!function_exists()) guard, so a body scan
+		// The door accepts the wire spelling itself. Every function in the file
+		// is nested inside an if(!function_exists()) guard, so a body scan
 		// would run to the end of the file. These two exact lines are read off
-		// the whole source instead, which is precise either way.
+		// the whole source instead.
 		$this->sourceHas('removewithdata.php',
 			"\t\t\$normalizedForce = ErasedataManifestCodec::normalizeForce(\$force);\n",
 			'the shared admission door normalizes its own force argument');
@@ -3494,7 +3424,7 @@ class RemoveWithDataTest extends TestCase
 		$specialFile = $base."/a\nb\r-\xFF.bin";
 		$this->frozen(true, array($base, 1, $specialFile));
 		$this->eraseOk();
-		$res = erasedataRemoveWithData(array($hash), 1);
+		$res = $this->admit(array($hash), 1);
 		$this->assertTrue($res !== false, 'valid request with byte-opaque path must succeed');
 		$record = $this->manifestRecordFor($hash);
 		$this->assertTrue(is_array($record), 'v2 manifest record must decode properly');
@@ -7693,7 +7623,7 @@ class RemoveWithDataTest extends TestCase
 		$this->frozen(true, array("/d/name", 1, "/d/name/a.bin"));
 		$this->eraseOk();
 		$injectedForce = $victim."\n1\n2";
-		$res = erasedataRemoveWithData(array($hash), $injectedForce);
+		$res = $this->admit(array($hash), $injectedForce);
 		$this->assertTrue($res === false, 'injected force parameter must be rejected');
 		$this->assertEquals(array(), rXMLRPCRequest::$erased, 'erase must not be called on injection attempt');
 		$this->assertTrue(file_exists($victim.'/sentinel.txt'), 'victim sentinel must survive');
@@ -10283,7 +10213,6 @@ class RemoveWithDataTest extends TestCase
 	//     erasedataAdmissionPartition($hashes, $force)
 	//     erasedataAdmitRemoval($hashes, $force)             [public door]
 	//     erasedataRemovalAdmissionRun(array $dependencies, $hashes, $force)
-	//     erasedataRemoveWithData($hashes, $force)              [public, 2 args]
 	//     erasedataDrainWorkerRun(array $dependencies)
 	//     erasedataDrainWorkerMain($user)                       [public]
 	//     erasedataClassifyEraseOutcomes(array $hashes, $request)
@@ -10562,6 +10491,14 @@ class RemoveWithDataTest extends TestCase
 	// by testTheProducerNeverWritesTheAcknowledgement and by the real
 	// update.php children of the paired-subprocess cases, none of which use
 	// this helper.
+	// erasedataAdmitRemoval(), the door action.php, httprpc and erase.php
+	// enter, with the acknowledgement rTorrent's scheduler would give.
+	private function admit($hashes, $force)
+	{
+		$this->acknowledgeOnRegistration(erasedataQueuePath());
+		return(erasedataAdmitRemoval($hashes, $force));
+	}
+
 	private function acknowledgeOnRegistration($queue, $extra = null)
 	{
 		rXMLRPCRequest::$responses['schedule'] = array('ok' => true, 'val' => array(0));
@@ -12208,10 +12145,6 @@ class RemoveWithDataTest extends TestCase
 			'action.php calls the shared admission API');
 		$this->sourceHas('erase.php', 'erasedataAdmitRemoval',
 			'erase.php calls the shared admission API');
-		$this->sourceLacks('action.php', 'erasedataRemoveWithData(',
-			'action.php never calls the destructive producer directly');
-		$this->sourceLacks('erase.php', 'erasedataRemoveWithData(',
-			'erase.php never calls the destructive producer directly');
 		foreach(array('action.php', 'erase.php', 'update.php', 'removewithdata.php',
 			'pending.php', 'filesystem.php', 'manifest.php', 'collector.php',
 			'init.php', 'conf.php') as $file)
@@ -12229,9 +12162,6 @@ class RemoveWithDataTest extends TestCase
 		if(!$this->requireApi(array('erasedataRemovalAdmissionRun()',
 			'erasedataAdmitRemoval()'), $invariant))
 			return;
-		$public = new ReflectionFunction('erasedataRemoveWithData');
-		$this->assertEquals(2, $public->getNumberOfParameters(),
-			'erasedataRemoveWithData keeps exactly its two production parameters');
 		$door = new ReflectionFunction('erasedataAdmitRemoval');
 		$this->assertEquals(2, $door->getNumberOfParameters(),
 			'the shared public door takes hashes and force and nothing else');

@@ -305,18 +305,18 @@ class RenameAdmissionTest extends TestCase
             'the second parent lookup retains the named helper refusal context');
     }
 
-    public function testLegacyAdmissionReportsTheActualParentAndErrno()
+    public function testAdmissionReportsTheActualParentAndErrno()
     {
         chmod($this->dir.'/data', 0500);
         try
         {
-            $this->assertTrue(erasedataRemoveWithData(array($this->hash), 1) === false,
-                'legacy producer refuses an unwritable payload parent');
-            $this->assertEquals(array(), rXMLRPCRequest::$erased, 'legacy refusal retains the torrent');
+            $this->assertTrue($this->admit(new ErasedataFilesystemOps()) === false,
+                'admission refuses an unwritable payload parent');
+            $this->assertEquals(array(), rXMLRPCRequest::$erased, 'the refusal retains the torrent');
             $log = implode("\n", FileUtil::$log);
             $this->assertTrue(strpos($log, 'path='.erasedataLogPath($this->dir.'/data')) !== false
                 && strpos($log, 'errno=13') !== false,
-                'legacy refusal reports the actual native parent and errno');
+                'the refusal reports the actual native parent and errno');
         }
         finally { chmod($this->dir.'/data', 0700); }
     }

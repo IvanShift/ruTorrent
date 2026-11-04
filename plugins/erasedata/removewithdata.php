@@ -1,8 +1,8 @@
 <?php
 
 // Shared admission and durable deletion obligations for the web and CLI
-// removal entrypoints. The legacy producer remains for compatibility; active
-// entrypoints use erasedataAdmitRemoval(). The caller loads php/xmlrpc.php.
+// removal entrypoints, which use erasedataAdmitRemoval(). The caller loads
+// php/xmlrpc.php.
 // The torrent presence probe and its three answers live in presence.php,
 // which datadir loads without the rest of this file.
 require_once(dirname(__FILE__)."/presence.php");
@@ -2954,8 +2954,8 @@ if(!function_exists('erasedataEraseRequest'))
 	// manifest -- a licence to delete a payload -- is published for a download
 	// rTorrent still holds. The constant's own comment demands that every
 	// builder stay in step with it, and the way to guarantee that is to have
-	// ONE builder. The admission producer, the drain pass and the retained
-	// legacy producer all come through here, so they cannot drift apart, and this function checks its own output against the
+	// ONE builder. The admission producer and the drain pass both come through
+	// here, so they cannot drift apart, and this function checks its own output against the
 	// constant so a change to erasedataEraseCommandsForHash() cannot drift away
 	// from it either. A mismatch refuses to build the request at all: every
 	// caller then reads it as an erase that did not run, retains its
@@ -5395,7 +5395,7 @@ if(!function_exists('erasedataNoAdmissionHoldsThisQueue'))
 	// It proves ONE direction, which is the direction that matters here: true
 	// means "nobody is arming", false means "cannot tell". A directory this
 	// process cannot read, a lock file it cannot open and a lock somebody else
-	// holds -- the periodic collector, the legacy producer, a drain pass -- all
+	// holds -- the periodic collector, another admission, a drain pass -- all
 	// answer false and leave the phase exactly as found.
 	//
 	// It costs one open per <HASH>.lock, and it is only ever reached on a queue
@@ -6030,132 +6030,5 @@ if(!function_exists('erasedataAdmitRemoval'))
 			'ackTimeout' => ERASEDATA_DRAIN_ACK_TIMEOUT,
 			'ackPoll' => ERASEDATA_DRAIN_ACK_POLL,
 		), $hashes, $normalizedForce));
-	}
-}
-
-if(!function_exists('erasedataRemoveWithData'))
-{
-	function erasedataRemoveWithData($hashes, $forceDelete)
-	{
-		if(erasedataNativeCapability() !== 'legacy')
-			return(erasedataAdmitRemoval($hashes, $forceDelete));
-
-		// Invariant 13 at a PUBLIC boundary: the two exact wire spellings "1"
-		// and "2" ARE accepted here and normalized exactly once, and every
-		// value below this line is the integer 1 or 2.
-		//
-		// Keep this compatibility boundary for direct or external callers of
-		// the legacy helper. The active web and CLI doors use the shared admission
-		// wrapper, which also accepts exact decimal wire spellings.
-		//
-		// Accepting the spelling is not coercing a value. normalizeForce()
-		// answers null for everything that is not exactly 1, 2, "1" or "2" --
-		// true, 1.0, "01", " 1", "1\n" and a footer-injection string included --
-		// and a null force is refused right here, before a single lock, path
-		// collection, staged byte or RPC. The integer-only rule then holds from
-		// admission inward: erasedataAdmissionPartition(), the marker codec,
-		// the drain journal, the worker and the collector each refuse anything
-		// that is not already the integer.
-		$normalizedForce = ErasedataManifestCodec::normalizeForce($forceDelete);
-		if(is_null($normalizedForce))
-			return(false);
-		$pending = array();
-		if(!is_array($hashes))
-			return(false);
-		foreach($hashes as $hash)
-		{
-			if(!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/D', $hash))
-				return(false);
-			$canonicalHash = strtoupper($hash);
-			if(!isset($pending[$canonicalHash]))
-				$pending[$canonicalHash] = $canonicalHash;
-		}
-		if(!count($pending))
-			return(false);
-		$listPath = erasedataQueuePath();
-		if(!erasedataEnsureQueueDirectory($listPath))
-			return(false);
-		$erasable = array();
-		$tmpMap = array();
-		$locks = array();
-		$filesystem = new ErasedataFilesystemOps();
-		$probed = array();
-		ksort($pending, SORT_STRING);
-		foreach($pending as $h)
-		{
-			$lock = erasedataAcquireHashLock($listPath, $h);
-			if($lock === false)
-			{
-				FileUtil::toLog("erasedata: could not lock ".$h.", torrent not erased");
-				continue;
-			}
-			$paths = erasedataCollectPaths($h);
-			if($paths === false || !erasedataRemovalRenameReady($listPath, $paths, $filesystem, $probed))
-			{
-				// Erasing now would drop the torrent and leave its data behind
-				// with nothing left to identify it, so keep the torrent.
-				if($paths === false)
-					FileUtil::toLog("erasedata: could not determine the files of ".$h.", torrent not erased");
-				else ErasedataFilesystemOps::reportRenameRefusal();
-				erasedataReleaseHashLock($lock);
-				continue;
-			}
-			$content = ErasedataManifestCodec::encode($h, $paths, $normalizedForce);
-			if($content === false)
-			{
-				FileUtil::toLog("erasedata: failed to encode valid manifest for ".$h.", torrent not erased");
-				erasedataReleaseHashLock($lock);
-				continue;
-			}
-			$staged = erasedataWriteStagedManifest($listPath, $h, $content);
-			if($staged === false)
-			{
-				FileUtil::toLog("erasedata: failed to write complete manifest for ".$h.", torrent not erased");
-				erasedataReleaseHashLock($lock);
-				continue;
-			}
-			$tmpMap[$h] = $staged['path'];
-			$locks[$h] = $lock;
-			$erasable[] = $h;
-		}
-		if(!count($erasable))
-			return(false);
-		// The same shared builder the drain protocol uses: three commands per
-		// member in the same order, so this legacy producer cannot drift away
-		// from ERASEDATA_ERASE_COMMANDS_PER_HASH either. A refused build is an
-		// erase that did not run, and the per-hash fallback below then probes
-		// presence and retains rather than publishing anything.
-		$req = erasedataEraseRequest($erasable);
-		$eraseSucceeded = ($req !== false) && $req->success();
-		$published = true;
-		foreach($erasable as $h)
-		{
-			$tmpPath = $tmpMap[$h];
-			if($eraseSucceeded)
-			{
-				if(!ErasedataManifestCodec::publishStaging($tmpPath, $h))
-					$published = false;
-			}
-			else
-			{
-				$presence = erasedataTorrentPresence($h);
-				if($presence === ERASEDATA_TORRENT_PRESENT)
-				{
-					FileUtil::toLog("erasedata: RPC erase failed and torrent ".$h.
-						" is present, staging retained for owned-path reconciliation");
-				}
-				elseif($presence === ERASEDATA_TORRENT_ABSENT)
-				{
-					if(ErasedataManifestCodec::publishStaging($tmpPath, $h))
-						FileUtil::toLog("erasedata: RPC erase unconfirmed but torrent ".$h." is gone, manifest published");
-					else
-						$published = false;
-				}
-				else
-					FileUtil::toLog("erasedata: RPC erase and torrent presence are unconfirmed for ".$h.", staging retained");
-			}
-			erasedataReleaseHashLock($locks[$h]);
-		}
-		return(($eraseSucceeded && $published) ? $req->val : false);
 	}
 }

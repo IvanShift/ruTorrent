@@ -62,7 +62,7 @@ class RpcStringConsumersTest extends TestCase
 		'plugins/edit/action.php'                        => 18,
 		'plugins/erasedata/outcome.php'                  => 9,
 		// Physical paths now retain per-command XML types/table rows instead of flat values.
-		'plugins/erasedata/removewithdata.php'           => 41,
+		'plugins/erasedata/removewithdata.php'           => 40,
 		'plugins/extratio/rules.php'                     => 5,
 		// List and files are read row by row, other modes as flat values, and a
 		// names=1 file list reads the session and tied paths for its labels.

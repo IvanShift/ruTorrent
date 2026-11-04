@@ -4,17 +4,18 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
 
 /**
- * Cross-process erase/collector checks on the explicitly supported stock 0.9.8
+ * Cross-process collector checks on the explicitly supported stock 0.9.8
  * boundary. The real capability probe must establish that exception; modern
  * native intent and generation gates remain covered by the Native* suites.
  *
- * The fork retains complete recovery staging after an unknown erase and asks
- * d.hash separately for every owner. A returning owner keeps both its data and
- * the retryable manifest until its paths are no longer owned. Only the exact
- * captured legacy missing-hash fault permits the collector to remove data.
+ * The collector asks d.hash separately for every owner. A returning owner
+ * keeps both its data and the retryable manifest until its paths are no longer
+ * owned. Only the exact captured legacy missing-hash fault permits the
+ * collector to remove data, and retained staging permits nothing.
  *
- * A real SCGI peer drives the shipped producer, then a fresh child executes
- * the shipped collector service, with the real filesystem helper and profile.
+ * Each case leaves what the retired direct producer left in the queue, then a
+ * fresh child executes the shipped collector service against a real SCGI peer,
+ * with the real filesystem helper and profile.
  */
 /** Stock capability reads stay separate from the scenario's erase/presence replies. */
 class UnconfirmedEraseReplies
@@ -117,18 +118,12 @@ class UnconfirmedEraseTest extends TestCase
 	}
 
 	/**
-	 * What the daemon answers the writer's first request -- the base path,
-	 * the multi-file flag and f.frozen_path of every file, in one multicall.
+	 * What the daemon answers a request for the paths -- the base path, the
+	 * multi-file flag and f.frozen_path of every file, in one multicall.
 	 */
 	private function pathsReply($download)
 	{
 		return array_merge(array($download['base'], 1), $download['files']);
-	}
-
-	/** What the daemon answers the erase request: one value per command. */
-	private function eraseReply()
-	{
-		return array(0, 0, 0);
 	}
 
 	private function startDaemon($replies)
@@ -178,22 +173,26 @@ class UnconfirmedEraseTest extends TestCase
 	}
 
 	/**
-	 * erasedataRemoveWithData() for one hash, as plugins/httprpc/action.php
-	 * and plugins/erasedata/action.php call it for "Remove and delete data".
-	 * Answers "erased" or "refused": what the caller reports to the user.
+	 * Leaves the manifest of $download in the queue as the retired direct
+	 * producer did, <HASH>.<pid>.<uniqid>.$type: "list" after a confirmed
+	 * erase, "tmp" for the staging it retained after an unconfirmed one. The
+	 * shipped code makes the queue; the daemon is not asked.
 	 */
-	private function removeWithData($socketTimeout = 60, $hash = self::HASH)
+	private function leaveManifest($download, $hash = self::HASH, $type = 'list')
 	{
 		$root = $this->repoRoot();
-		$driver = $this->base . '/drive-remove.php';
+		$driver = $this->base . '/drive-leave.php';
 		file_put_contents($driver, $this->preamble()
 			. 'require_once(' . var_export($root . '/plugins/erasedata/removewithdata.php', true) . ");\n"
-			. '$__result = erasedataRemoveWithData(array(' . var_export($hash, true) . '), "1");' . "\n"
-			. 'echo ($__result === false) ? "refused" : "erased";' . "\n");
-		// rSCGITransport::sendConfigured() sets the transfer budget to
-		// max(default_socket_timeout, $rpcTimeOut): config.php leaves
-		// $rpcTransferTimeOut null, and the preamble sets $rpcTimeOut = 5.
-		return $this->run_($driver, '-d default_socket_timeout=' . (int)$socketTimeout);
+			. '$__q = erasedataQueuePath();' . "\n"
+			. '$__b = ErasedataManifestCodec::encode(' . var_export($hash, true) . ', array("base" => '
+			. var_export($download['base'], true) . ', "multi" => true, "files" => '
+			. var_export($download['files'], true) . '), 1);' . "\n"
+			. '$__n = $__q . "/" . ' . var_export($hash, true) . ' . "." . getmypid() . "." . uniqid("", true) . '
+			. var_export('.' . $type, true) . ';' . "\n"
+			. 'echo (erasedataEnsureQueueDirectory($__q) && is_string($__b)'
+			. ' && file_put_contents($__n, $__b) === strlen($__b)) ? "left" : "refused";' . "\n");
+		return $this->run_($driver);
 	}
 
 	/**
@@ -249,65 +248,17 @@ class UnconfirmedEraseTest extends TestCase
 		return $this->isFile($log) ? file_get_contents($log) : '';
 	}
 
-	// -- the erase never reached the daemon -----------------------------------
 
-	public function testNothingIsPublishedForAnEraseTheDaemonNeverAnswered()
+	// -- an erase that was never confirmed --------------------------------------
+
+	public function testRetainedStagingOfAnUnconfirmedEraseIsNotPublished()
 	{
 		$this->fresh();
 		$download = $this->download();
-		// Only the path query is answered. The peer records later requests
-		// and closes without replies, modeling a lost erase answer followed
-		// by unknown presence. Neither can grant deletion authority.
-		$this->startDaemon(array($this->pathsReply($download)));
-
-		$verdict = $this->removeWithData(2);
-
-		$this->assertTrue($verdict === 'refused',
-			'the writer tells the caller the removal did not happen: ' . $verdict);
-		$this->assertTrue($this->daemon->received('d.erase'),
-			'the daemon received the erase but dropped its reply');
-		$this->assertTrue(!$this->listPublished(),
-			'so no list authorises deleting the files');
-		$this->assertTrue(count(glob($this->listPath() . '/' . self::HASH . '.*.tmp')) === 1,
-			'the complete recovery staging is retained instead of losing the obligation');
-		$this->assertTrue(strpos($this->logged(), 'RPC erase and torrent presence are unconfirmed for ' . self::HASH) !== false,
-			'the log says the erase was not confirmed, and where the data is: ' . $this->logged());
-
-		$out = $this->collect();
-
-		$this->assertTrue($out === '', 'the collector runs without a diagnostic: ' . $out);
-		foreach ($download['files'] as $file) {
-			$this->assertTrue($this->isFile($file),
-				'a file of a download the daemon still holds is still there: ' . basename($file));
-		}
-	}
-
-	// -- the daemon refused the erase -----------------------------------------
-
-	public function testNothingIsPublishedForAnEraseTheDaemonRefused()
-	{
-		$this->fresh();
-		$download = $this->download();
-		// A fault makes the writer report failure. It cannot tell which of
-		// the three calls ran; here none did. The third reply is for a
-		// collector that asks about hashes; one with nothing to apply does
-		// not ask, and the reply stays unconsumed.
-		$this->startDaemon(array(
-			$this->pathsReply($download),
-			FakeRtorrentDaemon::fault('Could not erase download.'),
-			array(self::HASH),
-		));
-
-		$verdict = $this->removeWithData();
-
-		$this->assertTrue($verdict === 'refused',
-			'the writer tells the caller the removal did not happen: ' . $verdict);
-		$this->assertTrue($this->daemon->received('d.erase'),
-			'the daemon saw the erase and answered it with a fault');
-		$this->assertTrue(!$this->listPublished(),
-			'so no list authorises deleting the files');
-		$this->assertTrue(count(glob($this->listPath() . '/' . self::HASH . '.*.tmp')) === 1,
-			'the complete recovery staging is retained instead of losing the obligation');
+		// The reply is for a collector that asks about hashes; one with
+		// nothing to apply does not ask, and the reply stays unconsumed.
+		$this->startDaemon(array(array(self::HASH)));
+		$this->assertTrue($this->leaveManifest($download, self::HASH, 'tmp') === 'left', 'the staging is left');
 
 		$out = $this->collect();
 
@@ -316,7 +267,7 @@ class UnconfirmedEraseTest extends TestCase
 			'the collector cannot grant deletion authority from the unknown retained staging');
 		foreach ($download['files'] as $file) {
 			$this->assertTrue($this->isFile($file),
-				'a file of a download the daemon still holds is still there: ' . basename($file));
+				'a file of a download whose erase was not confirmed is still there: ' . basename($file));
 		}
 	}
 
@@ -331,20 +282,12 @@ class UnconfirmedEraseTest extends TestCase
 		// a pass is skipped as busy -- the torrent is added again to the same
 		// directory: a removal noticed as a mistake, a watch directory, an
 		// RSS rule. rtorrent finds the files on disk and lists the hash
-		// again; the third reply is what it tells the collector.
+		// again; the first reply is what it tells the collector.
 		$this->startDaemon(array(
-			$this->pathsReply($download),
-			$this->eraseReply(),
 			array(self::HASH),
 			$this->pathsReply($download),
 		));
-
-		$verdict = $this->removeWithData();
-
-		$this->assertTrue($verdict === 'erased',
-			'the writer tells the caller the removal happened: ' . $verdict);
-		$this->assertTrue($this->daemon->received('d.erase'), 'the daemon erased the download');
-		$this->assertTrue($this->listPublished(), 'and the list is published');
+		$this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
 
 		$out = $this->collect();
 
@@ -356,7 +299,7 @@ class UnconfirmedEraseTest extends TestCase
 			$this->assertTrue($this->isFile($file),
 				'a file of a download the daemon holds again is still there: ' . basename($file));
 		}
-		$this->assertTrue(count(array_keys($this->daemon->calls(), 'd.get_base_path', true)) === 2,
+		$this->assertTrue(count(array_keys($this->daemon->calls(), 'd.get_base_path', true)) === 1,
 			'the returning torrent owns the same paths, so the collector reconciles them before retaining the obligation');
 	}
 
@@ -366,13 +309,8 @@ class UnconfirmedEraseTest extends TestCase
 	{
 		$this->fresh();
 		$download = $this->download();
-		$this->startDaemon(array($this->pathsReply($download), $this->eraseReply()));
-
-		$verdict = $this->removeWithData();
-
-		$this->assertTrue($verdict === 'erased',
-			'the writer tells the caller the removal happened: ' . $verdict);
-		$this->assertTrue($this->listPublished(), 'and the list is published');
+		$this->startDaemon(array());
+		$this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
 		// rtorrent is down when the collector's pass comes: restarting,
 		// crashed, its socket refused. Whether the download has been loaded
 		// again is unknown, and the collector may not guess.
@@ -400,16 +338,9 @@ class UnconfirmedEraseTest extends TestCase
 		// as unknown an answer as none, and is told apart in the log so that
 		// a line every pass can be read for what it is.
 		$this->startDaemon(array(
-			$this->pathsReply($download),
-			$this->eraseReply(),
 			FakeRtorrentDaemon::fault('Unsupported target type found.'),
 		));
-
-		$verdict = $this->removeWithData();
-
-		$this->assertTrue($verdict === 'erased',
-			'the writer tells the caller the removal happened: ' . $verdict);
-		$this->assertTrue($this->listPublished(), 'and the list is published');
+		$this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
 
 		$out = $this->collect();
 
@@ -437,19 +368,12 @@ class UnconfirmedEraseTest extends TestCase
 		// that exactly one list is applied and the other withdrawn, and that
 		// the withdrawn one is the download whose files are still there.
 		$this->startDaemon(array(
-			$this->pathsReply($first),
-			$this->eraseReply(),
-			$this->pathsReply($second),
-			$this->eraseReply(),
 			FakeRtorrentDaemon::fault('Could not find info-hash.', -501),
 			array(self::OTHER),
 			$this->pathsReply($second),
 		));
-
-		$this->assertTrue($this->removeWithData(60, self::HASH) === 'erased', 'the first removal happened');
-		$this->assertTrue($this->removeWithData(60, self::OTHER) === 'erased', 'and the second');
-		$this->assertTrue($this->listPublished(self::HASH) && $this->listPublished(self::OTHER),
-			'and both lists are published');
+		$this->assertTrue($this->leaveManifest($first, self::HASH) === 'left'
+			&& $this->leaveManifest($second, self::OTHER) === 'left', 'both lists are published');
 
 		$out = $this->collect();
 
@@ -479,22 +403,9 @@ class UnconfirmedEraseTest extends TestCase
 		// At the collector's pass the daemon holds another download, not
 		// this one.
 		$this->startDaemon(array(
-			$this->pathsReply($download),
-			$this->eraseReply(),
 			FakeRtorrentDaemon::fault('Could not find info-hash.', -501),
 		));
-
-		$verdict = $this->removeWithData();
-
-		$this->assertTrue($verdict === 'erased',
-			'the writer tells the caller the removal happened: ' . $verdict);
-		$this->assertTrue($this->daemon->calls() === array(
-			'system.listMethods', 'system.client_version',
-			'd.get_base_path', 'd.is_multi_file', 'f.multicall',
-			'd.set_custom5', 'd.delete_tied', 'd.erase'),
-			'the paths are read first, then the download is erased in one request: '
-			. implode(' ', $this->daemon->calls()));
-		$this->assertTrue($this->listPublished(), 'and the list is published');
+		$this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
 
 		$out = $this->collect();
 
