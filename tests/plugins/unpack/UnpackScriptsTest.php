@@ -62,12 +62,16 @@ class UnpackScriptsTest extends TestCase
 		return is_file($calls) ? file($calls, FILE_IGNORE_NEW_LINES) : array();
 	}
 
-	/** Runs plugins/unpack/$script as unpack.php does, with $this->user. */
-	private function script($script, array $arguments)
+	/**
+	 * Runs plugins/unpack/$script as unpack.php does, with $this->user, from
+	 * $directory when it is given.
+	 */
+	private function script($script, array $arguments, $directory = null)
 	{
 		$arguments = array_pad($arguments, 6, '');
 		array_push($arguments, PHP_BINARY, 'automatic', self::HASH, $this->user);
-		$process = proc_open(array_merge(array(dirname(__DIR__, 3) . '/plugins/unpack/' . $script), $arguments),
+		$directory = ($directory === null) ? dirname(__DIR__, 3) . '/plugins/unpack' : $directory;
+		$process = proc_open(array_merge(array($directory . '/' . $script), $arguments),
 			array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes,
 			$this->base, array_merge(getenv(), array('RU_PROFILE_PATH' => $this->base . '/profile',
 				'RU_LOG_FILE' => $this->base . '/errors.log')));
@@ -214,6 +218,45 @@ class UnpackScriptsTest extends TestCase
 		$this->assertSame('', $run['err'], 'and reports nothing');
 		$this->assertSame(array('Subs', 'Subs/eng', 'Subs/eng/r', 'Subs/eng/z'), UnpackArchiveFixture::tree($this->base . '/out'),
 			'the nested subdirectory is made and filled');
+	}
+
+	/** unrar is given each directory as "<directory>/.", and makes the whole path it extracts to. */
+	private function unrarWritingR()
+	{
+		return $this->extractor('unrar', '[ "$1" = x ] || exit 0; for a; do case "$a" in *.) d=${a%.} ;; esac; done;'
+			. ' for a in "$d"*.rar; do [ -f "$a" ] && mkdir -p "$dest" && echo r > "$dest/r"; done; exit 0');
+	}
+
+	public function testADirectoryNameEndingInANewlineKeepsIt()
+	{
+		// $(basename ...) would drop the newline; ${fn##*/} keeps it.
+		$unzip = $this->extractor('unzip', '{ mkdir "$dest" 2>/dev/null || [ -d "$dest" ]; } || exit 2; echo z > "$dest/z"');
+		$unrar = $this->unrarWritingR();
+		mkdir($this->base . "/in/sub\n");
+		file_put_contents($this->base . "/in/sub\n/x.zip", 'zip');
+		file_put_contents($this->base . "/in/sub\n/x.rar", 'rar');
+		foreach (array('unzip_dir.sh' => array($unzip, "sub\n/z"), 'unrar_dir.sh' => array($unrar, "sub\n/r")) as $script => $case) {
+			$output = $this->base . '/out/' . $script;
+			mkdir($output);
+			$run = $this->script($script, array($case[0], $this->base . '/in/', $output . '/'));
+			$this->assertSame(0, $run['code'], $script . ' succeeds: ' . json_encode($run));
+			$this->assertSame(array("sub\n", $case[1]), UnpackArchiveFixture::tree($output),
+				$script . ' places the directory under its own name, newline included: '
+				. json_encode(UnpackArchiveFixture::tree($output)));
+		}
+	}
+
+	public function testUnallRunsFromADirectoryWithASpace()
+	{
+		$unzip = $this->extractor('unzip', '{ mkdir "$dest" 2>/dev/null || [ -d "$dest" ]; } || exit 2; echo z > "$dest/z"');
+		$unrar = $this->unrarWritingR();
+		file_put_contents($this->base . '/in/x.zip', 'zip');
+		file_put_contents($this->base . '/in/x.rar', 'rar');
+		$directory = $this->base . '/plug in';
+		symlink(dirname(__DIR__, 3) . '/plugins/unpack', $directory);
+		$run = $this->script('unall_dir.sh', array($unrar, $this->base . '/in/', $this->base . '/out/', $unzip), $directory);
+		$this->assertSame(0, $run['code'], 'the unpack succeeds: ' . json_encode($run));
+		$this->assertSame(array('r', 'z'), UnpackArchiveFixture::tree($this->base . '/out'), 'both scripts are found and run');
 	}
 
 	public function testDirectoriesAnArchiveLockedArePlaced()
