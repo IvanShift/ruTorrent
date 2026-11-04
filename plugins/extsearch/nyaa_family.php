@@ -4,9 +4,9 @@
 // Keep this outside engines/: engineManager treats every file there as a site.
 abstract class NyaaFamilyEngine extends commonEngine
 {
-	public $defaults = array( "public"=>true, "page_size"=>75 );
+	public $defaults = [ "public"=>true, "page_size"=>75 ];
 	protected $baseUrl = '';
-	protected $globalCategories = array();
+	protected $globalCategories = [];
 
 	public function action($what,$cat,&$ret,$limit,$useGlobalCats)
 	{
@@ -19,8 +19,8 @@ abstract class NyaaFamilyEngine extends commonEngine
 		{
 			$search = $url . '/?c=' . $cat . '&q=' . $what . '&s=seeders&o=desc&p=' . $pg;
 			$cli = $this->fetch($search);
-			if(($cli == false) || (strpos($cli->results, ">No results found<") !== false))
-				break;
+			if(($cli == false) || (strpos($cli->results, ">No results found<") !== false)) {
+				break; }
 
 			$res = preg_match_all('`<tr class.*>.*'.
 				'<td.*>.*<a.*title="(?P<cat>.*)">.*'.
@@ -31,21 +31,21 @@ abstract class NyaaFamilyEngine extends commonEngine
 				'<td.*>(?P<seeds>.*)</td>.*'.
 				'<td.*>(?P<peers>.*)</td>'.
 				'`siU',$cli->results,$matches);
-			if(!$res)
-				break;
+			if(!$res) {
+				break; }
 
 			for($i = 0; $i < $res; $i++)
 			{
 				$link = self::removeTags($matches['link'][$i]);
-				if(array_key_exists($link,$ret))
-					continue;
+				if(array_key_exists($link,$ret)) {
+					continue; }
 				$item = $this->getNewEntry();
 				$item["desc"] = $url."/view/".$matches["id"][$i];
 				$time = false;
 				if(preg_match('/(?:^|\s)data-timestamp="(0|[1-9][0-9]*)"(?=\s|$)/',
-					$matches["dateAttrs"][$i], $timestamp))
+					$matches["dateAttrs"][$i], $timestamp)) {
 					$time = filter_var($timestamp[1], FILTER_VALIDATE_INT,
-						array("options"=>array("min_range"=>0)));
+						["options"=>["min_range"=>0]]); }
 				$item["time"] = $time === false
 					? strtotime(self::removeTags($matches["date"][$i]).' UTC') : $time;
 				$item["name"] = self::toUTF(self::removeTags($matches["name"][$i]),"utf-8");
@@ -54,8 +54,8 @@ abstract class NyaaFamilyEngine extends commonEngine
 				$item["seeds"] = intval(self::removeTags($matches["seeds"][$i]));
 				$item["peers"] = intval(self::removeTags($matches["peers"][$i]));
 				$ret[$link] = $item;
-				if(++$added >= $limit)
-					return;
+				if(++$added >= $limit) {
+					return; }
 			}
 		}
 	}

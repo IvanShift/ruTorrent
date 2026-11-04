@@ -14,7 +14,7 @@ class XMLRPCBinaryParamTest extends TestCase
 {
 	public function testLegacyPathsAndXmlNormalizedBytesUseBinaryParameters()
 	{
-		foreach(array("/data/\xF1\xE5\xF0\xE8\xFF", "/data/a\rb", "control\x01", "zero\0byte", "\xEF\xBF\xBE", "\xEF\xBF\xBF") as $raw)
+		foreach(["/data/\xF1\xE5\xF0\xE8\xFF", "/data/a\rb", "control\x01", "zero\0byte", "\xEF\xBF\xBE", "\xEF\xBF\xBF"] as $raw)
 		{
 			$parameter = new rXMLRPCParam('string', $raw);
 			$this->assertSame('base64', $parameter->type, 'XML cannot change or discard path bytes');
@@ -24,7 +24,7 @@ class XMLRPCBinaryParamTest extends TestCase
 
 	public function testOrdinaryUnicodeAndExplicitBinaryKeepTheirWireFormat()
 	{
-		foreach(array('', "русский/中文🙂", "a\tb\nc", "a'\"\\%2F<&") as $raw)
+		foreach(['', "русский/中文🙂", "a\tb\nc", "a'\"\\%2F<&"] as $raw)
 		{
 			$parameter = new rXMLRPCParam('string', $raw);
 			$this->assertSame('string', $parameter->type);
@@ -41,15 +41,15 @@ class XMLRPCBinaryParamTest extends TestCase
 		$begin = strpos($source, 'class rXMLRPCParam');
 		$end = strpos($source, "\nclass rXMLRPCInvalidCommandName");
 		$definition = substr($source, $begin, $end-$begin);
-		foreach(array('base64_encode', 'base64_decode', 'preg_match') as $disabled)
+		foreach(['base64_encode', 'base64_decode', 'preg_match'] as $disabled)
 		{
 			$code = 'require '.var_export(__DIR__.'/../../php/utility/utf.php', true).';'.$definition
 				.'$p=new rXMLRPCParam("string","raw\\xFF");echo json_encode(array($p->type,$p->value));';
-			$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'display_errors=1', '-d',
-				'disable_functions='.$disabled, '-r', $code)));
+			$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), ['-d', 'display_errors=1', '-d',
+				'disable_functions='.$disabled, '-r', $code]));
 			$this->assertSame(0, $result['code'], 'disabled converter does not throw through request construction');
 			$this->assertSame('', $result['err'], 'disabled converter does not emit warnings');
-			$this->assertSame(array('base64', $disabled === 'preg_match' ? base64_encode("raw\xFF") : null),
+			$this->assertSame(['base64', $disabled === 'preg_match' ? base64_encode("raw\xFF") : null],
 				json_decode($result['out'], true), 'an unavailable conversion never becomes an empty argument');
 		}
 	}
@@ -60,7 +60,7 @@ class XMLRPCBinaryParamTest extends TestCase
 		$command->command = 'd.directory.set';
 		$parameter = new rXMLRPCParam('base64', '');
 		$parameter->value = null;
-		$command->params = array($parameter);
+		$command->params = [$parameter];
 		$request = new XMLRPCBinaryParamProbe($command);
 		$this->assertSame(false, $request->run());
 		$this->assertSame(true, $request->fault);

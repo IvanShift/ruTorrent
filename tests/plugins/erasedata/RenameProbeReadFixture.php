@@ -12,7 +12,7 @@ class Script
 {
 	public static $lockRefused = false;
 	public static $beforeRead = null;
-	public static $lstatChanges = array();
+	public static $lstatChanges = [];
 }
 
 function flock($handle, $operation, &$wouldBlock = null)
@@ -22,7 +22,7 @@ function flock($handle, $operation, &$wouldBlock = null)
 
 function lstat($path)
 {
-	if(Script::$beforeRead !== null) call_user_func(Script::$beforeRead);
+	if(Script::$beforeRead !== null) { call_user_func(Script::$beforeRead); }
 	$answer = \lstat($path);
 	return isset(Script::$lstatChanges[$path]) ? Script::$lstatChanges[$path] + $answer : $answer;
 }

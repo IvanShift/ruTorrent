@@ -24,9 +24,9 @@ if($cmd !== null)
 		{
 			Requests::requirePost();
 			$up = rHistoryData::load();
-			$hashes = array();
-			if(!isset($HTTP_RAW_POST_DATA))
-				$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+			$hashes = [];
+			if(!isset($HTTP_RAW_POST_DATA)) {
+				$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 			$vars = explode('&', $HTTP_RAW_POST_DATA);
 			foreach($vars as $var)
 			{

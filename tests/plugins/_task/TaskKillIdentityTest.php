@@ -19,82 +19,6 @@ class TaskKillIdentityTest extends TestCase
 		}
 	}
 
-	protected function withWitness($check)
-	{
-		$process = proc_open(array('sleep', '30'), array(
-			0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'),
-			2 => array('file', '/dev/null', 'w'),
-		), $pipes);
-		if (!is_resource($process)) {
-			throw new RuntimeException('Could not start the isolated process witness');
-		}
-		try {
-			$pid = proc_get_status($process)['pid'];
-			if ($pid <= 1 || $pid === getmypid()) {
-				throw new RuntimeException('Unsafe process witness PID');
-			}
-			$check($process, $pid);
-		} finally {
-			if (proc_get_status($process)['running']) {
-				proc_terminate($process);
-			}
-			proc_close($process);
-		}
-	}
-
-	protected function makeTask($pid, $identity = null)
-	{
-		$id = uniqid(time(), true);
-		$dir = rTask::formatPath($id);
-		mkdir($dir, 0777, true);
-		file_put_contents($dir.'/pid', (string)$pid);
-		file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
-		if ($identity !== null) {
-			file_put_contents($dir.'/pid.identity', $identity);
-		}
-		return array($id, $dir);
-	}
-
-	protected function identityFor($pid)
-	{
-		$boot = file_get_contents('/proc/sys/kernel/random/boot_id');
-		$stat = file_get_contents('/proc/'.$pid.'/stat');
-		if ($boot === false || $stat === false) {
-			throw new RuntimeException('Could not read the process witness identity');
-		}
-		return $boot.$stat;
-	}
-
-	protected function staleIdentityFor($pid)
-	{
-		$identity = $this->identityFor($pid);
-		$separator = strpos($identity, "\n");
-		if ($separator===false) {
-			throw new RuntimeException('Could not parse the process witness identity');
-		}
-		$stat = substr($identity, $separator+1);
-		$endName = strrpos($stat, ') ');
-		if ($endName===false) {
-			throw new RuntimeException('Could not parse the process witness identity');
-		}
-		$fields = preg_split('/\s+/', trim(substr($stat, $endName+2)));
-		if (!isset($fields[19]) || !ctype_digit($fields[19])) {
-			throw new RuntimeException('Could not locate the process start tick');
-		}
-		$fields[19] = (string)((int)$fields[19]+1);
-		return substr($identity, 0, $separator+1).substr($stat, 0, $endName+2).implode(' ', $fields)."\n";
-	}
-
-	protected function assertRefusalVisible($result, $dir)
-	{
-		$this->assertEquals(false, $result, 'Unverifiable identity refuses the kill');
-		$this->assertEquals(true, is_dir($dir), 'The refused task stays available for diagnosis');
-		$this->assertEquals(true,
-			is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'pid identity') !== false,
-			'The refusal explains the pid identity problem in the task errors');
-	}
-
 	public function testNativeHelperSourceIsAvailableForIdentityBoundSignals()
 	{
 		$source = __DIR__.'/../../../plugins/_task/kill-verified.c';
@@ -104,11 +28,11 @@ class TaskKillIdentityTest extends TestCase
 
 	public function testNativeHelperRefusesParentExitDuringChildPass()
 	{
-		$process = proc_open(array('sh', '-c', 'sleep 30 & wait'), array(
-			0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'),
-			2 => array('file', '/dev/null', 'w'),
-		), $pipes);
+		$process = proc_open(['sh', '-c', 'sleep 30 & wait'], [
+			0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'],
+			2 => ['file', '/dev/null', 'w'],
+		], $pipes);
 		if (!is_resource($process)) {
 			throw new RuntimeException('Could not start the isolated parent and child witnesses');
 		}
@@ -137,15 +61,15 @@ class TaskKillIdentityTest extends TestCase
 			$ready = $dir.'/helper-ready';
 			$go = $dir.'/helper-go';
 			$binary = taskNativeHelperFixture(true);
-			$environment = array_merge($_ENV, array(
+			$environment = array_merge($_ENV, [
 				'RTASK_KILL_TEST_READY' => $ready,
 				'RTASK_KILL_TEST_GO' => $go,
-			));
-			$worker = proc_open(array($binary, (string)$parent, $dir.'/pid.identity'), array(
-				0 => array('file', '/dev/null', 'r'),
-				1 => array('file', '/dev/null', 'w'),
-				2 => array('file', '/dev/null', 'w'),
-			), $pipes, null, $environment);
+			]);
+			$worker = proc_open([$binary, (string)$parent, $dir.'/pid.identity'], [
+				0 => ['file', '/dev/null', 'r'],
+				1 => ['file', '/dev/null', 'w'],
+				2 => ['file', '/dev/null', 'w'],
+			], $pipes, null, $environment);
 			if (!is_resource($worker)) {
 				throw new RuntimeException('Could not start the isolated kill request');
 			}
@@ -154,7 +78,7 @@ class TaskKillIdentityTest extends TestCase
 			}
 			$this->assertEquals(true, is_file($ready),
 				'The helper reached the verified parent before its child pass');
-			if (!is_file($ready)) return;
+			if (!is_file($ready)) { return; }
 			proc_terminate($process);
 			for ($attempt = 0; $attempt < 100 && proc_get_status($process)['running']; ++$attempt) {
 				usleep(10000);
@@ -175,68 +99,22 @@ class TaskKillIdentityTest extends TestCase
 					is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'legacy') !== false,
 					'The task error identifies its legacy cancellation limit');
 		} finally {
-			if ($go !== null) @file_put_contents($go, 'go');
+			if ($go !== null) { @file_put_contents($go, 'go'); }
 			if (is_resource($worker)) {
-				if (proc_get_status($worker)['running']) proc_terminate($worker);
+				if (proc_get_status($worker)['running']) { proc_terminate($worker); }
 				proc_close($worker);
 			}
-			if (proc_get_status($process)['running']) proc_terminate($process);
+			if (proc_get_status($process)['running']) { proc_terminate($process); }
 			proc_close($process);
 			if ($child !== null && is_file($cleanupIdentity) && !$this->processIsGoneOrZombie($child)) {
-				$cleanup = proc_open(array(RTASK_KILL_HELPER, (string)$child, $cleanupIdentity),
-					array(0 => array('file', '/dev/null', 'r'),
-						1 => array('file', '/dev/null', 'w'),
-						2 => array('file', '/dev/null', 'w')), $pipes);
-				if (is_resource($cleanup)) proc_close($cleanup);
+				$cleanup = proc_open([RTASK_KILL_HELPER, (string)$child, $cleanupIdentity],
+					[0 => ['file', '/dev/null', 'r'],
+						1 => ['file', '/dev/null', 'w'],
+						2 => ['file', '/dev/null', 'w']], $pipes);
+				if (is_resource($cleanup)) { proc_close($cleanup); }
 			}
 			@unlink($cleanupIdentity);
 		}
-	}
-
-	protected function assertExitedWitnessAtNativeBoundary($readyVariable, $goVariable, $boundary)
-	{
-		$this->withWitness(function($process, $pid) use ($readyVariable, $goVariable, $boundary) {
-			$binary = taskNativeHelperFixture(true);
-			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
-			$ready = $dir.'/helper-ready';
-			$go = $dir.'/helper-go';
-			$environment = array_merge($_ENV, array(
-				$readyVariable => $ready,
-				$goVariable => $go,
-			));
-			$helper = proc_open(array($binary, (string)$pid, $dir.'/pid.identity'), array(
-				0 => array('file', '/dev/null', 'r'),
-				1 => array('file', '/dev/null', 'w'),
-				2 => array('file', '/dev/null', 'w'),
-			), $pipes, null, $environment);
-			if (!is_resource($helper)) {
-				throw new RuntimeException('Could not start the paused native task killer');
-			}
-			try {
-				for ($attempt = 0; $attempt < 100 && !is_file($ready); ++$attempt) {
-					usleep(10000);
-				}
-				$this->assertEquals(true, is_file($ready),
-					'The native helper reached '.$boundary);
-				if (!is_file($ready)) return;
-				proc_terminate($process);
-				for ($attempt = 0; $attempt < 100 && proc_get_status($process)['running']; ++$attempt) {
-					usleep(10000);
-				}
-				$this->assertEquals(false, proc_get_status($process)['running'],
-					'The witnessed process exited at '.$boundary);
-				file_put_contents($go, 'go');
-				$this->assertEquals(4, proc_close($helper),
-					'An unobserved exit at '.$boundary.' refuses uncertain descendants');
-				$helper = null;
-			} finally {
-				@file_put_contents($go, 'go');
-				if (is_resource($helper)) {
-					if (proc_get_status($helper)['running']) proc_terminate($helper);
-					proc_close($helper);
-				}
-			}
-		});
 	}
 
 	public function testExitedWitnessAfterVerificationRefusesUncertainDescendants()
@@ -323,11 +201,11 @@ class TaskKillIdentityTest extends TestCase
 
 	public function testLegacyTaskWithChildRefusesCompleteTreeCancellation()
 	{
-		$process = proc_open(array('sh', '-c', 'sleep 3 & wait'), array(
-			0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'),
-			2 => array('file', '/dev/null', 'w'),
-		), $pipes);
+		$process = proc_open(['sh', '-c', 'sleep 3 & wait'], [
+			0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'],
+			2 => ['file', '/dev/null', 'w'],
+		], $pipes);
 		if (!is_resource($process)) {
 			throw new RuntimeException('Could not start the isolated task shell');
 		}
@@ -368,12 +246,6 @@ class TaskKillIdentityTest extends TestCase
 		}
 	}
 
-	protected function processIsGoneOrZombie($pid)
-	{
-		$stat = @file_get_contents('/proc/'.$pid.'/stat');
-		return($stat===false || preg_match('/^'.(int)$pid.' \(.+\) Z /', $stat)===1);
-	}
-
 	public function testLocalRunPreservesShellQuotedArguments()
 	{
 		$marker = $_ENV['RU_PROFILE_PATH'].'/run-quoted-output';
@@ -402,8 +274,8 @@ class TaskKillIdentityTest extends TestCase
 
 	public function testStartedTaskRecordsItsProcessBirth()
 	{
-		$task = new rTask(array('name'=>'identity fixture'));
-		$result = $task->start(array('true'), rTask::FLG_RUN_AS_WEB | rTask::FLG_WAIT);
+		$task = new rTask(['name'=>'identity fixture']);
+		$result = $task->start(['true'], rTask::FLG_RUN_AS_WEB | rTask::FLG_WAIT);
 		$dir = rTask::formatPath($task->id);
 		$this->assertEquals(true, is_file($dir.'/pid'), 'The local task wrote its PID');
 		$this->assertEquals(true, isset($result['status']) && $result['status']===0,
@@ -419,5 +291,133 @@ class TaskKillIdentityTest extends TestCase
 			$this->assertEquals(true, strpos($identity, trim(file_get_contents('/proc/sys/kernel/random/boot_id'))."\n")===0,
 				'The identity includes the current boot ID');
 		}
+	}
+
+	protected function withWitness($check)
+	{
+		$process = proc_open(['sleep', '30'], [
+			0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'],
+			2 => ['file', '/dev/null', 'w'],
+		], $pipes);
+		if (!is_resource($process)) {
+			throw new RuntimeException('Could not start the isolated process witness');
+		}
+		try {
+			$pid = proc_get_status($process)['pid'];
+			if ($pid <= 1 || $pid === getmypid()) {
+				throw new RuntimeException('Unsafe process witness PID');
+			}
+			$check($process, $pid);
+		} finally {
+			if (proc_get_status($process)['running']) {
+				proc_terminate($process);
+			}
+			proc_close($process);
+		}
+	}
+
+	protected function makeTask($pid, $identity = null)
+	{
+		$id = uniqid(time(), true);
+		$dir = rTask::formatPath($id);
+		mkdir($dir, 0777, true);
+		file_put_contents($dir.'/pid', (string)$pid);
+		file_put_contents($dir.'/flags', (string)rTask::FLG_RUN_AS_WEB);
+		if ($identity !== null) {
+			file_put_contents($dir.'/pid.identity', $identity);
+		}
+		return [$id, $dir];
+	}
+
+	protected function identityFor($pid)
+	{
+		$boot = file_get_contents('/proc/sys/kernel/random/boot_id');
+		$stat = file_get_contents('/proc/'.$pid.'/stat');
+		if ($boot === false || $stat === false) {
+			throw new RuntimeException('Could not read the process witness identity');
+		}
+		return $boot.$stat;
+	}
+
+	protected function staleIdentityFor($pid)
+	{
+		$identity = $this->identityFor($pid);
+		$separator = strpos($identity, "\n");
+		if ($separator===false) {
+			throw new RuntimeException('Could not parse the process witness identity');
+		}
+		$stat = substr($identity, $separator+1);
+		$endName = strrpos($stat, ') ');
+		if ($endName===false) {
+			throw new RuntimeException('Could not parse the process witness identity');
+		}
+		$fields = preg_split('/\s+/', trim(substr($stat, $endName+2)));
+		if (!isset($fields[19]) || !ctype_digit($fields[19])) {
+			throw new RuntimeException('Could not locate the process start tick');
+		}
+		$fields[19] = (string)((int)$fields[19]+1);
+		return substr($identity, 0, $separator+1).substr($stat, 0, $endName+2).implode(' ', $fields)."\n";
+	}
+
+	protected function assertRefusalVisible($result, $dir)
+	{
+		$this->assertEquals(false, $result, 'Unverifiable identity refuses the kill');
+		$this->assertEquals(true, is_dir($dir), 'The refused task stays available for diagnosis');
+		$this->assertEquals(true,
+			is_file($dir.'/errors') && strpos(file_get_contents($dir.'/errors'), 'pid identity') !== false,
+			'The refusal explains the pid identity problem in the task errors');
+	}
+
+	protected function assertExitedWitnessAtNativeBoundary($readyVariable, $goVariable, $boundary)
+	{
+		$this->withWitness(function($process, $pid) use ($readyVariable, $goVariable, $boundary) {
+			$binary = taskNativeHelperFixture(true);
+			list($id, $dir) = $this->makeTask($pid, $this->identityFor($pid));
+			$ready = $dir.'/helper-ready';
+			$go = $dir.'/helper-go';
+			$environment = array_merge($_ENV, [
+				$readyVariable => $ready,
+				$goVariable => $go,
+			]);
+			$helper = proc_open([$binary, (string)$pid, $dir.'/pid.identity'], [
+				0 => ['file', '/dev/null', 'r'],
+				1 => ['file', '/dev/null', 'w'],
+				2 => ['file', '/dev/null', 'w'],
+			], $pipes, null, $environment);
+			if (!is_resource($helper)) {
+				throw new RuntimeException('Could not start the paused native task killer');
+			}
+			try {
+				for ($attempt = 0; $attempt < 100 && !is_file($ready); ++$attempt) {
+					usleep(10000);
+				}
+				$this->assertEquals(true, is_file($ready),
+					'The native helper reached '.$boundary);
+				if (!is_file($ready)) { return; }
+				proc_terminate($process);
+				for ($attempt = 0; $attempt < 100 && proc_get_status($process)['running']; ++$attempt) {
+					usleep(10000);
+				}
+				$this->assertEquals(false, proc_get_status($process)['running'],
+					'The witnessed process exited at '.$boundary);
+				file_put_contents($go, 'go');
+				$this->assertEquals(4, proc_close($helper),
+					'An unobserved exit at '.$boundary.' refuses uncertain descendants');
+				$helper = null;
+			} finally {
+				@file_put_contents($go, 'go');
+				if (is_resource($helper)) {
+					if (proc_get_status($helper)['running']) { proc_terminate($helper); }
+					proc_close($helper);
+				}
+			}
+		});
+	}
+
+	protected function processIsGoneOrZombie($pid)
+	{
+		$stat = @file_get_contents('/proc/'.$pid.'/stat');
+		return($stat===false || preg_match('/^'.(int)$pid.' \(.+\) Z /', $stat)===1);
 	}
 }

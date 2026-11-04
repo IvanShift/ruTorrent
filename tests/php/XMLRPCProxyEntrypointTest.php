@@ -13,23 +13,23 @@ require_once(__DIR__ . '/../../php/scgitransport.php');
  */
 class XMLRPCProxyEntrypointTest extends TestCase
 {
+
+	public const ORDINARY_PAYLOAD = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
+	public const ORDINARY_LENGTH = 109;
+	public const ORDINARY_SHA256 = 'da404e3c00f2949eaae852190dce9909c81734f86e0f1c833c99f59003d9cdf3';
+
+	public const CANONICAL_MULTICALL_PAYLOAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.stop=\"\"</string></value></param></params></methodCall>";
+	public const CANONICAL_MULTICALL_LENGTH = 275;
+	public const CANONICAL_MULTICALL_SHA256 = 'd92ec179c05929f0f8eebd4c6325a27a5fba884907c8cbb2e7c37c3b0f636908';
+	public const CANONICAL_SYSTEM_BATCH_SHA256 = '640d88150e348f7cfc7a070a4c0d78d41fceab4b7a99517c6ff29de9bb7abadc';
+	public const BUILT_IN_POLICY_WARNING = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
 	private $sourceRoot;
-
-	const ORDINARY_PAYLOAD = '<?xml version="1.0"?><methodCall><methodName>system.client_version</methodName><params></params></methodCall>';
-	const ORDINARY_LENGTH = 109;
-	const ORDINARY_SHA256 = 'da404e3c00f2949eaae852190dce9909c81734f86e0f1c833c99f59003d9cdf3';
-
-	const CANONICAL_MULTICALL_PAYLOAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>default</string></value></param><param><value><string>d.stop=\"\"</string></value></param></params></methodCall>";
-	const CANONICAL_MULTICALL_LENGTH = 275;
-	const CANONICAL_MULTICALL_SHA256 = 'd92ec179c05929f0f8eebd4c6325a27a5fba884907c8cbb2e7c37c3b0f636908';
-	const CANONICAL_SYSTEM_BATCH_SHA256 = '640d88150e348f7cfc7a070a4c0d78d41fceab4b7a99517c6ff29de9bb7abadc';
-	const BUILT_IN_POLICY_WARNING = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
 
 	public function setUp()
 	{
 		$this->sourceRoot = realpath(__DIR__ . '/../..');
-		if($this->sourceRoot === false)
-			throw new Exception('could not locate the production source root');
+		if($this->sourceRoot === false) {
+			throw new Exception('could not locate the production source root'); }
 	}
 
 	public function testD4BothDoorsRejectOldAliasesAndKeepNativeListings()
@@ -42,9 +42,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>d.base_path.realpath.or_empty=/outside</string></value></param>'
 			.'</params></methodCall>';
 		$native = str_replace('d.base_path.realpath.or_empty=/outside', 'd.name=', $newGetter);
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
-			foreach(array($alias, $newGetter) as $xml)
+			foreach([$alias, $newGetter] as $xml)
 			{
 				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.9.8');
 				$this->assertHttp($result, '403 Forbidden',
@@ -71,12 +71,12 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				.'</methodName><params>'.implode('', array_map($param, $params))
 				.'</params></methodCall>';
 		};
-		$cases = array(
-			'listing' => $call('d.multicall2', array('', 'main', 'd.name=')),
-			'tracker URLs' => $call('t.multicall', array($hash, '', 't.url=')),
-			'torrent load' => $call('load.start', array('', 'https://example.test/x.torrent')),
-		);
-		foreach(array('action', 'rpc2') as $door)
+		$cases = [
+			'listing' => $call('d.multicall2', ['', 'main', 'd.name=']),
+			'tracker URLs' => $call('t.multicall', [$hash, '', 't.url=']),
+			'torrent load' => $call('load.start', ['', 'https://example.test/x.torrent']),
+		];
+		foreach(['action', 'rpc2'] as $door) {
 			foreach($cases as $name => $xml)
 			{
 				$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, '0.9.8');
@@ -88,7 +88,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 					$door.' forwards one '.$name.' call after the version probe');
 				$this->assertTrue($result['state']['trusted'],
 					$door.' forwards '.$name.' with the evaluated trust setting');
-			}
+			} }
 	}
 
 	public function testRpc2RejectsCrossOriginPlainFormBeforeForwarding()
@@ -101,18 +101,18 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '</string></value></param></params></methodCall>';
 		$formBody = $formName . '=' . $formValue . "\r\n";
 		$result = $this->runEntrypoint('rpc2', $formBody, true,
-			'success', 'shipped', false, '0.16.24', null, array(
+			'success', 'shipped', false, '0.16.24', null, [
 			'Content-Type' => 'text/plain',
 			'Origin' => 'http://foreign.test',
 			'Sec-Fetch-Site' => 'cross-site',
-		));
+		]);
 		$this->assertHttp($result, '415 Unsupported Media Type', 'text/xml;charset=UTF-8');
 		$this->assertEquals(0, $result['state']['sends'],
 			'a browser form cannot forward a mutating XMLRPC call');
 		$this->assertTrue(strpos($result['rpc2logs'], 'XML Content-Type required') !== false,
 			'the media-type refusal is visible');
 		$headerless = $this->runEntrypoint('rpc2', $formBody, true,
-			'success', 'shipped', false, '0.16.24', null, array('Content-Type' => 'text/plain'));
+			'success', 'shipped', false, '0.16.24', null, ['Content-Type' => 'text/plain']);
 		$this->assertTrue(strpos($headerless['status'], '415 Unsupported Media Type') !== false,
 			'a browser without Origin or Fetch Metadata still cannot submit plain XML');
 		$this->assertEquals(0, $headerless['state']['sends'],
@@ -123,25 +123,25 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$xml = $this->allowedXml();
 		$foreign = $this->runEntrypoint('rpc2', $xml, true,
-			'success', 'shipped', false, '0.16.24', null, array(
+			'success', 'shipped', false, '0.16.24', null, [
 			'Origin' => 'http://foreign.test',
 			'Sec-Fetch-Site' => 'cross-site',
-		));
+		]);
 		$this->assertTrue(strpos($foreign['status'], '403 Forbidden') !== false,
 			'foreign XML origin is refused');
 		$this->assertEquals(0, $foreign['state']['sends'],
 			'foreign XML never reaches the daemon');
 		$opaque = $this->runEntrypoint('rpc2', $xml, true,
-			'success', 'shipped', false, '0.16.24', null, array('Origin' => 'null'));
+			'success', 'shipped', false, '0.16.24', null, ['Origin' => 'null']);
 		$this->assertTrue(strpos($opaque['status'], '403 Forbidden') !== false,
 			'opaque browser origin is refused');
 		$this->assertEquals(0, $opaque['state']['sends'],
 			'opaque XML never reaches the daemon');
 		$same = $this->runEntrypoint('rpc2', $xml, true,
-			'success', 'shipped', false, '0.16.24', null, array(
+			'success', 'shipped', false, '0.16.24', null, [
 			'Origin' => 'http://127.0.0.1',
 			'Sec-Fetch-Site' => 'same-origin',
-		));
+		]);
 		$this->assertTrue(strpos($same['status'], '200 OK') !== false && $same['state']['sends'] === 1,
 			'same-origin XML reaches the daemon');
 		$raw = $this->runEntrypoint('rpc2', $xml, true, 'success', 'shipped', false, '0.16.24');
@@ -171,9 +171,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>main</string></value></param>'
 			.'<param><value><string>d.name=</string></value></param>'
 			.'</params></methodCall>';
-		foreach(array('0.16.26', '0.16.27') as $version)
-			foreach(array('action', 'rpc2') as $door)
-				foreach(array('listing' => $listing, 'version read' => $this->allowedXml()) as $name => $xml)
+		foreach(['0.16.26', '0.16.27'] as $version) {
+			foreach(['action', 'rpc2'] as $door) {
+				foreach(['listing' => $listing, 'version read' => $this->allowedXml()] as $name => $xml)
 				{
 					$result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, $version);
 					$this->assertHttp($result, '200 OK',
@@ -184,13 +184,13 @@ class XMLRPCProxyEntrypointTest extends TestCase
 						$door.' forwards the '.$name.' to a reviewed '.$version.' daemon');
 					$this->assertSameStrict($name === 'listing', $result['state']['trusted'],
 						$door.' keeps the checked trust of the '.$name.' on '.$version);
-				}
+				} } }
 	}
 
 	public function testBothDoorsNameAnUnreviewedDaemonRelease()
 	{
 		$reason = 'rTorrent 0.16.28 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$result = $this->runEntrypoint($door, $this->allowedXml(), true,
 				'success', 'shipped', false, '0.16.28');
@@ -201,12 +201,12 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$this->assertTrue(strpos($result['body'], 'Could not verify the rTorrent version. '.$reason.'.') !== false,
 				$door.' tells the caller which release was refused');
 			$line = 'refusing request: rTorrent version unavailable or unsupported: '.$reason;
-			if($door === 'action')
+			if($door === 'action') {
 				$this->assertTrue(in_array('httprpc: '.$line, $result['state']['logs'], true),
-					'httprpc names the refused release in the app log');
-			else
+					'httprpc names the refused release in the app log'); }
+			else {
 				$this->assertTrue(strpos($result['rpc2logs'], 'rpc2: '.$line) !== false,
-					'rpc2 names the refused release in its log');
+					'rpc2 names the refused release in its log'); }
 		}
 	}
 
@@ -220,9 +220,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$generic = 'Could not verify the rTorrent version.';
 		$line = 'refusing request: rTorrent version unavailable or unsupported';
-		foreach(array('0.16.28-<b>', '0.16.28-<svg/onload=alert(1)>', '0.16.28-a"b',
-			"0.16.28\n", '1234.16.28', '0.16.1234') as $version)
-			foreach(array('action', 'rpc2') as $door)
+		foreach(['0.16.28-<b>', '0.16.28-<svg/onload=alert(1)>', '0.16.28-a"b',
+			"0.16.28\n", '1234.16.28', '0.16.1234'] as $version) {
+			foreach(['action', 'rpc2'] as $door)
 			{
 				$label = $door.' '.json_encode($version);
 				$result = $this->runEntrypoint($door, $this->allowedXml(), true,
@@ -245,7 +245,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 					$this->assertTrue(strpos($result['rpc2logs'], 'is not a supported version') === false,
 						$label.' names no release in its log');
 				}
-			}
+			} }
 	}
 
 	/**
@@ -256,14 +256,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	 */
 	public function testBothDoorsEscapeTheNamedReleaseWithoutTheFilter()
 	{
-		$widen = array('php/xmlrpc_proxy.php' => array(
-			'(?:[-+][A-Za-z0-9._-]{1,32})?$/D\', $text))' => '(?:[-+][^\r\n]{1,64})?$/D\', $text))'));
+		$widen = ['php/xmlrpc_proxy.php' => [
+			'(?:[-+][A-Za-z0-9._-]{1,32})?$/D\', $text))' => '(?:[-+][^\r\n]{1,64})?$/D\', $text))']];
 		$version = '0.16.28-<svg/onload=alert(1)>"\'&';
 		$why = 'rTorrent '.$version.' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$result = $this->runEntrypoint($door, $this->allowedXml(), true,
-				'success', 'shipped', false, $version, null, array(), $widen);
+				'success', 'shipped', false, $version, null, [], $widen);
 			$this->assertEquals(0, $result['state']['sends'], $door.' sends no client command');
 			$this->assertTrue(strpos($result['body'], '<svg') === false,
 				$door.' does not echo markup from the daemon answer');
@@ -317,8 +317,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'Could not read XMLRPC request.');
 		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-		$this->assertEquals(array('xmlrpc-proxy: could not read request body'), $result['state']['logs']);
+			[['event' => 'response', 'door' => 'httprpc']]);
+		$this->assertEquals(['xmlrpc-proxy: could not read request body'], $result['state']['logs']);
 	}
 
 	public function testHttprpcEmptyInputReturnsClassified400()
@@ -327,8 +327,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertHttp($result, '400 Bad Request', 'text/html; charset=UTF-8', 'Empty XMLRPC request.');
 		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-		$this->assertEquals(array('xmlrpc-proxy: empty request body'), $result['state']['logs']);
+			[['event' => 'response', 'door' => 'httprpc']]);
+		$this->assertEquals(['xmlrpc-proxy: empty request body'], $result['state']['logs']);
 	}
 
 	public function testHttprpcInputFailuresDoNotLogWhenDisabled()
@@ -338,15 +338,15 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'Could not read XMLRPC request.');
 		$this->assertFullTranscript('httprpc unreadable', $unreadable['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-		$this->assertEquals(array(), $unreadable['state']['logs']);
+			[['event' => 'response', 'door' => 'httprpc']]);
+		$this->assertEquals([], $unreadable['state']['logs']);
 
 		$empty = $this->runEntrypoint('action', '', false);
 		$this->assertHttp($empty, '400 Bad Request', 'text/html; charset=UTF-8', 'Empty XMLRPC request.');
 		$this->assertFullTranscript('httprpc empty', $empty['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
-		$this->assertEquals(array(), $empty['state']['logs']);
+			[['event' => 'response', 'door' => 'httprpc']]);
+		$this->assertEquals([], $empty['state']['logs']);
 	}
 
 	public function testHttprpcRefusalReturnsNamed403AndStops()
@@ -360,7 +360,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'httprpc refusal names the refused command');
 		$this->assertFullTranscript('httprpc', $result['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
+			[['event' => 'response', 'door' => 'httprpc']]);
 	}
 
 	public function testHttprpcTransportFailureReturnsNeutral500AndStops()
@@ -370,10 +370,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'Could not complete the rTorrent XMLRPC request.');
 		$this->assertFullTranscript('httprpc', $result['state'], 1, self::ORDINARY_PAYLOAD,
 			self::ORDINARY_LENGTH, self::ORDINARY_SHA256, null, null, false, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 	}
 
 	public function testHttprpcHeaderlessEofExplainsAcceptedConnection()
@@ -387,10 +387,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('httprpc headerless EOF', $result['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			null, null, false, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 	}
 
 	public function testRpc2OptInCallTranscriptIncludesSentAndReturnedXml()
@@ -436,7 +436,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertRpc2Log($result, 'could not read request body',
 			'rpc2 logs the classified unreadable-input reason');
 		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 	public function testRpc2EmptyInputReturnsClassified400()
@@ -450,7 +450,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertRpc2Log($result, 'empty request body',
 			'rpc2 logs the classified empty-input reason');
 		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 	public function testRpc2RefusalRendersTheSharedNamedMessage()
@@ -463,7 +463,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertTrue(strpos($result['body'], '<i4>-501</i4>') !== false,
 			'rpc2 refusal returns the XMLRPC -501 envelope');
 		$this->assertFullTranscript('rpc2', $result['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 
@@ -471,7 +471,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	public function testDisabledProxyDoesNotSendSocketAllocationRequests()
 	{
 		$xml = '<methodCall><methodName>system.sockets.adjust_alloc</methodName><params></params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$result = $this->runEntrypoint($door, $xml, true, 'success', 'off');
 			$this->assertTrue(strpos($result['status'], '403 Forbidden') !== false
@@ -495,9 +495,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>'.str_repeat('A', 40).'</string></value></param>'
 			.'<param><value><string>system.sockets. is plain text</string></value></param>'
 			.'</params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
-			foreach(array($malformed, $denied) as $xml)
+			foreach([$malformed, $denied] as $xml)
 			{
 				$r = $this->runEntrypoint($door, $xml, true);
 				$this->assertTrue(strpos($r['status'], '403') !== false && $r['state']['sends'] === 0,
@@ -519,13 +519,13 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$setter = '<methodCall><methodName>system.sockets.files.max_alloc.set</methodName>'
 			.'<params><param><value><string></string></value></param>'
 			.'<param><value><i8>1048576</i8></value></param></params></methodCall>';
-		$batch = $this->systemBatchXml(array(
-			array('system.sockets.files.max_alloc.set', array('', 1048576)),
-			array('system.sockets.adjust_alloc', array()),
-		));
-		foreach(array('action', 'rpc2') as $door)
+		$batch = $this->systemBatchXml([
+			['system.sockets.files.max_alloc.set', ['', 1048576]],
+			['system.sockets.adjust_alloc', []],
+		]);
+		foreach(['action', 'rpc2'] as $door)
 		{
-			foreach(array($xml, $setter) as $direct)
+			foreach([$xml, $setter] as $direct)
 			{
 				$r = $this->runEntrypoint($door, $direct, true, 'socket-refused');
 				$this->assertTrue(strpos($r['status'], '200 OK') !== false
@@ -544,7 +544,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testBothDoorsApplySharedPolicyFromSymlinkedConfVolume()
 	{
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$r = $this->runEntrypoint($door, $this->viewActionXml(), true,
 				'success', 'symlink');
@@ -579,7 +579,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>'.$hash.'</string></value></param>'
 			.'<param><value><string>sonarr_imported</string></value></param>'
 			.'</params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$r = $this->runEntrypoint($door, $xml, true);
 			$this->assertTrue(strpos($r['status'], '200 OK') !== false
@@ -592,8 +592,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testBothDoorsDenyOldLoadAndSizeLimitAliases()
 	{
-		foreach(array('load_start', 'set_xmlrpc_size_limit') as $method)
-			foreach(array('action', 'rpc2') as $door)
+		foreach(['load_start', 'set_xmlrpc_size_limit'] as $method) {
+			foreach(['action', 'rpc2'] as $door)
 			{
 				$xml = '<?xml version="1.0"?><methodCall><methodName>'.$method
 					.'</methodName><params></params></methodCall>';
@@ -601,7 +601,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$this->assertTrue(strpos($r['status'], '403 Forbidden') !== false
 					&& $r['state']['sends'] === 0,
 					$door.' denies the '.$method.' legacy bypass before transport');
-			}
+			} }
 	}
 
 	public function testBothDoorsSendAllUntrustedReadBatchesWithoutTrust()
@@ -611,7 +611,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<member><name>methodName</name><value><string>system.client_version</string></value></member>'
 			.'<member><name>params</name><value><array><data></data></array></value></member>'
 			.'</struct></value></data></array></value></param></params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$r = $this->runEntrypoint($door, $xml, true);
 			$this->assertTrue(strpos($r['status'], '200 OK') !== false
@@ -629,7 +629,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			.'<param><value><string>d.hash=</string></value></param>'
 			.'<param><value><string>'.$expression.'</string></value></param>'
 			.'</params></methodCall>';
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$r = $this->runEntrypoint($door, $xml, true);
 			$this->assertTrue(strpos($r['status'], '200 OK') !== false
@@ -643,10 +643,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	public function testBothDoorsTrustStopBatchAndKeepGetSavePathBatchesUntrusted()
 	{
 		$hash = str_repeat('A', 40);
-		$stop = $this->systemBatchXml(array(
-			array('d.stop', array($hash)), array('d.close', array($hash)),
-		));
-		foreach(array('action', 'rpc2') as $door)
+		$stop = $this->systemBatchXml([
+			['d.stop', [$hash]], ['d.close', [$hash]],
+		]);
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$result = $this->runEntrypoint($door, $stop, true, 'success', 'none', true);
 			$this->assertTrue(strpos($result['status'], '200 OK') !== false
@@ -666,12 +666,12 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$door.' warns once for the whole batch at the shipped default');
 			$this->assertTrue(strpos($quietLog, 'trusted:') === false,
 				$door.' omits the routine batch decision without tracing');
-			foreach(array('d.base_path', 'd.get_base_path') as $method)
+			foreach(['d.base_path', 'd.get_base_path'] as $method)
 			{
-				$path = $this->systemBatchXml(array(
-					array('d.open', array($hash)), array($method, array($hash)),
-					array('d.close', array($hash)),
-				));
+				$path = $this->systemBatchXml([
+					['d.open', [$hash]], [$method, [$hash]],
+					['d.close', [$hash]],
+				]);
 				$r = $this->runEntrypoint($door, $path, true);
 				$this->assertTrue(strpos($r['status'], '200 OK') !== false
 					&& $r['state']['sends'] === 1 && $r['state']['trusted'] === false
@@ -680,9 +680,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 					&& strpos($r['state']['payload'], '<string>d.close</string>') !== false,
 					$door.' transports every '.$method.' getsavepath member once without trust');
 			}
-			$bad = $this->systemBatchXml(array(
-				array('d.stop', array($hash)), array('d.close', array($hash, 'extra')),
-			));
+			$bad = $this->systemBatchXml([
+				['d.stop', [$hash]], ['d.close', [$hash, 'extra']],
+			]);
 			$result = $this->runEntrypoint($door, $bad, true);
 			$this->assertTrue(strpos($result['status'], '403 Forbidden') !== false
 				&& $result['state']['sends'] === 0,
@@ -695,23 +695,23 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$hash = str_repeat('A', 40);
 		$direct = function($params) {
 			$xml = '<methodCall><methodName>d.close</methodName><params>';
-			foreach($params as $param)
-				$xml .= '<param><value><string>'.$param.'</string></value></param>';
+			foreach($params as $param) {
+				$xml .= '<param><value><string>'.$param.'</string></value></param>'; }
 			return $xml.'</params></methodCall>';
 		};
-		$malformedBatch = $this->systemBatchXml(array(
-			array('d.close', array($hash, 'extra')),
-			array('d.close', array($hash, 'extra')),
-		));
-		foreach(array('action', 'rpc2') as $door)
+		$malformedBatch = $this->systemBatchXml([
+			['d.close', [$hash, 'extra']],
+			['d.close', [$hash, 'extra']],
+		]);
+		foreach(['action', 'rpc2'] as $door)
 		{
-			$valid = $this->runEntrypoint($door, $direct(array($hash)), true, 'success', 'none');
+			$valid = $this->runEntrypoint($door, $direct([$hash]), true, 'success', 'none');
 			$this->assertTrue(strpos($valid['status'], '200 OK') !== false
 				&& $valid['state']['sends'] === 1 && $valid['state']['trusted'] === true,
 				$door.' forwards exact d.close(hash) trusted so event.download.closed can run');
-			foreach(array('extra', '') as $extra)
+			foreach(['extra', ''] as $extra)
 			{
-				$bad = $this->runEntrypoint($door, $direct(array($hash, $extra)), true, 'success', 'none');
+				$bad = $this->runEntrypoint($door, $direct([$hash, $extra]), true, 'success', 'none');
 				$this->assertTrue(strpos($bad['status'], '403 Forbidden') !== false
 					&& $bad['state']['sends'] === 0,
 					$door.' refuses extra d.close argument before untrusted close can skip the hook');
@@ -726,17 +726,17 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	public function testBothDoorsKeepHomogeneousFallbackAndReverseMixedBatchUntrusted()
 	{
 		$hash = str_repeat('A', 40);
-		$fallback = $this->systemBatchXml(array(
-			array('d.views.push_back_unique', array($hash, 'sonarr_imported')),
-			array('d.views.push_back_unique', array($hash, 'radarr_imported')),
-		));
-		$mixed = $this->systemBatchXml(array(
-			array('d.wibble.set', array($hash, '1')),
-			array('d.stop', array($hash)),
-		));
-		foreach(array('action', 'rpc2') as $door)
+		$fallback = $this->systemBatchXml([
+			['d.views.push_back_unique', [$hash, 'sonarr_imported']],
+			['d.views.push_back_unique', [$hash, 'radarr_imported']],
+		]);
+		$mixed = $this->systemBatchXml([
+			['d.wibble.set', [$hash, '1']],
+			['d.stop', [$hash]],
+		]);
+		foreach(['action', 'rpc2'] as $door)
 		{
-			foreach(array('sonarr_imported', 'radarr_imported') as $view)
+			foreach(['sonarr_imported', 'radarr_imported'] as $view)
 			{
 				$direct = '<methodCall><methodName>d.views.push_back_unique</methodName><params>'
 					.'<param><value><string>'.$hash.'</string></value></param>'
@@ -755,7 +755,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$this->assertTrue(strpos($no['status'], '200 OK') !== false
 				&& $no['state']['sends'] === 1 && $no['state']['trusted'] === false,
 				$door.' sends an untrusted-first mixed batch once without trust');
-			if(!is_string($no['state']['payload']) || $no['state']['payload'] === '') continue;
+			if(!is_string($no['state']['payload']) || $no['state']['payload'] === '') { continue; }
 			$sent = simplexml_load_string($no['state']['payload']);
 			$members = $sent->params->param->value->array->data->value;
 			$this->assertTrue(count($members) === 2
@@ -782,7 +782,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		};
 		$allowed = $wrap($member('d.stop').$member('d.start'));
 		$mixed = $wrap($member('d.stop').$member('system.client_version'));
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$ok = $this->runEntrypoint($door, $allowed, true);
 			$this->assertTrue(strpos($ok['status'], '200 OK') !== false
@@ -819,21 +819,21 @@ class XMLRPCProxyEntrypointTest extends TestCase
 	{
 		$quiet = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
 		$this->assertHttp($quiet, '200 OK', 'text/xml; charset=UTF-8');
-		$this->assertEquals(array('xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING), $quiet['state']['logs'],
+		$this->assertEquals(['xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING], $quiet['state']['logs'],
 			'the fallback remains visible without a routine decision trace');
 		$result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none', true);
 		$this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8');
 		$this->assertTrue($result['policy_exists'] === false, 'the policy file is absent');
-		$this->assertEquals(array('xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]',
-			'xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING),
+		$this->assertEquals(['xmlrpc-proxy: trusted: d.multicall2 (3 params) [built-in policy]',
+			'xmlrpc-proxy: '.self::BUILT_IN_POLICY_WARNING],
 			$result['state']['logs'], 'one traced decision accompanies one runtime fallback warning');
 		$this->assertFullTranscript('httprpc', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, null, null, true, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 	}
 
 	public function testRpc2FallsBackToTheBuiltInPolicyToo()
@@ -853,18 +853,18 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('rpc2', $result['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH,
 			self::CANONICAL_MULTICALL_SHA256, '127.0.0.1', 1, true,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
-			array(array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1)));
+			['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null], rSCGITransport::RESPONSE_BODY,
+			[['event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1]]);
 	}
 
 	public function testBothDoorsCanDisableBuiltInPolicyDecisionLogging()
 	{
-		foreach(array('action', 'rpc2') as $door)
+		foreach(['action', 'rpc2'] as $door)
 		{
 			$result = $this->runEntrypoint($door, $this->viewActionXml(), false, 'success', 'none');
 			$this->assertTrue($result['state']['sends'] === 1 && $result['state']['trusted'] === true,
 				$door.' keeps fallback transport available with decision logging disabled');
-			$this->assertEquals(array(), $result['state']['logs'],
+			$this->assertEquals([], $result['state']['logs'],
 				$door.' emits no FileUtil decision log when disabled');
 			$this->assertEquals('', $result['rpc2logs'],
 				$door.' emits no standalone decision log when disabled');
@@ -873,8 +873,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testExplicitRestrictedAndEmptyPoliciesOverrideDefaultsAtBothDoors()
 	{
-		foreach(array('restricted', 'empty') as $policy)
-			foreach(array('action', 'rpc2') as $door)
+		foreach(['restricted', 'empty'] as $policy) {
+			foreach(['action', 'rpc2'] as $door)
 			{
 				$r = $this->runEntrypoint($door, $this->viewActionXml(), true, 'success', $policy);
 				$this->assertTrue(strpos($r['status'], '403') !== false, $door.' honors the '.$policy.' override');
@@ -885,7 +885,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$xml = str_replace('d.stop=', 'd.name=', $this->viewActionXml());
 				$r = $this->runEntrypoint($door, $xml, true, 'success', $policy);
 				$this->assertTrue($r['state']['sends'] === 1 && $r['state']['trusted'] === true, 'read-only listing remains available under a restricted setter policy');
-			}
+			} }
 	}
 
 	public function testPluginOnlyEmptyPolicyOverridesHttprpcButNotRpc2()
@@ -904,9 +904,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	public function testInvalidExplicitPolicyFailsVisiblyAtBothDoors()
 	{
-		foreach(array(true, false) as $logging)
-			foreach(array(array('action', 'null'), array('rpc2', 'null'),
-				array('action', 'plugin_null')) as $case)
+		foreach([true, false] as $logging) {
+			foreach([['action', 'null'], ['rpc2', 'null'],
+				['action', 'plugin_null']] as $case)
 			{
 				list($door, $policy) = $case;
 				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', $policy);
@@ -923,14 +923,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$log = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
 				$this->assertTrue(strpos($log, 'XMLRPCProxySafeParams must be an array') !== false,
 					$door.' logs the configuration error with routine logging '.($logging ? 'on' : 'off'));
-			}
+			} }
 	}
 
 	public function testUnreadablePolicyFailsClosedAtBothDoors()
 	{
-		if(testSkipUnlessPermissionsBite('an unreadable conf/xmlrpc_proxy.php fails closed at both doors')) return;
-		foreach(array(true, false) as $logging)
-			foreach(array('action', 'rpc2') as $door)
+		if(testSkipUnlessPermissionsBite('an unreadable conf/xmlrpc_proxy.php fails closed at both doors')) { return; }
+		foreach([true, false] as $logging) {
+			foreach(['action', 'rpc2'] as $door)
 			{
 				$r = $this->runEntrypoint($door, $this->viewActionXml(), $logging, 'success', 'unreadable');
 				$this->assertTrue(strpos($r['status'], '503') !== false, $door.' refuses an unreadable policy instead of widening it');
@@ -942,7 +942,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				$log = $door === 'rpc2' ? $r['rpc2logs'] : implode(' ', $r['state']['logs']);
 				$this->assertTrue(strpos($log, 'exists but is not readable') !== false,
 					$door.' reports the configuration failure with routine logging '.($logging ? 'on' : 'off'));
-			}
+			} }
 	}
 
 	public function testBothDoorsRejectMalformedOwnedCallWith403And501()
@@ -957,7 +957,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'httprpc malformed load refusal names load.start');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
+			[['event' => 'response', 'door' => 'httprpc']]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $malformedXml, true);
 		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
@@ -967,7 +967,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false,
 			'rpc2 malformed load refusal returns the XMLRPC -501 envelope');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 	public function testBothDoorsRejectNestedMulticallDenialNamingOuterMethod()
@@ -986,7 +986,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'httprpc nested denial names outer method d.multicall2');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
+			[['event' => 'response', 'door' => 'httprpc']]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $nestedDeniedXml, true);
 		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
@@ -996,7 +996,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertTrue(strpos($rpc2['body'], '<i4>-501</i4>') !== false,
 			'rpc2 nested denial returns the XMLRPC -501 envelope');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 	public function testBothDoorsPreserveOuterIdentityAfterLaterParameterFailure()
@@ -1014,7 +1014,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'httprpc fault names normalized outer method d.multicall2');
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 0, null, null, null,
 			null, null, null, null, null,
-			array(array('event' => 'response', 'door' => 'httprpc')));
+			[['event' => 'response', 'door' => 'httprpc']]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
 		$this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
@@ -1024,7 +1024,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			"The command 'd.multicall2' was rejected by this server.") !== false,
 			'rpc2 fault names normalized outer method d.multicall2');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 0, null, null, null,
-			null, null, null, null, null, array());
+			null, null, null, null, null, []);
 	}
 
 	public function testBothDoorsSendOrdinaryPayloadOnceUntrusted()
@@ -1036,20 +1036,20 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			null, null, false, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
 		$this->assertHttp($rpc2, '200 OK', 'text/xml;charset=UTF-8');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			'127.0.0.1', 1, false,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
-			));
+			['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null], rSCGITransport::RESPONSE_BODY,
+			[
+				['event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1],
+			]);
 	}
 
 	public function testBothDoorsSendCanonicalOwnedPayloadOnceTrusted()
@@ -1061,20 +1061,20 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
 			null, null, true, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $xml, true);
 		$this->assertHttp($rpc2, '200 OK', 'text/xml;charset=UTF-8');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::CANONICAL_MULTICALL_PAYLOAD, self::CANONICAL_MULTICALL_LENGTH, self::CANONICAL_MULTICALL_SHA256,
 			'127.0.0.1', 1, true,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
-			));
+			['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null], rSCGITransport::RESPONSE_BODY,
+			[
+				['event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1],
+			]);
 	}
 
 	public function testBothDoorsReturnNeutralStatusAfterOneTransportFailure()
@@ -1087,26 +1087,26 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		$this->assertFullTranscript('httprpc', $httprpc['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			null, null, false, null, rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-				array('event' => 'response', 'door' => 'httprpc'),
-			));
+			[
+				['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+				['event' => 'response', 'door' => 'httprpc'],
+			]);
 
 		$rpc2 = $this->runEntrypoint('rpc2', $xml, true, 'false');
 		$this->assertHttp($rpc2, '502 Bad Gateway', 'text/xml;charset=UTF-8');
 		$this->assertFullTranscript('rpc2', $rpc2['state'], 1,
 			self::ORDINARY_PAYLOAD, self::ORDINARY_LENGTH, self::ORDINARY_SHA256,
 			'127.0.0.1', 1, false,
-			array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null), rSCGITransport::RESPONSE_BODY,
-			array(
-				array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
-			));
+			['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null], rSCGITransport::RESPONSE_BODY,
+			[
+				['event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1],
+			]);
 	}
 
 	public function testBothDoorsLoggingDoesNotChangeTransport()
 	{
-		$dispositions = array(
-			'zero_call' => array(
+		$dispositions = [
+			'zero_call' => [
 				'xml' => $this->deniedXml(),
 				'send' => 'success',
 				'sends' => 0,
@@ -1114,14 +1114,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'length' => null,
 				'sha' => null,
 				'trusted' => null,
-				'httprpc_events' => array(array('event' => 'response', 'door' => 'httprpc')),
-				'rpc2_events' => array(),
+				'httprpc_events' => [['event' => 'response', 'door' => 'httprpc']],
+				'rpc2_events' => [],
 				'httprpc_status' => '403 Forbidden',
 				'httprpc_type' => 'text/xml; charset=UTF-8',
 				'rpc2_status' => '403 Forbidden',
 				'rpc2_type' => 'text/xml;charset=UTF-8',
-			),
-			'ordinary_pass' => array(
+			],
+			'ordinary_pass' => [
 				'xml' => $this->allowedXml(),
 				'send' => 'success',
 				'sends' => 1,
@@ -1129,19 +1129,19 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'length' => self::ORDINARY_LENGTH,
 				'sha' => self::ORDINARY_SHA256,
 				'trusted' => false,
-				'httprpc_events' => array(
-					array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-					array('event' => 'response', 'door' => 'httprpc'),
-				),
-				'rpc2_events' => array(
-					array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
-				),
+				'httprpc_events' => [
+					['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+					['event' => 'response', 'door' => 'httprpc'],
+				],
+				'rpc2_events' => [
+					['event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1],
+				],
 				'httprpc_status' => '200 OK',
 				'httprpc_type' => 'text/xml; charset=UTF-8',
 				'rpc2_status' => '200 OK',
 				'rpc2_type' => 'text/xml;charset=UTF-8',
-			),
-			'canonical_owned' => array(
+			],
+			'canonical_owned' => [
 				'xml' => $this->viewActionXml(),
 				'send' => 'success',
 				'sends' => 1,
@@ -1149,19 +1149,19 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'length' => self::CANONICAL_MULTICALL_LENGTH,
 				'sha' => self::CANONICAL_MULTICALL_SHA256,
 				'trusted' => true,
-				'httprpc_events' => array(
-					array('event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1),
-					array('event' => 'response', 'door' => 'httprpc'),
-				),
-				'rpc2_events' => array(
-					array('event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1),
-				),
+				'httprpc_events' => [
+					['event' => 'send', 'door' => 'httprpc', 'trusted' => true, 'sends' => 1],
+					['event' => 'response', 'door' => 'httprpc'],
+				],
+				'rpc2_events' => [
+					['event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1],
+				],
 				'httprpc_status' => '200 OK',
 				'httprpc_type' => 'text/xml; charset=UTF-8',
 				'rpc2_status' => '200 OK',
 				'rpc2_type' => 'text/xml;charset=UTF-8',
-			),
-			'transport_failure' => array(
+			],
+			'transport_failure' => [
 				'xml' => $this->allowedXml(),
 				'send' => 'false',
 				'sends' => 1,
@@ -1169,19 +1169,19 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'length' => self::ORDINARY_LENGTH,
 				'sha' => self::ORDINARY_SHA256,
 				'trusted' => false,
-				'httprpc_events' => array(
-					array('event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1),
-					array('event' => 'response', 'door' => 'httprpc'),
-				),
-				'rpc2_events' => array(
-					array('event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1),
-				),
+				'httprpc_events' => [
+					['event' => 'send', 'door' => 'httprpc', 'trusted' => false, 'sends' => 1],
+					['event' => 'response', 'door' => 'httprpc'],
+				],
+				'rpc2_events' => [
+					['event' => 'send', 'door' => 'rpc2', 'trusted' => false, 'sends' => 1],
+				],
 				'httprpc_status' => '500 Server Error',
 				'httprpc_type' => 'text/html; charset=UTF-8',
 				'rpc2_status' => '502 Bad Gateway',
 				'rpc2_type' => 'text/xml;charset=UTF-8',
-			),
-		);
+			],
+		];
 
 		foreach($dispositions as $name => $disp)
 		{
@@ -1215,7 +1215,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$this->assertHttp($rpc2Quiet, $disp['rpc2_status'], $disp['rpc2_type']);
 			$rpc2Host = ($disp['sends'] > 0) ? '127.0.0.1' : null;
 			$rpc2Port = ($disp['sends'] > 0) ? 1 : null;
-			$rpc2Timeouts = ($disp['sends'] > 0) ? array('timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null) : null;
+			$rpc2Timeouts = ($disp['sends'] > 0) ? ['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null] : null;
 			$rpc2ResponseMode = ($disp['sends'] > 0) ? rSCGITransport::RESPONSE_BODY : null;
 			$this->assertFullTranscript('rpc2 logged (' . $name . ')', $rpc2Logged['state'],
 				$disp['sends'], $disp['payload'], $disp['length'], $disp['sha'],
@@ -1247,8 +1247,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			$members .= '<value><struct><member><name>methodName</name><value><string>'
 				.$call[0].'</string></value></member><member><name>params</name>'
 				.'<value><array><data>';
-			foreach($call[1] as $param)
-				$members .= '<value><string>'.$param.'</string></value>';
+			foreach($call[1] as $param) {
+				$members .= '<value><string>'.$param.'</string></value>'; }
 			$members .= '</data></array></value></member></struct></value>';
 		}
 		return '<methodCall><methodName>system.multicall</methodName><params>'
@@ -1277,26 +1277,26 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			. '<params></params></methodCall>';
 	}
 
-	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = array(), $sourceEdits = array())
+	private function runEntrypoint($door, $body, $logging, $send = 'success', $policy = 'shipped', $logCalls = false, $daemonVersion = '0.16.22', $cachedVersion = null, $requestHeaders = [], $sourceEdits = [])
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-entrypoint-' . uniqid('', true);
 		$server = null;
 		try
 		{
-			if(!mkdir($tree, 0700, true) && !is_dir($tree))
-				throw new Exception('could not create entrypoint fixture tree');
+			if(!mkdir($tree, 0700, true) && !is_dir($tree)) {
+				throw new Exception('could not create entrypoint fixture tree'); }
 			$this->copyProductionTree($tree, $policy, $sourceEdits);
 			$state = $tree . '/state.json';
-			file_put_contents($state, json_encode(array(
-				'sends' => 0, 'responses' => 0, 'logs' => array(),
+			file_put_contents($state, json_encode([
+				'sends' => 0, 'responses' => 0, 'logs' => [],
 				'payload' => null, 'trusted' => null,
 				'host' => null, 'port' => null,
 				'payload_base64' => null, 'payload_sha256' => null, 'payload_length' => null,
-				'timeouts' => null, 'response_mode' => null, 'events' => array(),
-			)));
+				'timeouts' => null, 'response_mode' => null, 'events' => [],
+			]));
 			$this->writeStubs($tree);
 
-			$environment = array(
+			$environment = [
 				'XMLRPC_ENTRYPOINT_STATE' => $state,
 				'XMLRPC_ENTRYPOINT_LOGGING' => $logging ? '1' : '0',
 				'XMLRPC_ENTRYPOINT_LOG_CALLS' => $logCalls ? '1' : '0',
@@ -1304,14 +1304,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 				'XMLRPC_ENTRYPOINT_VERSION' => $daemonVersion,
 				'XMLRPC_ENTRYPOINT_CACHED_VERSION' => ($cachedVersion === null) ? $daemonVersion : $cachedVersion,
 				'XMLRPC_ENTRYPOINT_UNREADABLE' => ($body === 'unreadable') ? '1' : '0',
-			);
-			$server = TestHttpServer::start($tree, $environment, array(
-				'-d', 'auto_prepend_file=' . $tree . '/prepend.php', '-d', 'display_errors=0'));
+			];
+			$server = TestHttpServer::start($tree, $environment, [
+				'-d', 'auto_prepend_file=' . $tree . '/prepend.php', '-d', 'display_errors=0']);
 			$response = $this->rawPost($server->port(), ($door === 'action')
 				? '/plugins/httprpc/action.php' : '/rpc2.php', ($body === 'unreadable') ? '' : $body, $requestHeaders);
 			$decoded = json_decode(file_get_contents($state), true);
-			if(!is_array($decoded))
-				throw new Exception('copied entrypoint did not write readable state');
+			if(!is_array($decoded)) {
+				throw new Exception('copied entrypoint did not write readable state'); }
 			$response['state'] = $decoded;
 			$response['policy_exists'] = is_file($tree . '/conf/xmlrpc_proxy.php');
 			$response['rpc2logs'] = is_file($tree . '/rpc2.log')
@@ -1320,14 +1320,14 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		}
 		finally
 		{
-			if($server !== null) $server->close();
+			if($server !== null) { $server->close(); }
 			TestTree::remove($tree);
 		}
 	}
 
-	private function copyProductionTree($tree, $policy = 'shipped', $sourceEdits = array())
+	private function copyProductionTree($tree, $policy = 'shipped', $sourceEdits = [])
 	{
-		$files = array(
+		$files = [
 			'plugins/httprpc/action.php',
 			'plugins/httprpc/settingspolicy.php',
 			'php/xmlrpc_path.php',
@@ -1338,7 +1338,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 			'php/xmlrpc_proxy_policy.php',
 			'php/environment.php',
 			'rpc2.php',
-		);
+		];
 		// Copy and byte-verify the shipped policy files before applying the
 		// fixture's logging switch and restricted/empty lists below. The
 		// unreadable variant chmods its copy to 0000; "none" omits both files.
@@ -1351,46 +1351,46 @@ class XMLRPCProxyEntrypointTest extends TestCase
 		{
 			$source = $this->sourceRoot . '/' . $relative;
 			$target = $tree . '/' . $relative;
-			if(!is_dir(dirname($target)) && !mkdir(dirname($target), 0700, true))
-				throw new Exception('could not create copied source directory for ' . $relative);
-			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
-				throw new Exception('could not byte-copy production source ' . $relative);
+			if(!is_dir(dirname($target)) && !mkdir(dirname($target), 0700, true)) {
+				throw new Exception('could not create copied source directory for ' . $relative); }
+			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target))) {
+				throw new Exception('could not byte-copy production source ' . $relative); }
 		}
 		// A case may weaken one layer of a copied file to show that the next
 		// layer holds on its own. Each edit must apply exactly once, so a
 		// renamed source line fails the case instead of testing nothing.
-		foreach($sourceEdits as $relative => $edits)
+		foreach($sourceEdits as $relative => $edits) {
 			foreach($edits as $search => $replace)
 			{
 				$text = file_get_contents($tree . '/' . $relative);
 				if(substr_count($text, $search) !== 1
-					|| file_put_contents($tree . '/' . $relative, str_replace($search, $replace, $text)) === false)
-					throw new Exception('fixture edit does not apply exactly once to ' . $relative);
-			}
+					|| file_put_contents($tree . '/' . $relative, str_replace($search, $replace, $text)) === false) {
+					throw new Exception('fixture edit does not apply exactly once to ' . $relative); }
+			} }
 		if($policy !== 'none')
 		{
 			$file = $tree . '/conf/xmlrpc_proxy.php';
 			// Explicit deployment overrides follow the byte-verified shipped policy.
 			file_put_contents($file, "\n\$XMLRPCProxyLog = (getenv('XMLRPC_ENTRYPOINT_LOGGING') === '1');\n", FILE_APPEND);
-			if($policy === 'restricted' || $policy === 'empty')
-				file_put_contents($file, "\$XMLRPCProxySafeParams = ".($policy === 'empty' ? 'array()' : "array('d.custom1.set')").";\n", FILE_APPEND);
-			if($policy === 'off')
-				file_put_contents($file, "\$XMLRPCProxy = 'off';\n", FILE_APPEND);
-			if($policy === 'null')
-				file_put_contents($file, "\$XMLRPCProxySafeParams = null;\n", FILE_APPEND);
-			if($policy === 'plugin_null' || $policy === 'plugin_empty')
+			if($policy === 'restricted' || $policy === 'empty') {
+				file_put_contents($file, "\$XMLRPCProxySafeParams = ".($policy === 'empty' ? 'array()' : "array('d.custom1.set')").";\n", FILE_APPEND); }
+			if($policy === 'off') {
+				file_put_contents($file, "\$XMLRPCProxy = 'off';\n", FILE_APPEND); }
+			if($policy === 'null') {
+				file_put_contents($file, "\$XMLRPCProxySafeParams = null;\n", FILE_APPEND); }
+			if($policy === 'plugin_null' || $policy === 'plugin_empty') {
 				file_put_contents($tree . '/plugins/httprpc/conf.php',
 					$policy === 'plugin_null' ? "\$XMLRPCProxySafeParams = null;\n"
-						: "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
-			if($policy === 'unreadable' && !chmod($file, 0000))
-				throw new Exception('could not make policy unreadable');
+						: "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND); }
+			if($policy === 'unreadable' && !chmod($file, 0000)) {
+				throw new Exception('could not make policy unreadable'); }
 			if($policy === 'symlink')
 			{
 				file_put_contents($file, "\$XMLRPCProxySafeParams = array();\n", FILE_APPEND);
 				$volume = $tree . '/config-volume';
 				if(!mkdir($volume, 0700) || !rename($tree . '/conf', $volume . '/conf')
-					|| !symlink($volume . '/conf', $tree . '/conf'))
-					throw new Exception('could not model a symlinked conf volume');
+					|| !symlink($volume . '/conf', $tree . '/conf')) {
+					throw new Exception('could not model a symlinked conf volume'); }
 			}
 		}
 
@@ -1398,8 +1398,8 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
 	private function writeStubs($tree)
 	{
-		if(!is_dir($tree . '/conf'))
-			mkdir($tree . '/conf', 0700, true);
+		if(!is_dir($tree . '/conf')) {
+			mkdir($tree . '/conf', 0700, true); }
 		file_put_contents($tree . '/php/scgitransport.php', <<<'PHP'
 <?php
 class rSCGITransport
@@ -1614,34 +1614,34 @@ PHP
 
 
 
-	private function rawPost($port, $path, $body, $headers = array())
+	private function rawPost($port, $path, $body, $headers = [])
 	{
 		$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 2);
-		if($socket === false)
-			throw new Exception('could not connect raw HTTP client: ' . $error);
+		if($socket === false) {
+			throw new Exception('could not connect raw HTTP client: ' . $error); }
 		$request = "POST " . $path . " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
-		$headers = array_merge(array('Content-Type' => 'text/xml'), $headers);
-		foreach($headers as $name => $value)
-			$request .= $name . ': ' . $value . "\r\n";
+		$headers = array_merge(['Content-Type' => 'text/xml'], $headers);
+		foreach($headers as $name => $value) {
+			$request .= $name . ': ' . $value . "\r\n"; }
 		$request .= 'Content-Length: ' . strlen($body)
 			. "\r\nConnection: close\r\n\r\n" . $body;
-		if(fwrite($socket, $request) === false)
-			throw new Exception('could not write raw HTTP request');
+		if(fwrite($socket, $request) === false) {
+			throw new Exception('could not write raw HTTP request'); }
 		$raw = stream_get_contents($socket);
 		fclose($socket);
-		if($raw === false || strpos($raw, "\r\n\r\n") === false)
-			throw new Exception('copied entrypoint returned no complete HTTP response');
+		if($raw === false || strpos($raw, "\r\n\r\n") === false) {
+			throw new Exception('copied entrypoint returned no complete HTTP response'); }
 		list($headerBlock, $responseBody) = explode("\r\n\r\n", $raw, 2);
 		$headers = explode("\r\n", $headerBlock);
 		$status = array_shift($headers);
-		$values = array();
+		$values = [];
 		foreach($headers as $header)
 		{
 			$position = strpos($header, ':');
-			if($position !== false)
-				$values[strtolower(trim(substr($header, 0, $position)))] = trim(substr($header, $position + 1));
+			if($position !== false) {
+				$values[strtolower(trim(substr($header, 0, $position)))] = trim(substr($header, $position + 1)); }
 		}
-		return array('status' => $status, 'headers' => $values, 'body' => $responseBody);
+		return ['status' => $status, 'headers' => $values, 'body' => $responseBody];
 	}
 
 	private function assertHttp($result, $status, $type, $body = null)
@@ -1650,8 +1650,8 @@ PHP
 			'HTTP status is ' . $status);
 		$this->assertEquals($type, isset($result['headers']['content-type'])
 			? $result['headers']['content-type'] : null, 'HTTP content type is ' . $type);
-		if($body !== null)
-			$this->assertEquals($body, $result['body'], 'HTTP body is exact');
+		if($body !== null) {
+			$this->assertEquals($body, $result['body'], 'HTTP body is exact'); }
 	}
 
 	private function assertFullTranscript($door, array $state, $expectedSends, $expectedPayload, $expectedLength, $expectedSha, $expectedHost, $expectedPort, $expectedTrusted, $expectedTimeouts, $expectedResponseMode, array $expectedEvents)
@@ -1691,8 +1691,8 @@ PHP
 	private function faultString($body)
 	{
 		$document = new DOMDocument();
-		if(!is_string($body) || $body === '' || !@$document->loadXML($body, LIBXML_NONET))
-			return null;
+		if(!is_string($body) || $body === '' || !@$document->loadXML($body, LIBXML_NONET)) {
+			return null; }
 		$nodes = (new DOMXPath($document))->query(
 			'/methodResponse/fault/value/struct/member[name="faultString"]/value/string');
 		return ($nodes !== false && $nodes->length === 1) ? $nodes->item(0)->textContent : null;

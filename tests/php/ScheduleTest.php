@@ -15,7 +15,7 @@ function scheduleRemoveProfile($path)
     if (!is_dir($path)) {
         return;
     }
-    foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
+    foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
         $child = $path . '/' . $entry;
         if (is_dir($child) && !is_link($child)) {
             scheduleRemoveProfile($child);
@@ -40,11 +40,11 @@ require_once(__DIR__ . '/../../php/settings.php');
 // parser has removed each quoting layer; unsupported commands fail the case.
 function scheduleEvaluate($argument, $cached)
 {
-    if (!is_string($argument) || substr($argument, 0, 1) !== '$') return $argument;
+    if (!is_string($argument) || substr($argument, 0, 1) !== '$') { return $argument; }
     $commands = RtorrentCommandParser::commands(substr($argument, 1));
-    if (count($commands) !== 1) throw new RuntimeException('Unexpected registration command count');
+    if (count($commands) !== 1) { throw new RuntimeException('Unexpected registration command count'); }
     $call = $commands[0];
-    if ($call['name'] === 'system.time') return $cached;
+    if ($call['name'] === 'system.time') { return $cached; }
     $args = array_map(function ($arg) use ($cached) { return scheduleEvaluate($arg, $cached); }, $call['args']);
     switch ($call['name']) {
         case 'cat': return implode('', $args);
@@ -73,16 +73,16 @@ function scheduleCommandAt($name, $intervalMinutes, $now)
 {
     $startAt = 0;
     $command = rTorrentSettings::get()->getScheduleCommand(
-        $name, $intervalMinutes, 'print=noop', $startAt, $now
+        $name, $intervalMinutes, 'print=noop', $startAt, $now,
     );
-    return array(
+    return [
         'now' => $now,
         'startAt' => $startAt,
         'firesAt' => $now + $startAt,
         'key' => $command->params[0]->value,
         'reported' => $command->params[1]->value,
         'interval' => $command->params[2]->value,
-    );
+    ];
 }
 
 // The second within an interval that $name's key claims for itself.
@@ -100,7 +100,7 @@ $quarterMinute = 15;
 // the ones the code computes.
 $schedule_rand = 10;
 
-$tests = array(
+$tests = [
     'reloads do not move the fire time' => function () use ($hourly) {
         $now = 1755200000;
         $first = scheduleFiresAt('ratio', $hourly, $now);
@@ -109,7 +109,7 @@ $tests = array(
             testAssertSame(
                 $first,
                 scheduleFiresAt('ratio', $hourly, $reload),
-                'Re-registering ' . ($reload - $now) . 's later moved the fire time'
+                'Re-registering ' . ($reload - $now) . 's later moved the fire time',
             );
         }
     },
@@ -121,7 +121,7 @@ $tests = array(
             testAssertSame(
                 $first,
                 scheduleFiresAt('loginmgr', $daily, $reload),
-                'Re-registering ' . ($reload - $now) . 's later moved the daily fire time'
+                'Re-registering ' . ($reload - $now) . 's later moved the daily fire time',
             );
         }
     },
@@ -133,7 +133,7 @@ $tests = array(
             testAssertSame(
                 $first,
                 scheduleFiresAt('erasedata', $quarterMinute, $reload),
-                'Re-registering ' . ($reload - $now) . 's later moved the 15s fire time'
+                'Re-registering ' . ($reload - $now) . 's later moved the 15s fire time',
             );
         }
     },
@@ -144,12 +144,12 @@ $tests = array(
         testAssertSame(
             $first + $hourly,
             scheduleFiresAt('ratio', $hourly, $first + 1),
-            'The slot after a fire is not one interval later'
+            'The slot after a fire is not one interval later',
         );
         testAssertSame(
             $first + $hourly,
             scheduleFiresAt('ratio', $hourly, $first + $hourly - 1),
-            'A reload just before the next fire moved it'
+            'A reload just before the next fire moved it',
         );
     },
     'the task keeps firing on its own period' => function () use ($hourly) {
@@ -164,7 +164,7 @@ $tests = array(
             $start = rTorrentSettings::getAlignedStart('autowatch', $hourly, 1755200000 + $second * 29);
             testAssertTrue(
                 $start >= 1 && $start <= $hourly,
-                "Start {$start} is outside 1..{$hourly}, so a reload could fire the task at once"
+                "Start {$start} is outside 1..{$hourly}, so a reload could fire the task at once",
             );
         }
     },
@@ -172,20 +172,20 @@ $tests = array(
         global $schedule_rand;
         $schedule_rand = 10;
 
-        $offsets = array();
-        foreach (array('ratio', 'scheduler', 'loginmgr', 'autowatch', 'erasedata') as $name) {
+        $offsets = [];
+        foreach (['ratio', 'scheduler', 'loginmgr', 'autowatch', 'erasedata'] as $name) {
             $offsets[$name] = scheduleFiresAt($name, $hourly, 1755200000) % $hourly;
         }
 
         foreach ($offsets as $name => $offset) {
             testAssertTrue(
                 $offset % $hourly <= $schedule_rand || $hourly - ($offset % $hourly) <= $schedule_rand,
-                "{$name} landed at offset {$offset}, outside the jitter window"
+                "{$name} landed at offset {$offset}, outside the jitter window",
             );
             testAssertSame(
                 $offset,
                 scheduleFiresAt($name, $hourly, 1755200000 + 900) % $hourly,
-                "{$name} did not keep its slot across a reload"
+                "{$name} did not keep its slot across a reload",
             );
         }
         testAssertTrue(count(array_unique($offsets)) > 1, 'Every task landed on the same second');
@@ -225,18 +225,18 @@ $tests = array(
                 $sample['firesAt'],
                 'A reload at boundary' . sprintf('%+d', $now - $boundary)
                 . 's fires at boundary' . sprintf('%+d', $sample['firesAt'] - $boundary)
-                . 's instead of boundary' . sprintf('%+d', $expected - $boundary) . 's'
+                . 's instead of boundary' . sprintf('%+d', $expected - $boundary) . 's',
             );
             testAssertSame(
                 (string) $sample['startAt'],
                 $sample['reported'],
                 'A reload at boundary' . sprintf('%+d', $now - $boundary)
-                . 's told rTorrent a start the caller was never given'
+                . 's told rTorrent a start the caller was never given',
             );
             testAssertSame((string) $interval, $sample['interval'], 'The interval reached rTorrent in minutes');
             testAssertTrue(
                 $sample['startAt'] >= 1 && $sample['startAt'] <= $interval,
-                "Start {$sample['startAt']} is outside 1..{$interval}, so a reload could fire the task at once"
+                "Start {$sample['startAt']} is outside 1..{$interval}, so a reload could fire the task at once",
             );
         }
     },
@@ -253,13 +253,13 @@ $tests = array(
             testAssertSame(
                 $slot,
                 scheduleCommandAt($name, $intervalMinutes, $now)['firesAt'],
-                'A reload ' . ($slot - $now) . 's before the slot moved it'
+                'A reload ' . ($slot - $now) . 's before the slot moved it',
             );
         }
         testAssertSame(
             $slot + $interval,
             scheduleCommandAt($name, $intervalMinutes, $slot)['firesAt'],
-            'The slot after a fire is not one interval later'
+            'The slot after a fire is not one interval later',
         );
     },
     'each scheduled task gets its own getScheduleCommand slot' => function () {
@@ -268,20 +268,20 @@ $tests = array(
         $intervalMinutes = 5;
         $interval = $intervalMinutes * 60;
         $now = 1755198000;
-        $offsets = array();
-        foreach (array('trafic', 'rss', 'ratio', 'loginmgr', 'scheduler') as $name) {
+        $offsets = [];
+        foreach (['trafic', 'rss', 'ratio', 'loginmgr', 'scheduler'] as $name) {
             $sample = scheduleCommandAt($name, $intervalMinutes, $now);
             $offsets[$name] = $sample['firesAt'] % $interval;
 
             testAssertSame(
                 scheduleJitterOffset($name),
                 $offsets[$name],
-                "{$name} did not land on the slot its name picks out"
+                "{$name} did not land on the slot its name picks out",
             );
             testAssertSame(
                 $offsets[$name],
                 scheduleCommandAt($name, $intervalMinutes, $now + 137)['firesAt'] % $interval,
-                "{$name} did not keep its slot across a reload"
+                "{$name} did not keep its slot across a reload",
             );
             testAssertSame($name . User::getUser(), $sample['key'], "{$name} registered under the wrong key");
         }
@@ -304,18 +304,18 @@ $tests = array(
         testAssertSame('rutracker_check' . User::getUser(), $parsed[0]['args'][0], 'The profile key is preserved');
         testAssertSame('3600', $parsed[0]['args'][2], 'The installed cadence remains in seconds');
         testAssertSame($body, $parsed[0]['args'][3], 'The callback body survives nested grammar bytes');
-        foreach (array($now, $now - 2, $now - 20, $now - 7202, $now + $startAt,
-            $now + $startAt + 2, $now + $startAt + 7202) as $cached) {
+        foreach ([$now, $now - 2, $now - 20, $now - 7202, $now + $startAt,
+            $now + $startAt + 2, $now + $startAt + 7202] as $cached) {
             $relative = (int) scheduleEvaluate($parsed[0]['args'][1], $cached);
             testAssertTrue($relative >= 1, 'Every registration has a positive delay');
-            if ($cached >= $now + $startAt)
-                testAssertTrue($relative <= 3600, 'An overdue registration has a bounded positive delay');
+            if ($cached >= $now + $startAt) {
+                testAssertTrue($relative <= 3600, 'An overdue registration has a bounded positive delay'); }
             $firesAt = $cached + $relative;
             testAssertTrue($firesAt > $cached, 'An overdue target never becomes an unsigned negative delay');
             testAssertSame(($now + $startAt) % 3600, $firesAt % 3600,
                 'A stale or delayed callback retains the chosen profile phase');
-            if ($cached < $now + $startAt)
-                testAssertSame($now + $startAt, $firesAt, 'A stale callback clock cannot move the chosen slot earlier');
+            if ($cached < $now + $startAt) {
+                testAssertSame($now + $startAt, $firesAt, 'A stale callback clock cannot move the chosen slot earlier'); }
         }
     },
     'the clock seam is optional' => function () {
@@ -333,17 +333,17 @@ $tests = array(
             testAssertSame(
                 (string) $startAt,
                 $command->params[1]->value,
-                'The out-parameter and the command disagree'
+                'The out-parameter and the command disagree',
             );
             testAssertSame(
                 scheduleCommandAt('ratio', 60, $now)['firesAt'],
                 $now + $startAt,
-                'Reading the clock and being handed the same instant give different answers'
+                'Reading the clock and being handed the same instant give different answers',
             );
             return;
         }
         throw new RuntimeException('The clock ticked through every attempt at a stable call');
     },
-);
+];
 
 exit(testRunCases($tests));

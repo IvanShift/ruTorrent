@@ -13,36 +13,20 @@ require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
  */
 class PendingWaitLogTest extends TestCase
 {
-	private function await($adapter, $polls, $final = true)
-	{
-		$method = new ReflectionMethod('RetrackersRecoveryCoordinator', 'awaitRead');
-		if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
-		$reads = 0;
-		$failure = null;
-		$result = $method->invokeArgs(null, array(function (&$failure) use (&$reads, $polls, $final) {
-			if (++$reads <= $polls) {
-				$failure = 'handoff-release-pending';
-				return(false);
-			}
-			$failure = $final === true ? null : $final;
-			return($final === true ? true : false);
-		}, $adapter, true, array('handoff-release-pending'), &$failure));
-		return(array($result, $failure, $reads));
-	}
 
 	public function testABriefPendingWaitThatSucceedsLogsNothing()
 	{
-		FileUtil::$messages = array();
+		FileUtil::$messages = [];
 		$adapter = new RetrackersWorkerRpcAdapter(str_repeat('A', 40), 'alice');
 		list($result, $failure, $reads) = $this->await($adapter, 3);
-		$this->assertTrue($result === true && $reads === 4 && FileUtil::$messages === array() &&
+		$this->assertTrue($result === true && $reads === 4 && FileUtil::$messages === [] &&
 			$adapter->recoveryFailure() === 'handoff-release-pending',
 			'a delayed receipt that lands is recorded quietly and writes no recovery line');
 	}
 
 	public function testALongWaitIsLoggedOnceAndALaterOutcomeStillIs()
 	{
-		FileUtil::$messages = array();
+		FileUtil::$messages = [];
 		$adapter = new RetrackersWorkerRpcAdapter(str_repeat('A', 40), 'alice');
 		list($result, $failure) = $this->await($adapter, 80, 'receipt-ledger-corrupt');
 		$this->assertTrue($result === false && $failure === 'receipt-ledger-corrupt' && count(FileUtil::$messages) === 1 &&
@@ -56,10 +40,26 @@ class PendingWaitLogTest extends TestCase
 
 	public function testOutcomeLinesNamedPendingKeepTheirOwnMeaning()
 	{
-		FileUtil::$messages = array();
+		FileUtil::$messages = [];
 		$adapter = new RetrackersWorkerRpcAdapter(str_repeat('A', 40), 'alice');
 		$adapter->recordRecoveryFailure('native-capture-retry-pending');
-		$this->assertTrue(FileUtil::$messages === array('retrackers-recovery: ' . str_repeat('A', 40) .
-			' native-capture-retry-pending'), 'a deferral outcome is never phrased as a wait');
+		$this->assertTrue(FileUtil::$messages === ['retrackers-recovery: ' . str_repeat('A', 40) .
+			' native-capture-retry-pending'], 'a deferral outcome is never phrased as a wait');
+	}
+	private function await($adapter, $polls, $final = true)
+	{
+		$method = new ReflectionMethod('RetrackersRecoveryCoordinator', 'awaitRead');
+		if (PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
+		$reads = 0;
+		$failure = null;
+		$result = $method->invokeArgs(null, [function (&$failure) use (&$reads, $polls, $final) {
+			if (++$reads <= $polls) {
+				$failure = 'handoff-release-pending';
+				return(false);
+			}
+			$failure = $final === true ? null : $final;
+			return($final === true ? true : false);
+		}, $adapter, true, ['handoff-release-pending'], &$failure]);
+		return([$result, $failure, $reads]);
 	}
 }

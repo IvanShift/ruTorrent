@@ -6,26 +6,6 @@ class FileLabelsTest extends TestCase
 {
 	use HttprpcDisplayTestFixture;
 
-	private function files()
-	{
-		$name = "Dir\xFF";
-		$hash = $this->torrent(array('name'=>$name, 'files'=>array(
-			array('path'=>array("folder\xFF", "a\xFF.mkv"), 'path.utf-8'=>array('Сезон', 'Файл.mkv'), 'length'=>7),
-			array('path'=>array('b.txt'), 'length'=>3))));
-		$this->start(array($hash=>array('name'=>$name, 'label'=>'', 'base'=>'/data/'.$name, 'rate'=>'0',
-			'files'=>array(array("folder\xFF/a\xFF.mkv", 7), array('b.txt', 3)), 'extra'=>array('plugin-one', 'plugin-two'))));
-		return $hash;
-	}
-
-	// The claim is about metadata, so only its commands decide. The whole list is
-	// in the message: this is how PHP 8.1's tracing JIT breaking UTF::isValid() showed.
-	private function assertListedWithoutMetadata($label)
-	{
-		$calls = $this->daemon->calls();
-		$this->assertTrue(in_array('f.multicall', $calls, true) && !count(preg_grep('/session|tied/', $calls)),
-			$label.': '.json_encode($calls));
-	}
-
 	public function testDisplayLabelsAreOptInAndNeverReplaceExistingCells()
 	{
 		$hash = $this->files();
@@ -35,7 +15,7 @@ class FileLabelsTest extends TestCase
 		$this->assertListedWithoutMetadata('ordinary clients trigger no metadata lookup');
 		$labelled = $this->post($query.'&names=1');
 		$this->assertSame($original[0], array_slice($labelled[0], 0, 7), 'every old cell and extra command stays in place');
-		$this->assertSame(array('displayName'=>'Сезон/Файл.mkv', 'pathKey'=>'folder%FF/a%FF.mkv'), $labelled[0][7] ?? null, 'optional label follows all requested columns');
+		$this->assertSame(['displayName'=>'Сезон/Файл.mkv', 'pathKey'=>'folder%FF/a%FF.mkv'], $labelled[0][7] ?? null, 'optional label follows all requested columns');
 		$this->assertSame($original[1], $labelled[1], 'UTF-8 row needs no additional cell');
 		$this->assertSame(true, is_string($labelled[0][0]), 'the original path remains a string');
 	}
@@ -45,16 +25,16 @@ class FileLabelsTest extends TestCase
 		$hash = $this->files();
 		unlink($this->base.'/session/'.$hash.'.torrent');
 		$files = $this->post('mode=fls&hash='.$hash.'&cmd=f.priority%3D&cmd=f.priority%3D&names=1');
-		$this->assertSame(array('displayName'=>'folder\\xFF/a\\xFF.mkv', 'pathKey'=>'folder%FF/a%FF.mkv'), $files[0][7] ?? null, 'missing optional source leaves visible byte escapes');
+		$this->assertSame(['displayName'=>'folder\\xFF/a\\xFF.mkv', 'pathKey'=>'folder%FF/a%FF.mkv'], $files[0][7] ?? null, 'missing optional source leaves visible byte escapes');
 		$this->assertSame('plugin-two', $files[0][6], 'fallback cannot consume a plugin slot');
 	}
 
 	public function testUtf8AndDisabledLabelsKeepTheExistingWireFormat()
 	{
 		$hash = str_repeat('A', 40);
-		$this->start(array($hash=>array('name'=>'Plain', 'label'=>'', 'base'=>'/data/Plain', 'rate'=>'0', 'files'=>array(array('映画.mkv', 7)))));
+		$this->start([$hash=>['name'=>'Plain', 'label'=>'', 'base'=>'/data/Plain', 'rate'=>'0', 'files'=>[['映画.mkv', 7]]]]);
 		$plain = $this->post('mode=fls&hash='.$hash.'&names=1');
-		$this->assertSame(array(array('映画.mkv', '1', '1', '7', '1')), $plain, 'ordinary Unicode rows remain unchanged');
+		$this->assertSame([['映画.mkv', '1', '1', '7', '1']], $plain, 'ordinary Unicode rows remain unchanged');
 		$this->assertListedWithoutMetadata('ordinary Unicode needs no metadata call');
 		$hash = $this->files();
 		$off = $this->post('mode=fls&hash='.$hash.'&cmd=f.priority%3D&cmd=f.priority%3D&names=0');
@@ -66,14 +46,14 @@ class FileLabelsTest extends TestCase
 		// \\ and \" pairs: unescaping the daemon's bytes again would change the path.
 		$directory = "Dir\xFF \"q\" \\b \\\\ \\\"";
 		$leaf = "a\xFF.mkv";
-		$hash = $this->torrent(array('name'=>'Root', 'files'=>array(array(
-			'path'=>array($directory, $leaf), 'path.utf-8'=>array('Folder', 'Файл.mkv'), 'length'=>7))));
-		$this->start(array($hash=>array('name'=>'Root', 'label'=>'', 'base'=>'/data/Root', 'rate'=>'0',
-			'files'=>array(array($directory.'/'.$leaf, 7)))));
+		$hash = $this->torrent(['name'=>'Root', 'files'=>[[
+			'path'=>[$directory, $leaf], 'path.utf-8'=>['Folder', 'Файл.mkv'], 'length'=>7]]]);
+		$this->start([$hash=>['name'=>'Root', 'label'=>'', 'base'=>'/data/Root', 'rate'=>'0',
+			'files'=>[[$directory.'/'.$leaf, 7]]]]);
 		$raw = $this->post('mode=fls&hash='.$hash);
 		$labelled = $this->post('mode=fls&hash='.$hash.'&names=1');
 		$this->assertSame($raw[0], array_slice($labelled[0], 0, 5), 'quotes and backslashes keep the original gateway spelling');
-		$this->assertSame(array('displayName'=>'Folder/Файл.mkv', 'pathKey'=>'Dir%FF%20%22q%22%20%5Cb%20%5C%5C%20%5C%22/a%FF.mkv'), $labelled[0][5] ?? null,
+		$this->assertSame(['displayName'=>'Folder/Файл.mkv', 'pathKey'=>'Dir%FF%20%22q%22%20%5Cb%20%5C%5C%20%5C%22/a%FF.mkv'], $labelled[0][5] ?? null,
 			'the daemon\'s bytes, pairs included, attest the exact source file');
 	}
 
@@ -90,10 +70,30 @@ class UnreadableTorrentStream {
 }
 stream_wrapper_register('unreadable', 'UnreadableTorrentStream');
 PHP;
-		$this->start(array($hash=>$legacy), false, $wrapper);
+		$this->start([$hash=>$legacy], false, $wrapper);
 		$files = $this->post('mode=fls&hash='.$hash.'&names=1');
-		$this->assertSame(array('displayName'=>'raw\\xFF', 'pathKey'=>'raw%FF'), $files[0][5] ?? null, 'an actual source read failure leaves valid JSON and a byte label');
+		$this->assertSame(['displayName'=>'raw\\xFF', 'pathKey'=>'raw%FF'], $files[0][5] ?? null, 'an actual source read failure leaves valid JSON and a byte label');
 		$this->assertSame(false, strpos(file_get_contents($this->base.'/server.err'), 'file_get_contents'), 'an optional source read failure does not leak a PHP warning');
+	}
+
+	private function files()
+	{
+		$name = "Dir\xFF";
+		$hash = $this->torrent(['name'=>$name, 'files'=>[
+			['path'=>["folder\xFF", "a\xFF.mkv"], 'path.utf-8'=>['Сезон', 'Файл.mkv'], 'length'=>7],
+			['path'=>['b.txt'], 'length'=>3]]]);
+		$this->start([$hash=>['name'=>$name, 'label'=>'', 'base'=>'/data/'.$name, 'rate'=>'0',
+			'files'=>[["folder\xFF/a\xFF.mkv", 7], ['b.txt', 3]], 'extra'=>['plugin-one', 'plugin-two']]]);
+		return $hash;
+	}
+
+	// The claim is about metadata, so only its commands decide. The whole list is
+	// in the message: this is how PHP 8.1's tracing JIT breaking UTF::isValid() showed.
+	private function assertListedWithoutMetadata($label)
+	{
+		$calls = $this->daemon->calls();
+		$this->assertTrue(in_array('f.multicall', $calls, true) && !count(preg_grep('/session|tied/', $calls)),
+			$label.': '.json_encode($calls));
 	}
 
 }

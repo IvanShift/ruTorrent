@@ -2,10 +2,10 @@
 require_once('rules.php');
 
 $cmd = '';
-if(isset($_REQUEST['mode']))
-	$cmd = $_REQUEST['mode'];
-if($cmd === 'setrules' || $cmd === 'checklabels')
-	Requests::requirePost();
+if(isset($_REQUEST['mode'])) {
+	$cmd = $_REQUEST['mode']; }
+if($cmd === 'setrules' || $cmd === 'checklabels') {
+	Requests::requirePost(); }
 $mngr = rRatioRulesList::load();
 $val = null;
 
@@ -18,9 +18,9 @@ switch($cmd)
 	}
 	case "checklabels":
 	{
-		$hash = array();
-		if (!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+		$hash = [];
+		if (!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 		$vars = explode('&', $HTTP_RAW_POST_DATA);
 		foreach($vars as $var)
 		{
@@ -35,12 +35,12 @@ switch($cmd)
 			}
 		}
 		$mngr->checkLabels($hash);
-		$val = array();
+		$val = [];
 		break;
 	}
 }
 
-if(is_null($val))
-	$val = $mngr->getContents();
+if(is_null($val)) {
+	$val = $mngr->getContents(); }
 
 CachedEcho::send(JSON::safeEncode($val),"application/json",true);

@@ -29,6 +29,18 @@ class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
     public function claimCalls() { return count(array_keys($this->wire->calls, 'system.retrackers.original_claim')); }
     public function cancelCalls() { return count(array_keys($this->wire->calls, 'd.retrackers.defer_original')); }
     public function queuePending() { return $this->wire->torrents[str_repeat('A', 40)]['queued'] !== ''; }
+    public function sourceScalarSnapshot($hash, &$failure = null) {
+        if ($this->ownerFailures-- > 0) { $failure='initial-transport'; return false; }
+        return ['values' => ['recovery_marker' => '', 'recovery_ack' => '']];
+    }
+    public function getLedgerKeys(&$failure = null) { return []; }
+    public function executeLifecycleCallback(RetrackersLifecycleCallbacks $callback, &$failure = null) {
+        return 'ACQUIRED';
+    }
+    public function recordRecoveryFailure($reason) {
+        $this->reason = $reason;
+        throw new RuntimeException('observed refusal');
+    }
     protected function send($payload, $plan, &$failure = null, $historical = false) {
         $failure = null;
         if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false) {
@@ -37,43 +49,31 @@ class PreMutationRecoveryAdapter extends RetrackersWorkerRpcAdapter
                 $failure = 'closed-before-headers';
                 return false;
             }
-            return array('ok' => true, 'family' => 2, 'value' => array(
+            return ['ok' => true, 'family' => 2, 'value' => [
                 'd.retrackers.begin_original', 'd.retrackers.finish_original',
-                'd.incarnation', 'system.retrackers.finalized'));
+                'd.incarnation', 'system.retrackers.finalized']];
         }
         if (strpos($payload, '<methodName>d.incarnation</methodName>') !== false) {
             if ($this->incarnationFails) { $failure = 'connect-failed'; return false; }
-            return array('ok' => true, 'family' => 2, 'value' => str_repeat('e', 32));
+            return ['ok' => true, 'family' => 2, 'value' => str_repeat('e', 32)];
         }
         if (strpos($payload, '<methodName>d.retrackers.finish_original</methodName>') !== false) {
             $this->finishCalls++;
-            return array('ok' => true, 'family' => 2, 'value' => 'finalized');
+            return ['ok' => true, 'family' => 2, 'value' => 'finalized'];
         }
         if (strpos($payload, '<methodName>d.incarnation</methodName>') === false &&
             strpos($payload, '<methodName>system.retrackers.finalized</methodName>') === false) {
             $answer = $this->wire->answer($payload, $failure);
-            if ($answer !== null) return $answer;
+            if ($answer !== null) { return $answer; }
         }
         if (strpos($payload, '<methodName>system.retrackers.finalized</methodName>') !== false) {
             if ($this->finishCalls && $this->receiptFailures-- > 0) {
                 $failure = 'closed-before-headers'; return false;
             }
-            return array('ok' => true, 'family' => 2, 'value' => $this->finishCalls ?
-                'finalized:' . str_repeat('c', 32) . ':' . str_repeat('e', 32) : 'none');
+            return ['ok' => true, 'family' => 2, 'value' => $this->finishCalls ?
+                'finalized:' . str_repeat('c', 32) . ':' . str_repeat('e', 32) : 'none'];
         }
         throw new RuntimeException('Unexpected pre-mutation RPC');
-    }
-    public function sourceScalarSnapshot($hash, &$failure = null) {
-        if ($this->ownerFailures-- > 0) { $failure='initial-transport'; return false; }
-        return array('values' => array('recovery_marker' => '', 'recovery_ack' => ''));
-    }
-    public function getLedgerKeys(&$failure = null) { return array(); }
-    public function executeLifecycleCallback(RetrackersLifecycleCallbacks $callback, &$failure = null) {
-        return 'ACQUIRED';
-    }
-    public function recordRecoveryFailure($reason) {
-        $this->reason = $reason;
-        throw new RuntimeException('observed refusal');
     }
 }
 
@@ -86,46 +86,14 @@ class PreMutationWaitsAdapter extends PreMutationRecoveryAdapter
     }
     protected function send($payload, $plan, &$failure = null, $historical = false) {
         $answer = parent::send($payload, $plan, $failure, $historical);
-        if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false && is_array($answer))
-            $answer['value'][] = 'system.retrackers.retry_waits';
+        if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false && is_array($answer)) {
+            $answer['value'][] = 'system.retrackers.retry_waits'; }
         return $answer;
     }
 }
 
 class PreMutationRecoveryTest extends TestCase
 {
-    private function runWorker($adapter, $snapshot) {
-        $authority = new class {
-            public function prepare($path, $hash, $additions, $deletions, $begin, $snapshot) {
-                return array('ok' => true, 'changed' => false);
-            }
-        };
-        $id = str_repeat('B', 40);
-        $marker = 'v2:original:0:' . $id . ':' . hash('sha256', 'alice') . ':' . str_repeat('c', 32);
-        try {
-            return RetrackersRecoveryCoordinator::run(str_repeat('A', 40), 'alice',
-                $marker, '0', $id, $adapter, $authority, $snapshot);
-        } catch (RuntimeException $error) {
-            if ($error->getMessage() !== 'observed refusal') throw $error;
-            return false;
-        }
-    }
-    private function snapshot($failures, $reason = 'initial-hashing-pending') {
-        return new class($failures, $reason) {
-            public $reads = 0;
-            private $failures;
-            private $reason;
-            public function __construct($failures, $reason) { $this->failures=$failures; $this->reason=$reason; }
-            public function capture($hash, $handoff) {
-                $this->reads++;
-                if ($this->reads <= $this->failures)
-                    return array('ok' => false, 'failure' => $this->reason);
-                return array('ok' => true, 'snapshot' => array('scalar' => array(
-                    'is_private' => '0', 'name' => 'fixture'),
-                    'source' => array('path' => '/synthetic/source')));
-            }
-        };
-    }
     public function testCapabilityRetainsTransientTransportClassification() {
         $adapter = new PreMutationRecoveryAdapter(); $adapter->transientCalls=1; $failure=null;
         $this->assertTrue($adapter->nativeOriginalCapability($failure) === false &&
@@ -163,16 +131,16 @@ class PreMutationRecoveryTest extends TestCase
             RetrackersRecoveryCoordinator::cancelBeforeStart(str_repeat('A',40),$marker,$id,
                 $adapter,'worker-slots-unavailable');
         } catch(RuntimeException $error) {
-            if ($error->getMessage() !== 'observed refusal') throw $error;
+            if ($error->getMessage() !== 'observed refusal') { throw $error; }
         }
         $this->assertTrue($adapter->finishCalls===0 && $adapter->claimCalls()===1 && $adapter->cancelCalls()===1 && $adapter->queuePending() && $adapter->reason==='worker-slots-unavailable',
             'a worker without an RPC slot retires only its exact uncaptured observation while Q remains pending');
     }
     public function testUnknownPreMutationClaimOrCancelNeverFallsBackToCompletion() {
-        foreach(array('claim','cancel') as $cut) {
+        foreach(['claim','cancel'] as $cut) {
             $adapter=new PreMutationRecoveryAdapter();
-            if($cut==='claim')$adapter->wire->torrents[str_repeat('A',40)]['held']=true;
-            if($cut==='cancel')$adapter->wire->fail['d.retrackers.defer_original']=array('closed-before-headers');
+            if($cut==='claim') {$adapter->wire->torrents[str_repeat('A',40)]['held']=true; }
+            if($cut==='cancel') {$adapter->wire->fail['d.retrackers.defer_original']=['closed-before-headers']; }
             $this->assertTrue($this->runWorker($adapter,$this->snapshot(PHP_INT_MAX,'ownership-mismatch'))===false &&
                 $adapter->claimCalls()===($cut==='cancel'?2:1) && $adapter->cancelCalls()===($cut==='cancel'?1:0) && $adapter->finishCalls===0 && $adapter->queuePending(),
                 'unknown '.$cut.' outcome retains Q and never sends a finish/completion fallback');
@@ -195,5 +163,37 @@ class PreMutationRecoveryTest extends TestCase
         $this->assertTrue($this->runWorker($adapter, $snapshot) === false && $snapshot->reads > 1 &&
             $adapter->reason === 'initial-hashing-pending',
             'without native waits a defer spends an attempt, so the worker keeps its bounded hashing settle first');
+    }
+    private function runWorker($adapter, $snapshot) {
+        $authority = new class {
+            public function prepare($path, $hash, $additions, $deletions, $begin, $snapshot) {
+                return ['ok' => true, 'changed' => false];
+            }
+        };
+        $id = str_repeat('B', 40);
+        $marker = 'v2:original:0:' . $id . ':' . hash('sha256', 'alice') . ':' . str_repeat('c', 32);
+        try {
+            return RetrackersRecoveryCoordinator::run(str_repeat('A', 40), 'alice',
+                $marker, '0', $id, $adapter, $authority, $snapshot);
+        } catch (RuntimeException $error) {
+            if ($error->getMessage() !== 'observed refusal') { throw $error; }
+            return false;
+        }
+    }
+    private function snapshot($failures, $reason = 'initial-hashing-pending') {
+        return new class($failures, $reason) {
+            public $reads = 0;
+            private $failures;
+            private $reason;
+            public function __construct($failures, $reason) { $this->failures=$failures; $this->reason=$reason; }
+            public function capture($hash, $handoff) {
+                $this->reads++;
+                if ($this->reads <= $this->failures) {
+                    return ['ok' => false, 'failure' => $this->reason]; }
+                return ['ok' => true, 'snapshot' => ['scalar' => [
+                    'is_private' => '0', 'name' => 'fixture'],
+                    'source' => ['path' => '/synthetic/source']]];
+            }
+        };
     }
 }

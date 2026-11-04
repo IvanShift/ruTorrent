@@ -6,8 +6,8 @@ require_once(__DIR__.'/utf.php');
 
 class FileUtil
 {
-	const LOG_LOCK_ATTEMPTS = 100;
-	const LOG_LOCK_WAIT_US = 10000;
+	public const LOG_LOCK_ATTEMPTS = 100;
+	public const LOG_LOCK_WAIT_US = 10000;
 
 	private static $profilePathInstance = null;
 
@@ -29,24 +29,24 @@ class FileUtil
 	 */
 	public static function displayPath($path)
 	{
-		if(UTF::isValid($path))
-			return $path;
+		if(UTF::isValid($path)) {
+			return $path; }
 		try {
 			$key = @rawurlencode($path);
 		} catch(Throwable $error) {
 			$key = null;
 		}
-		return is_string($key) ? array('name' => UTF::display($path), 'pathKey' => $key) : $path;
+		return is_string($key) ? ['name' => UTF::display($path), 'pathKey' => $key] : $path;
 	}
 
 	/** Decode a structured form path once, before the caller's usual path checks. */
 	public static function requestPath($value)
 	{
-		if(is_string($value))
-			return $value;
+		if(is_string($value)) {
+			return $value; }
 		if(!is_array($value) || !isset($value['name'], $value['pathKey']) ||
-			!is_string($value['name']) || !is_string($value['pathKey']))
-			return null;
+			!is_string($value['name']) || !is_string($value['pathKey'])) {
+			return null; }
 		$path = rawurldecode($value['pathKey']);
 		return rawurlencode($path) === $value['pathKey'] ? $path : null;
 	}
@@ -63,63 +63,30 @@ class FileUtil
 		return( (($len == 0) || ($str[$len-1] != '/')) ? $str : substr($str,0,$len-1) );
 	}
 
-	private static function logFileStreamScheme( $path )
-	{
-		if( !is_string( $path ) ||
-			!preg_match('/^([A-Za-z][A-Za-z0-9+.-]*):\/\//', $path, $matches) )
-			return(null);
-		return($matches[1]);
-	}
-
-	private static function fileUriFilesystemPath( $path )
-	{
-		$parts = parse_url($path);
-		if( !is_array($parts) || !isset($parts['scheme']) ||
-			(strcasecmp($parts['scheme'], 'file') != 0) || !isset($parts['path']) ||
-			isset($parts['user']) || isset($parts['pass']) || isset($parts['port']) ||
-			isset($parts['query']) || isset($parts['fragment']) )
-			return(null);
-		$host = isset($parts['host']) ? $parts['host'] : '';
-		if( ($host === '') || (strcasecmp($host, 'localhost') == 0) )
-			return($parts['path']);
-		return( (DIRECTORY_SEPARATOR == '\\') ?
-			'\\\\'.$host.str_replace('/', '\\', $parts['path']) : null );
-	}
-
-	private static function isAbsoluteLogPath( $path )
-	{
-		if( !is_string( $path ) || ($path === '') )
-			return(false);
-		if( $path[0] == '/' )
-			return(true);
-		return( (DIRECTORY_SEPARATOR == '\\') &&
-			(preg_match('/^[A-Za-z]:[\\\\\/]/', $path) || (strncmp($path, '\\\\', 2) == 0)) );
-	}
-
 	public static function fullpath($path,$base = '')
 	{
 		$root  = '';
-		if(strlen($path) && ($path[0] == '/'))
-				$root = '/';
-		else
-			return(self::fullpath(self::addslash($base).$path,getcwd()));
+		if(strlen($path) && ($path[0] == '/')) {
+				$root = '/'; }
+		else {
+			return(self::fullpath(self::addslash($base).$path,getcwd())); }
 		$path=explode('/', $path);
-		$newpath=array();
+		$newpath=[];
 		foreach($path as $p)
 		{
-			if ($p === '' || $p === '.') continue;
-			if ($p==='..')
-				array_pop($newpath);
-			else
-				array_push($newpath, $p);
+			if ($p === '' || $p === '.') { continue; }
+			if ($p==='..') {
+				array_pop($newpath); }
+			else {
+				array_push($newpath, $p); }
 		}
 		return($root.implode('/', $newpath));
 	}
 
 	public static function getProfilePath()
 	{
-		if (is_null(self::$profilePathInstance))
-			self::$profilePathInstance = self::getProfilePathEx();
+		if (is_null(self::$profilePathInstance)) {
+			self::$profilePathInstance = self::getProfilePathEx(); }
 
 		return(self::$profilePathInstance);
 	}
@@ -129,8 +96,8 @@ class FileUtil
 		$create = $create && !self::settingsReadOnlyContext();
 		global $profilePath;
 		$ret = self::fullpath(isset($profilePath) ? $profilePath : '../../share', dirname(__FILE__));
-		if(is_null($user))
-			$user = User::getUser();
+		if(is_null($user)) {
+			$user = User::getUser(); }
 		if($user!='')
 		{
 			$ret.=('/users/'.$user);
@@ -138,8 +105,8 @@ class FileUtil
 			{
 				global $profileMask;
 				$protectedMode = (isset($profileMask) ? $profileMask : 0777) | 01000;
-				self::makeDirectory(array($ret,$ret.'/settings'), $protectedMode, true);
-				self::makeDirectory(array($ret.'/torrents',$ret.'/tmp'), null, true);
+				self::makeDirectory([$ret,$ret.'/settings'], $protectedMode, true);
+				self::makeDirectory([$ret.'/torrents',$ret.'/tmp'], null, true);
 			}
 		}
 		return $ret;
@@ -169,17 +136,17 @@ class FileUtil
 	{
 		$ret = '';
 		$conf = dirname(__FILE__).'/../../plugins/'.$plugin.'/conf.php';
-		if(is_file($conf) && is_readable($conf))
-			$ret.='require("'.$conf.'");';
+		if(is_file($conf) && is_readable($conf)) {
+			$ret.='require("'.$conf.'");'; }
 		$local = dirname(__FILE__).'/../../plugins/'.$plugin.'/conf.local.php';
-		if(is_file($local) && is_readable($local))
-			$ret.='require("'.$local.'");';
+		if(is_file($local) && is_readable($local)) {
+			$ret.='require("'.$local.'");'; }
 		$user = User::getUser();
 		if($user!='')
 		{
 			$conf = dirname(__FILE__).'/../../conf/users/'.$user.'/plugins/'.$plugin.'/conf.php';
-			if(is_file($conf) && is_readable($conf))
-				$ret.='require("'.$conf.'");';
+			if(is_file($conf) && is_readable($conf)) {
+				$ret.='require("'.$conf.'");'; }
 		}
 		return($ret);
 	}
@@ -190,8 +157,8 @@ class FileUtil
 		if($user!='')
 		{
 			$conf = dirname(__FILE__).'/../../conf/users/'.$user.'/'.$name;
-			if(is_file($conf) && is_readable($conf))
-				return($conf);
+			if(is_file($conf) && is_readable($conf)) {
+				return($conf); }
 		}
 		return(false);
 	}
@@ -236,19 +203,19 @@ class FileUtil
 			{
 				// Auto temp dir.
 				// Do not try to create tmp dir in system.
-				$directories = array();
-				if(ini_get('upload_tmp_dir'))
-					$directories[] = ini_get('upload_tmp_dir');
-				if(function_exists('sys_get_temp_dir'))
-					$directories[] = sys_get_temp_dir();
+				$directories = [];
+				if(ini_get('upload_tmp_dir')) {
+					$directories[] = ini_get('upload_tmp_dir'); }
+				if(function_exists('sys_get_temp_dir')) {
+					$directories[] = sys_get_temp_dir(); }
 				$directories[] = '/tmp';
 				$directories[] = '/var/tmp';
 				foreach ($directories as $directory)
 				{
-					if(!is_dir($directory) || !@file_exists($directory.'/.'))
-						continue;
-					if(!is_readable($directory) || !is_writable($directory))
-						continue;
+					if(!is_dir($directory) || !@file_exists($directory.'/.')) {
+						continue; }
+					if(!is_readable($directory) || !is_writable($directory)) {
+						continue; }
 					$tempDirectory = $directory;
 					break;
 				}
@@ -275,13 +242,13 @@ class FileUtil
 	{
 		do
 		{
-			$fname = uniqid(self::getTempDirectory().implode( '-', array_filter(array
-			(
+			$fname = uniqid(self::getTempDirectory().implode( '-', array_filter(
+			[
 				"rutorrent",
 				$purpose,
 				User::getLogin(),
-				getmypid()
-			))),true).( is_null($extension) ? '' : ".$extension" );
+				getmypid(),
+			])),true).( is_null($extension) ? '' : ".$extension" );
 		} while(file_exists($fname));	// this is no guarantee, of course...
 		return($fname);
 	}
@@ -289,20 +256,20 @@ class FileUtil
 	public static function makeDirectory($dirs, $perms = null, $preserveExisting = false)
 	{
 		global $profileMask;
-		if(is_null($perms))
-			$perms = isset($profileMask) ? $profileMask : 0777;
+		if(is_null($perms)) {
+			$perms = isset($profileMask) ? $profileMask : 0777; }
 		$oldMask = umask(0);
-		foreach(is_array($dirs) ? $dirs : array($dirs) as $dir)
+		foreach(is_array($dirs) ? $dirs : [$dirs] as $dir)
 		{
 			// A directory that is already there keeps the mode it has: only a
 			// missing one is created, and with the mode the caller asked for.
 			if($preserveExisting)
 			{
-				if(!is_dir($dir))
-					@mkdir($dir, $perms, true);
+				if(!is_dir($dir)) {
+					@mkdir($dir, $perms, true); }
 			}
-			else
-				(file_exists(self::addslash($dir).'.') && @chmod($dir,$perms)) || @mkdir($dir,$perms,true);
+			else {
+				(file_exists(self::addslash($dir).'.') && @chmod($dir,$perms)) || @mkdir($dir,$perms,true); }
 		}
 		@umask($oldMask);
 	}
@@ -311,7 +278,7 @@ class FileUtil
 	public static function deleteDirectory( $dir )
 	{
 		$dir = self::addslash($dir);
-		$files = array_diff(scandir($dir), array('.','..'));
+		$files = array_diff(scandir($dir), ['.','..']);
 		foreach($files as $file)
 		{
 			$path = $dir.$file;
@@ -349,19 +316,62 @@ class FileUtil
 				// O_APPEND keeps a line written by another process at the same
 				// time whole and in place, error_log()'s lines included.
 				$w = @fopen( $logTarget, "ab" );
-				if( !$w && self::appendWithoutOAppend( $logTarget, $line ) )
-					return;
+				if( !$w && self::appendWithoutOAppend( $logTarget, $line ) ) {
+					return; }
 			}
 			// Regular and unstatable stream logs only need write access. Keep the
 			// old mode for FIFOs, where a write-only open blocks until a reader appears.
-			if( !$w )
-				$w = fopen( $logTarget, (!$isFilesystem && !$exists) || is_file( $logTarget ) ? "ab" : "ab+" );
+			if( !$w ) {
+				$w = fopen( $logTarget, (!$isFilesystem && !$exists) || is_file( $logTarget ) ? "ab" : "ab+" ); }
 			if( $w )
 			{
 				fputs( $w, $line );
 				fclose( $w );
 			}
 		}
+	}
+
+	public static function getMinFilePerms( $file, $chmod = 0755 )
+	{
+		$code = fileperms($file);
+
+		if($code!==false) {
+			return(($code & 0777) >= $chmod); }
+
+		return false;
+	}
+
+	private static function logFileStreamScheme( $path )
+	{
+		if( !is_string( $path ) ||
+			!preg_match('/^([A-Za-z][A-Za-z0-9+.-]*):\/\//', $path, $matches) ) {
+			return(null); }
+		return($matches[1]);
+	}
+
+	private static function fileUriFilesystemPath( $path )
+	{
+		$parts = parse_url($path);
+		if( !is_array($parts) || !isset($parts['scheme']) ||
+			(strcasecmp($parts['scheme'], 'file') != 0) || !isset($parts['path']) ||
+			isset($parts['user']) || isset($parts['pass']) || isset($parts['port']) ||
+			isset($parts['query']) || isset($parts['fragment']) ) {
+			return(null); }
+		$host = isset($parts['host']) ? $parts['host'] : '';
+		if( ($host === '') || (strcasecmp($host, 'localhost') == 0) ) {
+			return($parts['path']); }
+		return( (DIRECTORY_SEPARATOR == '\\') ?
+			'\\\\'.$host.str_replace('/', '\\', $parts['path']) : null );
+	}
+
+	private static function isAbsoluteLogPath( $path )
+	{
+		if( !is_string( $path ) || ($path === '') ) {
+			return(false); }
+		if( $path[0] == '/' ) {
+			return(true); }
+		return( (DIRECTORY_SEPARATOR == '\\') &&
+			(preg_match('/^[A-Za-z]:[\\\\\/]/', $path) || (strncmp($path, '\\\\', 2) == 0)) );
 	}
 
 	// fs.protected_regular refuses an open that may create the file when another
@@ -375,18 +385,18 @@ class FileUtil
 	// would write over the log's start, so without one this path is not taken.
 	private static function appendWithoutOAppend( $path, $line )
 	{
-		foreach( array( 'flock', 'fseek', 'usleep' ) as $function )
-			if( !function_exists( $function ) )
-				return false;
+		foreach( [ 'flock', 'fseek', 'usleep' ] as $function ) {
+			if( !function_exists( $function ) ) {
+				return false; } }
 		$w = @fopen( $path, "r+b" );
-		if( !$w )
-			return false;
+		if( !$w ) {
+			return false; }
 		try
 		{
 			for( $attempt = 0; $attempt < self::LOG_LOCK_ATTEMPTS; $attempt++ )
 			{
-				if( flock( $w, LOCK_EX | LOCK_NB, $wouldBlock ) || !$wouldBlock )
-					break;
+				if( flock( $w, LOCK_EX | LOCK_NB, $wouldBlock ) || !$wouldBlock ) {
+					break; }
 				usleep( self::LOG_LOCK_WAIT_US );
 			}
 			fseek( $w, 0, SEEK_END );
@@ -399,15 +409,5 @@ class FileUtil
 			fclose( $w );
 		}
 		return true;
-	}
-
-	public static function getMinFilePerms( $file, $chmod = 0755 )
-	{
-		$code = fileperms($file);
-
-		if($code!==false)
-			return(($code & 0777) >= $chmod);
-
-		return false;
 	}
 }

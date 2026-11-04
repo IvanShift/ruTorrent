@@ -21,42 +21,6 @@ require_once(__DIR__ . '/../../plugins/autotools/autotools.php');
 
 class EmittedScriptValueTest extends TestCase
 {
-	// Payloads that end the emitted statement and start another one, in each of
-	// the two quotings the tree emits, plus the one that ends the <script>.
-	private static function payloads()
-	{
-		return array(
-			"apostrophe" => "';alert(1);//",
-			"quote" => '";alert(1);//',
-			"script end" => '</script><script>alert(1)</script>',
-			"line break" => "a\nalert(1)//",
-			"backslash" => 'a\\',
-		);
-	}
-
-	// The right-hand side of "<lvalue> = <literal>;", decoded. Returns the
-	// marker object when the fragment is not that shape or the literal is not
-	// one JSON value, which is what a value escaping its quotes looks like.
-	private function assigned($fragment, $lvalue)
-	{
-		$fragment = trim($fragment);
-		$prefix = $lvalue . ' = ';
-		if (substr($fragment, 0, strlen($prefix)) !== $prefix || substr($fragment, -1) !== ';') {
-			return 'NOT-AN-ASSIGNMENT';
-		}
-		$literal = substr($fragment, strlen($prefix), -1);
-		$value = json_decode($literal, true);
-		if ($value === null && trim($literal) !== 'null') {
-			return 'NOT-ONE-LITERAL';
-		}
-		return $value;
-	}
-
-	private function assertRoundTrips($fragment, $lvalue, $expected, $what)
-	{
-		$this->assertTrue($this->assigned($fragment, $lvalue) === $expected,
-			$what . ' survives as data: ' . json_encode($fragment));
-	}
 
 	public function testJsValueNeverEmitsCharactersThatCanCloseItsContext()
 	{
@@ -85,7 +49,7 @@ class EmittedScriptValueTest extends TestCase
 	public function testThemeRefusesToStoreANameThatIsNotAThemeDirectory()
 	{
 		foreach (array_merge(array_values(self::payloads()),
-			array('../../../..', 'themes/../../conf', '.', '..', 'NoSuchTheme')) as $payload) {
+			['../../../..', 'themes/../../conf', '.', '..', 'NoSuchTheme']) as $payload) {
 			$theme = new rTheme();
 			$theme->current = 'Blue';
 			$_POST['theme'] = $payload;
@@ -100,7 +64,7 @@ class EmittedScriptValueTest extends TestCase
 	{
 		$real = array_map('basename', glob(__DIR__ . '/../../plugins/theme/themes/*', GLOB_ONLYDIR));
 		$this->assertTrue(count($real) > 0, 'the tree ships at least one theme to test with');
-		foreach (array_merge($real, array('')) as $payload) {
+		foreach (array_merge($real, ['']) as $payload) {
 			$theme = new rTheme();
 			$theme->current = 'nonsense';
 			$_POST['theme'] = $payload;
@@ -194,10 +158,10 @@ class EmittedScriptValueTest extends TestCase
 			$unpack->addName = '1';
 			$unpack->path = $payload;
 			$unpack->filter = $payload;
-			$this->assertRoundTrips($unpack->get(), 'theWebUI.unpackData', array(
+			$this->assertRoundTrips($unpack->get(), 'theWebUI.unpackData', [
 				'enabled' => 1, 'path' => $payload, 'filter' => $payload,
 				'addLabel' => 0, 'addName' => 1,
-			), 'unpack '.$name);
+			], 'unpack '.$name);
 			$this->assertTrue(strpos($unpack->get(), '</script>') === false,
 				'unpack emits no script-closing text for '.$name);
 		}
@@ -212,16 +176,52 @@ class EmittedScriptValueTest extends TestCase
 			$auto->label_template = $payload;
 			$auto->path_to_finished = $payload;
 			$auto->automove_filter = $payload;
-			$this->assertRoundTrips($auto->get(), 'theWebUI.autotools', array(
+			$this->assertRoundTrips($auto->get(), 'theWebUI.autotools', [
 				'EnableLabel' => 1, 'LabelTemplate' => $payload,
 				'EnableMove' => 0, 'FileOpType' => 'Move',
 				'PathToFinished' => $payload, 'SkipMoveForFiles' => '',
 				'EnableWatch' => 0, 'PathToWatch' => '',
 				'MoveFilter' => $payload, 'WatchStart' => 1,
 				'AddLabel' => 0, 'AddName' => 0,
-			), 'autotools '.$name);
+			], 'autotools '.$name);
 			$this->assertTrue(strpos($auto->get(), '</script>') === false,
 				'autotools emits no script-closing text for '.$name);
 		}
+	}
+	// Payloads that end the emitted statement and start another one, in each of
+	// the two quotings the tree emits, plus the one that ends the <script>.
+	private static function payloads()
+	{
+		return [
+			"apostrophe" => "';alert(1);//",
+			"quote" => '";alert(1);//',
+			"script end" => '</script><script>alert(1)</script>',
+			"line break" => "a\nalert(1)//",
+			"backslash" => 'a\\',
+		];
+	}
+
+	// The right-hand side of "<lvalue> = <literal>;", decoded. Returns the
+	// marker object when the fragment is not that shape or the literal is not
+	// one JSON value, which is what a value escaping its quotes looks like.
+	private function assigned($fragment, $lvalue)
+	{
+		$fragment = trim($fragment);
+		$prefix = $lvalue . ' = ';
+		if (substr($fragment, 0, strlen($prefix)) !== $prefix || substr($fragment, -1) !== ';') {
+			return 'NOT-AN-ASSIGNMENT';
+		}
+		$literal = substr($fragment, strlen($prefix), -1);
+		$value = json_decode($literal, true);
+		if ($value === null && trim($literal) !== 'null') {
+			return 'NOT-ONE-LITERAL';
+		}
+		return $value;
+	}
+
+	private function assertRoundTrips($fragment, $lvalue, $expected, $what)
+	{
+		$this->assertTrue($this->assigned($fragment, $lvalue) === $expected,
+			$what . ' survives as data: ' . json_encode($fragment));
 	}
 }

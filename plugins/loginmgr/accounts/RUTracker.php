@@ -2,7 +2,6 @@
 
 class ruTrackerAccount extends commonAccount
 {
-	public $url = "https://rutracker.org";
 
 	// RuTracker's forum mirrors, in one place: test() decides whether this
 	// account claims a URL at all, and getDownloadId() decides whether the
@@ -31,7 +30,16 @@ class ruTrackerAccount extends commonAccount
 	// t-ru.org or any of these four mirrors from the detector. A host ADDED to
 	// the detector alone fails nothing, because no assertion enumerates that
 	// list -- so a new RuTracker mirror still has to be brought here by hand.
-	const FORUM_HOSTS = array("rutracker.org","rutracker.cr","rutracker.net","rutracker.nl");
+	public const FORUM_HOSTS = ["rutracker.org","rutracker.cr","rutracker.net","rutracker.nl"];
+	public $url = "https://rutracker.org";
+	// Matched against the URL's host, not against the URL string: the pattern
+	// this replaced also accepted https://evil.test/path/rutracker.org/forum/x, whose
+	// host is the attacker's, and loginmgr would then have sent this account's
+	// cookies there.
+	public function test($url)
+	{
+		return(self::urlAddresses($url,self::FORUM_HOSTS,"https","/forum/"));
+	}
 
 	protected function isOK($client)
 	{
@@ -60,12 +68,12 @@ class ruTrackerAccount extends commonAccount
 	protected function getDownloadId($url)
 	{
 		$parts = @parse_url((string) $url);
-		if(!is_array($parts) || empty($parts["host"]) || !isset($parts["path"]))
-			return(false);
-		if(!UrlHost::isOneOf($parts["host"], self::FORUM_HOSTS))
-			return(false);
-		if(strcasecmp($parts["path"], "/forum/dl.php") !== 0)
-			return(false);
+		if(!is_array($parts) || empty($parts["host"]) || !isset($parts["path"])) {
+			return(false); }
+		if(!UrlHost::isOneOf($parts["host"], self::FORUM_HOSTS)) {
+			return(false); }
+		if(strcasecmp($parts["path"], "/forum/dl.php") !== 0) {
+			return(false); }
 		return(self::queryDigits($url, 't'));
 	}
 	protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched)
@@ -98,13 +106,5 @@ class ruTrackerAccount extends commonAccount
 			return(true);
 		}
 		return(false);
-	}
-	// Matched against the URL's host, not against the URL string: the pattern
-	// this replaced also accepted https://evil.test/path/rutracker.org/forum/x, whose
-	// host is the attacker's, and loginmgr would then have sent this account's
-	// cookies there.
-	public function test($url)
-	{
-		return(self::urlAddresses($url,self::FORUM_HOSTS,"https","/forum/"));
 	}
 }

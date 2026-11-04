@@ -19,20 +19,20 @@ class AddTorrentResultTest extends TestCase
 	public function setUpClass()
 	{
 		$this->sourceRoot = realpath(__DIR__ . '/../..');
-		if($this->sourceRoot === false)
-			throw new Exception('could not locate the production source root');
+		if($this->sourceRoot === false) {
+			throw new Exception('could not locate the production source root'); }
 		$this->tree = $this->copyTree();
 		$this->server = AddTorrentHttpHarness::forDocumentRoot($this->tree,
-			array('zlib.output_compression' => '0'));
+			['zlib.output_compression' => '0']);
 	}
 
 	public function tearDownClass()
 	{
-		if($this->server !== null)
-			$this->server->close();
+		if($this->server !== null) {
+			$this->server->close(); }
 		$this->server = null;
-		if($this->tree !== null)
-			$this->deleteTree($this->tree);
+		if($this->tree !== null) {
+			$this->deleteTree($this->tree); }
 		$this->tree = null;
 	}
 
@@ -183,7 +183,7 @@ class AddTorrentResultTest extends TestCase
 	public function testJsonBranchReportsTheResult()
 	{
 		$result = $this->get('?json=1&result[]=Success');
-		$this->assertEquals(array('result' => 'Success'), json_decode($result['body'], true),
+		$this->assertEquals(['result' => 'Success'], json_decode($result['body'], true),
 			'the json branch reports the result: ' . $result['body']);
 	}
 
@@ -230,8 +230,8 @@ class AddTorrentResultTest extends TestCase
 	{
 		$marker = '"addTorrent"+';
 		$start = strpos($body, $marker);
-		if($start === false)
-			return '';
+		if($start === false) {
+			return ''; }
 		$start += strlen($marker);
 		$end = strpos($body, ']', $start);
 		return $end === false ? '' : substr($body, $start, $end - $start);
@@ -257,14 +257,14 @@ class AddTorrentResultTest extends TestCase
 	private function copyTree()
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-addtorrent-' . uniqid('', true);
-		if(!mkdir($tree . '/php/utility', 0700, true) && !is_dir($tree . '/php/utility'))
-			throw new Exception('could not create addtorrent fixture tree');
-		foreach(array('php/addtorrent.php', 'php/utility/cachedecho.php', 'php/utility/utf.php') as $relative)
+		if(!mkdir($tree . '/php/utility', 0700, true) && !is_dir($tree . '/php/utility')) {
+			throw new Exception('could not create addtorrent fixture tree'); }
+		foreach(['php/addtorrent.php', 'php/utility/cachedecho.php', 'php/utility/utf.php'] as $relative)
 		{
 			$source = $this->sourceRoot . '/' . $relative;
 			$target = $tree . '/' . $relative;
-			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target)))
-				throw new Exception('could not byte-copy production source ' . $relative);
+			if(!copy($source, $target) || (hash_file('sha256', $source) !== hash_file('sha256', $target))) {
+				throw new Exception('could not byte-copy production source ' . $relative); }
 		}
 		$this->writeStubs($tree);
 		return $tree;
@@ -273,8 +273,8 @@ class AddTorrentResultTest extends TestCase
 	private function get($query)
 	{
 		$response = $this->server->request('GET', '/php/addtorrent.php' . $query);
-		return array('status' => $response['status'], 'headers' => $response['headers'],
-			'body' => $response['body']);
+		return ['status' => $response['status'], 'headers' => $response['headers'],
+			'body' => $response['body']];
 	}
 
 	private function writeStubs($tree)
@@ -290,17 +290,17 @@ class AddTorrentResultTest extends TestCase
 
 	private function deleteTree($path)
 	{
-		if(!is_dir($path))
-			return;
-		foreach(scandir($path) as $entry)
+		if(!is_dir($path)) {
+			return; }
+		foreach(scandir($path) as $entry) {
 			if(($entry !== '.') && ($entry !== '..'))
 			{
 				$child = $path . '/' . $entry;
-				if(is_dir($child))
-					$this->deleteTree($child);
-				else
-					@unlink($child);
-			}
+				if(is_dir($child)) {
+					$this->deleteTree($child); }
+				else {
+					@unlink($child); }
+			} }
 		@rmdir($path);
 	}
 }

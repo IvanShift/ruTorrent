@@ -10,12 +10,12 @@ function taskNativeHelperFixture($testHook = false)
     }
     $binary = $directory.'/kill-verified';
     $command = NativeHelpers::compilerCommand('rutorrent-task-kill-pidfd', $binary,
-        $testHook ? array('-DRTASK_KILL_TEST_HOOK=1') : array());
-    $process = proc_open($command, array(
-        0 => array('file', '/dev/null', 'r'),
-        1 => array('pipe', 'w'),
-        2 => array('pipe', 'w'),
-    ), $pipes);
+        $testHook ? ['-DRTASK_KILL_TEST_HOOK=1'] : []);
+    $process = proc_open($command, [
+        0 => ['file', '/dev/null', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ], $pipes);
     if (!is_resource($process)) {
         throw new RuntimeException('Could not start C compiler for the task killer');
     }

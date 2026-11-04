@@ -7,16 +7,16 @@ require_once(__DIR__.'/../../php/TestHttpServer.php');
 
 function displayNamesBencode($value)
 {
-	if(is_int($value))
-		return 'i'.$value.'e';
-	if(is_string($value))
-		return strlen($value).':'.$value;
-	if(array_keys($value) === range(0, count($value) - 1))
-		return 'l'.implode('', array_map('displayNamesBencode', $value)).'e';
+	if(is_int($value)) {
+		return 'i'.$value.'e'; }
+	if(is_string($value)) {
+		return strlen($value).':'.$value; }
+	if(array_keys($value) === range(0, count($value) - 1)) {
+		return 'l'.implode('', array_map('displayNamesBencode', $value)).'e'; }
 	ksort($value, SORT_STRING);
 	$out = 'd';
-	foreach($value as $key=>$item)
-		$out .= displayNamesBencode((string)$key).displayNamesBencode($item);
+	foreach($value as $key=>$item) {
+		$out .= displayNamesBencode((string)$key).displayNamesBencode($item); }
 	return $out.'e';
 }
 
@@ -43,14 +43,14 @@ class HttprpcDisplayReplies
 	}
 	public function __invoke($request, $methods)
 	{
-		$session = count(array_intersect(array('get_session', 'session.path'), $methods)) > 0;
+		$session = count(array_intersect(['get_session', 'session.path'], $methods)) > 0;
 		// Fork: httprpc checks the daemon version before it runs a cmd= column.
-		if($methods === array('system.client_version'))
-			return HttprpcListFixture::raw('<?xml version="1.0"?><methodResponse><params><param><value><string>0.16.27</string></value></param></params></methodResponse>');
-		if($methods === array('d.multicall'))
+		if($methods === ['system.client_version']) {
+			return HttprpcListFixture::raw('<?xml version="1.0"?><methodResponse><params><param><value><string>0.16.27</string></value></param></params></methodResponse>'); }
+		if($methods === ['d.multicall'])
 		{
 			$this->torrents = $this->phases[min($this->lists++, count($this->phases) - 1)];
-			$rows = array();
+			$rows = [];
 			foreach($this->torrents as $hash=>$torrent)
 			{
 				$row = array_fill(0, 36, '0');
@@ -65,31 +65,31 @@ class HttprpcDisplayReplies
 		}
 		if($session && in_array('d.multicall', $methods, true))
 		{
-			$paths = array();
-			foreach($this->torrents as $hash=>$torrent)
-				$paths[] = array($hash, $torrent['tied'] ?? '');
-			if($this->brokenPaths)
-				$paths[] = array('unpaired');
-			return HttprpcListFixture::raw(HttprpcListFixture::body(array(array($this->session), array($paths)), $this->raw));
+			$paths = [];
+			foreach($this->torrents as $hash=>$torrent) {
+				$paths[] = [$hash, $torrent['tied'] ?? '']; }
+			if($this->brokenPaths) {
+				$paths[] = ['unpaired']; }
+			return HttprpcListFixture::raw(HttprpcListFixture::body([[$this->session], [$paths]], $this->raw));
 		}
 		if($session)
 		{
 			$torrent = reset($this->torrents);
-			return HttprpcListFixture::raw(HttprpcListFixture::body(array(array($this->session), array($torrent['tied'] ?? '')), $this->raw));
+			return HttprpcListFixture::raw(HttprpcListFixture::body([[$this->session], [$torrent['tied'] ?? '']], $this->raw));
 		}
-		if($methods === array('f.multicall'))
+		if($methods === ['f.multicall'])
 		{
 			$torrent = reset($this->torrents);
-			$rows = array();
-			foreach($torrent['files'] as $file)
-				$rows[] = array_merge(array($file[0], '1', '1', (string)$file[1], '1'), $torrent['extra'] ?? array());
+			$rows = [];
+			foreach($torrent['files'] as $file) {
+				$rows[] = array_merge([$file[0], '1', '1', (string)$file[1], '1'], $torrent['extra'] ?? []); }
 			return HttprpcListFixture::raw(HttprpcListFixture::body(HttprpcListFixture::typed($rows, HttprpcListFixture::FILE_INTEGERS), $this->raw));
 		}
 		if(in_array('d.open', $methods, true))
 		{
 			$torrent = reset($this->torrents);
-			return HttprpcListFixture::raw(HttprpcListFixture::body(array(array('0'), array($torrent['base']),
-				array('0'), array($torrent['name']))));
+			return HttprpcListFixture::raw(HttprpcListFixture::body([['0'], [$torrent['base']],
+				['0'], [$torrent['name']]]));
 		}
 		return FakeRtorrentDaemon::fault('unexpected request: '.implode(',', $methods));
 	}
@@ -111,8 +111,8 @@ trait HttprpcDisplayTestFixture
 	}
 	public function tearDown()
 	{
-		if($this->server !== null) $this->server->close();
-		if($this->daemon !== null) $this->daemon->stop();
+		if($this->server !== null) { $this->server->close(); }
+		if($this->daemon !== null) { $this->daemon->stop(); }
 		TestTree::remove($this->base);
 	}
 
@@ -122,14 +122,14 @@ trait HttprpcDisplayTestFixture
 		$info['piece length'] = 16384;
 		$info['pieces'] = str_repeat("\0", 20);
 		$hash = strtoupper(sha1(displayNamesBencode($info)));
-		file_put_contents($this->base.'/session/'.$hash.'.torrent', displayNamesBencode(array('info'=>$info)));
+		file_put_contents($this->base.'/session/'.$hash.'.torrent', displayNamesBencode(['info'=>$info]));
 		return $hash;
 	}
 
 	private function start($torrents, $brokenPaths = false, $routerCode = '', $raw = false)
 	{
 		$this->serve(new HttprpcDisplayReplies($this->base.'/session/',
-			isset($torrents[0]) ? $torrents : array($torrents), $brokenPaths, $raw), array(__DIR__.'/DisplayNamesFixture.php'), $routerCode);
+			isset($torrents[0]) ? $torrents : [$torrents], $brokenPaths, $raw), [__DIR__.'/DisplayNamesFixture.php'], $routerCode);
 	}
 
 	// The real plugins/httprpc/action.php behind a test HTTP server, with
@@ -148,7 +148,7 @@ trait HttprpcDisplayTestFixture
 			.'$topDirectory="/"; $rpcLogCalls=false; $scgi_host="127.0.0.1"; $scgi_port='.$this->daemon->port().';'
 			.'chdir('.var_export($root.'/plugins/httprpc', true).'); require "action.php";');
 		$this->server = TestHttpServer::start($this->base,
-			array('RU_PROFILE_PATH'=>$this->base.'/profile', 'RU_LOG_FILE'=>$this->base.'/app.log'), array(), $router);
+			['RU_PROFILE_PATH'=>$this->base.'/profile', 'RU_LOG_FILE'=>$this->base.'/app.log'], [], $router);
 	}
 
 	private function post($body)
@@ -168,9 +168,9 @@ trait HttprpcDisplayTestFixture
 
 	private function legacy($label = 'lab%FF', $name = "Serie \xF1\xE5\xF0\xE8\xFF", $alias = 'Серия')
 	{
-		$hash = $this->torrent(array('name'=>$name, 'name.utf-8'=>$alias, 'length'=>100));
-		return array($hash, array('name'=>$name, 'label'=>$label, 'base'=>'/data/'.$name, 'rate'=>'0',
-			'files'=>array(array($name, 100))));
+		$hash = $this->torrent(['name'=>$name, 'name.utf-8'=>$alias, 'length'=>100]);
+		return [$hash, ['name'=>$name, 'label'=>$label, 'base'=>'/data/'.$name, 'rate'=>'0',
+			'files'=>[[$name, 100]]]];
 	}
 
 }

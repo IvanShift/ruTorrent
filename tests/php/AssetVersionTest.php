@@ -31,30 +31,10 @@ class AssetVersionTest extends TestCase
         rmdir($this->tree);
     }
 
-    private function stamp()
-    {
-        $tool = dirname(__DIR__, 2) . '/tools/update-asset-version.php';
-        $this->assertTrue(is_file($tool), 'asset deployment tool exists');
-        if (!is_file($tool)) return null;
-        copy($tool, $this->tree . '/tools/update-asset-version.php');
-        $output = [];
-        $status = 0;
-        exec(escapeshellarg(PHP_BINARY) . ' -n ' . escapeshellarg($this->tree . '/tools/update-asset-version.php') . ' 2>&1', $output, $status);
-        $this->assertEquals(0, $status, 'asset deployment succeeds: ' . implode("\n", $output));
-        if ($status !== 0) return null;
-        $index = file_get_contents($this->tree . '/index.html');
-        preg_match('/ruTorrentAssetVersion = "([a-f0-9]{16})"/', $index, $match);
-        $this->assertTrue(isset($match[1]), 'index receives a content-derived asset key');
-        if (!isset($match[1])) return null;
-        preg_match_all('/[?&]v=([^"<> ]+)/', $index, $keys);
-        $this->assertEquals([$match[1], $match[1], $match[1]], $keys[1], 'core and transitive module URLs receive the same build key');
-        return $match[1];
-    }
-
     public function testStampIsIdempotentAndIgnoresUnservedState()
     {
         $first = $this->stamp();
-        if ($first === null) return;
+        if ($first === null) { return; }
         $index = file_get_contents($this->tree . '/index.html');
         $this->assertEquals($first, $this->stamp(), 'stamping unchanged assets is idempotent');
         $this->assertEquals($index, file_get_contents($this->tree . '/index.html'), 'unchanged HTML remains byte identical');
@@ -66,7 +46,7 @@ class AssetVersionTest extends TestCase
     public function testSameDisplayVersionDifferentStaticBytesChangesKey()
     {
         $first = $this->stamp();
-        if ($first === null) return;
+        if ($first === null) { return; }
         file_put_contents($this->tree . '/js/core.js', 'var version="5.3.15"; var changed=true;');
         $core = $this->stamp();
         $this->assertTrue($first !== $core, 'new core bytes with the same display version invalidate cached URLs');
@@ -80,7 +60,7 @@ class AssetVersionTest extends TestCase
     public function testNewFilesAndHtmlChangesAreHashedAndInvalidIndexIsPreserved()
     {
         $first = $this->stamp();
-        if ($first === null) return;
+        if ($first === null) { return; }
         chmod($this->tree . '/index.html', 0640);
         file_put_contents($this->tree . '/js/new.js', 'var added=true;');
         $added = $this->stamp();
@@ -116,7 +96,7 @@ class AssetVersionTest extends TestCase
         // script reads only its exit status.
         $dir = dirname(PHP_BINARY);
         $cgi = null;
-        foreach (array($dir . '/php-cgi', $dir . '/php-cgi' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION) as $candidate) {
+        foreach ([$dir . '/php-cgi', $dir . '/php-cgi' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION] as $candidate) {
             if (is_file($candidate) && is_executable($candidate)) {
                 $cgi = $candidate;
                 break;
@@ -133,5 +113,25 @@ class AssetVersionTest extends TestCase
         exec(escapeshellarg($cgi) . ' -n -f ' . escapeshellarg($this->tree . '/tools/update-asset-version.php') . ' 2>&1', $output, $status);
         $this->assertEquals(1, $status, 'a run outside the CLI fails, status ' . json_encode($status) . ': ' . implode("\n", $output));
         $this->assertEquals($index, file_get_contents($this->tree . '/index.html'), 'and stamps nothing');
+    }
+
+    private function stamp()
+    {
+        $tool = dirname(__DIR__, 2) . '/tools/update-asset-version.php';
+        $this->assertTrue(is_file($tool), 'asset deployment tool exists');
+        if (!is_file($tool)) { return null; }
+        copy($tool, $this->tree . '/tools/update-asset-version.php');
+        $output = [];
+        $status = 0;
+        exec(escapeshellarg(PHP_BINARY) . ' -n ' . escapeshellarg($this->tree . '/tools/update-asset-version.php') . ' 2>&1', $output, $status);
+        $this->assertEquals(0, $status, 'asset deployment succeeds: ' . implode("\n", $output));
+        if ($status !== 0) { return null; }
+        $index = file_get_contents($this->tree . '/index.html');
+        preg_match('/ruTorrentAssetVersion = "([a-f0-9]{16})"/', $index, $match);
+        $this->assertTrue(isset($match[1]), 'index receives a content-derived asset key');
+        if (!isset($match[1])) { return null; }
+        preg_match_all('/[?&]v=([^"<> ]+)/', $index, $keys);
+        $this->assertEquals([$match[1], $match[1], $match[1]], $keys[1], 'core and transitive module URLs receive the same build key');
+        return $match[1];
     }
 }

@@ -47,29 +47,6 @@ class TaskTest extends TestCase
 		}
 	}
 
-	protected function removeDir($dir)
-	{
-		foreach (array('pid', 'pid.identity', 'status', 'flags', 'params', 'errors') as $file) {
-			@unlink($dir.'/'.$file);
-		}
-		@rmdir($dir);
-	}
-
-	// A task the plugin itself could have produced: a real id, and the flags
-	// value that makes rTask::run() use the local shell rather than rtorrent.
-	protected function makeTask($pid, $params = null)
-	{
-		$id = uniqid(time(), true);
-		$dir = rTask::formatPath($id);
-		mkdir($dir, 0777, true);
-		file_put_contents($dir.'/pid', $pid);
-		file_put_contents($dir.'/flags', rTask::FLG_RUN_AS_WEB);
-		if (!is_null($params)) {
-			file_put_contents($dir.'/params', $params);
-		}
-		return array($id, $dir);
-	}
-
 	public function testFixturesUseAnIsolatedProfile()
 	{
 		$this->assertEquals($_ENV['RU_PROFILE_PATH'].'/settings', FileUtil::getSettingsPath(),
@@ -91,7 +68,7 @@ class TaskTest extends TestCase
 		// Fork form of upstream's case (256b8c876): this kill never asks pgrep.
 		// A supervised task whose pid file names 0 or 1 is refused before any
 		// helper runs; no pid.identity exists that a helper could match.
-		foreach (array('0', '1') as $pid) {
+		foreach (['0', '1'] as $pid) {
 			list($id, $dir) = $this->makeTask($pid);
 			file_put_contents($dir.'/supervisor.version', "1\n");
 			$result = rTask::kill($id);
@@ -105,11 +82,11 @@ class TaskTest extends TestCase
 
 	public function testLegacyKillRetainsMatchingPidWithoutSupervisor()
 	{
-		$process = proc_open(array('sleep', '30'), array(
-			0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'),
-			2 => array('file', '/dev/null', 'w'),
-		), $pipes);
+		$process = proc_open(['sleep', '30'], [
+			0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'],
+			2 => ['file', '/dev/null', 'w'],
+		], $pipes);
 		if (!is_resource($process)) {
 			throw new RuntimeException('Could not start the isolated process witness');
 		}
@@ -151,10 +128,33 @@ class TaskTest extends TestCase
 	{
 		mkdir($this->outside, 0777, true);
 		file_put_contents($this->outside.'/pid', '424242');
-		file_put_contents($this->outside.'/params', serialize(array('leaked' => 'data')));
+		file_put_contents($this->outside.'/params', serialize(['leaked' => 'data']));
 		$ret = rTask::check('../'.basename($this->outside));
 		$this->assertEquals(0, $ret['pid'], 'No pid is read from outside the tasks directory');
-		$this->assertEquals(array(), $ret['params'], 'No params are read from there either');
+		$this->assertEquals([], $ret['params'], 'No params are read from there either');
 		$this->assertEquals(true, is_file($this->outside.'/pid'), 'And nothing there was touched');
+	}
+
+	protected function removeDir($dir)
+	{
+		foreach (['pid', 'pid.identity', 'status', 'flags', 'params', 'errors'] as $file) {
+			@unlink($dir.'/'.$file);
+		}
+		@rmdir($dir);
+	}
+
+	// A task the plugin itself could have produced: a real id, and the flags
+	// value that makes rTask::run() use the local shell rather than rtorrent.
+	protected function makeTask($pid, $params = null)
+	{
+		$id = uniqid(time(), true);
+		$dir = rTask::formatPath($id);
+		mkdir($dir, 0777, true);
+		file_put_contents($dir.'/pid', $pid);
+		file_put_contents($dir.'/flags', rTask::FLG_RUN_AS_WEB);
+		if (!is_null($params)) {
+			file_put_contents($dir.'/params', $params);
+		}
+		return [$id, $dir];
 	}
 }

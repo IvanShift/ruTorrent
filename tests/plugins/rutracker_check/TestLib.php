@@ -17,7 +17,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 function testFindRepoRoot()
 {
     $path = realpath(__DIR__ . '/../../..');
-    if ($path !== false && is_file($path . '/plugins/rutracker_check/trackers/rutracker.php')) return $path;
+    if ($path !== false && is_file($path . '/plugins/rutracker_check/trackers/rutracker.php')) { return $path; }
     throw new RuntimeException('Unable to locate the ruTorrent repository root');
 }
 
@@ -51,12 +51,12 @@ function getCmd($command)
     return $command . $suffix;
 }
 
-if (!defined('ERASEDATA_TORRENT_PRESENT')) define('ERASEDATA_TORRENT_PRESENT', 1);
-if (!defined('ERASEDATA_TORRENT_ABSENT')) define('ERASEDATA_TORRENT_ABSENT', 0);
-if (!defined('ERASEDATA_TORRENT_UNKNOWN')) define('ERASEDATA_TORRENT_UNKNOWN', -1);
-if (!defined('ERASEDATA_FILE_ALIAS_SAME')) define('ERASEDATA_FILE_ALIAS_SAME', 1);
-if (!defined('ERASEDATA_FILE_ALIAS_DISTINCT')) define('ERASEDATA_FILE_ALIAS_DISTINCT', 0);
-if (!defined('ERASEDATA_FILE_ALIAS_UNKNOWN')) define('ERASEDATA_FILE_ALIAS_UNKNOWN', -1);
+if (!defined('ERASEDATA_TORRENT_PRESENT')) { define('ERASEDATA_TORRENT_PRESENT', 1); }
+if (!defined('ERASEDATA_TORRENT_ABSENT')) { define('ERASEDATA_TORRENT_ABSENT', 0); }
+if (!defined('ERASEDATA_TORRENT_UNKNOWN')) { define('ERASEDATA_TORRENT_UNKNOWN', -1); }
+if (!defined('ERASEDATA_FILE_ALIAS_SAME')) { define('ERASEDATA_FILE_ALIAS_SAME', 1); }
+if (!defined('ERASEDATA_FILE_ALIAS_DISTINCT')) { define('ERASEDATA_FILE_ALIAS_DISTINCT', 0); }
+if (!defined('ERASEDATA_FILE_ALIAS_UNKNOWN')) { define('ERASEDATA_FILE_ALIAS_UNKNOWN', -1); }
 
 // The shared run-state primitive, loaded for real. It is a small standalone
 // file with no application dependencies, and the suites that eval() only the
@@ -70,11 +70,11 @@ require_once(__DIR__ . '/../../php/SourceDefinitionFixture.php');
 
 class StrictTestSuite
 {
-    private $tests = array();
+    private $tests = [];
 
     public function test($name, $callback)
     {
-        $this->tests[] = array($name, $callback);
+        $this->tests[] = [$name, $callback];
     }
 
     // Register every public test* method of an object as a test case.
@@ -82,7 +82,7 @@ class StrictTestSuite
     {
         foreach (get_class_methods($object) as $method) {
             if (strpos($method, 'test') === 0) {
-                $this->tests[] = array($method, array($object, $method));
+                $this->tests[] = [$method, [$object, $method]];
             }
         }
     }
@@ -106,13 +106,13 @@ class StrictTestSuite
         // none of these bits, so the guard below re-raises exactly what was
         // NOT suppressed and stays silent about what was.
         set_error_handler(function ($errno, $message, $file, $line) {
-            if (!(error_reporting() & $errno)) return false;
+            if (!(error_reporting() & $errno)) { return false; }
             throw new ErrorException($message, 0, $errno, $file, $line);
         });
         try {
             foreach ($this->tests as $test) {
                 list($name, $callback) = $test;
-                $savedGlobals = array(
+                $savedGlobals = [
                     'rutrackerLayer2Enabled' => $GLOBALS['rutrackerLayer2Enabled'] ?? null,
                     'rutrackerAnnounceCap' => $GLOBALS['rutrackerAnnounceCap'] ?? null,
                     'ignoreLabels' => $GLOBALS['ignoreLabels'] ?? null,
@@ -121,7 +121,7 @@ class StrictTestSuite
                     'rutrackerFuseShare' => $GLOBALS['rutrackerFuseShare'] ?? null,
                     'rutrackerFuseFloor' => $GLOBALS['rutrackerFuseFloor'] ?? null,
                     'kinozalHosts' => $GLOBALS['kinozalHosts'] ?? null,
-                );
+                ];
                 try {
                     call_user_func($callback);
                     echo "ok - {$name}\n";
@@ -131,8 +131,8 @@ class StrictTestSuite
                     echo '  ' . get_class($error) . ': ' . $error->getMessage() . "\n";
                 } finally {
                     foreach ($savedGlobals as $k => $v) {
-                        if ($v === null) unset($GLOBALS[$k]);
-                        else $GLOBALS[$k] = $v;
+                        if ($v === null) { unset($GLOBALS[$k]); }
+                        else { $GLOBALS[$k] = $v; }
                     }
                     if (class_exists('rXMLRPCRequest', false) && method_exists('rXMLRPCRequest', 'reset')) {
                         rXMLRPCRequest::reset();
@@ -193,8 +193,8 @@ function strictAssertNoRpcCommand($needle, $message)
 {
     foreach (rXMLRPCRequest::$requests as $request) {
         $wire = $request['key'];
-        foreach ($request['commands'] as $command)
-            if ($command->command === 'branch') $wire .= '|' . implode('|', array_map('strval', $command->params));
+        foreach ($request['commands'] as $command) {
+            if ($command->command === 'branch') { $wire .= '|' . implode('|', array_map('strval', $command->params)); } }
         strictAssertTrue(strpos($wire, $needle) === false, $message . ' (saw ' . $request['key'] . ')');
     }
 }
@@ -252,7 +252,7 @@ function strictRemoveTree($path)
     if (!is_dir($path)) {
         return;
     }
-    foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
+    foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
         strictRemoveTree($path . '/' . $entry);
     }
     @rmdir($path);
@@ -261,7 +261,7 @@ function strictRemoveTree($path)
 function strictGetPrivateStatic($class, $property)
 {
     $reflection = new ReflectionProperty($class, $property);
-    if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) { $reflection->setAccessible(true); }
     return $reflection->getValue();
 }
 
@@ -290,11 +290,11 @@ function fiDump($topicId, $status, $hash, $seeders = 7)
  * the unreadable-column path. */
 function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 {
-    return json_encode(array(
-        'format' => array('topic_id' => array('tor_status', 'seeders', 'reg_time', 'tor_size_bytes',
-            'keeping_priority', 'keepers', 'seeder_last_seen', 'info_hash', 'topic_poster', 'leechers')),
-        'result' => array((string) $topicId => array($status, $seeders, $regTime, 2, 0, array(), 3, $hash, 4, 0)),
-    ));
+    return json_encode([
+        'format' => ['topic_id' => ['tor_status', 'seeders', 'reg_time', 'tor_size_bytes',
+            'keeping_priority', 'keepers', 'seeder_last_seen', 'info_hash', 'topic_poster', 'leechers']],
+        'result' => [(string) $topicId => [$status, $seeders, $regTime, 2, 0, [], 3, $hash, 4, 0]],
+    ]);
 }
 
 // The Snoopy failure sentences this plugin classifies, each paired with the
@@ -315,47 +315,47 @@ function fiDumpAt($topicId, $status, $hash, $seeders, $regTime)
 // The cases include errors emitted by php/Snoopy.class.inc.
 function fetchErrorParityCases()
 {
-    return array(
-        array('invalid-url', 'invalid-url'),
-        array('Invalid protocol "gopher"\n', 'invalid-protocol'),
-        array('invalid-protocol "gopher"', 'invalid-protocol'),
-        array('request-body-not-written', 'request-body-not-written'),
-        array('Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'),
-        array('Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
-            'refused-non-public-address'),
-        array('credential-redirect-refused', 'redirect-refused'),
-        array('Error: cURL could not retrieve the document, error 6.', 'curl-transfer'),
-        array('Error: cURL could not verify the certificate of "tracker.invalid" (error 60). Install the certificate authority that signed it.', 'certificate-verification'),
-        array('socket creation failed (-3)', 'socket-create'),
-        array('dns lookup failure (-4)', 'dns-lookup'),
-        array('dns lookup failure (0)', 'dns-lookup'),
-        array('connection refused or timed out (-5)', 'connect-refused'),
-        array('connection failed (111)', 'connect-errno'),
-        array('too-many-interim-responses', 'too-many-interim-responses'),
-        array('missing-final-response', 'missing-final-response'),
-        array('unsupported-transfer-encoding', 'unsupported-transfer-encoding'),
-        array('invalid-or-oversized-chunked', 'invalid-or-oversized-chunked'),
-        array('oversized-response', 'oversized-response'),
-        array('invalid-or-oversized-gzip', 'invalid-or-oversized-gzip'),
-        array('gzip-decoder-unavailable', 'gzip-decoder-unavailable'),
-        array('unreadable-or-oversized-response', 'unreadable-or-oversized-response'),
-        array('request-deadline', 'request-deadline'),
-        array('request-throttled', 'request-throttled'),
-        array('credential-post-failed', 'credential-post-failed'),
-        array('login-paused', 'login-paused'),
+    return [
+        ['invalid-url', 'invalid-url'],
+        ['Invalid protocol "gopher"\n', 'invalid-protocol'],
+        ['invalid-protocol "gopher"', 'invalid-protocol'],
+        ['request-body-not-written', 'request-body-not-written'],
+        ['Refusing to fetch: cannot resolve host "nx.invalid".', 'refused-unresolvable-host'],
+        ['Refusing to fetch: host "a.invalid" resolves to the non-public address 127.0.0.1.',
+            'refused-non-public-address'],
+        ['credential-redirect-refused', 'redirect-refused'],
+        ['Error: cURL could not retrieve the document, error 6.', 'curl-transfer'],
+        ['Error: cURL could not verify the certificate of "tracker.invalid" (error 60). Install the certificate authority that signed it.', 'certificate-verification'],
+        ['socket creation failed (-3)', 'socket-create'],
+        ['dns lookup failure (-4)', 'dns-lookup'],
+        ['dns lookup failure (0)', 'dns-lookup'],
+        ['connection refused or timed out (-5)', 'connect-refused'],
+        ['connection failed (111)', 'connect-errno'],
+        ['too-many-interim-responses', 'too-many-interim-responses'],
+        ['missing-final-response', 'missing-final-response'],
+        ['unsupported-transfer-encoding', 'unsupported-transfer-encoding'],
+        ['invalid-or-oversized-chunked', 'invalid-or-oversized-chunked'],
+        ['oversized-response', 'oversized-response'],
+        ['invalid-or-oversized-gzip', 'invalid-or-oversized-gzip'],
+        ['gzip-decoder-unavailable', 'gzip-decoder-unavailable'],
+        ['unreadable-or-oversized-response', 'unreadable-or-oversized-response'],
+        ['request-deadline', 'request-deadline'],
+        ['request-throttled', 'request-throttled'],
+        ['credential-post-failed', 'credential-post-failed'],
+        ['login-paused', 'login-paused'],
         // Repeated spaces, a tab and a newline in one message. Under a
         // trim-only normalisation this is 'unclassified'.
-        array("  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'),
-        array("dns   lookup\tfailure (-4)", 'dns-lookup'),
-        array("\n socket\r\ncreation  failed (-3) \t", 'socket-create'),
-        array("Refusing to fetch:  cannot  resolve\thost \"nx.invalid\".", 'refused-unresolvable-host'),
+        ["  \t connection   failed\t(111)\nhost bt4.t-ru.org  ", 'connect-errno'],
+        ["dns   lookup\tfailure (-4)", 'dns-lookup'],
+        ["\n socket\r\ncreation  failed (-3) \t", 'socket-create'],
+        ["Refusing to fetch:  cannot  resolve\thost \"nx.invalid\".", 'refused-unresolvable-host'],
         // Not one of the known errors. The canary is shaped like an NNMClub passkey:
         // an unrecognised sentence is classified, never quoted, so no merge
         // that teaches the vendored Snoopy to name the URL it failed on can
         // put a credential in this plugin's log.
-        array('Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked', 'unclassified'),
-        array('something php/Snoopy.class.inc does not say today', 'unclassified'),
-    );
+        ['Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked', 'unclassified'],
+        ['something php/Snoopy.class.inc does not say today', 'unclassified'],
+    ];
 }
 
 // The complete set of answers the classifier is allowed to give: the fixed
@@ -364,16 +364,16 @@ function fetchErrorParityCases()
 // membership can.
 function fetchErrorTokenVocabulary()
 {
-    return array('', 'invalid-url', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
+    return ['', 'invalid-url', 'invalid-protocol', 'refused-unresolvable-host', 'refused-non-public-address',
         'redirect-refused', 'curl-transfer', 'certificate-verification', 'socket-create', 'dns-lookup', 'connect-refused', 'connect-errno',
         'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked', 'oversized-response',
         'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline', 'request-throttled',
-        'credential-post-failed', 'login-paused', 'unclassified');
+        'credential-post-failed', 'login-paused', 'unclassified'];
 }
 
-function strictInvoke($className, $method, $arguments = array())
+function strictInvoke($className, $method, $arguments = [])
 {
     $reflection = new ReflectionMethod($className, $method);
     if (PHP_VERSION_ID < 80100) {
@@ -428,20 +428,16 @@ function testCapturedAppLog($body, $debug = false)
         return (string) @file_get_contents($file);
     } finally {
         @unlink($file);
-        if ($savedFile === null) unset($GLOBALS['log_file']);
-        else $GLOBALS['log_file'] = $savedFile;
-        if ($savedDebug === null) unset($GLOBALS['rutrackerCheckDebug']);
-        else $GLOBALS['rutrackerCheckDebug'] = $savedDebug;
+        if ($savedFile === null) { unset($GLOBALS['log_file']); }
+        else { $GLOBALS['log_file'] = $savedFile; }
+        if ($savedDebug === null) { unset($GLOBALS['rutrackerCheckDebug']); }
+        else { $GLOBALS['rutrackerCheckDebug'] = $savedDebug; }
     }
 }
 
 class rXMLRPCCommand
 {
-    const NAME_PATTERN = '/^[a-z0-9_.]+\\z/i';
-    public static function isValidCommandName($name)
-    {
-        return is_string($name) && preg_match(self::NAME_PATTERN, $name) === 1;
-    }
+    public const NAME_PATTERN = '/^[a-z0-9_.]+\\z/i';
     public $command;
     public $params;
 
@@ -449,6 +445,10 @@ class rXMLRPCCommand
     {
         $this->command = $command;
         $this->params = $params;
+    }
+    public static function isValidCommandName($name)
+    {
+        return is_string($name) && preg_match(self::NAME_PATTERN, $name) === 1;
     }
 }
 
@@ -460,16 +460,9 @@ class rXMLRPCCommand
  */
 class rXMLRPCRequest
 {
-    public static $responses = array();
-    public static $requests = array();
+    public static $responses = [];
+    public static $requests = [];
     public static $defaultLocalProjectionResponse = null;
-    private $commands = array();
-
-    // php/xmlrpc.php: values are already the daemon's bytes.
-    public static function unescapeValue($value)
-    {
-        return $value;
-    }
     public $important = true;
     public $fault = false;
     public $faultString = '';
@@ -477,21 +470,28 @@ class rXMLRPCRequest
     // clean answer. Consumers that need exact fault boundaries prefer it, so a
     // double that omits it silently reroutes them to the trimmed copy.
     public $rawFaultString = null;
-    public $val = array();
-    public $responseValues = array();
-    public $responseTypes = array();
-    public $responseCommandValues = array();
-    public $responseCommandTypes = array();
-    private $responseStringTableWidths = array();
-    private $responseCommandStringTableWidths = array();
+    public $val = [];
+    public $responseValues = [];
+    public $responseTypes = [];
+    public $responseCommandValues = [];
+    public $responseCommandTypes = [];
+    private $commands = [];
+    private $responseStringTableWidths = [];
+    private $responseCommandStringTableWidths = [];
     private $wireReply = false;
 
     public function __construct($commands = null)
     {
-        if (is_array($commands))
-            $this->commands = $commands;
-        elseif ($commands !== null)
-            $this->commands[] = $commands;
+        if (is_array($commands)) {
+            $this->commands = $commands; }
+        elseif ($commands !== null) {
+            $this->commands[] = $commands; }
+    }
+
+    // php/xmlrpc.php: values are already the daemon's bytes.
+    public static function unescapeValue($value)
+    {
+        return $value;
     }
 
     public function addCommand($command)
@@ -501,11 +501,11 @@ class rXMLRPCRequest
 
     public static function reset()
     {
-        self::$responses = array();
-        self::$requests = array();
+        self::$responses = [];
+        self::$requests = [];
     }
 
-    public static function queue($commands, $ok, $fault, $values = array(), $faultString = null)
+    public static function queue($commands, $ok, $fault, $values = [], $faultString = null)
     {
         // The real transport (php/xmlrpc.php rXMLRPCRequest::run()) parses
         // the SCGI answer into nested semantic values and flat scalar accessors,
@@ -523,48 +523,82 @@ class rXMLRPCRequest
                 if (is_array($value)) {
                     throw new InvalidArgumentException(
                         'rXMLRPCRequest::queue(): nested array value queued for "' . (is_array($commands) ? implode('|', $commands) : $commands)
-                        . '" -- the real transport only ever returns a flat list of scalars, flatten the fixture instead'
+                        . '" -- the real transport only ever returns a flat list of scalars, flatten the fixture instead',
                     );
                 }
             }
         }
         $key = is_array($commands) ? implode('|', $commands) : $commands;
-        if ($faultString === null)
+        if ($faultString === null) {
             // rTorrent 0.15+'s own missing-hash answer (php/utility/hashfault.php).
-            $faultString = ($ok && $fault && $key === getCmd('d.hash')) ? 'invalid parameters: info-hash not found' : '';
-        self::$responses[$key][] = array($ok, $fault, $values, $faultString);
+            $faultString = ($ok && $fault && $key === getCmd('d.hash')) ? 'invalid parameters: info-hash not found' : ''; }
+        self::$responses[$key][] = [$ok, $fault, $values, $faultString];
     }
 
     /** Typed fixtures use the production XML reader; flat queues prove no table shape. */
     public static function queueRaw($commands, $xml)
     {
-        if (!is_string($xml)) throw new InvalidArgumentException('An XMLRPC wire fixture must be a string');
+        if (!is_string($xml)) { throw new InvalidArgumentException('An XMLRPC wire fixture must be a string'); }
         $key = is_array($commands) ? implode('|', $commands) : $commands;
-        self::$responses[$key][] = array(true, false, array(), '', 'raw' => $xml);
+        self::$responses[$key][] = [true, false, [], '', 'raw' => $xml];
     }
 
     public static function requestsFor($key)
     {
-        $matched = array();
-        foreach (self::$requests as $request)
-            if ($request['key'] === $key)
-                $matched[] = $request;
+        $matched = [];
+        foreach (self::$requests as $request) {
+            if ($request['key'] === $key) {
+                $matched[] = $request; } }
         return $matched;
+    }
+
+    public function stringArray()
+    {
+        // Flat listMethods fixtures already carry semantic string values.
+        // Wire-type adversaries use FakeRtorrentDaemon and the real parser.
+        if ($this->fault || $this->responseTypes !== ['array'] || count($this->responseValues) !== 1
+            || !is_array($this->responseValues[0])) { return null; }
+        foreach ($this->responseValues[0] as $value) {
+            if (!is_string($value)) { return null; } }
+        return $this->responseValues[0];
+    }
+
+    public function stringTable($columns, $resultIndex = null)
+    {
+        // Flat queued fixtures carry no XML row-type provenance. Table consumers
+        // use queueRaw or FakeRtorrentDaemon instead of inventing it.
+        if (!$this->wireReply) { return null; }
+        static $reader = null;
+        if ($reader === null) {
+            $definition = loadFunctionDefinition(testFindRepoRoot() . '/php/xmlrpc.php', 'stringTable');
+            $reader = eval('return ' . preg_replace('/^function\s+stringTable\s*/', 'function ', $definition, 1) . ';');
+        }
+        return $reader->call($this, $columns, $resultIndex);
+    }
+
+    public function run($trusted = true)
+    {
+        return $this->execute();
+    }
+
+    public function success($trusted = true)
+    {
+        return $this->execute() && !$this->fault;
     }
 
     private function execute()
     {
         $key = implode('|', array_map(function ($command) { return $command->command; }, $this->commands));
-        self::$requests[] = array('key' => $key, 'important' => $this->important, 'commands' => $this->commands);
+        self::$requests[] = ['key' => $key, 'important' => $this->important, 'commands' => $this->commands];
         // Nothing queued stands for an unavailable transport response.
         $response = (isset(self::$responses[$key]) && count(self::$responses[$key]))
             ? array_shift(self::$responses[$key]) : null;
         if ($response === null && self::$defaultLocalProjectionResponse !== null
             && $key === 'branch' && isset($this->commands[0]->params[1], $this->commands[0]->params[2])
             && strpos($this->commands[0]->params[1], getCmd('d.get_local_id=')) !== false
-            && strpos($this->commands[0]->params[2], '$' . getCmd('d.set_custom=')) !== false)
-            $response = array(true, false, array(self::$defaultLocalProjectionResponse), '');
-        if ($response === null) $response = array(false, false, array(), '');
+            && strpos($this->commands[0]->params[2], '$' . getCmd('d.set_custom=')) !== false) {
+            $response = [true, false, [self::$defaultLocalProjectionResponse], '']; }
+        if ($response === null) { $response = [false, false, [], '']; }
         // Match the production request's reset and unavailable-response rules.
         // UpdatePassTest compares these fields against the real parser over
         // fault/clean/unavailable sequences on the same request object.
@@ -573,8 +607,8 @@ class rXMLRPCRequest
         $this->faultString = '';
         $this->rawFaultString = null;
         $this->wireReply = false;
-        $this->responseCommandValues = $this->responseCommandTypes = array();
-        $this->responseStringTableWidths = $this->responseCommandStringTableWidths = array();
+        $this->responseCommandValues = $this->responseCommandTypes = [];
+        $this->responseStringTableWidths = $this->responseCommandStringTableWidths = [];
         if (!$response[0]) {
             $this->fault = true;
             $this->faultString = 'rpc-response-unavailable';
@@ -586,7 +620,7 @@ class rXMLRPCRequest
         if (isset($response['raw'])) {
             require_once testFindRepoRoot() . '/php/xmlrpc_response.php';
             $this->wireReply = true;
-            $this->val = $this->responseValues = $this->responseTypes = array();
+            $this->val = $this->responseValues = $this->responseTypes = [];
             try {
                 $parsed = (new rXMLRPCResponse($response['raw'], count($this->commands) > 1 || $key === 'system.multicall'))->read();
                 $this->fault = $parsed->fault;
@@ -598,7 +632,7 @@ class rXMLRPCRequest
                 $this->responseCommandValues = $parsed->commandValues;
                 $this->responseCommandTypes = $parsed->commandTypes;
                 $this->responseCommandStringTableWidths = $parsed->commandStringTableWidths;
-                foreach ($parsed->scalars as $scalar) $this->val[] = $scalar[1];
+                foreach ($parsed->scalars as $scalar) { $this->val[] = $scalar[1]; }
             } catch (UnexpectedValueException $error) {
                 $this->fault = true;
                 $this->faultString = 'rpc-' . $error->getMessage();
@@ -619,7 +653,7 @@ class rXMLRPCRequest
         // scripted daemon action even when its response cannot be published.
         $values = ($response[2] instanceof Closure)
             ? call_user_func($response[2], $this->commands) : $response[2];
-        $this->val = $response[0] ? $values : array();
+        $this->val = $response[0] ? $values : [];
         // A successful d.set_custom returns one scalar per command in the real
         // XMLRPC response. Most legacy fixtures used [] merely because they
         // did not inspect those scalars; make that shorthand realistic while
@@ -629,53 +663,19 @@ class rXMLRPCRequest
         if ($response[0] && !$response[1] && is_array($this->val) && !count($this->val)
             && count($this->commands)) {
             $settersOnly = true;
-            foreach ($this->commands as $command)
+            foreach ($this->commands as $command) {
                 if ($command->command !== getCmd('d.set_custom')) {
                     $settersOnly = false;
                     break;
-                }
-            if ($settersOnly) $this->val = array_fill(0, count($this->commands), 0);
+                } }
+            if ($settersOnly) { $this->val = array_fill(0, count($this->commands), 0); }
         }
         // This flat fixture API models the one array returned by listMethods.
         // Malformed semantic responses use FakeRtorrentDaemon and the real parser.
-        $this->responseTypes = $response[0] && !$this->fault && $key === 'system.listMethods' ? array('array') : array();
+        $this->responseTypes = $response[0] && !$this->fault && $key === 'system.listMethods' ? ['array'] : [];
         $this->responseValues = $response[0] && !$this->fault && $key === 'system.listMethods'
-            ? array($this->val) : array();
+            ? [$this->val] : [];
         return $response[0];
-    }
-
-    public function stringArray()
-    {
-        // Flat listMethods fixtures already carry semantic string values.
-        // Wire-type adversaries use FakeRtorrentDaemon and the real parser.
-        if ($this->fault || $this->responseTypes !== array('array') || count($this->responseValues) !== 1
-            || !is_array($this->responseValues[0])) return null;
-        foreach ($this->responseValues[0] as $value)
-            if (!is_string($value)) return null;
-        return $this->responseValues[0];
-    }
-
-    public function stringTable($columns, $resultIndex = null)
-    {
-        // Flat queued fixtures carry no XML row-type provenance. Table consumers
-        // use queueRaw or FakeRtorrentDaemon instead of inventing it.
-        if (!$this->wireReply) return null;
-        static $reader = null;
-        if ($reader === null) {
-            $definition = loadFunctionDefinition(testFindRepoRoot() . '/php/xmlrpc.php', 'stringTable');
-            $reader = eval('return ' . preg_replace('/^function\s+stringTable\s*/', 'function ', $definition, 1) . ';');
-        }
-        return $reader->call($this, $columns, $resultIndex);
-    }
-
-    public function run($trusted = true)
-    {
-        return $this->execute();
-    }
-
-    public function success($trusted = true)
-    {
-        return $this->execute() && !$this->fault;
     }
 }
 
@@ -689,10 +689,10 @@ require_once(testFindRepoRoot() . '/plugins/erasedata/presence.php');
 if (!function_exists('erasedataExactFileAlias')) {
     function erasedataExactFileAlias($leftIdentity, $rightIdentity)
     {
-        if (!is_array($leftIdentity) || !is_array($rightIdentity)) return ERASEDATA_FILE_ALIAS_UNKNOWN;
-        if (empty($leftIdentity['exists']) || empty($rightIdentity['exists'])) return ERASEDATA_FILE_ALIAS_DISTINCT;
+        if (!is_array($leftIdentity) || !is_array($rightIdentity)) { return ERASEDATA_FILE_ALIAS_UNKNOWN; }
+        if (empty($leftIdentity['exists']) || empty($rightIdentity['exists'])) { return ERASEDATA_FILE_ALIAS_DISTINCT; }
         if (!isset($leftIdentity['stat']['dev'], $leftIdentity['stat']['ino'],
-            $rightIdentity['stat']['dev'], $rightIdentity['stat']['ino'])) return ERASEDATA_FILE_ALIAS_UNKNOWN;
+            $rightIdentity['stat']['dev'], $rightIdentity['stat']['ino'])) { return ERASEDATA_FILE_ALIAS_UNKNOWN; }
         return $leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
             && $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino']
             ? ERASEDATA_FILE_ALIAS_SAME : ERASEDATA_FILE_ALIAS_DISTINCT;
@@ -723,8 +723,8 @@ class rTorrentSettings
 
     public static function get()
     {
-        if (!self::$instance)
-            self::$instance = new self();
+        if (!self::$instance) {
+            self::$instance = new self(); }
         return self::$instance;
     }
 }
@@ -751,17 +751,17 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         }
     }
 
-    function strictTorrentRaw($name, $announce, $comment = '', $announceList = null, $extra = array())
+    function strictTorrentRaw($name, $announce, $comment = '', $announceList = null, $extra = [])
     {
-        $root = array(
+        $root = [
             'announce' => $announce,
-            'info' => array(
+            'info' => [
                 'length' => 1,
                 'name' => $name,
                 'piece length' => 16384,
                 'pieces' => str_repeat("\0", 20),
-            ),
-        );
+            ],
+        ];
         if ($comment !== '') {
             $root['comment'] = $comment;
         }
@@ -788,26 +788,26 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
     class Snoopy
     {
-        const RESPONSE_BODY_FAILED = -101;
-        const REQUEST_THROTTLED = 'request-throttled';
-        public static $responses = array();
+        public const RESPONSE_BODY_FAILED = -101;
+        public const REQUEST_THROTTLED = 'request-throttled';
+        public static $responses = [];
         // Catch-all queue, consulted only when $url has no exact match.
         // RuTracker's layer-2 probe URL carries a random peer_id tail and a
         // random key (RuTrackerAnnounce::makePeerId()/random_bytes()), so a
         // test can never know the exact URL in advance the way it does for
         // every other (deterministic) request this suite makes.
-        public static $any = array();
-        public static $requests = array();
-        public static $rawheadersLog = array();
-        public static $agentsLog = array();
-        public static $beforeFetchSnapshots = array();
+        public static $any = [];
+        public static $requests = [];
+        public static $rawheadersLog = [];
+        public static $agentsLog = [];
+        public static $beforeFetchSnapshots = [];
 
         public $lastredirectaddr = '';
         public $status = -1;
         public $results = '';
-        public $headers = array();
+        public $headers = [];
         public $error = '';
-        public $rawheaders = array();
+        public $rawheaders = [];
         public $read_timeout = 0;
         public $_fp_timeout = 0;
         public $agent = '';
@@ -818,12 +818,12 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         public static function reset()
         {
-            self::$responses = array();
-            self::$any = array();
-            self::$requests = array();
-            self::$rawheadersLog = array();
-            self::$agentsLog = array();
-            self::$beforeFetchSnapshots = array();
+            self::$responses = [];
+            self::$any = [];
+            self::$requests = [];
+            self::$rawheadersLog = [];
+            self::$agentsLog = [];
+            self::$beforeFetchSnapshots = [];
         }
 
         // $headers models the response headers real Snoopy collects into
@@ -831,57 +831,71 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // php/Snoopy.class.inc:596). The request side ($rawheaders) is
         // recorded per request into $rawheadersLog, index-parallel to
         // $requests, for the tests that pin conditional-GET behaviour.
-        public static function queue($url, $status, $results, $headers = array(), $redirect = null, $error = '',
+        public static function queue($url, $status, $results, $headers = [], $redirect = null, $error = '',
             $answeredUrl = null)
         {
             if (!isset(self::$responses[$url])) {
-                self::$responses[$url] = array();
+                self::$responses[$url] = [];
             }
-            self::$responses[$url][] = array($status, $results, $headers, $redirect, $error, $answeredUrl);
+            self::$responses[$url][] = [$status, $results, $headers, $redirect, $error, $answeredUrl];
         }
 
         // A refusal before Snoopy receives a response leaves status/results
         // from the previous fetch on this same client, but returns false.
         public static function queueEarlyFailure($url, $error)
         {
-            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
-            self::$responses[$url][] = array('earlyFailure' => $error);
+            if (!isset(self::$responses[$url])) { self::$responses[$url] = []; }
+            self::$responses[$url][] = ['earlyFailure' => $error];
         }
 
         // Model a fetchComplex() refusal after fresh HTTP bytes were recorded.
-        public static function queueAnsweredFailure($url, $status, $results, $headers = array(), $redirect = null,
+        public static function queueAnsweredFailure($url, $status, $results, $headers = [], $redirect = null,
             $answeredUrl = null)
         {
-            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
-            self::$responses[$url][] = array('answeredFailure' => array($status, $results, $headers, $redirect,
-                $answeredUrl));
+            if (!isset(self::$responses[$url])) { self::$responses[$url] = []; }
+            self::$responses[$url][] = ['answeredFailure' => [$status, $results, $headers, $redirect,
+                $answeredUrl]];
         }
 
         // loginmgr may refuse before it reaches Snoopy::fetch(), preserving
         // metadata from the preceding request on this reused client.
         public static function queueBeforeFetchFailure($url, $lastStatus = null, $lastBody = '')
         {
-            if (!isset(self::$responses[$url])) self::$responses[$url] = array();
-            self::$responses[$url][] = array('beforeFetchFailure' => array($lastStatus, $lastBody));
+            if (!isset(self::$responses[$url])) { self::$responses[$url] = []; }
+            self::$responses[$url][] = ['beforeFetchFailure' => [$lastStatus, $lastBody]];
         }
 
-        public static function queueAny($status, $results, $headers = array())
+        public static function queueAny($status, $results, $headers = [])
         {
-            self::$any[] = array($status, $results, $headers);
+            self::$any[] = [$status, $results, $headers];
+        }
+
+        public function fetch($url, $method = 'GET', $contentType = '', $body = '')
+        {
+            return $this->respond('fetch', $url);
+        }
+
+        public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
+        {
+            return $this->respond('fetchComplex', $url);
+        }
+
+        public function setcookies()
+        {
         }
 
         private function respond($method, $url)
         {
             if (isset(self::$responses[$url][0]['beforeFetchFailure'])) {
-                self::$beforeFetchSnapshots[] = array($this->status, $this->results,
-                    $this->headers, $this->error, $this->lastredirectaddr);
+                self::$beforeFetchSnapshots[] = [$this->status, $this->results,
+                    $this->headers, $this->error, $this->lastredirectaddr];
                 $queued = array_shift(self::$responses[$url]);
                 list($lastStatus, $lastBody) = $queued['beforeFetchFailure'];
                 if ($lastStatus !== null) {
                     $this->status = $lastStatus;
                     $this->results = $lastBody;
                 }
-                self::$requests[] = array($method, $url);
+                self::$requests[] = [$method, $url];
                 self::$rawheadersLog[] = $this->rawheaders;
                 self::$agentsLog[] = (string) $this->agent;
                 return false;
@@ -891,7 +905,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             $this->lastredirectaddr = '';
             $this->error = '';
             $this->lastResponseURL = '';
-            self::$requests[] = array($method, $url);
+            self::$requests[] = [$method, $url];
             self::$rawheadersLog[] = $this->rawheaders;
             // The agent the client actually held when it fetched. Recorded
             // beside the URL because for an announce probe the User-Agent
@@ -908,7 +922,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                 if (isset($response['answeredFailure'])) {
                     list($this->status, $this->results, $this->headers, $redirect, $answered) = $response['answeredFailure'];
                     $this->error = '';
-                    if ($redirect !== null) $this->lastredirectaddr = $redirect;
+                    if ($redirect !== null) { $this->lastredirectaddr = $redirect; }
                     $this->lastResponseURL = $answered !== null ? $answered : $url;
                     return false;
                 }
@@ -916,7 +930,7 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
                 $this->lastResponseURL = $answered !== null ? $answered : ($this->error === '' ? $url : '');
                 // A top-level fetch clears the previous redirect above; only
                 // a new redirect sets this field.
-                if ($redirect !== null) $this->lastredirectaddr = $redirect;
+                if ($redirect !== null) { $this->lastredirectaddr = $redirect; }
                 return true;
             }
             if (count(self::$any)) {
@@ -926,67 +940,65 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             }
             throw new RuntimeException("Unexpected {$method} request: {$url}");
         }
-
-        public function fetch($url, $method = 'GET', $contentType = '', $body = '')
-        {
-            return $this->respond('fetch', $url);
-        }
-
-        public function fetchComplex($url, $method = 'GET', $contentType = '', $body = '')
-        {
-            return $this->respond('fetchComplex', $url);
-        }
-
-        public function setcookies()
-        {
-        }
     }
 
     class ruTrackerChecker
     {
-        const STE_INPROGRESS = 1;
-        const STE_UPDATED = 2;
-        const STE_UPTODATE = 3;
-        const STE_DELETED = 4;
-        const STE_CANT_REACH_TRACKER = 5;
-        const STE_ERROR = 6;
-        const STE_NOT_NEED = 7;
-        const STE_IGNORED = 8;
-        const STE_META_PENDING = 9;
-        const STE_ABSORBED = 10;
+        public const STE_INPROGRESS = 1;
+        public const STE_UPDATED = 2;
+        public const STE_UPTODATE = 3;
+        public const STE_DELETED = 4;
+        public const STE_CANT_REACH_TRACKER = 5;
+        public const STE_ERROR = 6;
+        public const STE_NOT_NEED = 7;
+        public const STE_IGNORED = 8;
+        public const STE_META_PENDING = 9;
+        public const STE_ABSORBED = 10;
         // Not a status but a handler answer: "no data to judge by, keep the
         // stored verdict". Mirrors check.php's own constant.
-        const STE_UNCHANGED = -1;
-        const STE_DECLINED = -2;
+        public const STE_UNCHANGED = -1;
+        public const STE_DECLINED = -2;
 
         // Mirrors check.php's chk-msg token vocabulary; the tests assert on
         // these constants rather than on the literals, exactly like the
         // production call sites do.
-        const CHKMSG_SUPERSEDED = 'superseded';
-        const CHKMSG_SUCCESSOR_MISSING = 'successor-missing';
-        const CHKMSG_DELETING = 'deleting';
+        public const CHKMSG_SUPERSEDED = 'superseded';
+        public const CHKMSG_SUCCESSOR_MISSING = 'successor-missing';
+        public const CHKMSG_DELETING = 'deleting';
         // Mirrors check.php: metafetch reads it to tell an activation the
         // replacement confirmed from one it left unfinished.
-        const REPLACEMENT_MARKER_KEY = 'chk-replacement';
+        public const REPLACEMENT_MARKER_KEY = 'chk-replacement';
 
-        const CHKMSG_TOPIC_STATUS = 'topic-status';
-        const CHKMSG_FUSE = 'fuse';
-        const CHKMSG_ABSORBED = 'absorbed';
+        public const CHKMSG_TOPIC_STATUS = 'topic-status';
+        public const CHKMSG_FUSE = 'fuse';
+        public const CHKMSG_ABSORBED = 'absorbed';
 
-        const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        public const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             . "AppleWebKit/537.36 (KHTML, like Gecko) "
             . "Chrome/120.0.0.0 Safari/537.36";
 
-        public static $logs = array();
-        public static $messages = array();
-        public static $calls = array();
+        public static $logs = [];
+        public static $messages = [];
+        public static $calls = [];
         public static $runLocalId = null;
-        private static $results = array();
+        // Mirrors the real accountOrigin() lookup without loading loginmgr
+        // and its real Snoopy behind the strict transport double.
+        public static $accountOrigins = [];
+
+        // Every User-Agent this double was asked to send, in order. Without
+        // it the double silently swallowed the production signature's fifth
+        // argument and never set Snoopy::$agent, so the whole point of the
+        // layer 2 fix -- that the probe does NOT go out as a browser -- had
+        // no assertion anywhere: a refactor dropping the argument, or one
+        // restoring the old unconditional browser agent, would have left every
+        // suite green while layer 2 went back to answering 403 for ever.
+        public static $agents = [];
+        private static $results = [];
 
         public static function queueResult($method, $result)
         {
-            if (!array_key_exists($method, self::$results))
-                self::$results[$method] = array();
+            if (!array_key_exists($method, self::$results)) {
+                self::$results[$method] = []; }
             self::$results[$method][] = $result;
         }
 
@@ -997,18 +1009,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
             }));
         }
 
-        private static function answer($method, $arguments)
-        {
-            self::$calls[] = array(
-                'method' => $method,
-                'arguments' => $arguments,
-                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
-            );
-            if (!array_key_exists($method, self::$results) || !count(self::$results[$method]))
-                throw new RuntimeException('No TestLib result queued for ruTrackerChecker::' . $method);
-            return array_shift(self::$results[$method]);
-        }
-
         public static function activeRunLocalId($hash)
         {
             return self::$runLocalId;
@@ -1016,32 +1016,29 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         public static function writeHandlerCustom($hash, $field, $value)
         {
-            self::$calls[] = array('method' => __FUNCTION__,
-                'arguments' => array($hash, $field, $value),
-                'xmlrpc_count' => count(rXMLRPCRequest::$requests));
+            self::$calls[] = ['method' => __FUNCTION__,
+                'arguments' => [$hash, $field, $value],
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests)];
             $req = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.set_custom'),
-                array($hash, $field, (string) $value)));
+                [$hash, $field, (string) $value]));
             $req->important = false;
             return $req->success();
         }
 
         public static function awaitMetadata($hash)
         {
-            return self::answer(__FUNCTION__, array($hash));
+            return self::answer(__FUNCTION__, [$hash]);
         }
-        // Mirrors the real accountOrigin() lookup without loading loginmgr
-        // and its real Snoopy behind the strict transport double.
-        public static $accountOrigins = array();
 
         public static function reset()
         {
-            self::$logs = array();
-            self::$messages = array();
-            self::$calls = array();
+            self::$logs = [];
+            self::$messages = [];
+            self::$calls = [];
             self::$runLocalId = null;
-            self::$results = array();
-            self::$agents = array();
-            self::$accountOrigins = array();
+            self::$results = [];
+            self::$agents = [];
+            self::$accountOrigins = [];
             Snoopy::reset();
             rXMLRPCRequest::reset();
         }
@@ -1049,15 +1046,6 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function registerTracker($commentFilter, $announceFilter, $handler)
         {
         }
-
-        // Every User-Agent this double was asked to send, in order. Without
-        // it the double silently swallowed the production signature's fifth
-        // argument and never set Snoopy::$agent, so the whole point of the
-        // layer 2 fix -- that the probe does NOT go out as a browser -- had
-        // no assertion anywhere: a refactor dropping the argument, or one
-        // restoring the old unconditional browser agent, would have left every
-        // suite green while layer 2 went back to answering 403 for ever.
-        public static $agents = array();
 
         public static function makeClient($url, $method = 'GET', $contentType = '', $body = '',
             $agent = self::USER_AGENT)
@@ -1075,33 +1063,33 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function transportFailureDetail($status)
         {
             $status = (int) $status;
-            if ($status === Snoopy::RESPONSE_BODY_FAILED)
-                return 'transport=client status=' . $status;
+            if ($status === Snoopy::RESPONSE_BODY_FAILED) {
+                return 'transport=client status=' . $status; }
             if ($status < 0) {
-                $reasons = array(-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create');
+                $reasons = [-100 => 'timeout', -5 => 'connect', -4 => 'dns', -3 => 'socket-create'];
                 $reason = isset($reasons[$status]) ? $reasons[$status] : 'socket';
                 return 'transport=socket status=' . $status . ' reason=' . $reason;
             }
-            if ($status === 0) return 'transport=no-status reason=unset';
-            $reasons = array(
+            if ($status === 0) { return 'transport=no-status reason=unset'; }
+            $reasons = [
                 5 => 'proxy-dns', 6 => 'dns', 7 => 'connect', 28 => 'timeout',
                 35 => 'tls', 51 => 'tls-certificate', 52 => 'empty-reply',
                 56 => 'receive', 60 => 'tls-certificate',
-            );
+            ];
             $reason = isset($reasons[$status]) ? $reasons[$status] : 'curl';
             return 'transport=curl-exit code=' . $status . ' reason=' . $reason;
         }
 
         public static function fetchStatusDetail($status)
         {
-            if ($status === null || $status === '') return '';
+            if ($status === null || $status === '') { return ''; }
             $status = (int) $status;
             return $status < 100 ? self::transportFailureDetail($status) : 'http-status=' . $status;
         }
 
         public static function torrentExists($hash)
         {
-            return self::answer(__FUNCTION__, array($hash));
+            return self::answer(__FUNCTION__, [$hash]);
         }
 
 		public static function isPluginReplacementMarker($value)
@@ -1121,32 +1109,32 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
 
         public static function recordMissingSuccessor($hash, $successor)
         {
-            self::$calls[] = array(
+            self::$calls[] = [
                 'method' => __FUNCTION__,
-                'arguments' => array($hash, $successor),
+                'arguments' => [$hash, $successor],
                 'xmlrpc_count' => count(rXMLRPCRequest::$requests),
-            );
+            ];
             return true;
         }
 
         public static function retainMissingSuccessor($hash, $successor)
         {
-            self::$calls[] = array(
+            self::$calls[] = [
                 'method' => __FUNCTION__,
-                'arguments' => array($hash, $successor),
+                'arguments' => [$hash, $successor],
                 'xmlrpc_count' => count(rXMLRPCRequest::$requests),
-            );
+            ];
             return true;
         }
 
         public static function setMessage($hash, $message)
         {
-            self::$messages[] = array('hash' => $hash, 'message' => $message);
-            self::$calls[] = array(
+            self::$messages[] = ['hash' => $hash, 'message' => $message];
+            self::$calls[] = [
                 'method' => __FUNCTION__,
-                'arguments' => array($hash, $message),
+                'arguments' => [$hash, $message],
                 'xmlrpc_count' => count(rXMLRPCRequest::$requests),
-            );
+            ];
             return true;
         }
 
@@ -1155,18 +1143,18 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         // expects to travel on, or null for "these bytes are not metainfo".
         public static function parseMetainfo($payload)
         {
-            return self::answer(__FUNCTION__, array($payload));
+            return self::answer(__FUNCTION__, [$payload]);
         }
 
         public static function createTorrentFromDownload($client, $hash, $oldTorrent = null)
         {
-            return self::answer(__FUNCTION__, array($client, $hash, $oldTorrent));
+            return self::answer(__FUNCTION__, [$client, $hash, $oldTorrent]);
         }
 
         // $torrent is an already parsed Torrent, never bytes.
         public static function createTorrent($torrent, $oldHash, $oldTorrent = null)
         {
-            return self::answer(__FUNCTION__, array($torrent, $oldHash, $oldTorrent));
+            return self::answer(__FUNCTION__, [$torrent, $oldHash, $oldTorrent]);
         }
 
         public static function accountOrigin($name)
@@ -1189,6 +1177,18 @@ if (defined('TESTLIB_HANDLER_STUBS')) {
         public static function logUnrepairable($message)
         {
             FileUtil::toLog('rutracker_check: ' . preg_replace('/[\r\n]+/', ' ', (string) $message));
+        }
+
+        private static function answer($method, $arguments)
+        {
+            self::$calls[] = [
+                'method' => $method,
+                'arguments' => $arguments,
+                'xmlrpc_count' => count(rXMLRPCRequest::$requests),
+            ];
+            if (!array_key_exists($method, self::$results) || !count(self::$results[$method])) {
+                throw new RuntimeException('No TestLib result queued for ruTrackerChecker::' . $method); }
+            return array_shift(self::$results[$method]);
         }
     }
 }

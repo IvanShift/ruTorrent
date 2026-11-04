@@ -26,13 +26,13 @@
  * and Torrent.php wants the working directory set to php/ while it loads.
  */
 
-if (!class_exists('Torrent', false))
-    throw new RuntimeException('UpstreamStampingTorrentFixture.php needs php/Torrent.php loaded first');
+if (!class_exists('Torrent', false)) {
+    throw new RuntimeException('UpstreamStampingTorrentFixture.php needs php/Torrent.php loaded first'); }
 
 class UpstreamStampingTorrent extends Torrent
 {
 	/** What this stand-in writes instead of time(). */
-	const STAMP_DATE = 1700000000;
+	public const STAMP_DATE = 1700000000;
 
 	protected function touch()
 	{

@@ -29,7 +29,7 @@ class SettingsSynchronousHookTest extends TestCase
 			'define("RUTORRENT_SYNCHRONOUS_HOOK",true);'.
 			'try {$s=rTorrentSettings::get();echo json_encode(array($s->directory,$s->valueFormat,$s->store()), JSON_UNESCAPED_SLASHES);}'.
 			'catch(RuntimeException $e){echo $e->getMessage();}');
-		$out = array();
+		$out = [];
 		exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($driver).' 2>&1', $out, $code);
 		$text = implode("\n", $out);
 		$this->assertSame(0, $code, 'the hook bootstrap exits without a timeout');
@@ -37,9 +37,9 @@ class SettingsSynchronousHookTest extends TestCase
 			'the hook uses its stale cache or visibly refuses a missing cache: '.$text);
 		$this->assertTrue(!file_exists($path.'/rpc.log') || strpos(file_get_contents($path.'/rpc.log'), '<methodCall>') === false,
 			'no synchronous callback asks its own blocked daemon');
-		foreach(glob($path.'/settings/*') ?: array() as $file) unlink($file);
+		foreach(glob($path.'/settings/*') ?: [] as $file) { unlink($file); }
 		@rmdir($path.'/settings');
-		foreach(glob($path.'/*') ?: array() as $file) if(is_file($file)) unlink($file);
+		foreach(glob($path.'/*') ?: [] as $file) { if(is_file($file)) { unlink($file); } }
 		rmdir($path);
 	}
 }

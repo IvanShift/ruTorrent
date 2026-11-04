@@ -16,7 +16,7 @@ class rAutoTools {
         self::$calls++;
         $files=glob(self::$root.'/*.move.json');$job=json_decode(file_get_contents($files[0]),true);
         strictAssertSame('notice-attempted',$job['phase'],'attempt durable before external mail');
-        if(self::$fail)throw new RuntimeException('simulated process death during mail');
+        if(self::$fail) {throw new RuntimeException('simulated process death during mail'); }
     }
 }
 require_once testFindRepoRoot().'/plugins/autotools/move_queue.php';
@@ -27,18 +27,18 @@ $suite->test('mail death retains attempted phase and retry never sends twice',fu
     try{
         $job=moveWorkerSeed($state,'notice-pending','absent',true);
         $root=$state['root'].'/session/.autotools-file-jobs';rAutoTools::$root=$root;rAutoTools::$fail=true;rAutoTools::$calls=0;
-        rXMLRPCRequest::queue('d.get_directory',true,false,array($job['daemon_dir']));
+        rXMLRPCRequest::queue('d.get_directory',true,false,[$job['daemon_dir']]);
         try{AutoToolsMoveJob::deliverNotice($root,$state['hash']);}catch(RuntimeException $e){strictAssertSame('simulated process death during mail',$e->getMessage(),'cut reached');}
         rAutoTools::$fail=false;
-        rXMLRPCRequest::queue('d.get_directory',true,false,array($job['daemon_dir']));
+        rXMLRPCRequest::queue('d.get_directory',true,false,[$job['daemon_dir']]);
         rXMLRPCRequest::queue('d.autotools.move_finish',true,false,function()use($root){
             $files=glob($root.'/*.move.json');$saved=json_decode(file_get_contents($files[0]),true);
             strictAssertSame('completed',$saved['phase'],'completion durable before native finish');
-            return array('finished');
+            return ['finished'];
         });
         AutoToolsMoveJob::deliverNotice($root,$state['hash']);
         strictAssertSame(1,rAutoTools::$calls,'mail is never repeated');
-        strictAssertSame(array(),glob($root.'/*.move.json'),'completed journal retired');
+        strictAssertSame([],glob($root.'/*.move.json'),'completed journal retired');
     }finally{strictRemoveTree($state['root']);rXMLRPCRequest::reset();}
 });
 // POST-1011-01: run() renames the journal into place, then deliverNotice()
@@ -53,13 +53,13 @@ $suite->test('a journal whose new name answers late still delivers its notice on
         $path=$root.'/'.$state['hash'].'.move.json';$files=new SettlingRenameFiles('/^$/D',3);
         strictAssertSame(true,$files->hide($path),'the renamed journal answers ENOENT');
         strictSetPrivateStatic('AutoToolsMoveJob','files',$files);
-        rXMLRPCRequest::queue('d.get_directory',true,false,array($job['daemon_dir']));
-        rXMLRPCRequest::queue('d.autotools.move_finish',true,false,array('finished'));
+        rXMLRPCRequest::queue('d.get_directory',true,false,[$job['daemon_dir']]);
+        rXMLRPCRequest::queue('d.autotools.move_finish',true,false,['finished']);
         AutoToolsMoveJob::deliverNotice($root,$state['hash']);
         strictAssertSame(1,rAutoTools::$calls,'the completion mail is sent once');
-        strictAssertSame(array($path=>3),$files->lookups,'the journal is confirmed on its third lookup');
-        strictAssertSame(array(),glob($root.'/*.move.json'),'the completed journal retires');
-        strictAssertSame(array(),glob($root.'/.settling-*'),'nothing is left hidden');
+        strictAssertSame([$path=>3],$files->lookups,'the journal is confirmed on its third lookup');
+        strictAssertSame([],glob($root.'/*.move.json'),'the completed journal retires');
+        strictAssertSame([],glob($root.'/.settling-*'),'nothing is left hidden');
     }finally{strictSetPrivateStatic('AutoToolsMoveJob','files',null);strictRemoveTree($state['root']);rXMLRPCRequest::reset();}
 });
 
@@ -93,15 +93,15 @@ AutoToolsMoveJob::recoverCompleted();
 echo json_encode(array('status'=>$status,'classified'=>count(FileUtil::$log)===1
     &&strpos(FileUtil::$log[0],'completed-state-changed')!==false,'journals'=>count(glob($root.'/*.move.json'))));
 SCRIPT;
-        $process=proc_open(array(PHP_BINARY,'-d','memory_limit=128M','-r',$script),
-            array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('pipe','w')),
-            $pipes,testFindRepoRoot(),array_merge($_ENV,array('JOURNAL_ROOT'=>$root)));
-        if(!is_resource($process))throw new RuntimeException('large receipt child unavailable');
+        $process=proc_open([PHP_BINARY,'-d','memory_limit=128M','-r',$script],
+            [0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']],
+            $pipes,testFindRepoRoot(),array_merge($_ENV,['JOURNAL_ROOT'=>$root]));
+        if(!is_resource($process)) {throw new RuntimeException('large receipt child unavailable'); }
         $output=stream_get_contents($pipes[1]);$errors=stream_get_contents($pipes[2]);
         fclose($pipes[1]);fclose($pipes[2]);$status=proc_close($process);
         strictAssertSame(0,$status,'large readback reaches the owner without exhausting 128 MiB: '.$errors);
         strictAssertSame('', $errors,'no PHP memory or decode failure');
-        strictAssertSame(array('status'=>1,'classified'=>true,'journals'=>2),json_decode($output,true),
+        strictAssertSame(['status'=>1,'classified'=>true,'journals'=>2],json_decode($output,true),
             'notice validates the current directory and recovery retains both unresolved jobs');
     } finally {strictRemoveTree($root);}
 });

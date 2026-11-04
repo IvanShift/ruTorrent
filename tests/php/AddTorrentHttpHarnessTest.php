@@ -31,24 +31,14 @@ final class AddTorrentHttpHarnessTest extends TestCase
 
 	public function tearDown()
 	{
-		if ($this->server !== null)
-			$this->server->close();
+		if ($this->server !== null) {
+			$this->server->close(); }
 		$this->server = null;
-		if (is_resource($this->listener))
-			fclose($this->listener);
-		foreach (glob($this->root . '/*') as $path)
-			unlink($path);
+		if (is_resource($this->listener)) {
+			fclose($this->listener); }
+		foreach (glob($this->root . '/*') as $path) {
+			unlink($path); }
 		rmdir($this->root);
-	}
-
-	private function failure(callable $request)
-	{
-		try {
-			$request();
-		} catch (RuntimeException $e) {
-			return $e->getMessage();
-		}
-		return null;
 	}
 
 	public function testAnIdleServerIsAPauseNotTheEndOfTheResponse()
@@ -89,25 +79,6 @@ final class AddTorrentHttpHarnessTest extends TestCase
 			'a later request names the missing server: ' . var_export($message, true));
 	}
 
-	/** The argv of a running process, from /proc. */
-	private static function argv($pid)
-	{
-		$cmdline = @file_get_contents('/proc/' . (int)$pid . '/cmdline');
-		return $cmdline === false ? array() : explode("\0", rtrim($cmdline, "\0"));
-	}
-
-	/** The processes whose command line names $path. */
-	private static function processesNaming($path)
-	{
-		$found = array();
-		foreach (glob('/proc/[0-9]*', GLOB_ONLYDIR) as $dir) {
-			$cmdline = @file_get_contents($dir . '/cmdline');
-			if ($cmdline !== false && strpos($cmdline, $path) !== false && (int)basename($dir) !== getmypid())
-				$found[] = (int)basename($dir);
-		}
-		return $found;
-	}
-
 	/**
 	 * The process proc_open() starts is the server itself, so proc_terminate()
 	 * reaches it and nothing outlives close(). Through /bin/sh, which forks
@@ -125,9 +96,9 @@ final class AddTorrentHttpHarnessTest extends TestCase
 		$this->server->close();
 		$this->server = null;
 		$left = self::processesNaming($router);
-		foreach ($left as $pid)
-			exec('kill -9 ' . (int)$pid . ' 2>/dev/null');
-		$this->assertSame(array(), $left, 'no process of the fixture outlives close()');
+		foreach ($left as $pid) {
+			exec('kill -9 ' . (int)$pid . ' 2>/dev/null'); }
+		$this->assertSame([], $left, 'no process of the fixture outlives close()');
 	}
 
 	public function testAPortHeldByAnotherListenerIsNotMistakenForTheFixture()
@@ -136,7 +107,7 @@ final class AddTorrentHttpHarnessTest extends TestCase
 		$name = stream_socket_get_name($this->listener, false);
 		$port = (int)substr($name, strrpos($name, ':') + 1);
 		$message = $this->failure(function () use ($port) {
-			$this->server = AddTorrentHttpHarness::forDocumentRoot($this->root, array(), $port);
+			$this->server = AddTorrentHttpHarness::forDocumentRoot($this->root, [], $port);
 		});
 		$this->assertTrue($message !== null
 			&& strpos($message, 'the PHP built-in server did not start on 127.0.0.1:' . $port) === 0
@@ -144,5 +115,34 @@ final class AddTorrentHttpHarnessTest extends TestCase
 			&& preg_match('/Failed to listen on 127\\.0\\.0\\.1:' . $port
 				. ' \\(reason: [^\\r\\n)]+\\)/', $message) === 1,
 			'a listener without the fixture token is refused with its bind cause: ' . var_export($message, true));
+	}
+
+	private function failure(callable $request)
+	{
+		try {
+			$request();
+		} catch (RuntimeException $e) {
+			return $e->getMessage();
+		}
+		return null;
+	}
+
+	/** The argv of a running process, from /proc. */
+	private static function argv($pid)
+	{
+		$cmdline = @file_get_contents('/proc/' . (int)$pid . '/cmdline');
+		return $cmdline === false ? [] : explode("\0", rtrim($cmdline, "\0"));
+	}
+
+	/** The processes whose command line names $path. */
+	private static function processesNaming($path)
+	{
+		$found = [];
+		foreach (glob('/proc/[0-9]*', GLOB_ONLYDIR) as $dir) {
+			$cmdline = @file_get_contents($dir . '/cmdline');
+			if ($cmdline !== false && strpos($cmdline, $path) !== false && (int)basename($dir) !== getmypid()) {
+				$found[] = (int)basename($dir); }
+		}
+		return $found;
 	}
 }

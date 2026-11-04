@@ -14,15 +14,15 @@ require_once( dirname(__FILE__)."/launcher.php" );
  */
 function ruTrackerManualAnswer( $status, $accepted )
 {
-	CachedEcho::send( json_encode( array( 'status' => $status, 'accepted' => $accepted ) ),
+	CachedEcho::send( json_encode( [ 'status' => $status, 'accepted' => $accepted ] ),
 		"application/json" );
 }
 
-if(!isset($HTTP_RAW_POST_DATA))
+if(!isset($HTTP_RAW_POST_DATA)) {
 	// Bounded: one byte over the limit is enough to recognise an oversized body,
 	// and nothing larger is ever buffered to find that out.
 	$HTTP_RAW_POST_DATA = file_get_contents( "php://input", false, null, 0,
-		RuTrackerBatchRequest::MAX_BODY_BYTES + 1 );
+		RuTrackerBatchRequest::MAX_BODY_BYTES + 1 ); }
 
 $error = null;
 $hashes = RuTrackerBatchRequest::parseHashes( $HTTP_RAW_POST_DATA, $error );
@@ -32,8 +32,8 @@ if( $error !== null )
 	ruTrackerManualAnswer( 'rejected', 0 );
 }
 
-if( !count( $hashes ) )
-	ruTrackerManualAnswer( 'rejected', 0 );
+if( !count( $hashes ) ) {
+	ruTrackerManualAnswer( 'rejected', 0 ); }
 
 $dispatched = RuTrackerBatchDispatch::dispatch(
 	$hashes,
@@ -42,7 +42,7 @@ $dispatched = RuTrackerBatchDispatch::dispatch(
 	dirname( __FILE__ )."/batch_check.php",
 	User::getUser(),
 	null,
-	array( 'FileUtil', 'toLog' )
+	[ 'FileUtil', 'toLog' ],
 );
 
 ruTrackerManualAnswer( $dispatched ? 'queued' : 'refused', $dispatched ? count( $hashes ) : 0 );

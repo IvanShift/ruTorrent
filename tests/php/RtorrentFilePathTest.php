@@ -12,27 +12,27 @@ class RtorrentFilePathTest
     public function testPresentPathDoesNotOpenOrCloseTheDownload()
     {
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('f.get_frozen_path', true, false, array('/media/file.bin'));
+        rXMLRPCRequest::queue('f.get_frozen_path', true, false, ['/media/file.bin']);
         strictAssertSame('/media/file.bin', rTorrent::getFilePath(self::HASH, 3),
             'a present frozen path is used directly');
-        strictAssertSame(array('f.get_frozen_path'), array_column(rXMLRPCRequest::$requests, 'key'),
+        strictAssertSame(['f.get_frozen_path'], array_column(rXMLRPCRequest::$requests, 'key'),
             'the fast path makes one read-only RPC');
     }
 
     public function testEmptyPathUsesOrderedOpenReadCloseFallback()
     {
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('f.get_frozen_path', true, false, array(''));
-        rXMLRPCRequest::queue(array('d.open', 'f.get_frozen_path', 'd.close'),
-            true, false, array(0, '/media/after-open.bin', 0));
+        rXMLRPCRequest::queue('f.get_frozen_path', true, false, ['']);
+        rXMLRPCRequest::queue(['d.open', 'f.get_frozen_path', 'd.close'],
+            true, false, [0, '/media/after-open.bin', 0]);
         strictAssertSame('/media/after-open.bin', rTorrent::getFilePath(self::HASH, 3),
             'fallback reads the newly frozen path');
-        strictAssertSame(array('f.get_frozen_path', 'd.open|f.get_frozen_path|d.close'),
+        strictAssertSame(['f.get_frozen_path', 'd.open|f.get_frozen_path|d.close'],
             array_column(rXMLRPCRequest::$requests, 'key'),
             'opening, path read, and closing stay in one ordered daemon request');
         $commands = rXMLRPCRequest::$requests[1]['commands'];
         strictAssertSame(self::HASH, $commands[0]->params, 'open targets requested hash');
-        strictAssertSame(array(self::HASH, 3), $commands[1]->params,
+        strictAssertSame([self::HASH, 3], $commands[1]->params,
             'path read targets requested hash and integer file index');
         strictAssertSame(self::HASH, $commands[2]->params, 'close targets the same hash');
     }
@@ -46,9 +46,9 @@ class RtorrentFilePathTest
         strictAssertSame(1, count(rXMLRPCRequest::$requests), 'fault sends only the initial probe');
 
         rXMLRPCRequest::reset();
-        rXMLRPCRequest::queue('f.get_frozen_path', true, false, array(''));
-        rXMLRPCRequest::queue(array('d.open', 'f.get_frozen_path', 'd.close'),
-            true, false, array(0, '', 0));
+        rXMLRPCRequest::queue('f.get_frozen_path', true, false, ['']);
+        rXMLRPCRequest::queue(['d.open', 'f.get_frozen_path', 'd.close'],
+            true, false, [0, '', 0]);
         strictAssertSame(false, rTorrent::getFilePath(self::HASH, 3),
             'an empty fallback path does not start a media task');
     }

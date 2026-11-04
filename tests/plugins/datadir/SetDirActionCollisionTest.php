@@ -13,7 +13,7 @@ require_once(__DIR__ . '/../../../plugins/rutracker_check/runstate.php');
  */
 class SetDirActionCollisionTest extends TestCase
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	private $base;
 	private $daemon;
@@ -33,20 +33,6 @@ class SetDirActionCollisionTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
-	private function removeTree($path)
-	{
-		if (is_link($path)) { @unlink($path); return; }
-		if (!is_dir($path)) { @unlink($path); return; }
-		foreach (array_diff(scandir($path), array('.', '..')) as $entry)
-			$this->removeTree($path . '/' . $entry);
-		@rmdir($path);
-	}
-
-	private function repoRoot()
-	{
-		return realpath(__DIR__ . '/../../..');
-	}
-
 	public function testFixtureCleanupRemovesTheHiddenJournalLock()
 	{
 		mkdir($this->base, 0700);
@@ -56,119 +42,12 @@ class SetDirActionCollisionTest extends TestCase
 		$this->assertTrue(!is_dir($this->base), 'fixture cleanup removes the hidden lock and its parent');
 	}
 
-	/**
-	 * Posts a "set data directory" to action.php and reports what came back
-	 * and what rTorrent was asked for.
-	 *
-	 * $occupy are names already standing under the destination, $isOpen says
-	 * whether rTorrent has the download open, and $datadir defaults to a directory that is
-	 * not where the data already is.
-	 */
-	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1,
-		$rawEquals = false, $malformed = false, $afterStart = array(0, 1), $checkerCustoms = array())
-	{
-		$this->removeTree($this->base);
-		if ($this->daemon !== null)
-			$this->daemon->stop();
-
-		$names = array('1.bin', '2.bin');
-		@mkdir($this->base . '/profile/settings', 0700, true);
-		@mkdir($this->base . '/src/mytorrent', 0700, true);
-		@mkdir($this->base . '/dst', 0700, true);
-		foreach ($names as $n)
-			file_put_contents($this->base . '/src/mytorrent/' . $n, 'download ' . $n);
-		foreach ($occupy as $n)
-		{
-			@mkdir($this->base . '/dst/mytorrent', 0700, true);
-			file_put_contents($this->base . '/dst/mytorrent/' . $n, 'already there');
-		}
-		if ($datadir === null)
-			$datadir = $this->base . '/dst';
-		$encodedDir = rawurlencode($datadir);
-		if ($rawEquals)
-			$encodedDir = str_replace('%3D', '=', $encodedDir);
-
-		// Native claim support is required before the UI may dispatch a worker.
-		$methods = array('system.listMethods', 'd.stop_close_claim_state',
-			'd.stop_close_claim', 'd.directory.set_if_stop_close_claim',
-			'd.directory.base.set_if_stop_close_claim', 'd.start_if_stop_close_claim',
-			'd.open_if_stop_close_claim', 'd.release_stop_close_claim',
-			'd.replay_stop_close_claim', 'd.ack_stop_close_claim');
-		$replies = array($methods);
-		if ($moveFiles) {
-			$replies[] = array($isOpen, 'local-1', $this->base . '/src');
-			if ($isOpen) {
-				$replies[] = array('mytorrent', $this->base . '/src/mytorrent',
-					'mytorrent', 1);
-				$replies[] = $names;
-			}
-		}
-		if ($moveFiles) $replies[] = array(0); // detached payload worker
-		else {
-			// The request read the claim ABI above; the change does not read it
-			// again. A restored start is followed by its hash check outcome.
-			$receipt = 'token:1|1|1|1|local-1';
-			$ownership = array(''); // download label precedes the shared ownership keys
-			foreach (RuTrackerAtomicOwnership::ownershipKeys() as $key)
-				$ownership[] = isset($checkerCustoms[$key]) ? $checkerCustoms[$key] : '';
-			$replies = array_merge($replies, array($ownership,
-				array('absent'), array($isOpen, 'local-1', $this->base . '/src'),
-				array('absent'), array($receipt), array($this->base . '/src'),
-				array(1), array(1), array('done|S|' . $receipt), array(1), $afterStart,
-				// A stop is kept as the download's outcome: its directory, the
-				// custom key with d.message, and a session save.
-				array($this->base . '/dst'), array(0, 0), array(0)));
-		}
-		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
-
-		$driver = $this->base . '/drive-action.php';
-		file_put_contents($driver, "<?php\n"
-			. '$_SERVER[\'REMOTE_USER\'] = "tester"; $_ENV[\'RU_PROFILE_PATH\'] = '
-				. var_export($this->base . '/profile', true) . ";\n"
-			. 'require_once(' . var_export($this->repoRoot() . '/conf/config.php', true) . ");\n"
-			. 'require_once(' . var_export($this->repoRoot() . '/php/settings.php', true) . ');' . "\n"
-			. '$r = new ReflectionClass("rTorrentSettings"); $s = $r->newInstanceWithoutConstructor();'
-			. ' $s->iVersion = 0x1018; $s->aliases = array(); $s->directory = "/";'
-			. ' $s->linkExist = true; $p = $r->getProperty("theSettings");'
-			. ' if (PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
-			. '$scgi_host = "127.0.0.1"; $scgi_port = ' . $this->daemon->port() . ';'
-				. ' $rpcTimeOut = 10; $rpcLogCalls = false;' . "\n"
-			. '$topDirectory = "/";' . "\n"
-			. '$HTTP_RAW_POST_DATA = "hash=' . self::HASH . '&datadir='
-				. $encodedDir . ($malformed ? '&datadir' : '')
-				. '&move_addpath=1&move_datafiles=' . $moveFiles
-				. '&move_fastresume=0";' . "\n"
-			. 'chdir(' . var_export($this->repoRoot() . '/plugins/datadir', true) . ");\n"
-			. 'require(' . var_export($this->repoRoot() . '/plugins/datadir/action.php', true) . ");\n");
-
-		$out = array();
-		exec(escapeshellarg(PHP_BINARY)
-			. ' -d display_errors=1 -d log_errors=0 -d error_reporting=E_ALL ' . escapeshellarg($driver)
-			. ' 2>&1', $out, $status);
-		$printed = implode("\n", $out);
-		if ($status !== 0)
-			throw new Exception('action.php exited with status ' . $status . ': ' . $printed);
-		$answer = json_decode($printed, true);
-		if (!is_array($answer) || !array_key_exists('errors', $answer))
-			throw new Exception('action.php printed: ' . $printed);
-
-		return array(
-			'printed' => $printed,
-			'answer' => $answer,
-			'errors' => $answer['errors'],
-			'calls' => $this->daemon->calls(),
-			'bodies' => $this->daemon->bodies(),
-			'started' => in_array('execute', $this->daemon->calls(), true),
-			'applied' => in_array('d.directory.set_if_stop_close_claim', $this->daemon->calls(), true),
-		);
-	}
-
 	public function testAReusedSuccessorRefusesADirectoryChangeBeforeClaim()
 	{
-		$r = $this->setTheDataDirectory(array(), 1, null, 0, false, false, array(0, 1),
-			array('chk-reuse' => str_repeat('B', 32)));
-		$this->assertSame(array(array('desc' => 'theUILang.datadirSetDirFail',
-			'prm' => 'active-checker-transaction-or-service-label')), $r['errors'],
+		$r = $this->setTheDataDirectory([], 1, null, 0, false, false, [0, 1],
+			['chk-reuse' => str_repeat('B', 32)]);
+		$this->assertSame([['desc' => 'theUILang.datadirSetDirFail',
+			'prm' => 'active-checker-transaction-or-service-label']], $r['errors'],
 			'the exact shared ownership read recognizes a reused successor');
 		$this->assertTrue(strpos(implode("\n", $r['bodies']), '<string>chk-reuse</string>') !== false,
 			'the admission request reads the reuse marker');
@@ -180,8 +59,8 @@ class SetDirActionCollisionTest extends TestCase
 	public function testRawEqualsInDirectoryReachesWorkerCommand()
 	{
 		$dir = $this->base . '/dst=chosen';
-		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, true);
-		$this->assertSame(array(), $r['errors'], $r['printed']);
+		$r = $this->setTheDataDirectory([], 1, $dir, 0, true);
+		$this->assertSame([], $r['errors'], $r['printed']);
 		$this->assertTrue($r['applied'], 'the valid destination is applied synchronously');
 		$this->assertTrue(strpos(implode("\n", $r['bodies']), htmlspecialchars($dir, ENT_COMPAT, 'UTF-8')) !== false,
 			'the complete directory reaches the guarded setter');
@@ -190,8 +69,8 @@ class SetDirActionCollisionTest extends TestCase
 	public function testMalformedTrailingFieldDoesNotOverwriteDestination()
 	{
 		$dir = $this->base . '/dst=chosen';
-		$r = $this->setTheDataDirectory(array(), 1, $dir, 0, false, true);
-		$this->assertSame(array(), $r['errors'], $r['printed']);
+		$r = $this->setTheDataDirectory([], 1, $dir, 0, false, true);
+		$this->assertSame([], $r['errors'], $r['printed']);
 		$this->assertTrue($r['applied'], 'the valid destination is applied synchronously');
 		$this->assertTrue(strpos(implode("\n", $r['bodies']), htmlspecialchars($dir, ENT_COMPAT, 'UTF-8')) !== false,
 			'the malformed field does not replace the valid directory');
@@ -200,8 +79,8 @@ class SetDirActionCollisionTest extends TestCase
 	public function testANewDestinationIsAdmittedWithoutCreatingOrOpeningAnything()
 	{
 		$dir = $this->base . '/dst/new/nested';
-		$r = $this->setTheDataDirectory(array(), 1, $dir, 1);
-		$this->assertSame(array(), $r['errors'], 'A valid new destination is admitted: ' . $r['printed']);
+		$r = $this->setTheDataDirectory([], 1, $dir, 1);
+		$this->assertSame([], $r['errors'], 'A valid new destination is admitted: ' . $r['printed']);
 		$this->assertTrue($r['started'], 'The worker receives the new destination');
 		$this->assertTrue(!file_exists($dir), 'Preflight does not create the requested destination');
 		$this->assertTrue(!in_array('d.open', $r['calls'], true)
@@ -214,7 +93,7 @@ class SetDirActionCollisionTest extends TestCase
 	 */
 	public function testATakenDestinationComesBackAsAnError()
 	{
-		$r = $this->setTheDataDirectory(array('2.bin'));
+		$r = $this->setTheDataDirectory(['2.bin']);
 
 		$this->assertTrue(count($r['errors']) > 0,
 			'a destination that is already taken is refused before anything is '
@@ -239,7 +118,7 @@ class SetDirActionCollisionTest extends TestCase
 		file_put_contents($this->base . '/CASE', 'x');
 		$foldsCase = file_exists($this->base . '/case');
 		@unlink($this->base . '/CASE');
-		$r = $this->setTheDataDirectory(array('2.BIN'));
+		$r = $this->setTheDataDirectory(['2.BIN']);
 
 		$this->assertSame($foldsCase, count($r['errors']) > 0,
 			'case-only collisions follow the measured filesystem semantics: ' . $r['printed']);
@@ -255,7 +134,7 @@ class SetDirActionCollisionTest extends TestCase
 	 */
 	public function testAClosedDownloadIsNotOpenedToAnswerTheQuestion()
 	{
-		$r = $this->setTheDataDirectory(array('2.bin'), 0);
+		$r = $this->setTheDataDirectory(['2.bin'], 0);
 
 		$this->assertTrue(!in_array('d.open', $r['calls'], true),
 			'the check does not open a closed download; calls: '
@@ -271,9 +150,9 @@ class SetDirActionCollisionTest extends TestCase
 	 */
 	public function testMovingADownloadToWhereItAlreadyIsIsNotRefused()
 	{
-		$r = $this->setTheDataDirectory(array(), 1, $this->base . '/src');
+		$r = $this->setTheDataDirectory([], 1, $this->base . '/src');
 
-		$this->assertEquals(array(), $r['errors'],
+		$this->assertEquals([], $r['errors'],
 			'a download is not refused its own directory; action.php answered: '
 			. $r['printed']);
 		$this->assertTrue($r['started'],
@@ -286,9 +165,9 @@ class SetDirActionCollisionTest extends TestCase
 	 */
 	public function testARequestThatDoesNotMoveTheFilesIsNotChecked()
 	{
-		$r = $this->setTheDataDirectory(array('2.bin'), 1, null, 0);
+		$r = $this->setTheDataDirectory(['2.bin'], 1, null, 0);
 
-		$this->assertEquals(array('errors' => array()), $r['answer'],
+		$this->assertEquals(['errors' => []], $r['answer'],
 			'leaving the data where it is cannot collide; action.php answered: '
 			. $r['printed']);
 		$this->assertTrue(!in_array('f.multicall', $r['calls'], true),
@@ -308,10 +187,10 @@ class SetDirActionCollisionTest extends TestCase
 	 */
 	public function testADownloadStoppedAfterTheChangeIsAVisibleWarning()
 	{
-		$r = $this->setTheDataDirectory(array(), 1, null, 0, false, false, array(0, 0));
+		$r = $this->setTheDataDirectory([], 1, null, 0, false, false, [0, 0]);
 
-		$this->assertEquals(array('errors' => array(), 'warnings' => array(array(
-			'desc' => 'theUILang.datadirStoppedAfterCheck', 'prm' => 'stopped-after-hash-check'))),
+		$this->assertEquals(['errors' => [], 'warnings' => [[
+			'desc' => 'theUILang.datadirStoppedAfterCheck', 'prm' => 'stopped-after-hash-check']]],
 			$r['answer'], 'the dialog sees the applied change and the stop: ' . $r['printed']);
 		$this->assertTrue(in_array('d.message.set', $r['calls'], true),
 			'the torrent message names the stop; calls: ' . implode(', ', $r['calls']));
@@ -321,5 +200,126 @@ class SetDirActionCollisionTest extends TestCase
 		$this->assertTrue(strpos($message, 'd.message.set') !== false && strpos($message,
 			'datadir: stopped-after-hash-check directory=' . htmlspecialchars($this->base . '/dst', ENT_COMPAT, 'UTF-8')) !== false,
 			'with the classified message naming the directory: ' . $message);
+	}
+
+	private function removeTree($path)
+	{
+		if (is_link($path)) { @unlink($path); return; }
+		if (!is_dir($path)) { @unlink($path); return; }
+		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+			$this->removeTree($path . '/' . $entry); }
+		@rmdir($path);
+	}
+
+	private function repoRoot()
+	{
+		return realpath(__DIR__ . '/../../..');
+	}
+
+	/**
+	 * Posts a "set data directory" to action.php and reports what came back
+	 * and what rTorrent was asked for.
+	 *
+	 * $occupy are names already standing under the destination, $isOpen says
+	 * whether rTorrent has the download open, and $datadir defaults to a directory that is
+	 * not where the data already is.
+	 */
+	private function setTheDataDirectory($occupy, $isOpen = 1, $datadir = null, $moveFiles = 1,
+		$rawEquals = false, $malformed = false, $afterStart = [0, 1], $checkerCustoms = [])
+	{
+		$this->removeTree($this->base);
+		if ($this->daemon !== null) {
+			$this->daemon->stop(); }
+
+		$names = ['1.bin', '2.bin'];
+		@mkdir($this->base . '/profile/settings', 0700, true);
+		@mkdir($this->base . '/src/mytorrent', 0700, true);
+		@mkdir($this->base . '/dst', 0700, true);
+		foreach ($names as $n) {
+			file_put_contents($this->base . '/src/mytorrent/' . $n, 'download ' . $n); }
+		foreach ($occupy as $n)
+		{
+			@mkdir($this->base . '/dst/mytorrent', 0700, true);
+			file_put_contents($this->base . '/dst/mytorrent/' . $n, 'already there');
+		}
+		if ($datadir === null) {
+			$datadir = $this->base . '/dst'; }
+		$encodedDir = rawurlencode($datadir);
+		if ($rawEquals) {
+			$encodedDir = str_replace('%3D', '=', $encodedDir); }
+
+		// Native claim support is required before the UI may dispatch a worker.
+		$methods = ['system.listMethods', 'd.stop_close_claim_state',
+			'd.stop_close_claim', 'd.directory.set_if_stop_close_claim',
+			'd.directory.base.set_if_stop_close_claim', 'd.start_if_stop_close_claim',
+			'd.open_if_stop_close_claim', 'd.release_stop_close_claim',
+			'd.replay_stop_close_claim', 'd.ack_stop_close_claim'];
+		$replies = [$methods];
+		if ($moveFiles) {
+			$replies[] = [$isOpen, 'local-1', $this->base . '/src'];
+			if ($isOpen) {
+				$replies[] = ['mytorrent', $this->base . '/src/mytorrent',
+					'mytorrent', 1];
+				$replies[] = $names;
+			}
+		}
+		if ($moveFiles) { $replies[] = [0]; } // detached payload worker
+		else {
+			// The request read the claim ABI above; the change does not read it
+			// again. A restored start is followed by its hash check outcome.
+			$receipt = 'token:1|1|1|1|local-1';
+			$ownership = ['']; // download label precedes the shared ownership keys
+			foreach (RuTrackerAtomicOwnership::ownershipKeys() as $key) {
+				$ownership[] = isset($checkerCustoms[$key]) ? $checkerCustoms[$key] : ''; }
+			$replies = array_merge($replies, [$ownership,
+				['absent'], [$isOpen, 'local-1', $this->base . '/src'],
+				['absent'], [$receipt], [$this->base . '/src'],
+				[1], [1], ['done|S|' . $receipt], [1], $afterStart,
+				// A stop is kept as the download's outcome: its directory, the
+				// custom key with d.message, and a session save.
+				[$this->base . '/dst'], [0, 0], [0]]);
+		}
+		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
+
+		$driver = $this->base . '/drive-action.php';
+		file_put_contents($driver, "<?php\n"
+			. '$_SERVER[\'REMOTE_USER\'] = "tester"; $_ENV[\'RU_PROFILE_PATH\'] = '
+				. var_export($this->base . '/profile', true) . ";\n"
+			. 'require_once(' . var_export($this->repoRoot() . '/conf/config.php', true) . ");\n"
+			. 'require_once(' . var_export($this->repoRoot() . '/php/settings.php', true) . ');' . "\n"
+			. '$r = new ReflectionClass("rTorrentSettings"); $s = $r->newInstanceWithoutConstructor();'
+			. ' $s->iVersion = 0x1018; $s->aliases = array(); $s->directory = "/";'
+			. ' $s->linkExist = true; $p = $r->getProperty("theSettings");'
+			. ' if (PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, $s);' . "\n"
+			. '$scgi_host = "127.0.0.1"; $scgi_port = ' . $this->daemon->port() . ';'
+				. ' $rpcTimeOut = 10; $rpcLogCalls = false;' . "\n"
+			. '$topDirectory = "/";' . "\n"
+			. '$HTTP_RAW_POST_DATA = "hash=' . self::HASH . '&datadir='
+				. $encodedDir . ($malformed ? '&datadir' : '')
+				. '&move_addpath=1&move_datafiles=' . $moveFiles
+				. '&move_fastresume=0";' . "\n"
+			. 'chdir(' . var_export($this->repoRoot() . '/plugins/datadir', true) . ");\n"
+			. 'require(' . var_export($this->repoRoot() . '/plugins/datadir/action.php', true) . ");\n");
+
+		$out = [];
+		exec(escapeshellarg(PHP_BINARY)
+			. ' -d display_errors=1 -d log_errors=0 -d error_reporting=E_ALL ' . escapeshellarg($driver)
+			. ' 2>&1', $out, $status);
+		$printed = implode("\n", $out);
+		if ($status !== 0) {
+			throw new Exception('action.php exited with status ' . $status . ': ' . $printed); }
+		$answer = json_decode($printed, true);
+		if (!is_array($answer) || !array_key_exists('errors', $answer)) {
+			throw new Exception('action.php printed: ' . $printed); }
+
+		return [
+			'printed' => $printed,
+			'answer' => $answer,
+			'errors' => $answer['errors'],
+			'calls' => $this->daemon->calls(),
+			'bodies' => $this->daemon->bodies(),
+			'started' => in_array('execute', $this->daemon->calls(), true),
+			'applied' => in_array('d.directory.set_if_stop_close_claim', $this->daemon->calls(), true),
+		];
 	}
 }

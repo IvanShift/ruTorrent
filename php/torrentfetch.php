@@ -6,8 +6,8 @@ class TorrentFetch
 	public static function rejectionReason($client, $fetched)
 	{
 		if(is_object($client) && isset($client->error)
-			&& $client->error === Snoopy::CREDENTIAL_REDIRECT_REFUSED)
-			return Snoopy::CREDENTIAL_REDIRECT_REFUSED;
+			&& $client->error === Snoopy::CREDENTIAL_REDIRECT_REFUSED) {
+			return Snoopy::CREDENTIAL_REDIRECT_REFUSED; }
 		$status = (is_object($client) && isset($client->status) && is_numeric($client->status))
 			? (int)$client->status : 0;
 		$error = (is_object($client) && isset($client->error)) ? (string)$client->error : '';
@@ -18,18 +18,18 @@ class TorrentFetch
 		// 100 and up included (CURLE_TOO_LARGE, and the shell's 126 and 127 when
 		// curl cannot be run) -- with one of Snoopy's curl messages. Neither
 		// came from the server, so neither is an http-status.
-		$socketReasons = array(
+		$socketReasons = [
 			'connection failed' => 'connect-failed',
 			'connection refused or timed out' => 'connect-failed',
 			'socket creation failed' => 'socket-create-failed',
 			'dns lookup failure' => 'dns-failed',
-		);
-		if(preg_match('/^(.+) \((-?[0-9]+)\)$/D', $error, $match) && isset($socketReasons[$match[1]]))
-			return $socketReasons[$match[1]].' errno='.$match[2];
-		if(($status > 0) && ((strpos($error, 'Error: cURL ') === 0) || ($error === 'oversized-response')))
-			return 'curl-failed exit='.$status;
-		if(($status >= 100) && ($status <= 599) && !Snoopy::isSuccessfulResponse($client))
-			return 'http-status-'.$status;
+		];
+		if(preg_match('/^(.+) \((-?[0-9]+)\)$/D', $error, $match) && isset($socketReasons[$match[1]])) {
+			return $socketReasons[$match[1]].' errno='.$match[2]; }
+		if(($status > 0) && ((strpos($error, 'Error: cURL ') === 0) || ($error === 'oversized-response'))) {
+			return 'curl-failed exit='.$status; }
+		if(($status >= 100) && ($status <= 599) && !Snoopy::isSuccessfulResponse($client)) {
+			return 'http-status-'.$status; }
 		return $fetched && Snoopy::isSuccessfulResponse($client)
 			? 'invalid-torrent-response' : 'fetch-failed';
 	}

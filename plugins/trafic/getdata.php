@@ -5,28 +5,27 @@ eval(FileUtil::getPluginConf('trafic'));
 $request = $_SERVER['REQUEST_METHOD'] === 'POST' ? $_POST : $_GET;
 
 $ret = null;
-$storages = array( "global.csv" );
+$storages = [ "global.csv" ];
 
 if(isset($request['tracker']))
 {
 	if($request['tracker']=="none")
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		$tstorages = array();
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+		$tstorages = [];
 		$vars = explode('&', $HTTP_RAW_POST_DATA);
 		foreach($vars as $var)
 		{
 			$parts = explode("=",$var);
-			if(($parts[0]=="hash") && rStat::isStorageName($parts[1]))
-				$tstorages[] = 'torrents/'.$parts[1].".csv";
+			if(($parts[0]=="hash") && rStat::isStorageName($parts[1])) {
+				$tstorages[] = 'torrents/'.$parts[1].".csv"; }
 		}
-		if( count($tstorages) )
-			$storages = $tstorages;
+		if( count($tstorages) ) {
+			$storages = $tstorages; }
 	}
-	else
-		if(($request['tracker']!="global") && rStat::isStorageName($request['tracker']))
-			$storages = array( "trackers/".$request['tracker'].".csv" );
+	elseif(($request['tracker']!="global") && rStat::isStorageName($request['tracker'])) {
+			$storages = [ "trackers/".$request['tracker'].".csv" ]; }
 }
 
 function sum($e1, $e2)
@@ -40,27 +39,25 @@ if(isset($request['mode']))
 	if($mode=='clear')
 	{
 		Requests::requirePost();
-		if(!$disableClearButton)
-			foreach( $storages as $storage )
-				@unlink(FileUtil::getSettingsPath().'/trafic/'.$storage);
-		if($request['tracker']!="none")
-			$storages = array( "global.csv" );
+		if(!$disableClearButton) {
+			foreach( $storages as $storage ) {
+				@unlink(FileUtil::getSettingsPath().'/trafic/'.$storage); } }
+		if($request['tracker']!="none") {
+			$storages = [ "global.csv" ]; }
 		$mode = 'day';
 	}
-	$ret = array();
+	$ret = [];
 	foreach( $storages as $storage )
 	{
 		$st = new rStat($storage);
-		if($mode=='day')
-			$val = $st->getDay();
-		else
-		if($mode=='month')
-			$val = $st->getMonth();
-		else
-		if($mode=='year')
-			$val = $st->getYear();
-		if(empty($ret))
-			$ret = $val;
+		if($mode=='day') {
+			$val = $st->getDay(); }
+		elseif($mode=='month') {
+			$val = $st->getMonth(); }
+		elseif($mode=='year') {
+			$val = $st->getYear(); }
+		if(empty($ret)) {
+			$ret = $val; }
 		else
 		{
 			$ret["up"] = array_map("sum", $val["up"], $ret["up"]);

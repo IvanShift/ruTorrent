@@ -11,7 +11,7 @@ require_once __DIR__ . '/../rutracker_check/TestLib.php';
 
 class FileUtil
 {
-    public static $log = array();
+    public static $log = [];
     public static function toLog($line) { self::$log[] = $line; }
 }
 
@@ -27,8 +27,8 @@ class RenameHelperStatusScript extends ErasedataFilesystemOps
 function renameStatusRoot()
 {
     $root = (getenv('TMPDIR') ?: sys_get_temp_dir()) . '/rename-status-' . bin2hex(random_bytes(6));
-    if (!mkdir($root, 0700))
-        throw new RuntimeException('fixture directory was not created');
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('fixture directory was not created'); }
     return $root;
 }
 
@@ -54,17 +54,17 @@ $suite = new StrictTestSuite();
 $suite->test('the status table is the one definition its C, shell and document spellings follow', function () {
     $root = testFindRepoRoot();
     $table = ErasedataFilesystemOps::RENAME_HELPER_STATUS;
-    strictAssertSame(array(0, 1, 2, 3, 4, 5), array_keys($table), 'the helper ABI has six statuses');
-    $expected = array();
-    foreach ($table as $status => $entry)
-        $expected[renameStatusName($entry[0])] = $status;
+    strictAssertSame([0, 1, 2, 3, 4, 5], array_keys($table), 'the helper ABI has six statuses');
+    $expected = [];
+    foreach ($table as $status => $entry) {
+        $expected[renameStatusName($entry[0])] = $status; }
 
     $c = file_get_contents($root . '/plugins/erasedata/rename-noreplace.c');
     strictAssertTrue(preg_match('/enum rename_status\s*\{(.*?)\};/s', $c, $enum) === 1,
         'the C helper names its statuses in one enum');
     preg_match_all('/\b(STATUS_[A-Z_]+)\s*=\s*([0-9]+)\s*,/', $enum[1], $pairs, PREG_SET_ORDER);
-    $named = array();
-    foreach ($pairs as $pair) $named[$pair[1]] = (int) $pair[2];
+    $named = [];
+    foreach ($pairs as $pair) { $named[$pair[1]] = (int) $pair[2]; }
     strictAssertSame($expected, $named, 'the C enum spells the PHP table');
     strictAssertTrue(preg_match('/\nint main\(int argc, char \*\*argv\)\n\{(.*)\n\}\n*$/s', $c, $main) === 1,
         'the C entry point is found');
@@ -78,12 +78,12 @@ $suite->test('the status table is the one definition its C, shell and document s
     strictAssertTrue(preg_match('/"(rename-noreplace-invalid-arguments)\\\\n"\);\s*return (STATUS_[A-Z_]+);/',
         $c, $invalid) === 1, 'the argument refusal prints its reason and returns a named status');
     $printed[] = $invalid;
-    $refusals = array();
-    foreach ($printed as $pair) $refusals[$pair[1]] = $named[$pair[2]];
+    $refusals = [];
+    foreach ($printed as $pair) { $refusals[$pair[1]] = $named[$pair[2]]; }
     ksort($refusals);
-    $tableRefusals = array();
-    foreach ($table as $status => $entry)
-        if ($entry[1] === 'refusal') $tableRefusals[$entry[0]] = $status;
+    $tableRefusals = [];
+    foreach ($table as $status => $entry) {
+        if ($entry[1] === 'refusal') { $tableRefusals[$entry[0]] = $status; } }
     ksort($tableRefusals);
     strictAssertSame($tableRefusals, $refusals, 'each printed reason carries its table status');
     strictAssertTrue(strpos($c, '(fallback_used ? STATUS_FALLBACK : STATUS_OK)') !== false,
@@ -92,7 +92,7 @@ $suite->test('the status table is the one definition its C, shell and document s
     $shell = file_get_contents($root . '/tests/plugins/erasedata/rename-noreplace-test.sh');
     strictAssertTrue(preg_match('/^readonly (STATUS_[A-Z_]+=[0-9]+(?: STATUS_[A-Z_]+=[0-9]+)*)$/m',
         $shell, $line) === 1, 'the shell test declares the statuses once');
-    $constants = array();
+    $constants = [];
     foreach (explode(' ', $line[1]) as $assignment) {
         list($name, $value) = explode('=', $assignment);
         $constants[$name] = (int) $value;
@@ -103,10 +103,10 @@ $suite->test('the status table is the one definition its C, shell and document s
 
     $document = file_get_contents($root . '/plugins/erasedata/QUEUE-ATTESTATION.md');
     preg_match_all('/^\| `([0-9]+)` \| `([a-z-]+)` \|/m', $document, $rows, PREG_SET_ORDER);
-    $documented = array();
-    foreach ($rows as $row) $documented[(int) $row[1]] = $row[2];
-    $reasons = array();
-    foreach ($table as $status => $entry) $reasons[$status] = $entry[0];
+    $documented = [];
+    foreach ($rows as $row) { $documented[(int) $row[1]] = $row[2]; }
+    $reasons = [];
+    foreach ($table as $status => $entry) { $reasons[$status] = $entry[0]; }
     strictAssertSame($reasons, $documented, 'the operator document lists the PHP table');
 });
 
@@ -114,23 +114,23 @@ $suite->test('each status keeps its meaning through the shared process runner', 
     $root = renameStatusRoot();
     try {
         $files = new RenameHelperStatusScript();
-        $expected = array(
-            0 => array(true, true, ''),
-            1 => array(false, false, 'rename-noreplace-collision'),
-            2 => array(false, false, 'rename-noreplace-invalid-arguments'),
-            3 => array(false, false, 'rename-noreplace-unsupported'),
-            4 => array(false, false, 'rename-noreplace-error'),
-            5 => array(true, false, 'rename-noreplace-process-exit-5'),
-            6 => array(false, false, 'rename-noreplace-process-exit-6'),
-        );
+        $expected = [
+            0 => [true, true, ''],
+            1 => [false, false, 'rename-noreplace-collision'],
+            2 => [false, false, 'rename-noreplace-invalid-arguments'],
+            3 => [false, false, 'rename-noreplace-unsupported'],
+            4 => [false, false, 'rename-noreplace-error'],
+            5 => [true, false, 'rename-noreplace-process-exit-5'],
+            6 => [false, false, 'rename-noreplace-process-exit-6'],
+        ];
         foreach ($expected as $status => $outcome) {
             RenameHelperStatusScript::$helper = renameStatusHelper($root, $status,
                 $status === 4 ? 'rename-noreplace-error: errno=13 Permission denied' : '');
             strictAssertSame($outcome[0], $files->probeRenameParent($root),
                 'a probe answering ' . $status . ' has the table meaning');
-            if (!$outcome[0])
+            if (!$outcome[0]) {
                 strictAssertSame($outcome[2], ErasedataFilesystemOps::lastRenameRefusal(),
-                    'a refused probe ' . $status . ' keeps its classified reason');
+                    'a refused probe ' . $status . ' keeps its classified reason'); }
             strictAssertSame($outcome[1], $files->renameNoReplace($root . '/from', $root . '/to'),
                 'a rename answering ' . $status . ' has the table meaning');
             strictAssertSame($outcome[2], ErasedataFilesystemOps::lastRenameRefusal(),
@@ -160,20 +160,20 @@ $suite->test('status 3 advice describes the refusal that remains after the fallb
         $rename = ErasedataFilesystemOps::renameRefusalReport();
         strictAssertTrue(strpos($rename, 'its own subtree') !== false
             && strpos($rename, 'errno=22') !== false, 'a rename 3 names the plain rename refusal: ' . $rename);
-        foreach (array($probe, $rename) as $report)
+        foreach ([$probe, $rename] as $report) {
             strictAssertTrue(strpos($report, 'supports atomic no-replace') === false,
-                'no advice asks for the atomic flag the fallback made optional');
+                'no advice asks for the atomic flag the fallback made optional'); }
     } finally { strictRemoveTree($root); }
 });
 
 $suite->test('a consumer reports the refusal under its own name and the runner logs nothing', function () {
     $root = renameStatusRoot();
     try {
-        FileUtil::$log = array();
+        FileUtil::$log = [];
         $files = new RenameHelperStatusScript();
         RenameHelperStatusScript::$helper = renameStatusHelper($root, 1);
         strictAssertSame(false, $files->renameNoReplace($root . '/from', $root . '/to'), 'a collision refuses');
-        strictAssertSame(array(), FileUtil::$log, 'the shared runner leaves reporting to its caller');
+        strictAssertSame([], FileUtil::$log, 'the shared runner leaves reporting to its caller');
         ErasedataFilesystemOps::reportRenameRefusal('datadir');
         strictAssertSame(1, count(FileUtil::$log), 'one report line is written');
         strictAssertTrue(strpos(FileUtil::$log[0], 'datadir: rename-noreplace-collision path=') === 0
@@ -188,8 +188,8 @@ $suite->test('only a native EXDEV rename refusal permits staged cross-mount copy
     $root = renameStatusRoot();
     try {
         $files = new RenameHelperStatusScript();
-        foreach (array(array(4, 18, true), array(4, 13, false), array(1, 18, false),
-            array(3, 18, false), array(0, 18, false)) as $case) {
+        foreach ([[4, 18, true], [4, 13, false], [1, 18, false],
+            [3, 18, false], [0, 18, false]] as $case) {
             RenameHelperStatusScript::$helper = renameStatusHelper($root, $case[0], 'errno=' . $case[1]);
             $files->renameNoReplace($root . '/from errno=18', $root . '/to');
             strictAssertSame($case[2], ErasedataFilesystemOps::isCrossDeviceRenameRefusal(),
@@ -208,10 +208,10 @@ $suite->test('the logged action of a probe timeout names the flock, and only the
     try {
         $files = new RenameHelperStatusScript();
         $flock = 'another process held the named parent\'s flock';
-        foreach (array(array('probe', 110, true), array('probe', 13, false), array('rename', 110, false)) as $case) {
+        foreach ([['probe', 110, true], ['probe', 13, false], ['rename', 110, false]] as $case) {
             RenameHelperStatusScript::$helper = renameStatusHelper($root, 4, 'errno=' . $case[1]);
-            if ($case[0] === 'probe') $files->probeRenameParent($root);
-            else $files->renameNoReplace($root . '/from', $root . '/to');
+            if ($case[0] === 'probe') { $files->probeRenameParent($root); }
+            else { $files->renameNoReplace($root . '/from', $root . '/to'); }
             $report = ErasedataFilesystemOps::renameRefusalReport();
             strictAssertSame(0, strpos($report, 'rename-noreplace-error path='
                 . erasedataLogPath($case[0] === 'probe' ? $root : $root . '/from')), 'the class and the path format stay: ' . $report);
@@ -251,24 +251,24 @@ $suite->test('a preflight replays a refused parent without running the helper ag
         $count = $root . '/runs';
         RenameHelperStatusScript::$helper = renameStatusCountingHelper($root, $stuck, $count);
         $files = new RenameHelperStatusScript();
-        $probed = array();
+        $probed = [];
         $runs = function () use ($count) { return array_map('trim', file($count)); };
-        strictAssertSame(false, $files->preflightParents(array($free, $stuck), $probed), 'the stuck parent refuses');
+        strictAssertSame(false, $files->preflightParents([$free, $stuck], $probed), 'the stuck parent refuses');
         $first = ErasedataFilesystemOps::lastRenameRefusalContext();
-        strictAssertSame(array($free, $stuck), $runs(), 'each parent ran the helper once');
-        strictAssertSame(false, $files->preflightParents(array($free, $stuck), $probed), 'the answer is replayed');
-        strictAssertSame(array($free, $stuck), $runs(), 'and neither parent ran the helper again');
+        strictAssertSame([$free, $stuck], $runs(), 'each parent ran the helper once');
+        strictAssertSame(false, $files->preflightParents([$free, $stuck], $probed), 'the answer is replayed');
+        strictAssertSame([$free, $stuck], $runs(), 'and neither parent ran the helper again');
         strictAssertSame('rename-noreplace-error', ErasedataFilesystemOps::lastRenameRefusal(), 'the class is replayed');
         strictAssertSame($first, ErasedataFilesystemOps::lastRenameRefusalContext(), 'the path and errno are replayed');
         strictAssertTrue(strpos(ErasedataFilesystemOps::renameRefusalReport(), "named parent's flock") !== false,
             'and so is the probe timeout\'s action');
         symlink($stuck, $root . '/alias');
-        strictAssertSame(false, $files->preflightParents(array($root . '/alias'), $probed), 'an alias of the parent is the same answer');
+        strictAssertSame(false, $files->preflightParents([$root . '/alias'], $probed), 'an alias of the parent is the same answer');
         strictAssertSame($first, ErasedataFilesystemOps::lastRenameRefusalContext(), 'naming the resolved parent, as the first answer did');
-        strictAssertSame(array($free, $stuck), $runs(), 'without another helper run');
-        strictAssertSame(true, $files->preflightParents(array($free), $probed), 'another member under a free parent proceeds');
-        $fresh = array();
-        strictAssertSame(false, $files->preflightParents(array($stuck), $fresh), 'a new operation asks again');
+        strictAssertSame([$free, $stuck], $runs(), 'without another helper run');
+        strictAssertSame(true, $files->preflightParents([$free], $probed), 'another member under a free parent proceeds');
+        $fresh = [];
+        strictAssertSame(false, $files->preflightParents([$stuck], $fresh), 'a new operation asks again');
         strictAssertSame(3, count($runs()), 'with one more helper run');
     } finally { strictRemoveTree($root); }
 });

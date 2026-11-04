@@ -8,64 +8,6 @@ class RtorrentCompatibilityTest extends TestCase
 {
 	use AdditionCallerFixtures;
 
-	private function makeSettings($version)
-	{
-		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$settings->iVersion = $version;
-		$settings->aliases = $this->aliasTableFor($version);
-		return $settings;
-	}
-
-	private function useSettingsSingleton($settings)
-	{
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) {
-			$property->setAccessible(true);
-		}
-		$property->setValue(null, $settings);
-	}
-
-	/**
-	 * What rtorrent 0.16 registers under d., t., f. and p. that does not
-	 * change state -- the commands a listing client may put in a multicall's
-	 * result slots. Derived from the registry, not typed: the read list is
-	 * whatever this leaves, so a getter the list lacks is a failing test here
-	 * rather than a refused client. Measured 2026-09-14 against a live 0.16.22:
-	 * a list built from the panel's alias table alone refused t.failed_counter
-	 * and d.load_date, neither of which has a pre-0.9 spelling.
-	 *
-	 * "Changes state" is read off the command's path segments: a segment that
-	 * IS a verb (set, erase, start, ...) or starts with one (set_, try_, ...),
-	 * and the two spellings of the dispatchers -- multicall and multicall2 --
-	 * which run other commands rather than read anything, and p.call_target,
-	 * which calls one. Four names are listed by hand: two carry a side effect
-	 * under a noun (the announce triggers), and two cannot be carried by a
-	 * multicall at all -- measured 2026-09-14 on 0.16.22 over SCGI: nothing
-	 * after the '=' still hands the command one empty argument, and a bare
-	 * name without '=' is refused, so d.custom.keys and d.custom.items, which
-	 * take none, fault the whole listing whichever way they are spelled.
-	 */
-	private function stockDaemonReadCommands()
-	{
-		$mutating = '/^(set|erase|disconnect|enable|disable|start|stop|open|close|pause|resume|'
-			. 'check_hash|delete|push_back|insert|remove|unset|update|create|save|try|initialize|'
-			. 'add|send|call|multicall2?|import|execute|clear|reset|toggle)(_|$)|^load$/';
-		$byHand = array(
-			'd.tracker_announce' => true, 'd.tracker_announce.force' => true,
-			'd.custom.keys' => true, 'd.custom.items' => true,
-		);
-		$reads = array();
-		foreach ($this->stockDaemonMethodList() as $name) {
-			if (!preg_match('/^[dtfp]\./', $name) || isset($byHand[$name])) continue;
-			$changes = false;
-			foreach (array_slice(explode('.', $name), 1) as $segment) {
-				if (preg_match($mutating, $segment)) $changes = true;
-			}
-			if (!$changes) $reads[] = $name;
-		}
-		return $reads;
-	}
-
 	/**
 	 * The proxy's read list (XMLRPCProxy::$safeGetters) against the two
 	 * oracles this suite already holds: the daemon's own registry, and the
@@ -88,9 +30,9 @@ class RtorrentCompatibilityTest extends TestCase
 		$registered = $this->stockDaemonMethods();
 		$reads = array_flip($this->stockDaemonReadCommands());
 		$aliases = $this->makeSettings(0x1014)->aliases;
-		$legacyOf = array();
+		$legacyOf = [];
 		foreach ($aliases as $old => $entry) {
-			if (preg_match('/^[dtfp]\.get_/', $old)) $legacyOf[$entry['name']][] = $old;
+			if (preg_match('/^[dtfp]\.get_/', $old)) { $legacyOf[$entry['name']][] = $old; }
 		}
 
 		$present = array_flip($getters);
@@ -104,7 +46,7 @@ class RtorrentCompatibilityTest extends TestCase
 			if (isset($registered[$name])) {
 				$this->assertTrue(isset($reads[$name]),
 					$name . ' is a registered read command, not a state change');
-				$twins = isset($legacyOf[$name]) ? $legacyOf[$name] : array();
+				$twins = isset($legacyOf[$name]) ? $legacyOf[$name] : [];
 				foreach ($twins as $old) {
 					$this->assertTrue(isset($present[$old]),
 						$name . ' is on the list, so its pre-0.9 spelling ' . $old . ' must be too');
@@ -122,7 +64,7 @@ class RtorrentCompatibilityTest extends TestCase
 
 	public function testXmlrpcSizeGetterAliasCoversSupportedWorkerVersions()
 	{
-		foreach (array(0x908 => '0.9.8', 0x1018 => '0.16.24') as $version => $label) {
+		foreach ([0x908 => '0.9.8', 0x1018 => '0.16.24'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 			$this->assertEquals('network.xmlrpc.size_limit',
 				$settings->getCommand('get_xmlrpc_size_limit'),
@@ -134,7 +76,7 @@ class RtorrentCompatibilityTest extends TestCase
 	{
 		// iVersion packs one version component per byte, so 0.10.2 is 0x0a02
 		// (0x1002 would be 0.16.2) and 0.10.1 is 0x0a01.
-		foreach (array(0x908 => '0.9.8', 0x0a01 => '0.10.1') as $version => $label) {
+		foreach ([0x908 => '0.9.8', 0x0a01 => '0.10.1'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 			$this->assertEquals('dht', $settings->getCommand('dht'), 'rTorrent '.$label.' predates the 0.10.2 aliases so dht stays unmapped');
 			$this->assertEquals('connection_leech', $settings->getCommand('connection_leech'), 'rTorrent '.$label.' predates the 0.10.2 aliases so connection_leech stays unmapped');
@@ -154,7 +96,7 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('schedule', $settings->getCommand('schedule'), 'rTorrent 0.16 uses schedule directly');
 		$this->assertEquals('schedule.remove', $settings->getCommand('schedule_remove'), 'rTorrent 0.16 uses schedule.remove directly');
 
-		$command = new rXMLRPCCommand('schedule', array('test_schedule', '0', '60', 'system.method'));
+		$command = new rXMLRPCCommand('schedule', ['test_schedule', '0', '60', 'system.method']);
 		$this->assertEquals('schedule', $command->command, 'rTorrent 0.16 schedule command name stays direct');
 		$this->assertEquals('', $command->params[0]->value, 'rTorrent 0.16 schedule keeps an empty target parameter');
 		$this->assertEquals('test_schedule', $command->params[1]->value, 'rTorrent 0.16 schedule keeps requested parameters after the empty target');
@@ -162,7 +104,7 @@ class RtorrentCompatibilityTest extends TestCase
 
 	public function testRtorrent0102AliasesAreLoadedFor0102AndInheritedBy016()
 	{
-		foreach (array(0x0a02 => '0.10.2', 0x1000 => '0.16.0') as $version => $label) {
+		foreach ([0x0a02 => '0.10.2', 0x1000 => '0.16.0'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 
 			$this->assertEquals('dht.mode.set', $settings->getCommand('dht'), 'rTorrent '.$label.' maps DHT mode command');
@@ -207,11 +149,11 @@ class RtorrentCompatibilityTest extends TestCase
 		// (target, value). Some 0.9.8 builds define no group.NAME.ratio.*
 		// limits at all, and there each such call faults with "Method not
 		// defined", leaving the group on rtorrent's built-in limits.
-		foreach (array(0x904 => '0.9.4', 0x908 => '0.9.8', 0x0a02 => '0.10.2') as $version => $label) {
+		foreach ([0x904 => '0.9.4', 0x908 => '0.9.8', 0x0a02 => '0.10.2'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 			$this->useSettingsSingleton($settings);
 
-			foreach (array('min', 'max', 'upload') as $limit) {
+			foreach (['min', 'max', 'upload'] as $limit) {
 				$command = $settings->getRatioGroupCommand('rat_0', 'ratio.'.$limit.'.set', 150);
 				$this->assertEquals('group2.rat_0.ratio.'.$limit.'.set', $command->command, 'rTorrent '.$label.' sets the '.$limit.' limit through group2');
 				$this->assertEquals(2, count($command->params), 'rTorrent '.$label.' sends target and value to the group2 '.$limit.' setter');
@@ -222,8 +164,8 @@ class RtorrentCompatibilityTest extends TestCase
 				$this->assertEquals('group2.rat_0.ratio.'.$limit, $command->command, 'rTorrent '.$label.' reads the '.$limit.' limit through group2');
 			}
 
-			foreach (array('ratio.enable', 'ratio.disable', 'ratio.command') as $cmd) {
-				$command = $settings->getRatioGroupCommand('rat_0', $cmd, array(''));
+			foreach (['ratio.enable', 'ratio.disable', 'ratio.command'] as $cmd) {
+				$command = $settings->getRatioGroupCommand('rat_0', $cmd, ['']);
 				$this->assertEquals('group.rat_0.'.$cmd, $command->command, 'rTorrent '.$label.' keeps '.$cmd.' on group');
 			}
 		}
@@ -234,20 +176,20 @@ class RtorrentCompatibilityTest extends TestCase
 		// 0.15 stubs group2.* and takes a bare value on group.*; 0.16 removed
 		// group2.* and takes (target, value) on group.*. Below 0.9.4 the
 		// command names never went through group2.
-		$expected = array(
-			0x903 => array('0.9.3', array('150')),
-			0x0f07 => array('0.15.7', array('150')),
-			0x1000 => array('0.16.0', array('', '150')),
-			0x101a => array('0.16.26', array('', '150')),
-		);
+		$expected = [
+			0x903 => ['0.9.3', ['150']],
+			0x0f07 => ['0.15.7', ['150']],
+			0x1000 => ['0.16.0', ['', '150']],
+			0x101a => ['0.16.26', ['', '150']],
+		];
 		foreach ($expected as $version => list($label, $params)) {
 			$settings = $this->makeSettings($version);
 			$this->useSettingsSingleton($settings);
 
-			foreach (array('min', 'max', 'upload') as $limit) {
+			foreach (['min', 'max', 'upload'] as $limit) {
 				$command = $settings->getRatioGroupCommand('rat_0', 'ratio.'.$limit.'.set', 150);
 				$this->assertEquals('group.rat_0.ratio.'.$limit.'.set', $command->command, 'rTorrent '.$label.' sets the '.$limit.' limit through group');
-				$values = array();
+				$values = [];
 				foreach ($command->params as $param) {
 					$values[] = (string)$param->value;
 				}
@@ -268,14 +210,14 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('d.multicall', $settings->getCommand('d.multicall'), 'rTorrent 0.16.16 uses the canonical download multicall command');
 		$this->assertEquals('d.multicall', $settings->getCommand('d.multicall2'), 'rTorrent 0.16.16 maps the legacy download multicall command to the canonical command');
 
-		$command = new rXMLRPCCommand('d.multicall', array('main', 'd.hash='));
+		$command = new rXMLRPCCommand('d.multicall', ['main', 'd.hash=']);
 		$this->assertEquals('d.multicall', $command->command, 'rTorrent 0.16.16 sends canonical download multicalls');
 		$this->assertEquals('', $command->params[0]->value, 'canonical download multicalls keep the required empty target argument');
 	}
 
 	public function testRtorrent01618AndLaterLoadCanonicalPortAliasesAtExactThreshold()
 	{
-		$legacyAliases = array(
+		$legacyAliases = [
 			'get_port_range' => 'network.port_range',
 			'set_port_range' => 'network.port_range.set',
 			'get_port_random' => 'network.port_random',
@@ -283,13 +225,13 @@ class RtorrentCompatibilityTest extends TestCase
 			'get_port_open' => 'network.port_open',
 			'set_port_open' => 'network.port_open.set',
 			'port_open' => 'network.port_open',
-		);
+		];
 		$settings = $this->makeSettings(0x1011);
 		foreach ($legacyAliases as $alias => $command) {
 			$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent 0.16.17 keeps '.$alias.' on its legacy command');
 		}
 
-		$canonicalAliases = array(
+		$canonicalAliases = [
 			'get_port_range' => 'network.listen.port.range',
 			'set_port_range' => 'network.listen.port.range.set',
 			'get_port_random' => 'network.listen.port.random',
@@ -297,8 +239,8 @@ class RtorrentCompatibilityTest extends TestCase
 			'get_port_open' => 'cat',
 			'set_port_open' => 'cat',
 			'port_open' => 'cat',
-		);
-		foreach (array(0x1012 => '0.16.18', 0x1013 => '0.16.19', 0x1015 => '0.16.21') as $version => $label) {
+		];
+		foreach ([0x1012 => '0.16.18', 0x1013 => '0.16.19', 0x1015 => '0.16.21'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 			foreach ($canonicalAliases as $alias => $command) {
 				$this->assertEquals($command, $settings->getCommand($alias), 'rTorrent '.$label.' maps '.$alias.' to its canonical command');
@@ -314,10 +256,266 @@ class RtorrentCompatibilityTest extends TestCase
 		$this->assertEquals('cat', $settings->getCommand('d.is_partially_done'), 'rTorrent 0.8.9 answers the partially done question with the no-op cat');
 		$this->assertEquals('cat=', $settings->getCommand('d.is_partially_done='), 'the no-op keeps the trailing = so the multicall field stays in place');
 
-		foreach (array(0x900 => '0.9.0', 0x908 => '0.9.8', 0x1014 => '0.16.20', 0x1015 => '0.16.21') as $version => $label) {
+		foreach ([0x900 => '0.9.0', 0x908 => '0.9.8', 0x1014 => '0.16.20', 0x1015 => '0.16.21'] as $version => $label) {
 			$settings = $this->makeSettings($version);
 			$this->assertEquals('d.is_partially_done', $settings->getCommand('d.is_partially_done'), 'rTorrent '.$label.' asks the daemon directly');
 		}
+	}
+
+	public function testStockDaemonMethodFixtureIsCompleteUniqueAndSorted()
+	{
+		$methods = $this->stockDaemonMethodList();
+		$this->assertEquals(946, count($methods), 'fixture contains exactly 946 names');
+		$this->assertEquals(946, count(array_unique($methods)), 'fixture contains no duplicate names');
+		$sorted = $methods;
+		sort($sorted, SORT_STRING);
+		$this->assertEquals($sorted, $methods, 'fixture is sorted in LC_ALL=C order');
+		foreach ($methods as $name) {
+			$this->assertTrue(is_string($name) && strlen($name) > 0, 'fixture entries are non-empty strings');
+		}
+	}
+
+	public function testEveryAliasTargetIsANameTheDaemonRegisters()
+	{
+		// 23 of the 310 effective aliases used to be asserted by name, and
+		// nothing at all checked that a target is a command the daemon
+		// actually has. Walk the whole map instead and hold every target
+		// against a real registry.
+		//
+		// Only 0.16.18 and later are held against it: 0.16.16 and below map
+		// the port commands to network.port_range and friends, which 0.16.18
+		// removed, so a 0.16.22 registry is the wrong oracle down there. The
+		// shape of those older maps is covered by the walk further below.
+		$deprecatedOnly = array_values($this->deprecatedOnlyAliases());
+		sort($deprecatedOnly);
+
+		foreach ([0x1012 => '0.16.18', 0x1013 => '0.16.19', 0x1014 => '0.16.20', 0x1015 => '0.16.21'] as $version => $label) {
+			$settings = $this->makeSettings($version);
+
+			// getCommand() indexes straight into $entry['name'], so an entry
+			// that is not an array at all takes the whole test FILE down with
+			// a TypeError before the walk below can name it -- and a fatal
+			// here would also swallow the shape report further down. Collect
+			// those and keep walking; their shape is asserted properly by
+			// testEveryAliasEntryIsWellFormedAtEveryVersionGate.
+			$targets = [];
+			$unreadable = [];
+			foreach ($settings->aliases as $alias => $entry) {
+				if (!is_array($entry) || !array_key_exists('name', $entry)) {
+					$unreadable[] = $alias;
+					continue;
+				}
+				$targets[$settings->getCommand($alias)] = true;
+			}
+			$this->assertEquals([], $unreadable, 'rTorrent '.$label.' alias entries all carry a readable target; unreadable: '.implode(', ', $unreadable));
+
+			// deprecatedOnlyAliases() is written as key => target, but the
+			// two halves are consumed apart: the targets exempt names from
+			// the registry check, the keys drive the dormancy scan. Nothing
+			// tied a key to its target, so renaming a key in the alias table
+			// left this test green and the scan looking for a string that no
+			// longer exists. Assert the pairing, so a rename lands here.
+			foreach ($this->deprecatedOnlyAliases() as $alias => $target) {
+				$this->assertEquals($target, $settings->getCommand($alias), 'rTorrent '.$label.' still maps the alias key '.$alias.' to the deprecated-only target '.$target.', got '.$settings->getCommand($alias));
+			}
+
+			// The counts are pinned so that an edit which drops or duplicates
+			// a table entry cannot pass unnoticed: the walk above would
+			// happily assert nothing at all over an empty map.
+			$this->assertEquals(310, count($settings->aliases), 'rTorrent '.$label.' has 310 effective alias keys, got '.count($settings->aliases));
+			$this->assertEquals(296, count($targets), 'rTorrent '.$label.' resolves those keys to 296 distinct targets, got '.count($targets));
+
+			$missing = array_keys(array_diff_key($targets, $this->stockDaemonMethods()));
+			sort($missing);
+			$this->assertEquals($deprecatedOnly, $missing, 'rTorrent '.$label.' maps only to registered names, apart from the known deprecated-only three; unregistered here: '.implode(', ', $missing));
+		}
+	}
+
+	public function testDeprecatedOnlyAliasKeysAreNotSentByProductionCode()
+	{
+		// The three targets above are harmless only for as long as nobody
+		// asks for them. Anything that starts sending one of these keys ships
+		// a fault to every stock daemon, so the "nothing calls them" half of
+		// the argument is checked here rather than left as a comment.
+		$root = dirname(dirname(__DIR__));
+		$paths = $this->ownedProductionSources($root);
+		$deprecatedOnly = $this->deprecatedOnlyAliases();
+
+		$callers = [];
+		$definitions = [];
+		$unreadable = [];
+		$scanned = 0;
+
+		foreach ($paths as $path) {
+			$contents = @file_get_contents($root.'/'.$path);
+			if ($contents === false) {
+				$unreadable[] = $path;
+				continue;
+			}
+			$scanned++;
+			$lines = explode("\n", $contents);
+			foreach ($lines as $lineNum => $line) {
+				foreach ($deprecatedOnly as $alias => $target) {
+					if (strpos($line, $alias) === false) {
+						continue;
+					}
+					if ($path === 'php/methods-0.9.4.php') {
+						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*=>\s*array\(\s*"name"\s*=>\s*"'.preg_quote($target, '/').'",\s*"prm"\s*=>\s*[01]\s*\),?(\s*\/\/.*)?$/';
+						if (preg_match($pattern, $line)) {
+							$definitions[$alias]['php/methods-0.9.4.php'] = isset($definitions[$alias]['php/methods-0.9.4.php'])
+								? $definitions[$alias]['php/methods-0.9.4.php'] + 1
+								: 1;
+							if ($definitions[$alias]['php/methods-0.9.4.php'] > 1) {
+								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
+							}
+							continue;
+						}
+					} elseif ($path === 'js/content.js') {
+						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*:\s*\{\s*name:\s*"'.preg_quote($target, '/').'",\s*prm:\s*[01]\s*\},?(\s*\/\/.*)?$/';
+						if (preg_match($pattern, $line)) {
+							$definitions[$alias]['js/content.js'] = isset($definitions[$alias]['js/content.js'])
+								? $definitions[$alias]['js/content.js'] + 1
+								: 1;
+							if ($definitions[$alias]['js/content.js'] > 1) {
+								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
+							}
+							continue;
+						}
+					}
+					$callers[] = $path.':'.($lineNum + 1).' sends '.$alias;
+				}
+			}
+		}
+
+		$this->assertEquals([], $unreadable, 'all owned production sources are readable; unreadable: '.implode(', ', $unreadable));
+		$this->assertTrue($scanned > 100, 'the dormancy scan read production sources; files scanned: '.$scanned);
+
+		foreach ($deprecatedOnly as $alias => $target) {
+			$this->assertTrue(
+				isset($definitions[$alias]['php/methods-0.9.4.php']) && $definitions[$alias]['php/methods-0.9.4.php'] === 1,
+				'exact PHP definition found for '.$alias,
+			);
+			$this->assertTrue(
+				isset($definitions[$alias]['js/content.js']) && $definitions[$alias]['js/content.js'] === 1,
+				'exact JS definition found for '.$alias,
+			);
+		}
+
+		$this->assertEquals([], $callers, 'the deprecated-only aliases stay confined to the exact alias table definitions; found: '.implode(', ', $callers));
+	}
+
+	public function testEveryAliasEntryIsWellFormedAtEveryVersionGate()
+	{
+		// rXMLRPCCommand reads "name" as the wire command and treats "prm" as
+		// "prepend the empty target argument the 0.16 dispatcher insists on",
+		// so a missing key, a stray trailing '=' or a prm outside {0,1} is a
+		// malformed request rather than a wrong one -- and the version that
+		// carries it may not be the version anyone runs the suite against.
+		// Walk every gate, not just the current daemon's.
+		$expected = [
+			0x809  => ['label' => '0.8.9',   'keys' => 3,   'targets' => 3],
+			0x908  => ['label' => '0.9.8',   'keys' => 292, 'targets' => 283],
+			0x0a02 => ['label' => '0.10.2',  'keys' => 307, 'targets' => 296],
+			0x1000 => ['label' => '0.16.0',  'keys' => 307, 'targets' => 296],
+			0x1010 => ['label' => '0.16.16', 'keys' => 310, 'targets' => 297],
+			0x1012 => ['label' => '0.16.18', 'keys' => 310, 'targets' => 296],
+			0x1015 => ['label' => '0.16.21', 'keys' => 310, 'targets' => 296],
+		];
+
+		foreach ($expected as $version => $counts) {
+			$settings = $this->makeSettings($version);
+			$label = $counts['label'];
+
+			$malformed = [];
+			$targets = [];
+			foreach ($settings->aliases as $alias => $entry) {
+				// Shape first, then the target. getCommand() reaches straight
+				// into $entry['name'], so asking it for the target ahead of
+				// this check makes a non-array entry a fatal before the
+				// branch that names that exact malformation can report it.
+				if (!is_array($entry) || !array_key_exists('name', $entry) || !array_key_exists('prm', $entry)) {
+					$malformed[] = $alias.' is not an array carrying both name and prm';
+					continue;
+				}
+				// The target must be proven a non-empty string before anything
+				// treats it as one. getCommand() concatenates it and strpos()
+				// demands it, so a name that is an array or a number fatals the
+				// whole test file here -- taking every later version gate with
+				// it -- instead of being reported as the malformation it is.
+				if (!is_string($entry['name']) || $entry['name'] === '') {
+					$malformed[] = $alias.' has an empty target';
+					continue;
+				}
+				$targets[$settings->getCommand($alias)] = true;
+				if (strpos($entry['name'], '=') !== false) {
+					$malformed[] = $alias.' carries a trailing = in its target, which getCommand appends itself';
+				}
+				if (!in_array($entry['prm'], [0, 1], true)) {
+					$malformed[] = $alias.' has prm '.json_encode($entry['prm']).', which is neither 0 nor 1';
+				}
+			}
+			$this->assertEquals([], $malformed, 'rTorrent '.$label.' alias entries are well formed; malformed: '.implode(', ', $malformed));
+			$this->assertEquals($counts['keys'], count($settings->aliases), 'rTorrent '.$label.' has '.$counts['keys'].' effective alias keys, got '.count($settings->aliases));
+			$this->assertEquals($counts['targets'], count($targets), 'rTorrent '.$label.' resolves them to '.$counts['targets'].' distinct targets, got '.count($targets));
+		}
+	}
+
+	private function makeSettings($version)
+	{
+		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+		$settings->iVersion = $version;
+		$settings->aliases = $this->aliasTableFor($version);
+		return $settings;
+	}
+
+	private function useSettingsSingleton($settings)
+	{
+		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+		if (PHP_VERSION_ID < 80100) {
+			$property->setAccessible(true);
+		}
+		$property->setValue(null, $settings);
+	}
+
+	/**
+	 * What rtorrent 0.16 registers under d., t., f. and p. that does not
+	 * change state -- the commands a listing client may put in a multicall's
+	 * result slots. Derived from the registry, not typed: the read list is
+	 * whatever this leaves, so a getter the list lacks is a failing test here
+	 * rather than a refused client. Measured 2026-09-14 against a live 0.16.22:
+	 * a list built from the panel's alias table alone refused t.failed_counter
+	 * and d.load_date, neither of which has a pre-0.9 spelling.
+	 *
+	 * "Changes state" is read off the command's path segments: a segment that
+	 * IS a verb (set, erase, start, ...) or starts with one (set_, try_, ...),
+	 * and the two spellings of the dispatchers -- multicall and multicall2 --
+	 * which run other commands rather than read anything, and p.call_target,
+	 * which calls one. Four names are listed by hand: two carry a side effect
+	 * under a noun (the announce triggers), and two cannot be carried by a
+	 * multicall at all -- measured 2026-09-14 on 0.16.22 over SCGI: nothing
+	 * after the '=' still hands the command one empty argument, and a bare
+	 * name without '=' is refused, so d.custom.keys and d.custom.items, which
+	 * take none, fault the whole listing whichever way they are spelled.
+	 */
+	private function stockDaemonReadCommands()
+	{
+		$mutating = '/^(set|erase|disconnect|enable|disable|start|stop|open|close|pause|resume|'
+			. 'check_hash|delete|push_back|insert|remove|unset|update|create|save|try|initialize|'
+			. 'add|send|call|multicall2?|import|execute|clear|reset|toggle)(_|$)|^load$/';
+		$byHand = [
+			'd.tracker_announce' => true, 'd.tracker_announce.force' => true,
+			'd.custom.keys' => true, 'd.custom.items' => true,
+		];
+		$reads = [];
+		foreach ($this->stockDaemonMethodList() as $name) {
+			if (!preg_match('/^[dtfp]\./', $name) || isset($byHand[$name])) { continue; }
+			$changes = false;
+			foreach (array_slice(explode('.', $name), 1) as $segment) {
+				if (preg_match($mutating, $segment)) { $changes = true; }
+			}
+			if (!$changes) { $reads[] = $name; }
+		}
+		return $reads;
 	}
 
 	/**
@@ -1315,19 +1513,6 @@ LISTMETHODS
 		return $methods;
 	}
 
-	public function testStockDaemonMethodFixtureIsCompleteUniqueAndSorted()
-	{
-		$methods = $this->stockDaemonMethodList();
-		$this->assertEquals(946, count($methods), 'fixture contains exactly 946 names');
-		$this->assertEquals(946, count(array_unique($methods)), 'fixture contains no duplicate names');
-		$sorted = $methods;
-		sort($sorted, SORT_STRING);
-		$this->assertEquals($sorted, $methods, 'fixture is sorted in LC_ALL=C order');
-		foreach ($methods as $name) {
-			$this->assertTrue(is_string($name) && strlen($name) > 0, 'fixture entries are non-empty strings');
-		}
-	}
-
 	/**
 	 * The alias keys that resolve to the deprecated-only targets, so the
 	 * dormancy claim below can be checked rather than asserted.
@@ -1348,67 +1533,11 @@ LISTMETHODS
 		// safe -- a FOURTH such target, or a first caller of one of these
 		// keys, has to fail loudly here rather than in a user's settings
 		// panel.
-		return array(
+		return [
 			'get_dht_throttle' => 'dht.throttle.name',
 			'set_dht_throttle' => 'dht.throttle.name.set',
 			'throttle_ip'      => 'throttle.ip',
-		);
-	}
-
-	public function testEveryAliasTargetIsANameTheDaemonRegisters()
-	{
-		// 23 of the 310 effective aliases used to be asserted by name, and
-		// nothing at all checked that a target is a command the daemon
-		// actually has. Walk the whole map instead and hold every target
-		// against a real registry.
-		//
-		// Only 0.16.18 and later are held against it: 0.16.16 and below map
-		// the port commands to network.port_range and friends, which 0.16.18
-		// removed, so a 0.16.22 registry is the wrong oracle down there. The
-		// shape of those older maps is covered by the walk further below.
-		$deprecatedOnly = array_values($this->deprecatedOnlyAliases());
-		sort($deprecatedOnly);
-
-		foreach (array(0x1012 => '0.16.18', 0x1013 => '0.16.19', 0x1014 => '0.16.20', 0x1015 => '0.16.21') as $version => $label) {
-			$settings = $this->makeSettings($version);
-
-			// getCommand() indexes straight into $entry['name'], so an entry
-			// that is not an array at all takes the whole test FILE down with
-			// a TypeError before the walk below can name it -- and a fatal
-			// here would also swallow the shape report further down. Collect
-			// those and keep walking; their shape is asserted properly by
-			// testEveryAliasEntryIsWellFormedAtEveryVersionGate.
-			$targets = array();
-			$unreadable = array();
-			foreach ($settings->aliases as $alias => $entry) {
-				if (!is_array($entry) || !array_key_exists('name', $entry)) {
-					$unreadable[] = $alias;
-					continue;
-				}
-				$targets[$settings->getCommand($alias)] = true;
-			}
-			$this->assertEquals(array(), $unreadable, 'rTorrent '.$label.' alias entries all carry a readable target; unreadable: '.implode(', ', $unreadable));
-
-			// deprecatedOnlyAliases() is written as key => target, but the
-			// two halves are consumed apart: the targets exempt names from
-			// the registry check, the keys drive the dormancy scan. Nothing
-			// tied a key to its target, so renaming a key in the alias table
-			// left this test green and the scan looking for a string that no
-			// longer exists. Assert the pairing, so a rename lands here.
-			foreach ($this->deprecatedOnlyAliases() as $alias => $target) {
-				$this->assertEquals($target, $settings->getCommand($alias), 'rTorrent '.$label.' still maps the alias key '.$alias.' to the deprecated-only target '.$target.', got '.$settings->getCommand($alias));
-			}
-
-			// The counts are pinned so that an edit which drops or duplicates
-			// a table entry cannot pass unnoticed: the walk above would
-			// happily assert nothing at all over an empty map.
-			$this->assertEquals(310, count($settings->aliases), 'rTorrent '.$label.' has 310 effective alias keys, got '.count($settings->aliases));
-			$this->assertEquals(296, count($targets), 'rTorrent '.$label.' resolves those keys to 296 distinct targets, got '.count($targets));
-
-			$missing = array_keys(array_diff_key($targets, $this->stockDaemonMethods()));
-			sort($missing);
-			$this->assertEquals($deprecatedOnly, $missing, 'rTorrent '.$label.' maps only to registered names, apart from the known deprecated-only three; unregistered here: '.implode(', ', $missing));
-		}
+		];
 	}
 
 	/**
@@ -1417,7 +1546,7 @@ LISTMETHODS
 	 */
 	private function ownedProductionSources($root)
 	{
-		$paths = array();
+		$paths = [];
 
 		foreach (scandir($root) as $item) {
 			if ($item === '.' || $item === '..' || is_dir($root.'/'.$item)) {
@@ -1428,7 +1557,7 @@ LISTMETHODS
 			}
 		}
 
-		foreach (array('php', 'plugins', 'js', 'conf', 'lang') as $dir) {
+		foreach (['php', 'plugins', 'js', 'conf', 'lang'] as $dir) {
 			$base = $root.'/'.$dir;
 			if (!is_dir($base)) {
 				continue;
@@ -1448,146 +1577,17 @@ LISTMETHODS
 		}
 		sort($paths);
 
-		$sentinels = array('rpc2.php', 'env_check.php', 'lang/en.js', 'php/settings.php', 'js/content.js');
+		$sentinels = ['rpc2.php', 'env_check.php', 'lang/en.js', 'php/settings.php', 'js/content.js'];
 		$this->assertTrue(
 			count($paths) > 100,
-			'owned production sources scan found more than 100 paths; got '.count($paths)
+			'owned production sources scan found more than 100 paths; got '.count($paths),
 		);
 		foreach ($sentinels as $sentinel) {
 			$this->assertTrue(
 				in_array($sentinel, $paths, true),
-				'owned production sources listing includes sentinel '.$sentinel
+				'owned production sources listing includes sentinel '.$sentinel,
 			);
 		}
 		return $paths;
-	}
-
-	public function testDeprecatedOnlyAliasKeysAreNotSentByProductionCode()
-	{
-		// The three targets above are harmless only for as long as nobody
-		// asks for them. Anything that starts sending one of these keys ships
-		// a fault to every stock daemon, so the "nothing calls them" half of
-		// the argument is checked here rather than left as a comment.
-		$root = dirname(dirname(__DIR__));
-		$paths = $this->ownedProductionSources($root);
-		$deprecatedOnly = $this->deprecatedOnlyAliases();
-
-		$callers = array();
-		$definitions = array();
-		$unreadable = array();
-		$scanned = 0;
-
-		foreach ($paths as $path) {
-			$contents = @file_get_contents($root.'/'.$path);
-			if ($contents === false) {
-				$unreadable[] = $path;
-				continue;
-			}
-			$scanned++;
-			$lines = explode("\n", $contents);
-			foreach ($lines as $lineNum => $line) {
-				foreach ($deprecatedOnly as $alias => $target) {
-					if (strpos($line, $alias) === false) {
-						continue;
-					}
-					if ($path === 'php/methods-0.9.4.php') {
-						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*=>\s*array\(\s*"name"\s*=>\s*"'.preg_quote($target, '/').'",\s*"prm"\s*=>\s*[01]\s*\),?(\s*\/\/.*)?$/';
-						if (preg_match($pattern, $line)) {
-							$definitions[$alias]['php/methods-0.9.4.php'] = isset($definitions[$alias]['php/methods-0.9.4.php'])
-								? $definitions[$alias]['php/methods-0.9.4.php'] + 1
-								: 1;
-							if ($definitions[$alias]['php/methods-0.9.4.php'] > 1) {
-								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
-							}
-							continue;
-						}
-					} elseif ($path === 'js/content.js') {
-						$pattern = '/^\s*"'.preg_quote($alias, '/').'"\s*:\s*\{\s*name:\s*"'.preg_quote($target, '/').'",\s*prm:\s*[01]\s*\},?(\s*\/\/.*)?$/';
-						if (preg_match($pattern, $line)) {
-							$definitions[$alias]['js/content.js'] = isset($definitions[$alias]['js/content.js'])
-								? $definitions[$alias]['js/content.js'] + 1
-								: 1;
-							if ($definitions[$alias]['js/content.js'] > 1) {
-								$callers[] = $path.':'.($lineNum + 1).' extra definition of '.$alias;
-							}
-							continue;
-						}
-					}
-					$callers[] = $path.':'.($lineNum + 1).' sends '.$alias;
-				}
-			}
-		}
-
-		$this->assertEquals(array(), $unreadable, 'all owned production sources are readable; unreadable: '.implode(', ', $unreadable));
-		$this->assertTrue($scanned > 100, 'the dormancy scan read production sources; files scanned: '.$scanned);
-
-		foreach ($deprecatedOnly as $alias => $target) {
-			$this->assertTrue(
-				isset($definitions[$alias]['php/methods-0.9.4.php']) && $definitions[$alias]['php/methods-0.9.4.php'] === 1,
-				'exact PHP definition found for '.$alias
-			);
-			$this->assertTrue(
-				isset($definitions[$alias]['js/content.js']) && $definitions[$alias]['js/content.js'] === 1,
-				'exact JS definition found for '.$alias
-			);
-		}
-
-		$this->assertEquals(array(), $callers, 'the deprecated-only aliases stay confined to the exact alias table definitions; found: '.implode(', ', $callers));
-	}
-
-	public function testEveryAliasEntryIsWellFormedAtEveryVersionGate()
-	{
-		// rXMLRPCCommand reads "name" as the wire command and treats "prm" as
-		// "prepend the empty target argument the 0.16 dispatcher insists on",
-		// so a missing key, a stray trailing '=' or a prm outside {0,1} is a
-		// malformed request rather than a wrong one -- and the version that
-		// carries it may not be the version anyone runs the suite against.
-		// Walk every gate, not just the current daemon's.
-		$expected = array(
-			0x809  => array('label' => '0.8.9',   'keys' => 3,   'targets' => 3),
-			0x908  => array('label' => '0.9.8',   'keys' => 292, 'targets' => 283),
-			0x0a02 => array('label' => '0.10.2',  'keys' => 307, 'targets' => 296),
-			0x1000 => array('label' => '0.16.0',  'keys' => 307, 'targets' => 296),
-			0x1010 => array('label' => '0.16.16', 'keys' => 310, 'targets' => 297),
-			0x1012 => array('label' => '0.16.18', 'keys' => 310, 'targets' => 296),
-			0x1015 => array('label' => '0.16.21', 'keys' => 310, 'targets' => 296),
-		);
-
-		foreach ($expected as $version => $counts) {
-			$settings = $this->makeSettings($version);
-			$label = $counts['label'];
-
-			$malformed = array();
-			$targets = array();
-			foreach ($settings->aliases as $alias => $entry) {
-				// Shape first, then the target. getCommand() reaches straight
-				// into $entry['name'], so asking it for the target ahead of
-				// this check makes a non-array entry a fatal before the
-				// branch that names that exact malformation can report it.
-				if (!is_array($entry) || !array_key_exists('name', $entry) || !array_key_exists('prm', $entry)) {
-					$malformed[] = $alias.' is not an array carrying both name and prm';
-					continue;
-				}
-				// The target must be proven a non-empty string before anything
-				// treats it as one. getCommand() concatenates it and strpos()
-				// demands it, so a name that is an array or a number fatals the
-				// whole test file here -- taking every later version gate with
-				// it -- instead of being reported as the malformation it is.
-				if (!is_string($entry['name']) || $entry['name'] === '') {
-					$malformed[] = $alias.' has an empty target';
-					continue;
-				}
-				$targets[$settings->getCommand($alias)] = true;
-				if (strpos($entry['name'], '=') !== false) {
-					$malformed[] = $alias.' carries a trailing = in its target, which getCommand appends itself';
-				}
-				if (!in_array($entry['prm'], array(0, 1), true)) {
-					$malformed[] = $alias.' has prm '.json_encode($entry['prm']).', which is neither 0 nor 1';
-				}
-			}
-			$this->assertEquals(array(), $malformed, 'rTorrent '.$label.' alias entries are well formed; malformed: '.implode(', ', $malformed));
-			$this->assertEquals($counts['keys'], count($settings->aliases), 'rTorrent '.$label.' has '.$counts['keys'].' effective alias keys, got '.count($settings->aliases));
-			$this->assertEquals($counts['targets'], count($targets), 'rTorrent '.$label.' resolves them to '.$counts['targets'].' distinct targets, got '.count($targets));
-		}
 	}
 }

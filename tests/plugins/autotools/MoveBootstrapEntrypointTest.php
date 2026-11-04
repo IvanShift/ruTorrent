@@ -34,7 +34,7 @@ if (isset($argv[1]) && $argv[1] === '--getplugins-child') {
     $at->enable_move = 1;
     $at->fileop_type = 'Move';
     $at->path_to_finished = $scratch . '/finished';
-    if (!$at->store()) throw new RuntimeException('AutoTools fixture setting was not stored');
+    if (!$at->store()) { throw new RuntimeException('AutoTools fixture setting was not stored'); }
     require($root . '/php/getplugins.php');
     exit(0);
 }
@@ -43,9 +43,9 @@ require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
 
 function removeMoveBootstrapFixture($path)
 {
-    if (!is_dir($path) || is_link($path)) return @unlink($path);
-    foreach (scandir($path) as $name)
-        if ($name !== '.' && $name !== '..') removeMoveBootstrapFixture($path . '/' . $name);
+    if (!is_dir($path) || is_link($path)) { return @unlink($path); }
+    foreach (scandir($path) as $name) {
+        if ($name !== '.' && $name !== '..') { removeMoveBootstrapFixture($path . '/' . $name); } }
     return rmdir($path);
 }
 
@@ -56,19 +56,19 @@ $suite->test('getplugins boots configured AutoTools Move from php working direct
         . '/autotools-getplugins-' . bin2hex(random_bytes(7));
     $user = 'autotoolsbootstrap' . bin2hex(random_bytes(6));
     $userDir = $root . '/conf/users/' . $user;
-    if (!mkdir($scratch, 0700) || !mkdir($userDir, 0700))
-        throw new RuntimeException('Cannot create private getplugins fixture');
+    if (!mkdir($scratch, 0700) || !mkdir($userDir, 0700)) {
+        throw new RuntimeException('Cannot create private getplugins fixture'); }
     try {
         file_put_contents($userDir . '/plugins.ini',
             "[default]\nenabled = no\n[autotools]\nenabled = yes\n");
-        $command = array(PHP_BINARY, '-d', 'variables_order=EGPCS', __FILE__,
-            '--getplugins-child', $root, $user, $scratch);
-        $process = proc_open($command, array(
-            0 => array('file', '/dev/null', 'r'),
-            1 => array('pipe', 'w'),
-            2 => array('pipe', 'w'),
-        ), $pipes, $root . '/php');
-        if (!is_resource($process)) throw new RuntimeException('Cannot start getplugins child');
+        $command = [PHP_BINARY, '-d', 'variables_order=EGPCS', __FILE__,
+            '--getplugins-child', $root, $user, $scratch];
+        $process = proc_open($command, [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ], $pipes, $root . '/php');
+        if (!is_resource($process)) { throw new RuntimeException('Cannot start getplugins child'); }
         $output = stream_get_contents($pipes[1]); fclose($pipes[1]);
         $error = stream_get_contents($pipes[2]); fclose($pipes[2]);
         $status = proc_close($process);

@@ -9,21 +9,21 @@ class ExtsearchOtherActionBudgetTest extends TestCase
 	public function testSearchGetBoundsRealSilentScgiAndRetainsSixReceipts()
 	{
 		$fixture = new ExtsearchRealActionFixture();
-		$peer = SCGITransportFixture::startChunks(array(), true);
+		$peer = SCGITransportFixture::startChunks([], true);
 		try
 		{
-			$rows = array();
-			for($i=0; $i<6; $i++)
-				$rows['https://example.invalid/search/'.$i] = array(
+			$rows = [];
+			for($i=0; $i<6; $i++) {
+				$rows['https://example.invalid/search/'.$i] = [
 					'hash'=>str_repeat((string)$i,40),
-					'key'=>'ru-load-proof-'.str_repeat('b',32));
-			$result = $fixture->run(array(
+					'key'=>'ru-load-proof-'.str_repeat('b',32)]; }
+			$result = $fixture->run([
 				'method'=>'GET',
-				'request'=>array('mode'=>'get','eng'=>'all','what'=>'needle','cat'=>'all'),
-				'body'=>'', 'empty_engines'=>true, 'rows'=>$rows), $peer);
+				'request'=>['mode'=>'get','eng'=>'all','what'=>'needle','cat'=>'all'],
+				'body'=>'', 'empty_engines'=>true, 'rows'=>$rows], $peer);
 			$this->assertSame(0, $result['exit'],
 				'real search action finishes: '.$result['error']);
-			$this->assertSame(array('eng'=>'all','cat'=>'all','data'=>array()),
+			$this->assertSame(['eng'=>'all','cat'=>'all','data'=>[]],
 				json_decode($result['output'],true), 'search returns without tracker fetch');
 			$this->assertTrue($result['elapsed'] < 6.0,
 				'search cannot wait through six default SCGI read timeouts: '.$result['elapsed']);
@@ -47,17 +47,17 @@ class ExtsearchOtherActionBudgetTest extends TestCase
 		$url = 'https://example.invalid/pending/malformed';
 		$key = 'ru-load-proof-'.str_repeat('c',32);
 		$fixture = new ExtsearchRealActionFixture();
-		$peer = SCGITransportFixture::startChunks(array(), true);
+		$peer = SCGITransportFixture::startChunks([], true);
 		try
 		{
-			$result = $fixture->run(array(
-				'method'=>'POST', 'request'=>array('mode'=>'loadtorrents'),
+			$result = $fixture->run([
+				'method'=>'POST', 'request'=>['mode'=>'loadtorrents'],
 				'body'=>'mode=loadtorrents&url='.rawurlencode($url).'&ndx=3',
-				'rows'=>array($url=>array('hash'=>str_repeat('C',40),
-					'key'=>$key))), $peer);
+				'rows'=>[$url=>['hash'=>str_repeat('C',40),
+					'key'=>$key]]], $peer);
 			$this->assertSame(0, $result['exit'],
 				'malformed load action exits cleanly: '.$result['error']);
-			$this->assertSame(array('error'=>'invalid request'),
+			$this->assertSame(['error'=>'invalid request'],
 				json_decode($result['output'], true), 'partial load trio is rejected');
 			$saved = $fixture->snapshot();
 			$this->assertSame(true, $saved['rows'][$url]['pending'] ?? null,

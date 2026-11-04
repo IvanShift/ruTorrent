@@ -41,9 +41,9 @@ if(!is_string($runnerFile) || !is_file($runnerFile))
 $runnerBefore = get_declared_classes();
 require_once($runnerFile);
 $runnerClass = null;
-foreach(array_diff(get_declared_classes(), $runnerBefore) as $candidate)
-	if(get_parent_class($candidate) === 'TestCase')
-		$runnerClass = $candidate;
+foreach(array_diff(get_declared_classes(), $runnerBefore) as $candidate) {
+	if(get_parent_class($candidate) === 'TestCase') {
+		$runnerClass = $candidate; } }
 if($runnerClass === null)
 {
 	fwrite(STDERR, "RunNamedCases: ".$runnerFile." declares no TestCase subclass\n");
@@ -51,7 +51,7 @@ if($runnerClass === null)
 }
 
 $runnerFailures = 0;
-$runnerFinished = array();
+$runnerFinished = [];
 $runnerPatterns = '/^Failed:|^not ok|failed with error|PHP (Fatal|Parse) error|Uncaught/m';
 
 // A fatal error kills the process before the loop below can report, so the
@@ -59,16 +59,16 @@ $runnerPatterns = '/^Failed:|^not ok|failed with error|PHP (Fatal|Parse) error|U
 register_shutdown_function(function() use (&$runnerFinished, $runnerNames) {
 	$last = error_get_last();
 	$fatal = is_array($last)
-		&& in_array($last['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR,
-			E_COMPILE_ERROR, E_USER_ERROR), true);
+		&& in_array($last['type'], [E_ERROR, E_PARSE, E_CORE_ERROR,
+			E_COMPILE_ERROR, E_USER_ERROR], true);
 	$missing = array_values(array_diff($runnerNames, $runnerFinished));
-	if(!$fatal && !count($missing))
-		return;
+	if(!$fatal && !count($missing)) {
+		return; }
 	echo "RunNamedCases: INCOMPLETE";
-	if($fatal)
-		echo " (fatal: ".$last['message'].")";
-	if(count($missing))
-		echo " (never finished: ".implode(', ', $missing).")";
+	if($fatal) {
+		echo " (fatal: ".$last['message'].")"; }
+	if(count($missing)) {
+		echo " (never finished: ".implode(', ', $missing).")"; }
 	echo "\n";
 	// exit() inside a shutdown function still sets the process status.
 	exit(1);
@@ -115,14 +115,14 @@ try
 			echo "RunNamedCases: ".$name." made no assertions at all\n";
 			$runnerFailures++;
 		}
-		if($failed || $signals)
-			$runnerFailures++;
+		if($failed || $signals) {
+			$runnerFailures++; }
 	}
 }
 finally
 {
-	if($classReady)
-		$runner->tearDownClass();
+	if($classReady) {
+		$runner->tearDownClass(); }
 }
 
 echo "RunNamedCases: ".count($runnerFinished)."/".count($runnerNames)

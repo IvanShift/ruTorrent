@@ -6,8 +6,8 @@ $forbidUserSettings = false;
 $enableCSRFCheck = false;
 $al_diagnostic = true;
 $locale = 'UTF8';
-$localhosts = array('::1', '127.0.0.1', 'localhost');
+$localhosts = ['::1', '127.0.0.1', 'localhost'];
 getenv('RU_LOCALHOSTS') && $localhosts[] = $_ENV['RU_LOCALHOSTS'];
 $configLocalPath = __DIR__.'/config.local.php';
-if(is_file($configLocalPath) && is_readable($configLocalPath))
-    require($configLocalPath);
+if(is_file($configLocalPath) && is_readable($configLocalPath)) {
+    require($configLocalPath); }

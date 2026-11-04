@@ -28,59 +28,9 @@ class WatchTopDirectoryTest extends TestCase
 
 	public function tearDown()
 	{
-		if ($this->base !== null)
-			PluginEntryDriver::removeTree($this->base);
+		if ($this->base !== null) {
+			PluginEntryDriver::removeTree($this->base); }
 		$this->base = null;
-	}
-
-	private function makeDir($dir)
-	{
-		if (!is_dir($dir) && !mkdir($dir, 0700, true))
-			throw new RuntimeException('Could not create fixture directory ' . $dir);
-	}
-
-	/** A top directory with a download directory, and a directory outside it. */
-	private function makeTree()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-autowatch-top-' . bin2hex(random_bytes(6));
-		$this->makeDir($this->base . '/session');
-		$this->makeDir($this->base . '/top/dl');
-		$this->makeDir($this->base . '/outside');
-		$this->base = realpath($this->base);
-		$this->top = $this->base . '/top';
-	}
-
-	/** Stores the settings watch.php reads, then runs it once against port 1, where nothing answers. */
-	private function watch($watched)
-	{
-		$run = PluginEntryDriver::run($this->base, 1, 'plugins/autotools/watch.php', array('before' =>
-			'$topDirectory = ' . var_export($this->top . '/', true) . ';'
-			. ' $s->directory = ' . var_export($this->top . '/dl', true) . ';'
-			. ' $s->session = ' . var_export($this->base . '/session', true) . ';'
-			. ' require_once ' . var_export(realpath(__DIR__ . '/../../..') . '/plugins/autotools/autotools.php', true) . ';'
-			. ' $at = rAutoTools::load(); $at->enable_watch = 1; $at->watch_start = 0;'
-			. ' $at->path_to_watch = ' . var_export($watched, true) . ';'
-			. ' if (!$at->store()) throw new RuntimeException("the AutoTools settings were not stored");'));
-		clearstatcache();
-		return $run[2];
-	}
-
-	private function log()
-	{
-		return (string) @file_get_contents($this->base . '/application.log');
-	}
-
-	/** A torrent outside the top directory, with a time watch.php's touch would change. */
-	private function outsideTorrent()
-	{
-		file_put_contents($this->base . '/outside/x.torrent', 'not ours');
-		touch($this->base . '/outside/x.torrent', 1000000000);
-		return $this->base . '/outside/x.torrent';
-	}
-
-	private function untouched($file)
-	{
-		return is_file($file) && filemtime($file) === 1000000000;
 	}
 
 	public function testAWatchDirectoryThatIsALinkOutIsNotScanned()
@@ -156,5 +106,55 @@ class WatchTopDirectoryTest extends TestCase
 			'it is taken up (and, with rtorrent unreachable, set aside): ' . $errors);
 		$this->assertTrue(strpos($this->log(), 'autotools: watch refused') === false,
 			'and nothing is refused: ' . $this->log());
+	}
+
+	private function makeDir($dir)
+	{
+		if (!is_dir($dir) && !mkdir($dir, 0700, true)) {
+			throw new RuntimeException('Could not create fixture directory ' . $dir); }
+	}
+
+	/** A top directory with a download directory, and a directory outside it. */
+	private function makeTree()
+	{
+		$this->base = sys_get_temp_dir() . '/rutorrent-autowatch-top-' . bin2hex(random_bytes(6));
+		$this->makeDir($this->base . '/session');
+		$this->makeDir($this->base . '/top/dl');
+		$this->makeDir($this->base . '/outside');
+		$this->base = realpath($this->base);
+		$this->top = $this->base . '/top';
+	}
+
+	/** Stores the settings watch.php reads, then runs it once against port 1, where nothing answers. */
+	private function watch($watched)
+	{
+		$run = PluginEntryDriver::run($this->base, 1, 'plugins/autotools/watch.php', ['before' =>
+			'$topDirectory = ' . var_export($this->top . '/', true) . ';'
+			. ' $s->directory = ' . var_export($this->top . '/dl', true) . ';'
+			. ' $s->session = ' . var_export($this->base . '/session', true) . ';'
+			. ' require_once ' . var_export(realpath(__DIR__ . '/../../..') . '/plugins/autotools/autotools.php', true) . ';'
+			. ' $at = rAutoTools::load(); $at->enable_watch = 1; $at->watch_start = 0;'
+			. ' $at->path_to_watch = ' . var_export($watched, true) . ';'
+			. ' if (!$at->store()) throw new RuntimeException("the AutoTools settings were not stored");']);
+		clearstatcache();
+		return $run[2];
+	}
+
+	private function log()
+	{
+		return (string) @file_get_contents($this->base . '/application.log');
+	}
+
+	/** A torrent outside the top directory, with a time watch.php's touch would change. */
+	private function outsideTorrent()
+	{
+		file_put_contents($this->base . '/outside/x.torrent', 'not ours');
+		touch($this->base . '/outside/x.torrent', 1000000000);
+		return $this->base . '/outside/x.torrent';
+	}
+
+	private function untouched($file)
+	{
+		return is_file($file) && filemtime($file) === 1000000000;
 	}
 }

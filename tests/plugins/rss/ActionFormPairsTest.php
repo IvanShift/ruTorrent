@@ -66,47 +66,21 @@ PHPDRIVER
 
     public function tearDown()
     {
-        foreach (glob($this->root . '/*') as $path) unlink($path);
+        foreach (glob($this->root . '/*') as $path) { unlink($path); }
         rmdir($this->root);
-    }
-
-    private function action($mode, $body)
-    {
-        $env = array_merge(getenv(), array(
-            'RSS_FORM_MODE' => $mode,
-            'RSS_FORM_BODY' => $body === false ? '' : $body,
-            'RSS_FORM_FALSE' => $body === false ? '1' : '0',
-            'RSS_FORM_TRACE' => $this->root . '/trace',
-        ));
-        @unlink($this->root . '/trace');
-        $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr', $this->root . '/driver.php'),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, $this->root, $env);
-        $this->assertTrue(is_resource($process), 'RSS action child starts');
-        if (!is_resource($process)) return array();
-        fclose($pipes[0]);
-        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
-        $errors = stream_get_contents($pipes[2]); fclose($pipes[2]);
-        $exit = proc_close($process);
-        $this->assertEquals(0, $exit, 'RSS action completes: ' . $errors);
-        $this->assertEquals('', $errors, 'RSS action emits no diagnostics');
-        $this->assertTrue($out !== '', 'RSS action returns a response');
-        $trace = @file_get_contents($this->root . '/trace');
-        return array_map(static function($line) { return json_decode($line, true); },
-            explode("\n", trim((string)$trace)));
     }
 
     public function testAddGroupRetainsEqualsPlusEmptyAndDuplicateOrder()
     {
         $trace = $this->action('addgroup', 'rss=raw=A&rss=plus+tag&rss=&rss&unknown&rss=last%2Be');
-        $this->assertEquals(array('addGroup', array('raw=A', 'plus+tag', '', null, 'last%2Be')),
+        $this->assertEquals(['addGroup', ['raw=A', 'plus+tag', '', null, 'last%2Be']],
             $trace[0] ?? null, 'feed IDs retain their raw ordered wire values');
     }
 
     public function testFailedBodyReadStillProcessesAnEmptyGroup()
     {
         $trace = $this->action('addgroup', false);
-        $this->assertEquals(array('addGroup', array()), $trace[0] ?? null,
+        $this->assertEquals(['addGroup', []], $trace[0] ?? null,
             'a failed body read still follows the old empty-group path');
     }
 
@@ -114,7 +88,7 @@ PHPDRIVER
     {
         $trace = $this->action('setfilters',
             'name=A%2BB&pattern=one=two&exclude=plus+word&name=Second&pattern=&pattern=tail=part');
-        $rows = $trace[0][1] ?? array();
+        $rows = $trace[0][1] ?? [];
         $this->assertEquals('A+B', $rows[0]['name'] ?? null, 'encoded plus decoded once');
         $this->assertEquals('one=two', $rows[0]['pattern'] ?? null, 'pattern keeps raw equals');
         $this->assertEquals('plus+word', $rows[0]['exclude'] ?? null, 'literal plus remains plus');
@@ -125,8 +99,8 @@ PHPDRIVER
     public function testMarkKeepsParallelUrlTimeOrder()
     {
         $trace = $this->action('mark', 'url=https://a.test/?x=y&time=1=2&url=x+y&time=&url&time');
-        $this->assertEquals(array('setHistoryState',
-            array(array('https://a.test/?x=y', 'x+y', ''), array('1=2', '', null), '1')),
+        $this->assertEquals(['setHistoryState',
+            [['https://a.test/?x=y', 'x+y', ''], ['1=2', '', null], '1']],
             $trace[0] ?? null, 'parallel URL/time arrays keep complete ordered values');
     }
 
@@ -134,43 +108,43 @@ PHPDRIVER
     {
         $trace = $this->action('loadtorrents',
             'rss=known-feed&url=magnet:?xt=abc&url=x+y&url=&rss=unknown&url=skip=me&rss=known-feed&url=last=part');
-        $this->assertEquals(array(
-            array('getTorrents', array('known-feed', 'magnet:?xt=abc', true, true, null, null)),
-            array('getTorrents', array('known-feed', 'x+y', true, true, null, null)),
-            array('getTorrents', array('known-feed', '', true, true, null, null)),
-            array('getTorrents', array('known-feed', 'last=part', true, true, null, null)),
-        ), $trace, 'only registered feed receives complete URLs in duplicate order');
+        $this->assertEquals([
+            ['getTorrents', ['known-feed', 'magnet:?xt=abc', true, true, null, null]],
+            ['getTorrents', ['known-feed', 'x+y', true, true, null, null]],
+            ['getTorrents', ['known-feed', '', true, true, null, null]],
+            ['getTorrents', ['known-feed', 'last=part', true, true, null, null]],
+        ], $trace, 'only registered feed receives complete URLs in duplicate order');
     }
 
     public function testLoadTorrentsRetainsBarePresenceFlags()
     {
         $trace = $this->action('loadtorrents',
             'rss=known-feed&url=one&missing&torrents_start_stopped&not_add_path&url=two');
-        $this->assertEquals(array(
-            array('getTorrents', array('known-feed', 'one', false, false, null, null)),
-            array('getTorrents', array('known-feed', 'two', false, false, null, null)),
-        ), $trace, 'name-only load flags retain their historical presence semantics');
+        $this->assertEquals([
+            ['getTorrents', ['known-feed', 'one', false, false, null, null]],
+            ['getTorrents', ['known-feed', 'two', false, false, null, null]],
+        ], $trace, 'name-only load flags retain their historical presence semantics');
     }
     public function testLoadTorrentsBareKeysMatchCommittedParserState()
     {
-        $cases = array(
-            array('torrents_start_stopped', array('before', 'after', 'resumed'), false, true, null, null),
-            array('not_add_path', array('before', 'after', 'resumed'), true, false, null, null),
-            array('dir_edit', array('before', 'after', 'resumed'), true, true, '', null),
-            array('label', array('before', 'after', 'resumed'), true, true, null, ''),
-            array('rss', array('before', 'resumed'), true, true, null, null),
-            array('url', array('before', '', 'after', 'resumed'), true, true, null, null),
-            array('unknown', array('before', 'after', 'resumed'), true, true, null, null),
-        );
+        $cases = [
+            ['torrents_start_stopped', ['before', 'after', 'resumed'], false, true, null, null],
+            ['not_add_path', ['before', 'after', 'resumed'], true, false, null, null],
+            ['dir_edit', ['before', 'after', 'resumed'], true, true, '', null],
+            ['label', ['before', 'after', 'resumed'], true, true, null, ''],
+            ['rss', ['before', 'resumed'], true, true, null, null],
+            ['url', ['before', '', 'after', 'resumed'], true, true, null, null],
+            ['unknown', ['before', 'after', 'resumed'], true, true, null, null],
+        ];
         foreach ($cases as $case)
         {
             list($key, $urls, $isStart, $isAddPath, $dir, $label) = $case;
             $trace = $this->action('loadtorrents',
                 'rss=known-feed&url=before&' . $key . '&url=after&rss=known-feed&url=resumed');
-            $expected = array();
-            foreach ($urls as $url)
-                $expected[] = array('getTorrents',
-                    array('known-feed', $url, $isStart, $isAddPath, $dir, $label));
+            $expected = [];
+            foreach ($urls as $url) {
+                $expected[] = ['getTorrents',
+                    ['known-feed', $url, $isStart, $isAddPath, $dir, $label]]; }
             $this->assertEquals($expected, $trace, 'bare ' . $key . ' retains committed parser state');
         }
     }
@@ -178,35 +152,61 @@ PHPDRIVER
     public function testSetFiltersBareKeysRetainCommittedResetSemantics()
     {
         $trace = $this->action('setfilters', 'name=A&pattern=one&name&pattern=two');
-        $this->assertEquals(array('setFilters', array(
-            array('name' => 'A', 'pattern' => 'one'),
-            array('name' => '', 'pattern' => 'two'),
-        )), $trace[0] ?? null, 'bare name starts a fresh unnamed filter');
+        $this->assertEquals(['setFilters', [
+            ['name' => 'A', 'pattern' => 'one'],
+            ['name' => '', 'pattern' => 'two'],
+        ]], $trace[0] ?? null, 'bare name starts a fresh unnamed filter');
 
-        $properties = array(
-            'pattern' => array('pattern', ''),
-            'exclude' => array('exclude', ''),
-            'enabled' => array('enabled', null),
-            'no' => array('no', null),
-            'interval' => array('interval', null),
-            'hash' => array('rssHash', null),
-            'throttle' => array('throttle', null),
-            'ratio' => array('ratio', null),
-            'start' => array('start', null),
-            'addPath' => array('addPath', null),
-            'dir' => array('directory', ''),
-            'label' => array('label', ''),
-            'chktitle' => array('titleCheck', null),
-            'chkdesc' => array('descCheck', null),
-            'chklink' => array('linkCheck', null),
-        );
+        $properties = [
+            'pattern' => ['pattern', ''],
+            'exclude' => ['exclude', ''],
+            'enabled' => ['enabled', null],
+            'no' => ['no', null],
+            'interval' => ['interval', null],
+            'hash' => ['rssHash', null],
+            'throttle' => ['throttle', null],
+            'ratio' => ['ratio', null],
+            'start' => ['start', null],
+            'addPath' => ['addPath', null],
+            'dir' => ['directory', ''],
+            'label' => ['label', ''],
+            'chktitle' => ['titleCheck', null],
+            'chkdesc' => ['descCheck', null],
+            'chklink' => ['linkCheck', null],
+        ];
         foreach ($properties as $key => $property)
         {
             list($field, $bareValue) = $property;
             $trace = $this->action('setfilters', 'name=A&' . $key . '=old&' . $key);
-            $this->assertEquals(array('setFilters', array(array('name' => 'A', $field => $bareValue))),
+            $this->assertEquals(['setFilters', [['name' => 'A', $field => $bareValue]]],
                 $trace[0] ?? null, 'bare ' . $key . ' resets the filter property as on HEAD');
         }
+    }
+
+    private function action($mode, $body)
+    {
+        $env = array_merge(getenv(), [
+            'RSS_FORM_MODE' => $mode,
+            'RSS_FORM_BODY' => $body === false ? '' : $body,
+            'RSS_FORM_FALSE' => $body === false ? '1' : '0',
+            'RSS_FORM_TRACE' => $this->root . '/trace',
+        ]);
+        @unlink($this->root . '/trace');
+        $process = proc_open([PHP_BINARY, '-d', 'display_errors=stderr', $this->root . '/driver.php'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, $this->root, $env);
+        $this->assertTrue(is_resource($process), 'RSS action child starts');
+        if (!is_resource($process)) { return []; }
+        fclose($pipes[0]);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $errors = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $exit = proc_close($process);
+        $this->assertEquals(0, $exit, 'RSS action completes: ' . $errors);
+        $this->assertEquals('', $errors, 'RSS action emits no diagnostics');
+        $this->assertTrue($out !== '', 'RSS action returns a response');
+        $trace = @file_get_contents($this->root . '/trace');
+        return array_map(static function($line) { return json_decode($line, true); },
+            explode("\n", trim((string)$trace)));
     }
 
 }

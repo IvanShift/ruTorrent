@@ -65,57 +65,57 @@ function aefNow()
 // "still running".
 function aefProcessAlive($pid)
 {
-	if(!is_int($pid) || $pid <= 0 || !@is_dir('/proc'))
-		return(null);
+	if(!is_int($pid) || $pid <= 0 || !@is_dir('/proc')) {
+		return(null); }
 	clearstatcache(true, '/proc/'.$pid);
 	return(@is_dir('/proc/'.$pid));
 }
 
 function aefConfig($file)
 {
-	if(!is_string($file) || $file === '' || $file[0] !== '/' || !is_file($file))
-		aefFail('config argument must be one absolute filename');
+	if(!is_string($file) || $file === '' || $file[0] !== '/' || !is_file($file)) {
+		aefFail('config argument must be one absolute filename'); }
 	$raw = @file_get_contents($file);
-	if(!is_string($raw))
-		aefFail('config file is unreadable');
+	if(!is_string($raw)) {
+		aefFail('config file is unreadable'); }
 	$config = json_decode($raw, true);
-	if(!is_array($config))
-		aefFail('config file is not a JSON object');
-	$required = array('dir' => 'string', 'hashes' => 'array',
-		'aggregate' => 'array', 'idle' => 'number');
+	if(!is_array($config)) {
+		aefFail('config file is not a JSON object'); }
+	$required = ['dir' => 'string', 'hashes' => 'array',
+		'aggregate' => 'array', 'idle' => 'number'];
 	if(count(array_diff(array_keys($config), array_keys($required)))
-		|| count(array_diff(array_keys($required), array_keys($config))))
-		aefFail('config keys must be exactly: '.implode(', ', array_keys($required)));
+		|| count(array_diff(array_keys($required), array_keys($config)))) {
+		aefFail('config keys must be exactly: '.implode(', ', array_keys($required))); }
 	if(!is_string($config['dir']) || $config['dir'] === '' || $config['dir'][0] !== '/'
-		|| !is_dir($config['dir']))
-		aefFail('config dir must be an existing absolute directory');
-	if(!is_array($config['hashes']) || !count($config['hashes']))
-		aefFail('config hashes must be a non-empty object');
+		|| !is_dir($config['dir'])) {
+		aefFail('config dir must be an existing absolute directory'); }
+	if(!is_array($config['hashes']) || !count($config['hashes'])) {
+		aefFail('config hashes must be a non-empty object'); }
 	foreach($config['hashes'] as $hash => $entry)
 	{
 		// The canonical spelling erasedataCanonicalHash() produces, which is
 		// what every command really carries on the wire.
-		if(preg_match('/^[0-9A-F]{40}$/D', (string)$hash) !== 1)
-			aefFail('config hashes must be keyed by canonical uppercase hashes');
+		if(preg_match('/^[0-9A-F]{40}$/D', (string)$hash) !== 1) {
+			aefFail('config hashes must be keyed by canonical uppercase hashes'); }
 		if(!is_array($entry) || !isset($entry['present'], $entry['base'], $entry['multi'],
 			$entry['files']) || !is_bool($entry['present']) || !is_string($entry['base'])
-			|| !is_int($entry['multi']) || !is_array($entry['files']))
-			aefFail('config hash '.$hash.' must carry present/base/multi/files');
+			|| !is_int($entry['multi']) || !is_array($entry['files'])) {
+			aefFail('config hash '.$hash.' must carry present/base/multi/files'); }
 	}
 	$aggregate = $config['aggregate'];
-	$aggregateKeys = array('after_erase' => true, 'mode' => true, 'barrier' => true);
+	$aggregateKeys = ['after_erase' => true, 'mode' => true, 'barrier' => true];
 	if(count(array_diff(array_keys($aggregate), array_keys($aggregateKeys)))
-		|| count(array_diff(array_keys($aggregateKeys), array_keys($aggregate))))
-		aefFail('config aggregate keys must be exactly: after_erase, mode, barrier');
-	if(!is_int($aggregate['after_erase']) || $aggregate['after_erase'] < 0)
-		aefFail('aggregate after_erase must be a non-negative integer');
-	if(!in_array($aggregate['mode'], array('none', 'pause-after-erase',
-		'stop-after-erase'), true))
-		aefFail('aggregate mode must be none, pause-after-erase or stop-after-erase');
-	if(!is_string($aggregate['barrier']) || $aggregate['barrier'] === '')
-		aefFail('aggregate barrier must be a non-empty label');
-	if(!is_int($config['idle']) && !is_float($config['idle']))
-		aefFail('config idle must be a number of seconds');
+		|| count(array_diff(array_keys($aggregateKeys), array_keys($aggregate)))) {
+		aefFail('config aggregate keys must be exactly: after_erase, mode, barrier'); }
+	if(!is_int($aggregate['after_erase']) || $aggregate['after_erase'] < 0) {
+		aefFail('aggregate after_erase must be a non-negative integer'); }
+	if(!in_array($aggregate['mode'], ['none', 'pause-after-erase',
+		'stop-after-erase'], true)) {
+		aefFail('aggregate mode must be none, pause-after-erase or stop-after-erase'); }
+	if(!is_string($aggregate['barrier']) || $aggregate['barrier'] === '') {
+		aefFail('aggregate barrier must be a non-empty label'); }
+	if(!is_int($config['idle']) && !is_float($config['idle'])) {
+		aefFail('config idle must be a number of seconds'); }
 	return($config);
 }
 
@@ -133,6 +133,55 @@ class ErasedataAggregateEraseDaemon
 		$this->barrier = $config['aggregate'];
 	}
 
+	public function run()
+	{
+		@mkdir($this->dir.'/req', 0777, true);
+		@mkdir($this->dir.'/rep', 0777, true);
+		$this->load();
+		// A restart resumes nothing. Any request left unanswered belongs to a
+		// transport that is already gone, and re-running it would execute the
+		// tail of a batch whose client died -- which is precisely the outcome
+		// the daemon-death case must NOT be handed.
+		$abandoned = [];
+		foreach((array)@glob($this->dir.'/req/*.json') as $pending)
+		{
+			$abandoned[] = basename($pending);
+			@rename($pending, $pending.'.abandoned');
+		}
+		@unlink($this->dir.'/barrier');
+		@unlink($this->dir.'/release');
+		$this->persist();
+		$this->event(['event' => 'daemon-started',
+			'abandoned' => $abandoned, 'present' => $this->presentHashes()]);
+		@file_put_contents($this->dir.'/alive', (string)getmypid());
+		$idle = (float)$this->config['idle'];
+		$deadline = microtime(true) + $idle;
+		while(microtime(true) < $deadline)
+		{
+			clearstatcache(true, $this->dir.'/stop');
+			if(@file_exists($this->dir.'/stop')) {
+				break; }
+			$pending = (array)@glob($this->dir.'/req/*.json');
+			sort($pending, SORT_STRING);
+			if(!count($pending))
+			{
+				usleep(5000);
+				continue;
+			}
+			foreach($pending as $file)
+			{
+				if(!$this->serve($file))
+				{
+					$this->close('stopped-at-barrier');
+					return(0);
+				}
+				$deadline = microtime(true) + $idle;
+			}
+		}
+		$this->close('stopped');
+		return(0);
+	}
+
 	// -- durable presence table ---------------------------------------------
 	//
 	// It is loaded from disk when it is already there, so a RESTART of this
@@ -148,15 +197,15 @@ class ErasedataAggregateEraseDaemon
 			$this->state = $decoded;
 			return;
 		}
-		$this->state = array('hashes' => $this->config['hashes'],
-			'applied' => 0, 'erased' => array());
+		$this->state = ['hashes' => $this->config['hashes'],
+			'applied' => 0, 'erased' => []];
 	}
 
 	private function persist()
 	{
 		$tmp = $this->dir.'/state.json.tmp';
-		if(@file_put_contents($tmp, json_encode($this->state)) === false)
-			return(false);
+		if(@file_put_contents($tmp, json_encode($this->state)) === false) {
+			return(false); }
 		return(@rename($tmp, $this->dir.'/state.json'));
 	}
 
@@ -184,42 +233,42 @@ class ErasedataAggregateEraseDaemon
 		$known = isset($this->state['hashes'][$hash])
 			&& is_array($this->state['hashes'][$hash]);
 		$present = $known && !empty($this->state['hashes'][$hash]['present']);
-		$missing = array('ok' => true, 'fault' => 'invalid parameters: info-hash not found',
-			'faultCode' => -500, 'values' => array(), 'hash' => $hash);
-		if(!$present)
-			return($missing);
+		$missing = ['ok' => true, 'fault' => 'invalid parameters: info-hash not found',
+			'faultCode' => -500, 'values' => [], 'hash' => $hash];
+		if(!$present) {
+			return($missing); }
 		$entry = $this->state['hashes'][$hash];
-		$values = array();
+		$values = [];
 		switch((string)$command)
 		{
 			case 'd.hash':
-				$values = array($hash);
+				$values = [$hash];
 				break;
 			case 'd.get_base_path':
 			case 'd.get_directory':
-				$values = array($entry['base']);
+				$values = [$entry['base']];
 				break;
 			case 'd.is_multi_file':
-				$values = array(empty($entry['multi']) ? '0' : '1');
+				$values = [empty($entry['multi']) ? '0' : '1'];
 				break;
 			case 'f.multicall':
 				$values = array_values($entry['files']);
 				break;
 			case 'd.set_custom5':
 			case 'd.delete_tied':
-				$values = array('');
+				$values = [''];
 				break;
 			case 'd.erase':
 				$this->state['hashes'][$hash]['present'] = false;
 				$this->state['erased'][] = $hash;
-				$values = array('');
+				$values = [''];
 				break;
 			default:
-				return(array('ok' => true, 'fault' => 'unsupported command',
-					'faultCode' => -506, 'values' => array(), 'hash' => $hash));
+				return(['ok' => true, 'fault' => 'unsupported command',
+					'faultCode' => -506, 'values' => [], 'hash' => $hash]);
 		}
-		return(array('ok' => true, 'fault' => null, 'faultCode' => 0,
-			'values' => $values, 'hash' => $hash));
+		return(['ok' => true, 'fault' => null, 'faultCode' => 0,
+			'values' => $values, 'hash' => $hash]);
 	}
 
 	// -- the barrier ---------------------------------------------------------
@@ -230,14 +279,14 @@ class ErasedataAggregateEraseDaemon
 	private function reachBarrier($request, $ordinal, $hash, $executed, $clientPid,
 		$generation)
 	{
-		$record = $this->event(array('event' => 'barrier-reached',
+		$record = $this->event(['event' => 'barrier-reached',
 			'barrier' => $this->barrier['barrier'], 'mode' => $this->barrier['mode'],
 			'request' => $request, 'ordinal' => $ordinal, 'command' => 'd.erase',
 			'hash' => $hash, 'erased' => $executed, 'client_pid' => $clientPid,
-			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation));
+			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation]);
 		@file_put_contents($this->dir.'/barrier', json_encode($record));
-		if($this->barrier['mode'] === 'stop-after-erase')
-			return(false);
+		if($this->barrier['mode'] === 'stop-after-erase') {
+			return(false); }
 		$deadline = microtime(true) + 60.0;
 		while(microtime(true) < $deadline)
 		{
@@ -245,23 +294,23 @@ class ErasedataAggregateEraseDaemon
 			// on, which is how a case observes the producer's held locks and
 			// descriptors first and only then closes the transport under it.
 			clearstatcache(true, $this->dir.'/stop');
-			if(@file_exists($this->dir.'/stop'))
-				return(false);
+			if(@file_exists($this->dir.'/stop')) {
+				return(false); }
 			clearstatcache(true, $this->dir.'/release');
 			if(@file_exists($this->dir.'/release'))
 			{
-				$this->event(array('event' => 'barrier-released',
+				$this->event(['event' => 'barrier-released',
 					'request' => $request, 'ordinal' => $ordinal, 'hash' => $hash,
 					'erased' => $executed, 'client_pid' => $clientPid,
 					'client_alive' => aefProcessAlive($clientPid),
-					'generation' => $generation));
+					'generation' => $generation]);
 				return(true);
 			}
 			usleep(5000);
 		}
-		$this->event(array('event' => 'barrier-timeout', 'request' => $request,
+		$this->event(['event' => 'barrier-timeout', 'request' => $request,
 			'ordinal' => $ordinal, 'hash' => $hash, 'erased' => $executed,
-			'client_pid' => $clientPid, 'generation' => $generation));
+			'client_pid' => $clientPid, 'generation' => $generation]);
 		return(true);
 	}
 
@@ -279,10 +328,10 @@ class ErasedataAggregateEraseDaemon
 		$request = (string)$envelope['id'];
 		$clientPid = isset($envelope['client_pid']) ? (int)$envelope['client_pid'] : 0;
 		$generation = isset($envelope['generation']) ? $envelope['generation'] : null;
-		$this->event(array('event' => 'request-received', 'request' => $request,
+		$this->event(['event' => 'request-received', 'request' => $request,
 			'commands' => count($envelope['commands']), 'client_pid' => $clientPid,
-			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation));
-		$values = array();
+			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation]);
+		$values = [];
 		$fault = null;
 		$executed = 0;
 		$ordinal = 0;
@@ -294,15 +343,15 @@ class ErasedataAggregateEraseDaemon
 			$params = isset($entry['params']) ? $entry['params'] : null;
 			$applied = $this->apply($command, $params);
 			$this->state['applied']++;
-			if($command === 'd.erase' && $applied['fault'] === null)
-				$executed++;
+			if($command === 'd.erase' && $applied['fault'] === null) {
+				$executed++; }
 			$this->persist();
-			$this->event(array('event' => 'command-applied', 'request' => $request,
+			$this->event(['event' => 'command-applied', 'request' => $request,
 				'ordinal' => $ordinal, 'command' => $command,
 				'hash' => $applied['hash'], 'erased' => $executed,
 				'fault' => $applied['fault'], 'client_pid' => $clientPid,
 				'client_alive' => aefProcessAlive($clientPid),
-				'generation' => $generation));
+				'generation' => $generation]);
 			if($applied['fault'] !== null)
 			{
 				// CAPTURED, 2026-09-05, on both daemons this fork supports: a
@@ -326,8 +375,8 @@ class ErasedataAggregateEraseDaemon
 				$values[] = $applied['fault'];
 				continue;
 			}
-			foreach($applied['values'] as $value)
-				$values[] = $value;
+			foreach($applied['values'] as $value) {
+				$values[] = $value; }
 			if($command === 'd.erase' && $this->barrier['mode'] !== 'none'
 				&& $this->barrier['after_erase'] > 0
 				&& $executed === $this->barrier['after_erase'])
@@ -344,9 +393,9 @@ class ErasedataAggregateEraseDaemon
 		{
 			// The transport closes with NO reply: the executed prefix stands and
 			// the client is told nothing at all about it.
-			$this->event(array('event' => 'transport-closed', 'request' => $request,
+			$this->event(['event' => 'transport-closed', 'request' => $request,
 				'applied' => $ordinal, 'erased' => $executed,
-				'client_pid' => $clientPid, 'generation' => $generation));
+				'client_pid' => $clientPid, 'generation' => $generation]);
 			@rename($file, $file.'.abandoned');
 			$this->persist();
 			return(false);
@@ -354,75 +403,26 @@ class ErasedataAggregateEraseDaemon
 		// Every item's own value is in $values already, faults included and in
 		// wire order, so the whole answer is handed back as one list exactly as
 		// the production parser would scrape it.
-		$reply = array('ok' => true, 'fault' => $fault !== null,
+		$reply = ['ok' => true, 'fault' => $fault !== null,
 			'faultString' => $fault === null ? '' : $fault,
-			'faultCode' => $fault === null ? 0 : -500, 'val' => $values);
+			'faultCode' => $fault === null ? 0 : -500, 'val' => $values];
 		$tmp = $this->dir.'/rep/'.$request.'.json.tmp';
 		@file_put_contents($tmp, json_encode($reply));
 		@rename($tmp, $this->dir.'/rep/'.$request.'.json');
 		@rename($file, $file.'.done');
-		$this->event(array('event' => 'reply-delivered', 'request' => $request,
+		$this->event(['event' => 'reply-delivered', 'request' => $request,
 			'applied' => $ordinal, 'erased' => $executed, 'values' => count($reply['val']),
 			'fault' => $fault, 'client_pid' => $clientPid,
-			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation));
+			'client_alive' => aefProcessAlive($clientPid), 'generation' => $generation]);
 		return(true);
-	}
-
-	public function run()
-	{
-		@mkdir($this->dir.'/req', 0777, true);
-		@mkdir($this->dir.'/rep', 0777, true);
-		$this->load();
-		// A restart resumes nothing. Any request left unanswered belongs to a
-		// transport that is already gone, and re-running it would execute the
-		// tail of a batch whose client died -- which is precisely the outcome
-		// the daemon-death case must NOT be handed.
-		$abandoned = array();
-		foreach((array)@glob($this->dir.'/req/*.json') as $pending)
-		{
-			$abandoned[] = basename($pending);
-			@rename($pending, $pending.'.abandoned');
-		}
-		@unlink($this->dir.'/barrier');
-		@unlink($this->dir.'/release');
-		$this->persist();
-		$this->event(array('event' => 'daemon-started',
-			'abandoned' => $abandoned, 'present' => $this->presentHashes()));
-		@file_put_contents($this->dir.'/alive', (string)getmypid());
-		$idle = (float)$this->config['idle'];
-		$deadline = microtime(true) + $idle;
-		while(microtime(true) < $deadline)
-		{
-			clearstatcache(true, $this->dir.'/stop');
-			if(@file_exists($this->dir.'/stop'))
-				break;
-			$pending = (array)@glob($this->dir.'/req/*.json');
-			sort($pending, SORT_STRING);
-			if(!count($pending))
-			{
-				usleep(5000);
-				continue;
-			}
-			foreach($pending as $file)
-			{
-				if(!$this->serve($file))
-				{
-					$this->close('stopped-at-barrier');
-					return(0);
-				}
-				$deadline = microtime(true) + $idle;
-			}
-		}
-		$this->close('stopped');
-		return(0);
 	}
 
 	private function presentHashes()
 	{
-		$present = array();
-		foreach($this->state['hashes'] as $hash => $entry)
-			if(!empty($entry['present']))
-				$present[] = $hash;
+		$present = [];
+		foreach($this->state['hashes'] as $hash => $entry) {
+			if(!empty($entry['present'])) {
+				$present[] = $hash; } }
 		sort($present, SORT_STRING);
 		return($present);
 	}
@@ -435,16 +435,16 @@ class ErasedataAggregateEraseDaemon
 	{
 		$this->persist();
 		@unlink($this->dir.'/alive');
-		$this->event(array('event' => 'daemon-stopped', 'reason' => $reason,
+		$this->event(['event' => 'daemon-stopped', 'reason' => $reason,
 			'present' => $this->presentHashes(),
-			'erased' => $this->state['erased']));
+			'erased' => $this->state['erased']]);
 	}
 }
 
 if(PHP_SAPI !== 'cli' || !isset($_SERVER['SCRIPT_FILENAME'])
-	|| realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__)
-	aefFail('this fixture is a standalone daemon process, not a library');
-if(!isset($argv) || count($argv) !== 2)
-	aefFail('expects exactly one argument');
+	|| realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__) {
+	aefFail('this fixture is a standalone daemon process, not a library'); }
+if(!isset($argv) || count($argv) !== 2) {
+	aefFail('expects exactly one argument'); }
 $daemon = new ErasedataAggregateEraseDaemon(aefConfig($argv[1]));
 exit($daemon->run());

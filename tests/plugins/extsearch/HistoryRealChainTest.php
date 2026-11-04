@@ -11,18 +11,18 @@ class ExtsearchHistoryRealChainTest extends TestCase
 		$url = 'https://example.invalid/pending/real-chain';
 		$key = 'ru-load-proof-'.str_repeat('b', 32);
 		$fixture = new ExtsearchRealActionFixture();
-		$peer = SCGITransportFixture::startChunks(array(), true);
+		$peer = SCGITransportFixture::startChunks([], true);
 		try
 		{
-			$result = $fixture->run(array(
-				'method'=>'POST', 'request'=>array('mode'=>'history'),
+			$result = $fixture->run([
+				'method'=>'POST', 'request'=>['mode'=>'history'],
 				'body'=>'mode=history&url='.rawurlencode($url),
-				'rows'=>array($url=>array('hash'=>str_repeat('A', 40),
-					'key'=>$key))), $peer);
+				'rows'=>[$url=>['hash'=>str_repeat('A', 40),
+					'key'=>$key]]], $peer);
 			$this->assertSame(0, $result['exit'],
 				'real history action finishes: '.$result['error']);
-			if($result['exit'] !== 0) return;
-			$this->assertSame(array($url=>null), json_decode($result['output'], true),
+			if($result['exit'] !== 0) { return; }
+			$this->assertSame([$url=>null], json_decode($result['output'], true),
 				'unknown daemon reply leaves the requested history entry pending');
 			$this->assertTrue($result['elapsed'] < 4.0,
 				'real action and XMLRPC chain use the short reply timeout: '.$result['elapsed']);

@@ -9,10 +9,10 @@ class LifecycleInitLogTest extends TestCase
 {
     public function testInitRefusalWritesOneClassifiedReasonWithoutRawFault()
     {
-        foreach (array(
+        foreach ([
             'receipt-ledger-corrupt' => 'receipt-ledger-corrupt',
             '<?xml fault="https://tracker.invalid/passkey" path="/private/session">' => 'lifecycle-unsupported',
-        ) as $reported => $expected) {
+        ] as $reported => $expected) {
             $adapter = new class($reported) extends RetrackersLifecycleRpcAdapter {
                 private $reported;
                 public function __construct($reported) { $this->reported = $reported; }
@@ -20,15 +20,15 @@ class LifecycleInitLogTest extends TestCase
                     $failure = $this->reported;
                     return(false);
                 }
-                public function recoveryMarkerDiagnostic() { return array(); }
+                public function recoveryMarkerDiagnostic() { return []; }
             };
-            FileUtil::$messages = array();
+            FileUtil::$messages = [];
             $jResult = '';
             $failure = null;
             $ok = retrackersRunLifecycleInit('alice', '/plugin/run.sh', '/usr/bin/php',
                 $jResult, $failure, $adapter);
             $this->assertTrue($ok === false, 'the supplied startup refusal reaches the lifecycle seam');
-            $this->assertEquals(array('retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $expected)), FileUtil::$messages,
+            $this->assertEquals(['retrackers-init: ' . retrackersLifecycleDiagnosticMessage('init', $expected)], FileUtil::$messages,
                 'startup writes exactly one bounded reason without RPC payload or private path');
             $this->assertTrue(strpos($jResult, $expected) !== false &&
                 strpos($jResult, 'tracker.invalid') === false,
@@ -40,18 +40,18 @@ class LifecycleInitLogTest extends TestCase
     {
         $hash = str_repeat('A', 40);
         $message = retrackersLifecycleDiagnosticMessage('init', 'receipt-ledger-corrupt',
-            array('count' => 1, 'hashes' => array($hash, '<?xml secret="passkey">')));
-        foreach (array('retrackers is disabled', 'd.custom=retrackers-recovery',
+            ['count' => 1, 'hashes' => [$hash, '<?xml secret="passkey">']]);
+        foreach (['retrackers is disabled', 'd.custom=retrackers-recovery',
             'torrent session sidecars', 'tools/retrackers-clear-markers.php',
-            'report first', 'marked torrents=1', $hash) as $part)
-            $this->assertTrue(strpos($message, $part) !== false, 'corrupt ledger diagnostic names ' . $part);
+            'report first', 'marked torrents=1', $hash] as $part) {
+            $this->assertTrue(strpos($message, $part) !== false, 'corrupt ledger diagnostic names ' . $part); }
         $this->assertTrue(strpos($message, 'passkey') === false && strpos($message, 'restart rTorrent') === false,
             'classified repair guidance contains no remote payload or false restart remedy');
     }
 
     public function testHookLedgerMismatchHintIsSpecificAndDoesNotMaskCorruption()
     {
-        foreach (array('init', 'done') as $door) {
+        foreach (['init', 'done'] as $door) {
             $mismatch = retrackersLifecycleDiagnosticJavascript($door,
                 'hook-ledger-mismatch-restart-required');
             $this->assertTrue(strpos($mismatch, 'hook-ledger-mismatch-restart-required') !== false &&
@@ -65,9 +65,9 @@ class LifecycleInitLogTest extends TestCase
     }
     public function testSharedDaemonRefusalNamesTheCauseAndRecoveryInUiAndLog()
     {
-        foreach (array('shared-daemon-contained','shared-daemon-no-owner',
+        foreach (['shared-daemon-contained','shared-daemon-no-owner',
             'shared-daemon-owner-ambiguous','shared-daemon-owner-ambiguous-uncontained',
-            'shared-daemon-unowned-mutating') as $reason) {
+            'shared-daemon-unowned-mutating'] as $reason) {
             $adapter = new class($reason) extends RetrackersLifecycleRpcAdapter {
                 private $reason;
                 public function __construct($reason) { $this->reason=$reason; }
@@ -75,9 +75,9 @@ class LifecycleInitLogTest extends TestCase
                     $failure=$this->reason; return false;
                 }
             };
-            FileUtil::$messages=array(); $js=''; $failure=null;
+            FileUtil::$messages=[]; $js=''; $failure=null;
             retrackersRunLifecycleInit('alice','/plugin/run.sh','/usr/bin/php',$js,$failure,$adapter);
-            foreach (array($js,implode('\n',FileUtil::$messages)) as $message) {
+            foreach ([$js,implode('\n',FileUtil::$messages)] as $message) {
                 $this->assertTrue(strpos($message,$reason)!==false &&
                     strpos($message,'multiple ruTorrent profiles')!==false &&
                     strpos($message,'$forbidUserSettings = true')!==false &&

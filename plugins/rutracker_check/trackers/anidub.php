@@ -6,9 +6,9 @@ class AniDUBCheckImpl{
     // account names. commonAccount::test() refuses a url weaker than its
     // site's, so a cleartext request selects no account and reads the page a
     // guest is shown.
-    const SITE = "https://tr.anidub.com";
+    public const SITE = "https://tr.anidub.com";
 
-    static public function download_torrent($url, $hash, $old_torrent){
+    public static function download_torrent($url, $hash, $old_torrent){
         if( preg_match( '`^https?://tr\.anidub\.com/\?newsid=(?P<id>\d+)$`',$url, $matches ) ) {
             $topic_id = $matches["id"];
             $torrent_name = $old_torrent->name();
@@ -58,7 +58,7 @@ class AniDUBCheckImpl{
             }
 
             $client = ruTrackerChecker::makeClient(self::SITE."/?newsid=" . $topic_id);
-            if($client->status!=200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            if($client->status!=200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
 
             $resp = preg_replace( "/\r|\n/", "", $client->results);
             $q =$torrent_quality_type.$torrent_quality;  // e.g. tv.720
@@ -67,14 +67,14 @@ class AniDUBCheckImpl{
             // return -- so a page that matched neither pattern fell through to
             // $url_matches["url"] on an array that has no such key, and the
             // fetch below went out against the bare host.
-            if (!preg_match($pattern, $resp, $url_matches)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            if (!preg_match($pattern, $resp, $url_matches)) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
 
             // Accept only the download id, then build the URL under our own host.
             // A suffix such as .evil.test/engine/download.php?id=1 would
             // otherwise turn host concatenation into a cookie-bearing request
             // to tr.anidub.com.evil.test.
             if (!preg_match('/^\/engine\/download\.php\?id=(\d{1,10})$/i',
-                $url_matches["url"], $m)) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+                $url_matches["url"], $m)) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
 
             $client->setcookies();
             if (!$client->fetchComplex(self::SITE . "/engine/download.php?id=" . $m[1])) {

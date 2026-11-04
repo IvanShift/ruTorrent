@@ -16,7 +16,7 @@ require_once( __DIR__ . '/runstate.php' );
 // event=stopped removes a peer record and trackers key peers by these.
 class RuTrackerAnnounce
 {
-    const PEER_PREFIX = '-RC0001-';
+    public const PEER_PREFIX = '-RC0001-';
 
     // The User-Agent the probe announces with. NOT the browser agent
     // ruTrackerChecker::makeClient() otherwise sends.
@@ -59,7 +59,7 @@ class RuTrackerAnnounce
     //
     // The browser agent stays correct for the forum and the API, which is why
     // this is a per-call override and not a change to the shared default.
-    const PROBE_USER_AGENT = 'rutorrent-rutracker_check';
+    public const PROBE_USER_AGENT = 'rutorrent-rutracker_check';
 
     // Measured live 2026-08-07: eight probes to bt4.t-ru.org/ann, this exact
     // probe identity (no passkey, event=stopped, numwant=0, left=0). Three
@@ -69,7 +69,7 @@ class RuTrackerAnnounce
     // else -- a rate-limit notice, a ban, a malformed-request complaint --
     // has NOT been confirmed to mean "deregistered" and must stay
     // inconclusive; classify() accepts no other text.
-    const UNREGISTERED_FAILURE_REASON = 'Torrent not registered';
+    public const UNREGISTERED_FAILURE_REASON = 'Torrent not registered';
 
     // Floor for the announce cap's window (reserveProbe()/probeDecision()'s
     // $window, seconds), mirroring RuTrackerCheckImpl::MIN_DELETE_INTERVAL
@@ -80,7 +80,7 @@ class RuTrackerAnnounce
     // buying a fresh cap each time. Floored at the smallest legitimate
     // non-zero scheduler interval (1 minute; see plugins/scheduler/conf.php's
     // own "1-6,10,12,15,20,30 or 60" minutes).
-    const MIN_WINDOW = 60;
+    public const MIN_WINDOW = 60;
 
     // The largest announce answer classify() will decode, and the source of
     // the decoder's byte and integer-digit ceilings (see BENCODE_LIMITS). The
@@ -88,71 +88,7 @@ class RuTrackerAnnounce
     // itself, so this caps transfer and decode cost rather than stack depth,
     // but the ceilings are derived from it and move with it.
     // Over a hundred times the size of any answer this probe asks for.
-    const MAX_ANNOUNCE_BODY = 8192;
-
-    // The per-host announce budget -- a windowed probe count (window_start +
-    // window_count) plus the 403 cooldown -- lives entirely in the
-    // persisted 'announce' state (RuTrackerState, state.php), keyed one
-    // entry per host. Persisting the count, not just the cooldown, is what
-    // makes the cap hold across every process that probes: the hourly
-    // update.php pass, its detached forumcrawl.php, and a fresh
-    // batch_check.php per manual "check" click all share the same file, so
-    // ten manual clicks share one window's budget instead of each buying
-    // its own the way an in-memory-only counter used to.
-
-    // Compatibility alias for callers of the former public helper.
-    // Budget decisions use UrlHost directly.
-    static public function hostKey($host)
-    {
-        return UrlHost::normalize($host);
-    }
-
-    // The host's four budget fields through the one canonical parser, or null
-    // when the stored entry cannot be believed. An ABSENT field is the fresh
-    // host, so zero is the reading rather than a guess; one that is present
-    // but not canonical is corruption, and every direction the old casts
-    // rounded it was dangerous -- "abc" a lapsed cooldown, "01" a smaller
-    // counter, 1.5 a fresh window.
-    static private function entryFor($state, $host)
-    {
-        // A host PRESENT whose value is not an entry is corruption, not
-        // absence: read as four absent fields it became a fresh allowance and
-        // the reservation overwrote the bytes nobody could read.
-        // array_key_exists(), because a stored null is present too.
-        if (!is_array($state) || (array_key_exists($host, $state) && !is_array($state[$host])))
-            return null;
-        $entry = isset($state[$host]) ? $state[$host] : array();
-        $read = array();
-        foreach (array('cooldown_until', 'window_start', 'window_count', 'cooldown_length') as $f) {
-            $v = array_key_exists($f, $entry) ? RuTrackerRpcValue::canonicalNonnegativeInteger($entry[$f]) : 0;
-            if ($v === null) return null;
-            $read[$f] = $v;
-        }
-        return $read;
-    }
-
-    // Ungated, and deliberately not the same channel as the write failure in
-    // reserveProbe() below. Nothing here ever rewrites an entry it could not
-    // read -- the reservation returns the document untouched, releaseProbe()
-    // and recordOutcome() both bail on this same null -- so the host is
-    // refused every probe from now to the end of time and no cycle repairs
-    // it. A budget that could not be WRITTEN is the opposite: an unwritable
-    // settings directory or a full disk, nothing corrupt on disk, and the
-    // very next cycle succeeds the moment the machine is fixed. That one
-    // stays on the debug channel; this one cannot heal, so it has to be
-    // visible. See ruTrackerChecker::logUnrepairable(). It names the document,
-    // the key and the consequence because that is what AGENTS.md requires of a
-    // refusal that can only be repaired by hand -- probeDecision() reaches this
-    // for a whole unreadable announce.json and never calls update(), so
-    // RuTrackerState::reportUnreadable()'s line naming the path is not
-    // guaranteed to be there beside it.
-    static private function logCorruptBudget($host, $what)
-    {
-        if (class_exists('ruTrackerChecker'))
-            ruTrackerChecker::logUnrepairable('announce: the stored budget for ' . $host
-                . ' in announce.json is not readable, so ' . $what
-                . ', and nothing will rewrite it');
-    }
+    public const MAX_ANNOUNCE_BODY = 8192;
 
     // THE budget rule, in one place. It takes an entry that has already been
     // read, so reserveProbe()'s locked read-modify-write judges the very state
@@ -173,42 +109,60 @@ class RuTrackerAnnounce
     // (design 2.6), and the shipped default of 10 is that measurement with a
     // 4x margin. A value above the measured limit does not buy more
     // confirmations, it buys the refusal the cooldown below exists to avoid.
-    const PROBE_CAP_MAX = 40;
+    public const PROBE_CAP_MAX = 40;
 
     // Seconds between probes. With the cap at 10 a one-minute pause already
     // spends ten minutes of the hour on a single host, so past that the value
     // stops being a politeness setting and starts being a stalled cycle.
-    const PROBE_PAUSE_MAX = 60;
+    public const PROBE_PAUSE_MAX = 60;
+
+    // The announce schema reads ONE typed tree from the shared grammar
+    // (bencode.php). The ceilings below are chosen so the grammar admits every
+    // shape the 8192-byte body cap already admits, and nothing more: a token
+    // costs at least two bytes ('le', 'de', '0:') and so does a level of
+    // nesting, so 8192 bytes can spell at most 4096 of either, and an integer
+    // may consume nearly the whole body. Four length digits are likewise the
+    // most a string inside the cap can need -- a five-digit length is 10000
+    // bytes the body does not have. Tightening any of these would quietly
+    // narrow what counts as a decodable answer; loosening them would let the
+    // body cap stop being the bound on decoding cost that it exists to be.
+    public const BENCODE_LIMITS = [
+        'max_bytes' => self::MAX_ANNOUNCE_BODY,
+        'max_depth' => 4096,
+        'max_tokens' => 4096,
+        'max_integer_digits' => self::MAX_ANNOUNCE_BODY,
+        'max_length_digits' => 4,
+    ];
+
+    // The per-host announce budget -- a windowed probe count (window_start +
+    // window_count) plus the 403 cooldown -- lives entirely in the
+    // persisted 'announce' state (RuTrackerState, state.php), keyed one
+    // entry per host. Persisting the count, not just the cooldown, is what
+    // makes the cap hold across every process that probes: the hourly
+    // update.php pass, its detached forumcrawl.php, and a fresh
+    // batch_check.php per manual "check" click all share the same file, so
+    // ten manual clicks share one window's budget instead of each buying
+    // its own the way an in-memory-only counter used to.
+
+    // Compatibility alias for callers of the former public helper.
+    // Budget decisions use UrlHost directly.
+    public static function hostKey($host)
+    {
+        return UrlHost::normalize($host);
+    }
 
     // Floored at 0, not 1: zero is a meaningful setting here, the same way
     // $updateInterval = 0 means "disabled" -- judge() answers 'cap' for every
     // probe once the allowance is nothing, which is how layer 2 is switched off
     // per host without touching $rutrackerLayer2Enabled.
-    static public function probeCap($configured)
+    public static function probeCap($configured)
     {
         return min(self::PROBE_CAP_MAX, max(0, (int) $configured));
     }
 
-    static public function probePause($configured)
+    public static function probePause($configured)
     {
         return min(self::PROBE_PAUSE_MAX, max(0, (int) $configured));
-    }
-
-    // Takes entryFor()'s already-canonical reading, and answers 'unstorable'
-    // when that reading is null: a budget that cannot be READ is a budget of
-    // zero, exactly as one that cannot be WRITTEN is.
-    static private function judge($read, $now, $cap, $window)
-    {
-        if ($read === null) return array('unstorable', 0, 0);
-        if ($now <= $read['cooldown_until']) return array('cooldown', 0, 0);
-
-        $windowStart = $read['window_start'];
-        $count = $read['window_count'];
-        if ($windowStart === 0 || $now - $windowStart >= $window) {
-            $windowStart = $now;
-            $count = 0;
-        }
-        return array($count < $cap ? 'allow' : 'cap', $windowStart, $count);
     }
 
     // Read-only: why this host may or may not be probed right now, WITHOUT
@@ -229,14 +183,14 @@ class RuTrackerAnnounce
     // read, so the refusal takes logCorruptBudget()'s ungated channel rather
     // than becoming a silent stall (AGENTS.md, "either self-healing or
     // visible").
-    static public function probeDecision($host, $now, $cap, $window)
+    public static function probeDecision($host, $now, $cap, $window)
     {
         $host = UrlHost::normalize($host);
         $window = max((int) $window, self::MIN_WINDOW);
         $readable = true;
         $state = RuTrackerState::load('announce', $readable);
         $judged = self::judge($readable ? self::entryFor($state, $host) : null, $now, $cap, $window);
-        if ($judged[0] === 'unstorable') self::logCorruptBudget($host, 'no probe is authorised');
+        if ($judged[0] === 'unstorable') { self::logCorruptBudget($host, 'no probe is authorised'); }
         return $judged[0];
     }
 
@@ -249,7 +203,7 @@ class RuTrackerAnnounce
     //
     // @return 'allow' (slot taken), 'cap', 'cooldown' (nothing taken), or
     //         'unstorable' (the slot could not be recorded -- see below)
-    static public function reserveProbe($host, $now, $cap, $window)
+    public static function reserveProbe($host, $now, $cap, $window)
     {
         $host = UrlHost::normalize($host);
         $window = max((int) $window, self::MIN_WINDOW);
@@ -258,7 +212,7 @@ class RuTrackerAnnounce
         $stored = RuTrackerState::update('announce', function ($state) use ($host, $now, $cap, $window, &$decision) {
             $entry = self::entryFor($state, $host);
             list($decision, $windowStart, $count) = self::judge($entry, $now, $cap, $window);
-            if ($decision !== 'allow') return $state;
+            if ($decision !== 'allow') { return $state; }
 
             $entry['window_start'] = $windowStart;
             $entry['window_count'] = $count + 1;
@@ -294,16 +248,16 @@ class RuTrackerAnnounce
         // succeeds the moment the machine is fixed. Only 'unreadable' is the
         // permanent one, so only it gets its own word.
         if ($decision === 'allow' && !$stored) {
-            if (class_exists('ruTrackerChecker'))
+            if (class_exists('ruTrackerChecker')) {
                 ruTrackerChecker::logDebug('announce: the budget for ' . $host . ' could not be '
                     . ($failure === 'unreadable' ? 'read' : 'written')
-                    . ', so the slot is refused rather than spent unrecorded');
+                    . ', so the slot is refused rather than spent unrecorded'); }
             return 'unstorable';
         }
         // judge() refused an unreadable entry and the closure returned $state
         // untouched, so the corrupted record is still on disk as it was.
-        if ($decision === 'unstorable')
-            self::logCorruptBudget($host, 'the slot is refused rather than taken against it');
+        if ($decision === 'unstorable') {
+            self::logCorruptBudget($host, 'the slot is refused rather than taken against it'); }
         return $decision;
     }
 
@@ -316,17 +270,17 @@ class RuTrackerAnnounce
     // reservation means a fresh window has opened in between and the slot
     // being handed back does not exist in the current count -- refunding it
     // there would give the new window an extra probe out of thin air.
-    static public function releaseProbe($host, $reservedAt)
+    public static function releaseProbe($host, $reservedAt)
     {
         $host = UrlHost::normalize($host);
         RuTrackerState::update('announce', function ($state) use ($host, $reservedAt) {
-            if (!isset($state[$host]) || !is_array($state[$host])) return $state;
+            if (!isset($state[$host]) || !is_array($state[$host])) { return $state; }
             // Refunding into an entry nobody can read would overwrite the
             // corruption with a smaller number invented here, so it is not.
             $read = self::entryFor($state, $host);
-            if ($read === null) return $state;
-            if ($read['window_start'] > (int) $reservedAt) return $state;
-            if ($read['window_count'] > 0) $state[$host]['window_count'] = $read['window_count'] - 1;
+            if ($read === null) { return $state; }
+            if ($read['window_start'] > (int) $reservedAt) { return $state; }
+            if ($read['window_count'] > 0) { $state[$host]['window_count'] = $read['window_count'] - 1; }
             return $state;
         });
     }
@@ -341,19 +295,19 @@ class RuTrackerAnnounce
     // for, but they are no evidence the refusal has lifted either. Read as
     // successes they wiped cooldown_length, so the next genuine 403 started
     // the backoff over at one hour instead of continuing to double.
-    static public function recordOutcome($host, $now, $status)
+    public static function recordOutcome($host, $now, $status)
     {
         $host = UrlHost::normalize($host);
         $status = (int) $status;
         // Anything that is neither a refusal nor a served answer leaves the
         // host's record exactly as it was -- including untouched on disk.
-        if ($status !== 403 && $status !== 200) return;
+        if ($status !== 403 && $status !== 200) { return; }
         RuTrackerState::update('announce', function ($state) use ($host, $now, $status) {
             // The 403 branch DOUBLES the stored backoff and the 200 branch
             // CLEARS it; both need the current one to be true. An entry that
             // will not read is left as it is, not restarted at one hour.
             $entry = self::entryFor($state, $host);
-            if ($entry === null) return $state;
+            if ($entry === null) { return $state; }
             $read = $entry;
 
             if ($status === 403) {
@@ -376,20 +330,20 @@ class RuTrackerAnnounce
         });
     }
 
-    static public function makePeerId()
+    public static function makePeerId()
     {
         $alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
         $tail = '';
-        for ($i = 0; $i < 12; $i++)
-            $tail .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        for ($i = 0; $i < 12; $i++) {
+            $tail .= $alphabet[random_int(0, strlen($alphabet) - 1)]; }
         return self::PEER_PREFIX . $tail;
     }
 
-    static public function buildUrl($announceUrl, $hash, $peerId, $port, $key)
+    public static function buildUrl($announceUrl, $hash, $peerId, $port, $key)
     {
-        if (!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) return null;
+        if (!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) { return null; }
         $parts = @parse_url((string) $announceUrl);
-        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) return null;
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'], $parts['path'])) { return null; }
         // Having a scheme is not the same as having one this probe can be
         // spoken over. Snoopy's scheme switch (php/Snoopy.class.inc:283-318)
         // sends a request for the byte-exact literals 'http' and 'https' and
@@ -399,7 +353,7 @@ class RuTrackerAnnounce
         // while its caller spent a budget slot and then read the reply it
         // never got as an inconclusive answer about the topic. Answering null
         // puts such a row on the same never-ran path as a pathless one.
-        if ($parts['scheme'] !== 'http' && $parts['scheme'] !== 'https') return null;
+        if ($parts['scheme'] !== 'http' && $parts['scheme'] !== 'https') { return null; }
 
         // Rebuild scheme+host+path only: an existing query string (RuTracker
         // announce URLs carry ?pk=<passkey>) must never reach the probe.
@@ -412,35 +366,119 @@ class RuTrackerAnnounce
             . '&event=stopped&key=' . rawurlencode($key);
     }
 
-    // The announce schema reads ONE typed tree from the shared grammar
-    // (bencode.php). The ceilings below are chosen so the grammar admits every
-    // shape the 8192-byte body cap already admits, and nothing more: a token
-    // costs at least two bytes ('le', 'de', '0:') and so does a level of
-    // nesting, so 8192 bytes can spell at most 4096 of either, and an integer
-    // may consume nearly the whole body. Four length digits are likewise the
-    // most a string inside the cap can need -- a five-digit length is 10000
-    // bytes the body does not have. Tightening any of these would quietly
-    // narrow what counts as a decodable answer; loosening them would let the
-    // body cap stop being the bound on decoding cost that it exists to be.
-    const BENCODE_LIMITS = array(
-        'max_bytes' => self::MAX_ANNOUNCE_BODY,
-        'max_depth' => 4096,
-        'max_tokens' => 4096,
-        'max_integer_digits' => self::MAX_ANNOUNCE_BODY,
-        'max_length_digits' => 4,
-    );
+    public static function classify($status, $body)
+    {
+        if ((int) $status !== 200 || !is_string($body) || $body === '') { return 'uncertain'; }
+
+        // Bencode dictionaries start with 'd'. Reject any other top-level
+        // type (lists, ints, raw strings) before decoding: an empty list
+        // ('le') and an empty dictionary ('de') both mean "nothing here" to a
+        // reader that has thrown the types away, and only the raw bytes -- or
+        // the typed tree below -- can tell them apart.
+        if ($body[0] !== 'd') { return 'uncertain'; }
+        // A legitimate announce reply to THIS probe is a few hundred bytes:
+        // numwant=0 and compact=1 mean no peer list, so the answer is a
+        // handful of integers or a failure reason. The cap is a bound on the
+        // cost of decoding as much as on the transfer: the worst body it
+        // admits is nothing but nesting, roughly one container per two bytes,
+        // and 8 KiB admits at most ~4k of them -- a few megabytes of nodes,
+        // which survives even the 8M memory_limit of a small install. The
+        // previous 64 KiB allowed ~32k levels and did not. It is checked here
+        // as well as inside the grammar so an oversized answer is refused
+        // without being read at all.
+        if (strlen($body) > self::MAX_ANNOUNCE_BODY) { return 'uncertain'; }
+
+        $root = RuTrackerBencode::decode($body, self::BENCODE_LIMITS);
+        // One decode, one tree. This used to be two passes over the same
+        // bytes -- a schema scanner and an inherited Torrent::decode() -- and
+        // the pair had to agree about what "valid" meant to be worth anything.
+        if ($root === false || $root['type'] !== 'dictionary' || empty($root['value'])) { return 'uncertain'; }
+
+        $reason = RuTrackerBencode::entry($root, 'failure reason');
+        if ($reason !== null) {
+            if ($reason['type'] !== 'string'
+                || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) { return 'uncertain'; }
+            return 'unregistered';
+        }
+
+        return self::hasValidSuccessSchema($root) ? 'registered' : 'uncertain';
+    }
+
+    // The host's four budget fields through the one canonical parser, or null
+    // when the stored entry cannot be believed. An ABSENT field is the fresh
+    // host, so zero is the reading rather than a guess; one that is present
+    // but not canonical is corruption, and every direction the old casts
+    // rounded it was dangerous -- "abc" a lapsed cooldown, "01" a smaller
+    // counter, 1.5 a fresh window.
+    private static function entryFor($state, $host)
+    {
+        // A host PRESENT whose value is not an entry is corruption, not
+        // absence: read as four absent fields it became a fresh allowance and
+        // the reservation overwrote the bytes nobody could read.
+        // array_key_exists(), because a stored null is present too.
+        if (!is_array($state) || (array_key_exists($host, $state) && !is_array($state[$host]))) {
+            return null; }
+        $entry = isset($state[$host]) ? $state[$host] : [];
+        $read = [];
+        foreach (['cooldown_until', 'window_start', 'window_count', 'cooldown_length'] as $f) {
+            $v = array_key_exists($f, $entry) ? RuTrackerRpcValue::canonicalNonnegativeInteger($entry[$f]) : 0;
+            if ($v === null) { return null; }
+            $read[$f] = $v;
+        }
+        return $read;
+    }
+
+    // Ungated, and deliberately not the same channel as the write failure in
+    // reserveProbe() below. Nothing here ever rewrites an entry it could not
+    // read -- the reservation returns the document untouched, releaseProbe()
+    // and recordOutcome() both bail on this same null -- so the host is
+    // refused every probe from now to the end of time and no cycle repairs
+    // it. A budget that could not be WRITTEN is the opposite: an unwritable
+    // settings directory or a full disk, nothing corrupt on disk, and the
+    // very next cycle succeeds the moment the machine is fixed. That one
+    // stays on the debug channel; this one cannot heal, so it has to be
+    // visible. See ruTrackerChecker::logUnrepairable(). It names the document,
+    // the key and the consequence because that is what AGENTS.md requires of a
+    // refusal that can only be repaired by hand -- probeDecision() reaches this
+    // for a whole unreadable announce.json and never calls update(), so
+    // RuTrackerState::reportUnreadable()'s line naming the path is not
+    // guaranteed to be there beside it.
+    private static function logCorruptBudget($host, $what)
+    {
+        if (class_exists('ruTrackerChecker')) {
+            ruTrackerChecker::logUnrepairable('announce: the stored budget for ' . $host
+                . ' in announce.json is not readable, so ' . $what
+                . ', and nothing will rewrite it'); }
+    }
+
+    // Takes entryFor()'s already-canonical reading, and answers 'unstorable'
+    // when that reading is null: a budget that cannot be READ is a budget of
+    // zero, exactly as one that cannot be WRITTEN is.
+    private static function judge($read, $now, $cap, $window)
+    {
+        if ($read === null) { return ['unstorable', 0, 0]; }
+        if ($now <= $read['cooldown_until']) { return ['cooldown', 0, 0]; }
+
+        $windowStart = $read['window_start'];
+        $count = $read['window_count'];
+        if ($windowStart === 0 || $now - $windowStart >= $window) {
+            $windowStart = $now;
+            $count = 0;
+        }
+        return [$count < $cap ? 'allow' : 'cap', $windowStart, $count];
+    }
 
     // Duplicate keys no longer need checking here: the shared grammar rejects
     // a repeated raw key outright, so a node that reached this point is the
     // only one the answer spelled under that name.
-    static private function isCanonicalNonnegativeInteger($node)
+    private static function isCanonicalNonnegativeInteger($node)
     {
         return is_array($node)
             && $node['type'] === 'integer'
             && preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['value']) === 1;
     }
 
-    static private function isValidPeerPort($node)
+    private static function isValidPeerPort($node)
     {
         if (!is_array($node)
             || $node['type'] !== 'integer'
@@ -454,75 +492,37 @@ class RuTrackerAnnounce
         return true;
     }
 
-    static private function hasValidPeers($node)
+    private static function hasValidPeers($node)
     {
-        if (!is_array($node)) return false;
+        if (!is_array($node)) { return false; }
         // compact=1 asks for the packed form -- six bytes per peer -- but the
         // tracker is free to answer with the dictionary list instead, and an
         // EMPTY list is a valid answer to numwant=0. An empty dictionary is
         // not: that is a different type, which is why the grammar has to keep
         // 'le' and 'de' apart.
-        if ($node['type'] === 'string') return strlen($node['value']) % 6 === 0;
-        if ($node['type'] !== 'list') return false;
+        if ($node['type'] === 'string') { return strlen($node['value']) % 6 === 0; }
+        if ($node['type'] !== 'list') { return false; }
 
         foreach ($node['value'] as $peer) {
-            if ($peer['type'] !== 'dictionary') return false;
+            if ($peer['type'] !== 'dictionary') { return false; }
             $ip = RuTrackerBencode::entry($peer, 'ip');
-            if (!is_array($ip) || $ip['type'] !== 'string') return false;
-            if (!self::isValidPeerPort(RuTrackerBencode::entry($peer, 'port'))) return false;
+            if (!is_array($ip) || $ip['type'] !== 'string') { return false; }
+            if (!self::isValidPeerPort(RuTrackerBencode::entry($peer, 'port'))) { return false; }
         }
         return true;
     }
 
-    static private function hasValidSuccessSchema($root)
+    private static function hasValidSuccessSchema($root)
     {
         if (!self::isCanonicalNonnegativeInteger(RuTrackerBencode::entry($root, 'interval'))
             || !self::hasValidPeers(RuTrackerBencode::entry($root, 'peers'))) {
             return false;
         }
 
-        foreach (array('complete', 'incomplete', 'min interval') as $counter) {
+        foreach (['complete', 'incomplete', 'min interval'] as $counter) {
             $node = RuTrackerBencode::entry($root, $counter);
-            if ($node !== null && !self::isCanonicalNonnegativeInteger($node)) return false;
+            if ($node !== null && !self::isCanonicalNonnegativeInteger($node)) { return false; }
         }
         return true;
-    }
-
-    static public function classify($status, $body)
-    {
-        if ((int) $status !== 200 || !is_string($body) || $body === '') return 'uncertain';
-
-        // Bencode dictionaries start with 'd'. Reject any other top-level
-        // type (lists, ints, raw strings) before decoding: an empty list
-        // ('le') and an empty dictionary ('de') both mean "nothing here" to a
-        // reader that has thrown the types away, and only the raw bytes -- or
-        // the typed tree below -- can tell them apart.
-        if ($body[0] !== 'd') return 'uncertain';
-        // A legitimate announce reply to THIS probe is a few hundred bytes:
-        // numwant=0 and compact=1 mean no peer list, so the answer is a
-        // handful of integers or a failure reason. The cap is a bound on the
-        // cost of decoding as much as on the transfer: the worst body it
-        // admits is nothing but nesting, roughly one container per two bytes,
-        // and 8 KiB admits at most ~4k of them -- a few megabytes of nodes,
-        // which survives even the 8M memory_limit of a small install. The
-        // previous 64 KiB allowed ~32k levels and did not. It is checked here
-        // as well as inside the grammar so an oversized answer is refused
-        // without being read at all.
-        if (strlen($body) > self::MAX_ANNOUNCE_BODY) return 'uncertain';
-
-        $root = RuTrackerBencode::decode($body, self::BENCODE_LIMITS);
-        // One decode, one tree. This used to be two passes over the same
-        // bytes -- a schema scanner and an inherited Torrent::decode() -- and
-        // the pair had to agree about what "valid" meant to be worth anything.
-        if ($root === false || $root['type'] !== 'dictionary' || empty($root['value'])) return 'uncertain';
-
-        $reason = RuTrackerBencode::entry($root, 'failure reason');
-        if ($reason !== null) {
-            if ($reason['type'] !== 'string'
-                || $reason['value'] !== self::UNREGISTERED_FAILURE_REASON) return 'uncertain';
-            return 'unregistered';
-        }
-
-        return self::hasValidSuccessSchema($root) ? 'registered' : 'uncertain';
     }
 }

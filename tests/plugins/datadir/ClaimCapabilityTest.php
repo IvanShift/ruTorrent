@@ -7,7 +7,7 @@ eval(loadFunctionDefinition(__DIR__ . '/../../../php/xmlrpc.php',
 eval(loadFunctionDefinition(__DIR__ . '/../../../plugins/datadir/util_setdir.php',
     'rtDataDirClaimCapability'));
 
-$required = array(
+$required = [
     'system.listMethods',
     'd.stop_close_claim_state',
     'd.stop_close_claim',
@@ -18,7 +18,7 @@ $required = array(
     'd.release_stop_close_claim',
     'd.replay_stop_close_claim',
     'd.ack_stop_close_claim',
-);
+];
 
 $suite = new StrictTestSuite();
 
@@ -38,19 +38,19 @@ $suite->test('every missing native claim command refuses DataDir before dispatch
         foreach (array_slice($required, 1) as $method) {
             rXMLRPCRequest::reset();
             rXMLRPCRequest::queue('system.listMethods', true, false,
-                array_values(array_diff($required, array($method))));
+                array_values(array_diff($required, [$method])));
             strictAssertSame('unsupported', rtDataDirClaimCapability(),
                 'missing ' . $method . ' is an unsupported daemon');
         }
     });
 
 $suite->test('transport and opaque faults remain unknown', function () use ($required) {
-    foreach (array(
-        array(false, false, array()),
-        array(true, true, array('Method list refused')),
-        array(true, false, array()),
-        array(true, false, array('system.listMethods', 1)),
-    ) as $response) {
+    foreach ([
+        [false, false, []],
+        [true, true, ['Method list refused']],
+        [true, false, []],
+        [true, false, ['system.listMethods', 1]],
+    ] as $response) {
         rXMLRPCRequest::reset();
         rXMLRPCRequest::queue('system.listMethods', $response[0], $response[1],
             $response[2]);
@@ -62,7 +62,7 @@ $suite->test('transport and opaque faults remain unknown', function () use ($req
 $suite->test('empty method name makes the daemon claim list unconfirmed', function () use ($required) {
     rXMLRPCRequest::reset();
     rXMLRPCRequest::queue('system.listMethods', true, false,
-        array_merge($required, array('')));
+        array_merge($required, ['']));
     strictAssertSame('unknown', rtDataDirClaimCapability(),
         'a malformed list cannot authorize a file move');
 });

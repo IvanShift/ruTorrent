@@ -27,7 +27,7 @@
 function testPermissionsBite()
 {
     static $bites = null;
-    if ($bites !== null) return $bites;
+    if ($bites !== null) { return $bites; }
 
     $root = sys_get_temp_dir() . '/permissions-bite-' . getmypid() . '-' . uniqid('', true);
     if (!@mkdir($root, 0700, true)) {
@@ -70,7 +70,7 @@ function testPermissionsBite()
  */
 function testSkipUnlessPermissionsBite($what)
 {
-    if (testPermissionsBite()) return false;
+    if (testPermissionsBite()) { return false; }
     echo 'NOT CHECKED (file permissions do not stop this process -- running as root, '
         . 'or on a filesystem that does not enforce them): ' . $what . "\n";
     return true;

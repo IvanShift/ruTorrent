@@ -8,16 +8,16 @@ class ShellArgumentBytesTest extends TestCase
 {
 	public function testAsciiQuotingKeepsTheExistingShellContract()
 	{
-		foreach(array('', '0', 'simple/path.ext', 'a b', "single'quote", '"double"', '\\path\\',
-			'$(printf INJECTED)', '`printf INJECTED`', 'a; printf INJECTED', "line\nbreak", '%2F+%25') as $value)
-			$this->assertSame(escapeshellarg($value), Utility::escapeShellArg($value), 'ASCII shell quoting remains byte-identical');
+		foreach(['', '0', 'simple/path.ext', 'a b', "single'quote", '"double"', '\\path\\',
+			'$(printf INJECTED)', '`printf INJECTED`', 'a; printf INJECTED', "line\nbreak", '%2F+%25'] as $value) {
+			$this->assertSame(escapeshellarg($value), Utility::escapeShellArg($value), 'ASCII shell quoting remains byte-identical'); }
 		$this->assertSame("''", Utility::escapeShellArg(null), 'a missing optional argument quotes as empty, like escapeshellarg()');
 	}
 
 	public function testRealShellPreservesLegacyBytesAndUnicodeInBothLocales()
 	{
-		$values = array('', "raw\xFF\xF1\xE5 name", 'серия 中文 🙂', "a'\"\\$;`printf INJECTED`\n%2F+%25", "\x01\x7F\x80\xFE");
-		foreach(array('C', 'C.UTF-8') as $locale)
+		$values = ['', "raw\xFF\xF1\xE5 name", 'серия 中文 🙂', "a'\"\\$;`printf INJECTED`\n%2F+%25", "\x01\x7F\x80\xFE"];
+		foreach(['C', 'C.UTF-8'] as $locale) {
 			foreach($values as $value)
 			{
 				$code = 'require '.var_export(__DIR__.'/../../php/utility/utility.php', true).';'
@@ -26,11 +26,11 @@ class ShellArgumentBytesTest extends TestCase
 					.'Utility::escapeShellArg(\'echo base64_encode($argv[1]);\')." -- ".'
 					.'Utility::escapeShellArg('.var_export($value, true).');'
 					.'passthru($command, $status); exit($status);';
-				$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-r', $code)));
+				$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), ['-r', $code]));
 				$this->assertSame(0, $result['code'], 'the actual shell command exits successfully in '.$locale);
 				$this->assertSame(base64_encode($value), $result['out'], 'the invoked process receives the exact original argument in '.$locale);
 				$this->assertSame('', $result['err'], 'quoting produces no diagnostic or injected command output');
-			}
+			} }
 	}
 
 	public function testNulIsRefusedBeforeACommandCanBeConstructed()
@@ -46,7 +46,7 @@ class ShellArgumentBytesTest extends TestCase
 		$code = 'require '.var_export(__DIR__.'/../../php/utility/utility.php', true).';'
 			.'if (Utility::escapeShellArg("raw\\xFF") !== "\'raw\\xFF\'") exit(1);'
 			.'try { Utility::escapeShellArg("a\\0b"); exit(2); } catch (InvalidArgumentException $error) {}';
-		$result = PhpProcess::run(array('-n', '-d', 'disable_functions=escapeshellarg,str_replace,strpos,strlen,substr,setlocale', '-r', $code));
+		$result = PhpProcess::run(['-n', '-d', 'disable_functions=escapeshellarg,str_replace,strpos,strlen,substr,setlocale', '-r', $code]);
 		$this->assertSame(0, $result['code'], 'raw-byte quoting and NUL refusal work without string/locale primitives');
 		$this->assertSame('', $result['out'].$result['err'], 'disabled primitive paths are quiet');
 	}

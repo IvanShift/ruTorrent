@@ -33,7 +33,7 @@ foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $account
 // twice running.
 function caAccountClasses()
 {
-    $classes = array();
+    $classes = [];
     foreach (get_declared_classes() as $class) {
         if (is_subclass_of($class, 'commonAccount') && !is_a($class, 'ProbeAccount', true)
             && $class !== 'CAKinozalAccount') {
@@ -57,13 +57,13 @@ class CAClient
     public $results = '';
     public $lastredirectaddr = '';
     public $referer = '';
-    public $cookies = array();
+    public $cookies = [];
     public $fetches = 0;
-    public $requests = array();
+    public $requests = [];
     public $filename = 'movie.torrent';
     private $queue;
 
-    public function __construct($queue = array())
+    public function __construct($queue = [])
     {
         $this->queue = $queue;
     }
@@ -71,7 +71,7 @@ class CAClient
     public function fetch($url, $method = 'GET', $contentType = '', $body = '')
     {
         $this->fetches++;
-        $this->requests[] = array($method, $url);
+        $this->requests[] = [$method, $url];
         if ($this->queue) {
             $answer = array_shift($this->queue);
             $this->apply($answer);
@@ -211,7 +211,7 @@ function caWarmProbe($queue)
 {
     $account = new ProbeAccount();
     $account->data->loaded = true;
-    return array($account, new CAClient($queue));
+    return [$account, new CAClient($queue)];
 }
 
 function caFetch($account, $client)
@@ -238,12 +238,12 @@ function caPostFetch($class, $client, $url = 'https://tracker.example/page.php')
     return $method->invoke(new $class(), $client, $url, 'GET', '', '');
 }
 
-$tests = array(
+$tests = [
 
     'a failed Kinozal guest parser refuses the answer without replacing its cached session' => function () {
         $account = new CAKinozalAccount();
         // The registration anchor is from the captured anonymous details answer.
-        $client = new CAClient(array(array(200, '<a href=\'/signup.php\' class=\'sba\'>сюда</a>')));
+        $client = new CAClient([[200, '<a href=\'/signup.php\' class=\'sba\'>сюда</a>']]);
         $limit = ini_get('pcre.backtrack_limit');
         try {
             ini_set('pcre.backtrack_limit', '1');
@@ -259,7 +259,7 @@ $tests = array(
 
     'a login reply with a failed Kinozal guest parser is refused' => function () {
         $method = new ReflectionMethod('commonAccount', 'loginWasNotRefused');
-        if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
         $limit = ini_get('pcre.backtrack_limit');
         try {
             ini_set('pcre.backtrack_limit', '1');
@@ -277,25 +277,25 @@ $tests = array(
         try {
             $account = new CAKinozalAccount();
             $challenge = '<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/test"></script></html>';
-            $client = new CAClient(array(
-                array(200, '<a href="/signup.php">guest</a>'),
+            $client = new CAClient([
+                [200, '<a href="/signup.php">guest</a>'],
                 // Form portion captured from /login.php on 2026-08-07, including
                 // the stray quote in its bare name value.
-                array(200, '<form method=post action="/takelogin.php" name=upt">'
+                [200, '<form method=post action="/takelogin.php" name=upt">'
                     . '<input type=text size=35 id="username" name="username" value="">'
-                    . '<input type=password size=35 id="password" name="password" value=""></form>'),
-                array(403, $challenge),
-            ));
+                    . '<input type=password size=35 id="password" name="password" value=""></form>'],
+                [403, $challenge],
+            ]);
             testAssertSame(false, $account->fetch($client,
                 'https://kinozal.guru/get_srv_details.php?action=2&id=1', 'fixture-user', 'fixture-password', 'GET', '', ''),
                 'the failed login cannot return the requested details');
             testAssertSame(1, $account->logins, 'the real adapter performed its relogin path');
             testAssertSame(3, $client->fetches, 'details, captured login form and takelogin were requested');
-            testAssertSame(array(
-                array('GET', 'https://kinozal.guru/get_srv_details.php?action=2&id=1'),
-                array('GET', 'https://kinozal.guru/login.php'),
-                array('POST', 'https://kinozal.guru/takelogin.php'),
-            ), $client->requests, 'the final reply belongs to the actual adapter login POST');
+            testAssertSame([
+                ['GET', 'https://kinozal.guru/get_srv_details.php?action=2&id=1'],
+                ['GET', 'https://kinozal.guru/login.php'],
+                ['POST', 'https://kinozal.guru/takelogin.php'],
+            ], $client->requests, 'the final reply belongs to the actual adapter login POST');
             testAssertSame(403, $client->status, 'the remaining status comes from takelogin');
             testAssertSame($challenge, $client->results, 'the remaining body comes from takelogin');
         } finally {
@@ -306,7 +306,7 @@ $tests = array(
     // ---- what fetch() does with each kind of answer -------------------------
 
     'a live page on the cached path is used, and costs no login' => function () {
-        list($account, $client) = caWarmProbe(array(array(200, caLivePage())));
+        list($account, $client) = caWarmProbe([[200, caLivePage()]]);
         testAssertSame(true, caFetch($account, $client), 'the cached session serves the page');
         testAssertSame(0, $account->logins, 'no credential POST is spent on a working session');
         testAssertSame(0, $account->data->removed, 'the cookies are kept');
@@ -316,8 +316,8 @@ $tests = array(
     'a guest page is the one answer that re-logs in' => function () {
         // The only evidence that the session died: the tracker answered, and
         // answered as a guest.
-        list($account, $client) = caWarmProbe(array(array(200, caGuestPage()), array(200, caLivePage())));
-        $account->loginAnswer = array(200, caLivePage());
+        list($account, $client) = caWarmProbe([[200, caGuestPage()], [200, caLivePage()]]);
+        $account->loginAnswer = [200, caLivePage()];
         testAssertSame(true, caFetch($account, $client), 'the re-login recovers the fetch');
         testAssertSame(1, $account->logins, 'exactly one login');
         testAssertSame(1, $account->data->stored, 'the new session is cached');
@@ -329,7 +329,7 @@ $tests = array(
         // again is not a repair -- it spends a credential POST on a tracker
         // that is already failing. Callers that loop over a torrent list would
         // otherwise turn one outage into a login per torrent.
-        list($account, $client) = caWarmProbe(array(array(503, '<html>bad gateway</html>')));
+        list($account, $client) = caWarmProbe([[503, '<html>bad gateway</html>']]);
         testAssertSame(false, caFetch($account, $client), 'the failure is reported');
         testAssertSame(0, $account->logins, 'no credential POST is spent on an outage');
         testAssertSame(0, $account->data->removed, 'cookies never shown to be stale are kept');
@@ -340,12 +340,12 @@ $tests = array(
         // A false Snoopy::fetch() means no response arrived at all. It cannot
         // establish that the cached cookies are stale, so this attempt must
         // stop before the Kinozal credential POST and leave that session alone.
-        list($account, $client) = caWarmProbe(array(array(0, '', false)));
-        $client->cookies = array('sid' => 'cached');
+        list($account, $client) = caWarmProbe([[0, '', false]]);
+        $client->cookies = ['sid' => 'cached'];
         testAssertSame(false, caFetch($account, $client), 'a transport failure is reported');
         testAssertSame(0, $account->logins, 'no credential POST is spent without an answer');
         testAssertSame(0, $account->data->removed, 'the cached session is not deleted');
-        testAssertSame(array('sid' => 'cached'), $client->cookies, 'the cached cookies stay in place');
+        testAssertSame(['sid' => 'cached'], $client->cookies, 'the cached cookies stay in place');
         testAssertSame(1, $client->fetches, 'the failed request is not retried through login');
     },
 
@@ -353,7 +353,7 @@ $tests = array(
         // plugins/rss sends If-None-Match and reads $client->status itself. A
         // 304 is empty on purpose; judging it by its absent body would turn
         // every unchanged poll of an authenticated feed into a fresh login.
-        list($account, $client) = caWarmProbe(array(array(304, '')));
+        list($account, $client) = caWarmProbe([[304, '']]);
         testAssertSame(true, caFetch($account, $client), '304 is an answer, and an authenticated one');
         testAssertSame(0, $account->logins, 'an unchanged feed costs no login');
         testAssertSame(0, $account->data->removed, 'and does not drop the session');
@@ -363,8 +363,8 @@ $tests = array(
         // A followed chain ends at the status of its last hop, so a 3xx here
         // means Snoopy stopped following. The boilerplate body a server puts on
         // one carries no guest marker, so it used to read as a live session.
-        foreach (array('', '<html><head><title>302 Found</title></head><body>moved</body></html>') as $stub) {
-            list($account, $client) = caWarmProbe(array(array(302, $stub)));
+        foreach (['', '<html><head><title>302 Found</title></head><body>moved</body></html>'] as $stub) {
+            list($account, $client) = caWarmProbe([[302, $stub]]);
             testAssertSame(false, caFetch($account, $client), 'a 302 is not a page to hand to the caller');
             testAssertSame(0, $account->logins, 'and not evidence that the session died');
             testAssertSame(0, $account->data->removed, 'so the cookies stay');
@@ -372,7 +372,7 @@ $tests = array(
     },
 
     'an empty body is not a live session' => function () {
-        list($account, $client) = caWarmProbe(array(array(200, '')));
+        list($account, $client) = caWarmProbe([[200, '']]);
         testAssertSame(false, caFetch($account, $client), 'nothing arrived, so nothing is served');
         testAssertSame(0, $account->logins, 'and no login is spent guessing why');
     },
@@ -381,7 +381,7 @@ $tests = array(
         // Historically, a failed Snoopy gzip shell-out left exec()'s output
         // array in ->results; every marker test under accounts/ is a strpos().
         // The guard remains necessary for non-string transport results.
-        list($account, $client) = caWarmProbe(array(array(200, array('gzip: stdin: not in gzip format'))));
+        list($account, $client) = caWarmProbe([[200, ['gzip: stdin: not in gzip format']]]);
         testAssertSame(false, caFetch($account, $client), 'a non-string body is refused');
         testAssertSame(0, $account->logins, 'and is not read as a dead session either');
     },
@@ -394,15 +394,15 @@ $tests = array(
         // whether the session took, so the marker test cannot be applied to a
         // body that is not there.
         $account = new ProbeAccount();
-        $account->loginAnswer = array(302, '');
-        $client = new CAClient(array(array(200, caLivePage())));
+        $account->loginAnswer = [302, ''];
+        $client = new CAClient([[200, caLivePage()]]);
         testAssertSame(true, caFetch($account, $client), 'a bodyless login answer is not a refusal');
         testAssertSame(1, $account->data->stored, 'the session it produced is cached');
     },
 
     'a login answered with the guest form is a refusal' => function () {
         $account = new ProbeAccount();
-        $account->loginAnswer = array(200, caGuestPage());
+        $account->loginAnswer = [200, caGuestPage()];
         $client = new CAClient();
         testAssertSame(false, caFetch($account, $client), 'wrong credentials do not authenticate');
         testAssertSame(1, $account->data->removed, 'and the stale cache is dropped');
@@ -415,7 +415,7 @@ $tests = array(
         // before writing. Undeclared, they arrived as null, and an account
         // whose login() begins by fetching $url could never authenticate here.
         $account = new ProbeAccount();
-        $account->loginAnswer = array(200, caLivePage());
+        $account->loginAnswer = [200, caLivePage()];
         $account->check(new CAClient(), 'user', 'pass', 0);
         testAssertSame('https://tracker.example', $account->urlSeenByLogin, 'login() is given the account url');
         testAssertSame(1, $account->data->stored, 'a renewed session is cached');
@@ -435,7 +435,7 @@ $tests = array(
     'fetch validates the final answer even if an override always returns true' => function () {
         $account = new CAPermissivePostFetchAccount();
         $account->data->loaded = true;
-        $client = new CAClient(array(array(503, caLivePage())));
+        $client = new CAClient([[503, caLivePage()]]);
         testAssertSame(false, caFetch($account, $client),
             'a cached 503 cannot become success through a permissive override');
         testAssertSame(0, $account->logins, 'a server error does not spend credentials');
@@ -443,8 +443,8 @@ $tests = array(
         testAssertSame(0, $account->data->stored, 'the failed fetch stores nothing');
 
         $account = new CAPermissivePostFetchAccount();
-        $account->loginAnswer = array(200, caLivePage());
-        $client = new CAClient(array(array(503, caLivePage())));
+        $account->loginAnswer = [200, caLivePage()];
+        $client = new CAClient([[503, caLivePage()]]);
         testAssertSame(false, caFetch($account, $client),
             'a fresh login cannot bless a later 503 through the override');
         testAssertSame(1, $account->logins, 'the new login branch was exercised');
@@ -466,8 +466,8 @@ $tests = array(
         $classes = caAccountClasses();
         testAssertSame(true, count($classes) > 0, 'the account files were found at all');
         foreach ($classes as $class) {
-            foreach (array(array(200, ''), array(503, caLivePage()), array(302, caLivePage()),
-                array(200, array('gzip: not in gzip format'))) as $answer) {
+            foreach ([[200, ''], [503, caLivePage()], [302, caLivePage()],
+                [200, ['gzip: not in gzip format']]] as $answer) {
                 testAssertSame(false, caPostFetch($class, caHolding($answer[0], $answer[1])),
                     $class . ' on status ' . $answer[0]);
             }
@@ -492,7 +492,7 @@ $tests = array(
         // through -- but only after replacing ->results with a page that would
         // pass on its own.
         $client = caHolding(200, caGuestPage(), '/browse.php?cat=1');
-        $client->queueAnswers(array(array(200, caLivePage())));
+        $client->queueAnswers([[200, caLivePage()]]);
         testAssertSame(false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
             'the guest answer to the download url decides, not details.php');
@@ -501,7 +501,7 @@ $tests = array(
     'a failed LostFilm recovery cannot return a details page as the download' => function () {
         $url = 'https://lostfilm.tv/download.php?id=7&x';
         $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
-        $client->queueAnswers(array(array(200, caLivePage())));
+        $client->queueAnswers([[200, caLivePage()]]);
         testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
             'a details page without the dlt token is not the requested torrent');
         testAssertSame(1, $client->fetches, 'the recovery path actually fetched details.php');
@@ -512,12 +512,12 @@ $tests = array(
         // body, so on its own it accepts a 500 page and a body Snoopy could not
         // decompress -- the shapes the base class exists to refuse.
         $client = caHolding(200, '<html>ok</html>', '/browse.php?cat=1');
-        $client->queueAnswers(array(
+        $client->queueAnswers([
             // details.php, carrying the dlt token in the shape the regex wants
-            array(200, '<a href="/download.php?id=7&yyy" onMouseOver="setCookie(\'dlt\',\'deadbeef\'"></a>'),
+            [200, '<a href="/download.php?id=7&yyy" onMouseOver="setCookie(\'dlt\',\'deadbeef\'"></a>'],
             // the retried download: a filename header, but an error page
-            array(500, '<html>error</html>'),
-        ));
+            [500, '<html>error</html>'],
+        ]);
         testAssertSame(false,
             caPostFetch('LostFilmAccount', $client, 'https://lostfilm.tv/download.php?id=7&x'),
             'a 500 carrying a filename header is not a torrent');
@@ -536,7 +536,7 @@ $tests = array(
             }
         };
         $account->data->loaded = true;
-        $client = new CAClient(array(array(200, caLivePage()), array(200, caLivePage())));
+        $client = new CAClient([[200, caLivePage()], [200, caLivePage()]]);
         $client->lastredirectaddr = '/browse.php?cat=1';
         $url = 'https://lostfilm.tv/download.php?id=7&x';
         testAssertSame(false, $account->fetch($client, $url, 'user', 'pass', 'GET', '', ''),
@@ -549,9 +549,9 @@ $tests = array(
 
     'LostFilm recovery refuses unreadable and failed details answers' => function () {
         $url = 'https://lostfilm.tv/download.php?id=7&x';
-        foreach (array(array(200, array('gzip failed'), true), array(200, caLivePage(), false)) as $detail) {
+        foreach ([[200, ['gzip failed'], true], [200, caLivePage(), false]] as $detail) {
             $client = caHolding(200, caLivePage(), '/browse.php?cat=1');
-            $client->queueAnswers(array($detail));
+            $client->queueAnswers([$detail]);
             testAssertSame(false, caPostFetch('LostFilmAccount', $client, $url),
                 'unusable details cannot turn the browse redirect into a download');
             testAssertSame(1, $client->fetches, 'the recovery branch fetched details');
@@ -570,6 +570,6 @@ $tests = array(
         testAssertSame(true, caPostFetch('KinozalTVAccount', caHolding(200, $torrent)),
             'a torrent whose comment names /signup.php is still a torrent');
     },
-);
+];
 
 exit(testRunCases($tests));

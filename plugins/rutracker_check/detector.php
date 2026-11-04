@@ -6,7 +6,7 @@ require_once(__DIR__ . '/../../php/urlhost.php');
 // rTorrent's own per-tracker counters, plus the fleet-level fuse.
 class RuTrackerDetector
 {
-    const TRACKER_PATTERN = '/t-ru\.org|rutracker\./i';
+    public const TRACKER_PATTERN = '/t-ru\.org|rutracker\./i';
 
     // The host-identity form of the pattern above: RuTracker's own hosts,
     // matched whole -- a listed host or a subdomain of one, through UrlHost --
@@ -45,8 +45,8 @@ class RuTrackerDetector
     // from here. A sixth domain is therefore a whole-tree search, not a
     // directory one, and sharing a list across plugins is a real change rather
     // than something a grep can finish.
-    const TRACKER_HOSTS = array('t-ru.org', 'rutracker.org', 'rutracker.cr', 'rutracker.net',
-        'rutracker.nl', 'rutracker.cc');
+    public const TRACKER_HOSTS = ['t-ru.org', 'rutracker.org', 'rutracker.cr', 'rutracker.net',
+        'rutracker.nl', 'rutracker.cc'];
 
     // Anchored at the start of the message rTorrent itself composes
     // ("Tracker: [Could not resolve hostname]"), because the tail of that
@@ -54,7 +54,7 @@ class RuTrackerDetector
     // "timed out" in any failure reason and veto its own deletion detection
     // for good -- the plugin would read its refusal as a network problem
     // and never conclude anything.
-    const TRANSPORT_PATTERN = '/^\s*(?:Tracker:\s*)?\[?\s*(?:Could not resolve hostname|Could not connect|Timed? ?out)/i';
+    public const TRANSPORT_PATTERN = '/^\s*(?:Tracker:\s*)?\[?\s*(?:Could not resolve hostname|Could not connect|Timed? ?out)/i';
 
     /**
      * Is this announce URL one of RuTracker's own -- or, given another
@@ -78,10 +78,10 @@ class RuTrackerDetector
      * So the host is extracted and matched whole, against RuTracker's own
      * domains -- the same anchored rule the outgoing paths already use.
      */
-    static public function isTrackerRow($url, $hosts = null)
+    public static function isTrackerRow($url, $hosts = null)
     {
         $host = UrlHost::of($url);
-        if ($host === null) return false;
+        if ($host === null) { return false; }
         return self::isTrackerHost($host, $hosts);
     }
 
@@ -96,7 +96,7 @@ class RuTrackerDetector
     // tracker's: the test is the same whoever the host belongs to, so a
     // second tracker's authority check goes through this one function
     // rather than through a copy of it.
-    static public function isTrackerHost($host, $hosts = null)
+    public static function isTrackerHost($host, $hosts = null)
     {
         return UrlHost::isOneOf($host, $hosts === null ? self::TRACKER_HOSTS : $hosts);
     }
@@ -105,10 +105,10 @@ class RuTrackerDetector
     // t.multicall assembles (see Task 8). A row whose field count is wrong
     // (e.g. a literal '|' inside its URL broke the framing) or whose counter
     // fields are non-numeric is dropped rather than guessed at.
-    static public function parseTrackerBlob($blob, &$complete = null)
+    public static function parseTrackerBlob($blob, &$complete = null)
     {
         $complete = true;
-        $rows = array();
+        $rows = [];
         if (!is_string($blob) || $blob === '') {
             return $rows;
         }
@@ -116,61 +116,20 @@ class RuTrackerDetector
             $complete = false;
         }
         foreach (explode('#', $blob) as $chunk) {
-            if ($chunk === '') continue;
+            if ($chunk === '') { continue; }
             $fields = explode('|', $chunk);
             if (count($fields) !== 4 || !is_numeric($fields[1]) || !is_numeric($fields[2]) || !is_numeric($fields[3])) {
                 $complete = false;
                 continue;
             }
-            $rows[] = array(
+            $rows[] = [
                 'url' => $fields[0],
                 'enabled' => (int) $fields[1],
                 'failed' => (int) $fields[2],
                 'success' => (int) $fields[3],
-            );
+            ];
         }
         return $rows;
-    }
-
-    /**
-     * What a set of tracker rows says about a topic, by announce alone.
-     *
-     * The shared core of announceVerdict() and classify(), stated once so a
-     * second tracker cannot grow a second, subtly different copy of it. A
-     * pattern and a list, and they answer different questions:
-     *
-     *   $jurisdiction  is this row about the tracker we are asking about?
-     *                  Deliberately loose, applied to a whole announce URL: a
-     *                  torrent whose announce was tampered with is still that
-     *                  tracker's topic and still has to be looked at.
-     *   $authority     may this row certify the topic ALIVE? A list of hosts
-     *                  matched whole, because 'alive' is the verdict that
-     *                  stops the check, and a host anyone can register must
-     *                  not be able to reach it. Applied through the same
-     *                  isTrackerRow() the outgoing RuTracker paths use.
-     *
-     * @return array enabled: rows in jurisdiction, counted: any of them
-     *               carrying a signal yet, alive: one of them announcing
-     *               successfully on an authoritative host
-     */
-    static private function announceSignal($rows, $jurisdiction, $authority)
-    {
-        $enabled = 0;
-        $alive = false;
-        $counted = false;
-        foreach ((array) $rows as $row) {
-            if (!is_array($row) || empty($row['enabled'])) continue;
-            $url = (string) ($row['url'] ?? '');
-            if (!preg_match($jurisdiction, $url)) continue;
-            $enabled++;
-
-            $failed = (int) ($row['failed'] ?? 0);
-            $success = (int) ($row['success'] ?? 0);
-            if ($failed === 0 && $success === 0) continue;   // no signal from this row yet
-            $counted = true;
-            if ($failed === 0 && self::isTrackerRow($url, $authority)) $alive = true;
-        }
-        return array('enabled' => $enabled, 'alive' => $alive, 'counted' => $counted);
     }
 
     /**
@@ -198,12 +157,12 @@ class RuTrackerDetector
      *                              each of them, or a subdomain of one
      * @return string 'none' | 'cold' | 'alive' | 'candidate'
      */
-    static public function announceVerdict($rows, $jurisdiction, $authority)
+    public static function announceVerdict($rows, $jurisdiction, $authority)
     {
         $signal = self::announceSignal($rows, $jurisdiction, $authority);
-        if ($signal['enabled'] === 0) return 'none';
-        if ($signal['alive']) return 'alive';
-        if (!$signal['counted']) return 'cold';
+        if ($signal['enabled'] === 0) { return 'none'; }
+        if ($signal['alive']) { return 'alive'; }
+        if (!$signal['counted']) { return 'cold'; }
         return 'candidate';
     }
 
@@ -219,7 +178,7 @@ class RuTrackerDetector
     // that sweep the whole seeding view (RuTrackerUpdatePass::run) carry all
     // of those too and must not read that second 'none' as "nothing to do",
     // or every other tracker's handler silently stops running.
-    static public function classify($rows, $dMessage, $trackersComplete = true)
+    public static function classify($rows, $dMessage, $trackersComplete = true)
     {
         // Every RuTracker row is weighed, not just the first: a RuTracker
         // torrent normally carries several (bt.t-ru.org, bt2..., bt3...), and
@@ -236,7 +195,7 @@ class RuTrackerDetector
         // announceSignal(). Both outgoing layers already gate on that same
         // test.
         $verdict = self::announceVerdict($rows, self::TRACKER_PATTERN, self::TRACKER_HOSTS);
-        if ($verdict !== 'candidate') return $verdict;
+        if ($verdict !== 'candidate') { return $verdict; }
 
         // Attribution, asked of every enabled row: could it have written
         // $dMessage on its own? isForeignRow() is the canonical answer, shared
@@ -245,9 +204,9 @@ class RuTrackerDetector
         // A look-alike row is therefore counted BOTH ways: judged by the
         // signal above, trusted nowhere.
         $foreign = 0;
-        foreach ((array) $rows as $row)
-            if (is_array($row) && !empty($row['enabled']) && self::isForeignRow($row))
-                $foreign++;
+        foreach ((array) $rows as $row) {
+            if (is_array($row) && !empty($row['enabled']) && self::isForeignRow($row)) {
+                $foreign++; } }
         // d.message is download-global: it holds the most recent tracker event
         // of ANY row. Reading it as the RuTracker row's excuse is only sound
         // when no other enabled tracker could have written it -- otherwise a
@@ -258,8 +217,8 @@ class RuTrackerDetector
         // agree before anything is concluded.
         if ($trackersComplete
             && self::messageSpeaksForTracker($foreign, $dMessage)
-            && self::isTransportFailure($dMessage))
-            return 'transport';
+            && self::isTransportFailure($dMessage)) {
+            return 'transport'; }
         return 'candidate';
     }
 
@@ -277,15 +236,15 @@ class RuTrackerDetector
      * "Failure reason" as a pure transport failure. Every nonempty part must
      * therefore be a transport failure.
      */
-    static public function isTransportFailure($message)
+    public static function isTransportFailure($message)
     {
-        if (!is_string($message) || trim($message) === '') return false;
+        if (!is_string($message) || trim($message) === '') { return false; }
         $body = trim($message);
         // The wrapper is written once around the whole join, not per part.
-        if (preg_match('/^Tracker:\s*\[(.*)\]$/is', $body, $m)) $body = $m[1];
+        if (preg_match('/^Tracker:\s*\[(.*)\]$/is', $body, $m)) { $body = $m[1]; }
         foreach (preg_split('~\s*///\s*~', $body) as $part) {
-            if (trim($part) === '') continue;
-            if (!preg_match(self::TRANSPORT_PATTERN, $part)) return false;
+            if (trim($part) === '') { continue; }
+            if (!preg_match(self::TRANSPORT_PATTERN, $part)) { return false; }
         }
         return true;
     }
@@ -307,7 +266,7 @@ class RuTrackerDetector
      * "exactly one HTTP row, so nobody else could have written the message" --
      * was not the closed world it took itself for.
      */
-    static public function messageSpeaksForTracker($foreignEnabled, $dMessage)
+    public static function messageSpeaksForTracker($foreignEnabled, $dMessage)
     {
         return (int) $foreignEnabled === 0 && is_string($dMessage) && $dMessage !== '';
     }
@@ -347,10 +306,10 @@ class RuTrackerDetector
      * call site would otherwise put $foreign back at 0 and restore the exact
      * defect above, silently.
      */
-    static public function isForeignRow($row)
+    public static function isForeignRow($row)
     {
-        if (!is_array($row)) return true;
-        if (empty($row['enabled'])) return false;
+        if (!is_array($row)) { return true; }
+        if (empty($row['enabled'])) { return false; }
         return !self::isTrackerRow($row['url'] ?? '');
     }
 
@@ -358,15 +317,56 @@ class RuTrackerDetector
     // layer-1 candidates reaches both the relative share and the absolute
     // floor, so a handful of failures in a tiny group can't trip it on
     // their own.
-    static public function fuseTrips($hostStats, $share, $floor)
+    public static function fuseTrips($hostStats, $share, $floor)
     {
-        $tripped = array();
+        $tripped = [];
         foreach ((array) $hostStats as $host => $stat) {
             $total = (int) ($stat['total'] ?? 0);
             $candidates = (int) ($stat['candidates'] ?? 0);
-            if ($total > 0 && $candidates >= max((int) $floor, (int) ceil($share * $total)))
-                $tripped[] = $host;
+            if ($total > 0 && $candidates >= max((int) $floor, (int) ceil($share * $total))) {
+                $tripped[] = $host; }
         }
         return $tripped;
+    }
+
+    /**
+     * What a set of tracker rows says about a topic, by announce alone.
+     *
+     * The shared core of announceVerdict() and classify(), stated once so a
+     * second tracker cannot grow a second, subtly different copy of it. A
+     * pattern and a list, and they answer different questions:
+     *
+     *   $jurisdiction  is this row about the tracker we are asking about?
+     *                  Deliberately loose, applied to a whole announce URL: a
+     *                  torrent whose announce was tampered with is still that
+     *                  tracker's topic and still has to be looked at.
+     *   $authority     may this row certify the topic ALIVE? A list of hosts
+     *                  matched whole, because 'alive' is the verdict that
+     *                  stops the check, and a host anyone can register must
+     *                  not be able to reach it. Applied through the same
+     *                  isTrackerRow() the outgoing RuTracker paths use.
+     *
+     * @return array enabled: rows in jurisdiction, counted: any of them
+     *               carrying a signal yet, alive: one of them announcing
+     *               successfully on an authoritative host
+     */
+    private static function announceSignal($rows, $jurisdiction, $authority)
+    {
+        $enabled = 0;
+        $alive = false;
+        $counted = false;
+        foreach ((array) $rows as $row) {
+            if (!is_array($row) || empty($row['enabled'])) { continue; }
+            $url = (string) ($row['url'] ?? '');
+            if (!preg_match($jurisdiction, $url)) { continue; }
+            $enabled++;
+
+            $failed = (int) ($row['failed'] ?? 0);
+            $success = (int) ($row['success'] ?? 0);
+            if ($failed === 0 && $success === 0) { continue; }   // no signal from this row yet
+            $counted = true;
+            if ($failed === 0 && self::isTrackerRow($url, $authority)) { $alive = true; }
+        }
+        return ['enabled' => $enabled, 'alive' => $alive, 'counted' => $counted];
     }
 }

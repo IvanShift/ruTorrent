@@ -82,16 +82,16 @@ class ExtsearchHistoryActionTest extends TestCase
 
 	public function tearDown()
 	{
-		foreach(array('post-gate', 'saved.json', 'probe-log.jsonl',
+		foreach(['post-gate', 'saved.json', 'probe-log.jsonl',
 			'action.log', 'cursor.txt', 'stall-server.php', 'stall-port',
 			'cache-merge.php',
-			'engine-scan', 'bootstrap.php') as $file)
-			@unlink($this->root.'/'.$file);
-		foreach(array('action.php', 'engines.php', 'probe_cursor.php') as $file)
-			@unlink($this->root.'/plugins/extsearch/'.$file);
+			'engine-scan', 'bootstrap.php'] as $file) {
+			@unlink($this->root.'/'.$file); }
+		foreach(['action.php', 'engines.php', 'probe_cursor.php'] as $file) {
+			@unlink($this->root.'/plugins/extsearch/'.$file); }
 		@unlink($this->root.'/php/util.php');
 		@unlink($this->root.'/php/rtorrent.php');
-		foreach(glob($this->root.'/settings/*') ?: array() as $entry) @unlink($entry);
+		foreach(glob($this->root.'/settings/*') ?: [] as $entry) { @unlink($entry); }
 		@rmdir($this->root.'/settings');
 		@rmdir($this->root.'/plugins/extsearch');
 		@rmdir($this->root.'/plugins');
@@ -109,26 +109,26 @@ class ExtsearchHistoryActionTest extends TestCase
 			.'&url='.rawurlencode($pending).'&url='.rawurlencode($pending)
 			.'&url='.rawurlencode($unknown).'&url='.rawurlencode($overLimit);
 		$answer = $this->runHistory($body, 3);
-		$this->assertSame(array($known=>str_repeat('A', 40),
-			$pending=>null, $unknown=>''), $answer,
+		$this->assertSame([$known=>str_repeat('A', 40),
+			$pending=>null, $unknown=>''], $answer,
 			'repeated encoded URLs map to exact confirmed, pending, and unknown values');
 		$this->assertTrue(is_file($this->root.'/post-gate'),
 			'history action enforces POST');
 		$this->assertTrue(!is_file($this->root.'/engine-scan'),
 			'history action does not scan engines or fetch trackers');
-		$this->assertSame(array($pending),
+		$this->assertSame([$pending],
 			json_decode((string)@file_get_contents($this->root.'/saved.json'), true),
 			'pending reconciliation is persisted once');
 	}
 
 	public function testHistoryCapsRpcsAndRotatesAcrossRepeatedRequests()
 	{
-		$urls = array();
-		foreach(range(0, 7) as $i)
-			$urls[] = 'https://example.invalid/pending/'.$i;
+		$urls = [];
+		foreach(range(0, 7) as $i) {
+			$urls[] = 'https://example.invalid/pending/'.$i; }
 		$body = 'mode=history';
-		foreach($urls as $url)
-			$body .= '&url='.rawurlencode($url);
+		foreach($urls as $url) {
+			$body .= '&url='.rawurlencode($url); }
 		$expected = array_fill_keys($urls, null);
 		$this->assertSame($expected, $this->runHistory($body, 8),
 			'all requested pending URLs remain in the response');
@@ -152,16 +152,16 @@ class ExtsearchHistoryActionTest extends TestCase
 
 	public function testInterleavedPanelsCannotStarveLaterPendingUrls()
 	{
-		$groups = array(array(), array());
-		foreach(range(0, 15) as $i)
-			$groups[$i < 8 ? 0 : 1][] = 'https://example.invalid/pending/'.$i;
-		file_put_contents($this->root.'/cursor.txt', json_encode(array('next'=>0,
-			'last'=>array('https://example.invalid/stale'=>99))));
-		foreach(array(0, 1, 0) as $panel)
+		$groups = [[], []];
+		foreach(range(0, 15) as $i) {
+			$groups[$i < 8 ? 0 : 1][] = 'https://example.invalid/pending/'.$i; }
+		file_put_contents($this->root.'/cursor.txt', json_encode(['next'=>0,
+			'last'=>['https://example.invalid/stale'=>99]]));
+		foreach([0, 1, 0] as $panel)
 		{
 			$body = 'mode=history';
-			foreach($groups[$panel] as $url)
-				$body .= '&url='.rawurlencode($url);
+			foreach($groups[$panel] as $url) {
+				$body .= '&url='.rawurlencode($url); }
 			$this->assertSame(array_fill_keys($groups[$panel], null),
 				$this->runHistory($body, 8, false, null, array_merge($groups[0], $groups[1])),
 				'each panel receives every pending key');
@@ -179,18 +179,18 @@ class ExtsearchHistoryActionTest extends TestCase
 	public function testOverflowPendingBeyondConfiguredHistoryLimitIsStillReconciled()
 	{
 		$body = 'mode=history';
-		foreach(range(0, 17) as $i)
-			$body .= '&url='.rawurlencode('https://example.invalid/unknown/'.$i);
-		$pending = array();
+		foreach(range(0, 17) as $i) {
+			$body .= '&url='.rawurlencode('https://example.invalid/unknown/'.$i); }
+		$pending = [];
 		foreach(range(0, 3) as $i)
 		{
 			$pending[] = 'https://example.invalid/pending/'.$i;
 			$body .= '&url='.rawurlencode($pending[$i]);
 		}
 		$answer = $this->runHistory($body, 2, false, null, $pending);
-		foreach($pending as $url)
+		foreach($pending as $url) {
 			$this->assertTrue(array_key_exists($url, $answer) && $answer[$url] === null,
-				'a persisted pending URL after the normal count limit remains in the answer');
+				'a persisted pending URL after the normal count limit remains in the answer'); }
 		$this->assertSame(4, count($this->readProbes()),
 			'overflow pending URLs receive a bounded reconciliation turn');
 		$this->assertTrue(strpos((string)file_get_contents($this->root.'/action.log'),
@@ -200,10 +200,10 @@ class ExtsearchHistoryActionTest extends TestCase
 	public function testDamagedCursorOrderResetsVisiblyAndResumesProbing()
 	{
 		$url = 'https://example.invalid/pending/0';
-		file_put_contents($this->root.'/cursor.txt', json_encode(array('next'=>1,
-			'last'=>array($url=>PHP_INT_MAX))));
+		file_put_contents($this->root.'/cursor.txt', json_encode(['next'=>1,
+			'last'=>[$url=>PHP_INT_MAX]]));
 		$body = 'mode=history&url='.rawurlencode($url);
-		$this->assertSame(array($url=>null), $this->runHistory($body, 1),
+		$this->assertSame([$url=>null], $this->runHistory($body, 1),
 			'a damaged cursor keeps the receipt pending while probing it');
 		$this->assertSame(1, count($this->readProbes()),
 			'the first request resumes a bounded probe after reset');
@@ -211,7 +211,7 @@ class ExtsearchHistoryActionTest extends TestCase
 		$this->assertTrue(strpos($log, 'history probe cursor reset: key='
 			.'extsearch_history_probe_cursor.dat; invalid scheduling state') !== false,
 			'the damaged cache key and reset reason are visible');
-		$this->assertSame(array($url=>null), $this->runHistory($body, 1),
+		$this->assertSame([$url=>null], $this->runHistory($body, 1),
 			'the recovered cursor remains usable on the next request');
 		$this->assertSame(2, count($this->readProbes()),
 			'the next request probes instead of remaining stalled');
@@ -221,8 +221,8 @@ class ExtsearchHistoryActionTest extends TestCase
 
 	public function testHistoryKeepsPendingResponseAndLogsCursorStoreRefusal()
 	{
-		$urls = array('https://example.invalid/pending/a',
-			'https://example.invalid/pending/b');
+		$urls = ['https://example.invalid/pending/a',
+			'https://example.invalid/pending/b'];
 		$body = 'mode=history&url='.rawurlencode($urls[0])
 			.'&url='.rawurlencode($urls[1]);
 		$this->assertSame(array_fill_keys($urls, null),
@@ -258,9 +258,9 @@ class ExtsearchHistoryActionTest extends TestCase
 			.'"selected"=>array($first->selected, $second->selected), '
 			.'"next"=>$saved->next, "last"=>$saved->last));';
 		file_put_contents($this->root.'/cache-merge.php', $script);
-		$process = proc_open(array(PHP_BINARY, $this->root.'/cache-merge.php'),
-			array(0=>array('file', '/dev/null', 'r'),
-				1=>array('pipe', 'w'), 2=>array('pipe', 'w')),
+		$process = proc_open([PHP_BINARY, $this->root.'/cache-merge.php'],
+			[0=>['file', '/dev/null', 'r'],
+				1=>['pipe', 'w'], 2=>['pipe', 'w']],
 			$pipes, $this->root.'/plugins/extsearch');
 		$this->assertTrue(is_resource($process), 'real rCache child starts');
 		$output = stream_get_contents($pipes[1]);
@@ -269,7 +269,7 @@ class ExtsearchHistoryActionTest extends TestCase
 		fclose($pipes[2]);
 		$this->assertSame(0, proc_close($process), 'real rCache child finishes: '.$error);
 		$result = json_decode($output, true);
-		$this->assertSame(array(true, true), $result['writes'],
+		$this->assertSame([true, true], $result['writes'],
 			'both stale-loaded reservations are durably accepted');
 		$this->assertSame(8, count(array_unique(array_merge(
 			$result['selected'][0], $result['selected'][1]))),
@@ -294,17 +294,17 @@ while(($client = stream_socket_accept($server, 5)) !== false)
 }
 PHP;
 		file_put_contents($this->root.'/stall-server.php', $source);
-		$server = proc_open(array(PHP_BINARY, $this->root.'/stall-server.php',
-			$this->root.'/stall-port'), array(0=>array('file', '/dev/null', 'r'),
-			1=>array('pipe', 'w'), 2=>array('pipe', 'w')), $pipes);
+		$server = proc_open([PHP_BINARY, $this->root.'/stall-server.php',
+			$this->root.'/stall-port'], [0=>['file', '/dev/null', 'r'],
+			1=>['pipe', 'w'], 2=>['pipe', 'w']], $pipes);
 		$this->assertTrue(is_resource($server), 'SCGI stall fixture starts');
 		try
 		{
 			// The server creates the file before it writes the port.
-			for($i = 0; $i < 100 && ($port = (int)@file_get_contents($this->root.'/stall-port')) <= 0; $i++)
-				usleep(10000);
+			for($i = 0; $i < 100 && ($port = (int)@file_get_contents($this->root.'/stall-port')) <= 0; $i++) {
+				usleep(10000); }
 			$this->assertTrue($port > 0, 'SCGI stall fixture publishes its port');
-			$urls = array();
+			$urls = [];
 			$body = 'mode=history';
 			foreach(range(0, 7) as $i)
 			{
@@ -346,12 +346,12 @@ PHP;
 			.'$activePendingUrls = '.var_export($activePendingUrls, true).'; '
 			.'$HTTP_RAW_POST_DATA = '.var_export($body, true).';';
 		file_put_contents($this->root.'/bootstrap.php', $bootstrap);
-		$command = array(PHP_BINARY,
+		$command = [PHP_BINARY,
 			'-d', 'auto_prepend_file='.$this->root.'/bootstrap.php',
-			'-f', $this->root.'/plugins/extsearch/action.php');
-		$process = proc_open($command, array(
-			0=>array('file', '/dev/null', 'r'),
-			1=>array('pipe', 'w'), 2=>array('pipe', 'w')),
+			'-f', $this->root.'/plugins/extsearch/action.php'];
+		$process = proc_open($command, [
+			0=>['file', '/dev/null', 'r'],
+			1=>['pipe', 'w'], 2=>['pipe', 'w']],
 			$pipes, $this->root.'/plugins/extsearch');
 		$this->assertTrue(is_resource($process), 'history action child starts');
 		$output = stream_get_contents($pipes[1]);

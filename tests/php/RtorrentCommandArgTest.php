@@ -23,7 +23,7 @@ class RtorrentCommandArgSettings extends rTorrentSettings
 {
 	use PermissiveDirectorySettings;
 
-	public $captured = array();
+	public $captured = [];
 
 
 	public function patchDeprecatedRequest($commands)
@@ -58,11 +58,11 @@ class RtorrentCommandArgTest extends TestCase
 		$stub = new ReflectionClass('RtorrentCommandArgSettings');
 		$this->settings = $stub->newInstanceWithoutConstructor();
 		$this->settings->iVersion = 0x904;
-		$this->settings->aliases = array();
+		$this->settings->aliases = [];
 
 		$reflection = new ReflectionClass('rTorrentSettings');
 		$property = $reflection->getProperty('theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$this->previousSettings = $property->getValue();
 		$property->setValue(null, $this->settings);
 
@@ -78,17 +78,11 @@ class RtorrentCommandArgTest extends TestCase
 		file_put_contents($this->torrentFile, $this->minimalTorrent());
 	}
 
-	public function testTorrentFixtureHasNoUnusedTemporarySibling()
-	{
-		$this->assertTrue(!file_exists(substr($this->torrentFile, 0, -strlen('.torrent'))),
-			'the torrent fixture leaves no unused tempnam file beside its .torrent file');
-	}
-
 	public function tearDown()
 	{
 		$reflection = new ReflectionClass('rTorrentSettings');
 		$property = $reflection->getProperty('theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$property->setValue(null, $this->previousSettings);
 
 		if ($this->torrentFile && file_exists($this->torrentFile)) {
@@ -96,38 +90,10 @@ class RtorrentCommandArgTest extends TestCase
 		}
 	}
 
-	private function minimalTorrent()
+	public function testTorrentFixtureHasNoUnusedTemporarySibling()
 	{
-		$info = 'd6:lengthi1e4:name9:test.data12:piece lengthi16384e6:pieces20:'
-			. str_repeat("\x01", 20) . 'e';
-		return 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
-	}
-
-	/**
-	 * Run a load through sendTorrent() and return the command parameters it
-	 * put on the wire, as plain strings.
-	 *
-	 * A reload ($isNew false), because it sends the mkdir and the load in one
-	 * request, which is the one this seam stops; a new download's directory is
-	 * made in a request of its own first. The load's directory parameter is
-	 * built by the same line either way.
-	 */
-	private function loadInto($directory, $addPath = true)
-	{
-		try {
-			rTorrent::sendTorrent($this->torrentFile, true, $addPath, $directory,
-				null, true, false, false);
-		} catch (RtorrentCommandArgCaptured $stop) {
-			// expected: the request was stopped at the seam
-		}
-
-		$parameters = array();
-		foreach ($this->settings->captured as $command) {
-			foreach ($command->params as $param) {
-				$parameters[] = (string)$param->value;
-			}
-		}
-		return $parameters;
+		$this->assertTrue(!file_exists(substr($this->torrentFile, 0, -strlen('.torrent'))),
+			'the torrent fixture leaves no unused tempnam file beside its .torrent file');
 	}
 
 	// ---- what sendTorrent() actually emits -------------------------------
@@ -237,5 +203,39 @@ class RtorrentCommandArgTest extends TestCase
 			'""',
 			rTorrent::quoteCommandArg(''),
 			'an empty value quotes to an empty argument');
+	}
+
+	private function minimalTorrent()
+	{
+		$info = 'd6:lengthi1e4:name9:test.data12:piece lengthi16384e6:pieces20:'
+			. str_repeat("\x01", 20) . 'e';
+		return 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
+	}
+
+	/**
+	 * Run a load through sendTorrent() and return the command parameters it
+	 * put on the wire, as plain strings.
+	 *
+	 * A reload ($isNew false), because it sends the mkdir and the load in one
+	 * request, which is the one this seam stops; a new download's directory is
+	 * made in a request of its own first. The load's directory parameter is
+	 * built by the same line either way.
+	 */
+	private function loadInto($directory, $addPath = true)
+	{
+		try {
+			rTorrent::sendTorrent($this->torrentFile, true, $addPath, $directory,
+				null, true, false, false);
+		} catch (RtorrentCommandArgCaptured $stop) {
+			// expected: the request was stopped at the seam
+		}
+
+		$parameters = [];
+		foreach ($this->settings->captured as $command) {
+			foreach ($command->params as $param) {
+				$parameters[] = (string)$param->value;
+			}
+		}
+		return $parameters;
 	}
 }

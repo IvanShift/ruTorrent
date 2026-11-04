@@ -20,7 +20,7 @@ class TorrentLoadDirectoryProvenanceTest extends TestCase
 		$settings->directory = '/load-provenance-top/';
 		$settings->home = '/load-provenance-top/home';
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if(PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if(PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$this->previousSettings = $property->getValue();
 		$property->setValue(null, $settings);
 	}
@@ -28,7 +28,7 @@ class TorrentLoadDirectoryProvenanceTest extends TestCase
 	public function tearDown()
 	{
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if(PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if(PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$property->setValue(null, $this->previousSettings);
 		$GLOBALS['topDirectory'] = $this->previousTop;
 	}

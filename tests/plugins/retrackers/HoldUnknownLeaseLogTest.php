@@ -23,12 +23,12 @@ $source = '<?php' . "\n"
     . '$method->setAccessible(true);' . "\n"
     . '$method->invoke(null);' . "\n";
 file_put_contents($script, $source);
-$descriptors = array(
-    0 => array('file', '/dev/null', 'r'),
-    1 => array('file', $stdout, 'w'),
-    2 => array('file', $stderr, 'w'),
-);
-$process = @proc_open(array(PHP_BINARY, $script, $log), $descriptors, $pipes);
+$descriptors = [
+    0 => ['file', '/dev/null', 'r'],
+    1 => ['file', $stdout, 'w'],
+    2 => ['file', $stderr, 'w'],
+];
+$process = @proc_open([PHP_BINARY, $script, $log], $descriptors, $pipes);
 $failure = null;
 try {
     if (!is_resource($process)) {
@@ -42,7 +42,7 @@ try {
             $saw = true;
             break;
         }
-        if (!proc_get_status($process)['running']) break;
+        if (!proc_get_status($process)['running']) { break; }
         usleep(100000);
     }
     if (!$saw) {
@@ -65,10 +65,10 @@ try {
     if (is_resource($process)) {
         proc_terminate($process);
         usleep(50000);
-        if (proc_get_status($process)['running']) proc_terminate($process, 9);
+        if (proc_get_status($process)['running']) { proc_terminate($process, 9); }
         proc_close($process);
     }
-    foreach (array($script, $log, $stdout, $stderr) as $path) @unlink($path);
+    foreach ([$script, $log, $stdout, $stderr] as $path) { @unlink($path); }
     @rmdir($root);
 }
 if ($failure !== null) {

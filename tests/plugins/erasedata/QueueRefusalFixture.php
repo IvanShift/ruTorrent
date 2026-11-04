@@ -9,14 +9,14 @@ class ErasedataQueueRefusalFixture
     public static function installCheckerDependencies($tree)
     {
         $root = dirname(__DIR__, 3);
-        $paths = array('php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php', 'php/utility/utility.php',
+        $paths = ['php/rtorrent.php', 'php/Torrent.php', 'php/commandargs.php', 'php/utility/utility.php',
             'php/utility/json.php', 'php/utility/utf.php',
-            'plugins/rutracker_check/launcher.php');
+            'plugins/rutracker_check/launcher.php'];
         foreach($paths as $relative)
         {
             copy($root.'/'.$relative, $tree.'/'.$relative);
-            if(hash_file('sha256', $root.'/'.$relative) !== hash_file('sha256', $tree.'/'.$relative))
-                throw new RuntimeException('queue checker dependency identity mismatch: '.$relative);
+            if(hash_file('sha256', $root.'/'.$relative) !== hash_file('sha256', $tree.'/'.$relative)) {
+                throw new RuntimeException('queue checker dependency identity mismatch: '.$relative); }
         }
         // FileUtil belongs to the RPC adapter; these real core files require
         // util.php by name before reaching their command helpers.
@@ -25,7 +25,7 @@ class ErasedataQueueRefusalFixture
         // the recording RPC adapter supplies the daemon's structured reply.
         $command = loadClassDefinition($root.'/php/xmlrpc.php', 'rXMLRPCCommand');
         $nextClass = strpos($command, 'class rXMLRPCRequest');
-        if($nextClass === false) throw new RuntimeException('queue command validator boundary moved');
+        if($nextClass === false) { throw new RuntimeException('queue command validator boundary moved'); }
         $command = substr($command, 0, $nextClass);
         $command = str_replace('class rXMLRPCCommand', 'class QueueCoreXMLRPCCommand', $command);
         file_put_contents($tree.'/php/xmlrpc.php', "\n".$command."\n"
@@ -37,18 +37,18 @@ class ErasedataQueueRefusalFixture
     {
         $root = dirname(__DIR__, 3);
         $tree = $base.'/queue-refusal-'.bin2hex(random_bytes(5));
-        foreach(array('plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php/utility', 'settings', 'session') as $name)
-            mkdir($tree.'/'.$name, 0700, true);
-        foreach(array('plugins/erasedata/init.php', 'plugins/erasedata/update.php',
+        foreach(['plugins/erasedata', 'plugins/rutracker_check', 'plugins/ratio', 'php/utility', 'settings', 'session'] as $name) {
+            mkdir($tree.'/'.$name, 0700, true); }
+        foreach(['plugins/erasedata/init.php', 'plugins/erasedata/update.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
             'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
-            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php') as $name)
+            'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php'] as $name)
         {
             copy($root.'/'.$name, $tree.'/'.$name);
-            if(hash_file('sha256', $root.'/'.$name) !== hash_file('sha256', $tree.'/'.$name))
-                throw new RuntimeException('queue refusal mirror identity mismatch: '.$name);
+            if(hash_file('sha256', $root.'/'.$name) !== hash_file('sha256', $tree.'/'.$name)) {
+                throw new RuntimeException('queue refusal mirror identity mismatch: '.$name); }
         }
         if(!$ready)
         {
@@ -139,15 +139,15 @@ echo json_encode(array('requests'=>rXMLRPCRequest::$requests,'schedules'=>rXMLRP
  'queue_exists'=>is_dir($queue),'intent'=>is_file($queue.'/old.list')?file_get_contents($queue.'/old.list'):null));
 PHP
         );
-        $process=proc_open(array(PHP_BINARY,'-c',$root.'/tests/php-test.ini',$tree.'/driver.php'),
-            array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('pipe','w')),$pipes,null,
-            array_merge($_ENV,array('QUEUE_ROUTE'=>$route,'QUEUE_USER_JSON'=>json_encode($user),
-                'REMOVE_FAILS'=>$removeFails?'1':'0','CHECK_INTERVAL'=>(string)$interval)));
-        if(!is_resource($process))throw new RuntimeException('queue refusal child unavailable');
+        $process=proc_open([PHP_BINARY,'-c',$root.'/tests/php-test.ini',$tree.'/driver.php'],
+            [0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,null,
+            array_merge($_ENV,['QUEUE_ROUTE'=>$route,'QUEUE_USER_JSON'=>json_encode($user),
+                'REMOVE_FAILS'=>$removeFails?'1':'0','CHECK_INTERVAL'=>(string)$interval]));
+        if(!is_resource($process)) {throw new RuntimeException('queue refusal child unavailable'); }
         $out=stream_get_contents($pipes[1]);$err=stream_get_contents($pipes[2]);
         fclose($pipes[1]);fclose($pipes[2]);$code=proc_close($process);
         $data=json_decode($out,true);
-        if($code!==0||!is_array($data))throw new RuntimeException('queue refusal child failed: '.$err.$out);
+        if($code!==0||!is_array($data)) {throw new RuntimeException('queue refusal child failed: '.$err.$out); }
         return $data;
     }
 }

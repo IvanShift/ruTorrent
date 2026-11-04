@@ -6,8 +6,8 @@ function loadClassDefinition($filename, $className)
 {
     $source = file_get_contents($filename);
     $offset = strpos($source, 'class ' . $className);
-    if ($offset === false)
-        throw new RuntimeException("Class {$className} was not found in {$filename}");
+    if ($offset === false) {
+        throw new RuntimeException("Class {$className} was not found in {$filename}"); }
     // ruTrackerChecker is the final declaration in check.php.
     return substr($source, $offset);
 }
@@ -24,15 +24,15 @@ function loadClassDefinition($filename, $className)
 function testEndOfStringLiteral($source, $offset, $where)
 {
     $quote = $source[$offset];
-    if ($quote !== "'" && $quote !== '"' && $quote !== '`')
-        throw new RuntimeException('No string literal begins at offset ' . $offset . ' in ' . $where);
+    if ($quote !== "'" && $quote !== '"' && $quote !== '`') {
+        throw new RuntimeException('No string literal begins at offset ' . $offset . ' in ' . $where); }
     $length = strlen($source);
     for ($i = $offset + 1; $i < $length; $i++) {
         if ($source[$i] === '\\') {
             $i++;
             continue;
         }
-        if ($source[$i] === $quote) return $i + 1;
+        if ($source[$i] === $quote) { return $i + 1; }
     }
     throw new RuntimeException('An unterminated string literal begins at offset '
         . $offset . ' in ' . $where);
@@ -50,9 +50,9 @@ function testEndOfComment($source, $offset, $where)
     }
     // "#[" opens a PHP 8 attribute, not a comment to the end of the line. This
     // project targets 7.4 and carries none; refuse rather than swallow a line.
-    if ($two === '#[')
+    if ($two === '#[') {
         throw new RuntimeException('An attribute at offset ' . $offset . ' in ' . $where
-            . '; this reader knows comments, not attributes');
+            . '; this reader knows comments, not attributes'); }
     if ($two === '//' || $source[$offset] === '#') {
         $end = strpos($source, "\n", $offset);
         return $end === false ? strlen($source) : $end + 1;
@@ -65,25 +65,25 @@ function testEndOfComment($source, $offset, $where)
 // followed by the label and then anything that cannot continue an identifier.
 function testEndOfHeredoc($source, $offset, $where)
 {
-    if (substr($source, $offset, 3) !== '<<<') return false;
+    if (substr($source, $offset, 3) !== '<<<') { return false; }
     $length = strlen($source);
     $i = $offset + 3;
-    while ($i < $length && ($source[$i] === ' ' || $source[$i] === "\t")) $i++;
+    while ($i < $length && ($source[$i] === ' ' || $source[$i] === "\t")) { $i++; }
     $quote = ($i < $length && ($source[$i] === "'" || $source[$i] === '"')) ? $source[$i] : '';
-    if ($quote !== '') $i++;
+    if ($quote !== '') { $i++; }
     $label = '';
     while ($i < $length && preg_match('/[A-Za-z0-9_]/', $source[$i])) {
         $label .= $source[$i];
         $i++;
     }
-    if ($label === '' || ($quote !== '' && (!isset($source[$i]) || $source[$i] !== $quote)))
+    if ($label === '' || ($quote !== '' && (!isset($source[$i]) || $source[$i] !== $quote))) {
         throw new RuntimeException('A heredoc at offset ' . $offset . ' in ' . $where
-            . ' has no label this reader can make out');
-    if ($quote !== '') $i++;
+            . ' has no label this reader can make out'); }
+    if ($quote !== '') { $i++; }
     $newline = strpos($source, "\n", $i);
-    if ($newline === false)
+    if ($newline === false) {
         throw new RuntimeException('A heredoc at offset ' . $offset . ' in ' . $where
-            . ' never opens its body');
+            . ' never opens its body'); }
     $i = $newline + 1;
     while ($i <= $length) {
         $lineEnd = strpos($source, "\n", $i);
@@ -91,10 +91,10 @@ function testEndOfHeredoc($source, $offset, $where)
         $trimmed = ltrim($line, " \t");
         if (strpos($trimmed, $label) === 0) {
             $after = substr($trimmed, strlen($label), 1);
-            if ($after === '' || !preg_match('/[A-Za-z0-9_]/', $after))
-                return $i + (strlen($line) - strlen($trimmed)) + strlen($label);
+            if ($after === '' || !preg_match('/[A-Za-z0-9_]/', $after)) {
+                return $i + (strlen($line) - strlen($trimmed)) + strlen($label); }
         }
-        if ($lineEnd === false) break;
+        if ($lineEnd === false) { break; }
         $i = $lineEnd + 1;
     }
     throw new RuntimeException('A heredoc opened at offset ' . $offset . ' in ' . $where
@@ -129,7 +129,7 @@ function loadFunctionDefinition($filename, $functionName)
             continue;
         }
         $skip = testEndOfComment($source, $i, $filename);
-        if ($skip === false) $skip = testEndOfHeredoc($source, $i, $filename);
+        if ($skip === false) { $skip = testEndOfHeredoc($source, $i, $filename); }
         if ($skip !== false) {
             $i = $skip;
             continue;
@@ -139,7 +139,7 @@ function loadFunctionDefinition($filename, $functionName)
             if ($character === 'f' && substr($source, $i, 8) === 'function'
                 && ($i === 0 || !preg_match('/[A-Za-z0-9_$\\\\]/', $source[$i - 1]))) {
                 $after = $i + 8;
-                while ($after < $length && strpos(" \t\r\n&", $source[$after]) !== false) $after++;
+                while ($after < $length && strpos(" \t\r\n&", $source[$after]) !== false) { $after++; }
                 if (substr($source, $after, strlen($functionName)) === $functionName) {
                     $tail = $after + strlen($functionName);
                     if ($tail >= $length || !preg_match('/[A-Za-z0-9_]/', $source[$tail])) {
@@ -159,13 +159,13 @@ function loadFunctionDefinition($filename, $functionName)
         }
         if ($character === '}') {
             $depth--;
-            if ($depth === 0) return substr($source, $start, $i + 1 - $start);
+            if ($depth === 0) { return substr($source, $start, $i + 1 - $start); }
             $i++;
             continue;
         }
         $i++;
     }
-    if ($start === null)
-        throw new RuntimeException("Function {$functionName} was not found in {$filename}");
+    if ($start === null) {
+        throw new RuntimeException("Function {$functionName} was not found in {$filename}"); }
     throw new RuntimeException("Function {$functionName} in {$filename} has an unbalanced body");
 }

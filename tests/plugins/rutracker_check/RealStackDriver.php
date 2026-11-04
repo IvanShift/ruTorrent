@@ -17,11 +17,11 @@ require_once(__DIR__ . '/MiniRtorrent.php');
  */
 final class RutrackerRealStackDriver
 {
-	private $base;
-	private $served = null;
 	public $daemon = null;
 	public $appLog;
 	public $erasedataLog;
+	private $base;
+	private $served = null;
 
 	public function __construct($base)
 	{
@@ -40,8 +40,8 @@ final class RutrackerRealStackDriver
 
 	public function stop()
 	{
-		if ($this->served !== null)
-			MiniRtorrent::stop($this->served);
+		if ($this->served !== null) {
+			MiniRtorrent::stop($this->served); }
 		$this->served = null;
 	}
 
@@ -49,15 +49,15 @@ final class RutrackerRealStackDriver
 	 * Run $body (PHP source, top level, after check.php is loaded) and return
 	 * the JSON value it printed with rsDone().
 	 */
-	public function run($body, $settings = array())
+	public function run($body, $settings = [])
 	{
-		if ($this->served === null)
-			throw new RuntimeException('start a daemon first');
+		if ($this->served === null) {
+			throw new RuntimeException('start a daemon first'); }
 		$root = realpath(__DIR__ . '/../../..');
-		$settings = array_merge(array(
+		$settings = array_merge([
 			'directory' => $this->daemon->directory,
 			'session' => $this->daemon->session,
-		), $settings);
+		], $settings);
 		$driver = $this->base . '/drive-' . uniqid() . '.php';
 		file_put_contents($driver, "<?php\n"
 			. '$_SERVER["REMOTE_USER"] = "tester";' . "\n"
@@ -95,37 +95,37 @@ final class RutrackerRealStackDriver
 			. '} catch(Throwable $rsFailure) {'
 			. ' rsDone(array("child-failure" => get_class($rsFailure) . ": " . $rsFailure->getMessage()'
 			. ' . " at " . $rsFailure->getFile() . ":" . $rsFailure->getLine())); }' . "\n");
-		$output = array();
+		$output = [];
 		$status = 0;
 		exec('TMPDIR=' . escapeshellarg($this->base) . ' ' . escapeshellarg(PHP_BINARY)
 			. ' -d display_errors=stderr -d error_reporting=-1 ' . escapeshellarg($driver) . ' 2>&1',
 			$output, $status);
 		$printed = implode("\n", $output);
 		$at = strrpos($printed, "\n--RS-RESULT--\n");
-		if ($at === false)
-			throw new RuntimeException('the child printed no result (status ' . $status . '): ' . $printed);
+		if ($at === false) {
+			throw new RuntimeException('the child printed no result (status ' . $status . '): ' . $printed); }
 		$noise = trim(substr($printed, 0, $at));
 		$answer = json_decode(substr($printed, $at + strlen("\n--RS-RESULT--\n")), true);
-		if (is_array($answer) && isset($answer['child-failure']))
+		if (is_array($answer) && isset($answer['child-failure'])) {
 			throw new RuntimeException('the child failed: ' . $answer['child-failure']
-				. ($noise !== '' ? ' -- output: ' . $noise : ''));
-		if ($noise !== '')
-			throw new RuntimeException('the child printed before its result: ' . $noise);
+				. ($noise !== '' ? ' -- output: ' . $noise : '')); }
+		if ($noise !== '') {
+			throw new RuntimeException('the child printed before its result: ' . $noise); }
 		return $answer;
 	}
 
 	/** Every erasedata cleanup call the last children made, in order. */
 	public function erasedataCalls()
 	{
-		$calls = is_file($this->erasedataLog) ? json_decode(file_get_contents($this->erasedataLog), true) : array();
-		return is_array($calls) ? $calls : array();
+		$calls = is_file($this->erasedataLog) ? json_decode(file_get_contents($this->erasedataLog), true) : [];
+		return is_array($calls) ? $calls : [];
 	}
 
 	public function appLogLines()
 	{
 		$content = is_file($this->appLog) ? rtrim(file_get_contents($this->appLog), "\n") : '';
-		if ($content === '')
-			return array();
+		if ($content === '') {
+			return []; }
 		return array_map(function ($line) {
 			return preg_replace('/^\[[^\]]*\] /', '', $line);
 		}, explode("\n", $content));

@@ -51,16 +51,16 @@ class MiniRtorrent
 	public $legacy;
 	public $session;
 	public $directory;
-	public $downloads = array();
-	public $loads = array();
-	public $executed = array();
-	public $calls = array();
-	public $views = array('main', 'default', 'started', 'stopped', 'seeding');
+	public $downloads = [];
+	public $loads = [];
+	public $executed = [];
+	public $calls = [];
+	public $views = ['main', 'default', 'started', 'stopped', 'seeding'];
 	/**
 	 * Method => count: that many requests carrying the method are executed
 	 * and then left unanswered, the lost reply a readback exists for.
 	 */
-	public $loseReplies = array();
+	public $loseReplies = [];
 	private $localIds = 0;
 
 	/**
@@ -77,44 +77,6 @@ class MiniRtorrent
 		$this->legacy = $legacy;
 	}
 
-	/** A download already in the session, as a list of field overrides. */
-	public function addDownload($hash, $fields)
-	{
-		$hash = strtoupper($hash);
-		$this->downloads[$hash] = array_merge($this->newDownload($hash), $fields);
-	}
-
-	private function newDownload($hash)
-	{
-		$this->localIds++;
-		return array(
-			'hash' => $hash,
-			'name' => '',
-			'directory_base' => '',
-			'directory' => '',
-			'custom1' => '',
-			'custom2' => '',
-			'customs' => array(),
-			'throttle_name' => '',
-			'connection_seed' => '',
-			'state' => 0,
-			'open' => 0,
-			'is_meta' => 0,
-			'local_id' => strtoupper(sha1($hash . '/' . $this->localIds)),
-			'views' => array('main'),
-			'tied_to_file' => '',
-			'message' => '',
-			'chunks_hashed' => 0,
-			'completed_bytes' => 0,
-			'complete' => 0,
-			'trackers' => array(),
-			// Relative file paths, as f.path answers them, and whether the
-			// metainfo is a multi-file one (d.is_multi_file).
-			'files' => array(),
-			'multi' => 1,
-		);
-	}
-
 	// ------------------------------------------------------------ transport
 
 	/**
@@ -124,7 +86,7 @@ class MiniRtorrent
 	 */
 	public function __invoke($request, $methods)
 	{
-		$results = array();
+		$results = [];
 		$lose = false;
 		try {
 			foreach (self::parseRequest($request) as $call) {
@@ -137,8 +99,8 @@ class MiniRtorrent
 			}
 			$batch = strpos($request, '<methodName>system.multicall</methodName>') !== false;
 			$body = '';
-			foreach ($results as $result)
-				$body .= self::xmlValue($batch ? array($result) : $result);
+			foreach ($results as $result) {
+				$body .= self::xmlValue($batch ? [$result] : $result); }
 			$reply = $lose ? null : new FakeRtorrentRawReply('<methodResponse><params><param>'
 				. ($batch ? '<value><array><data>' . $body . '</data></array></value>' : $body)
 				. '</param></params></methodResponse>');
@@ -151,48 +113,159 @@ class MiniRtorrent
 		return $reply;
 	}
 
-	private function save()
+	/** A download already in the session, as a list of field overrides. */
+	public function addDownload($hash, $fields)
 	{
-		$state = array(
-			'downloads' => $this->downloads,
-			'loads' => $this->loads,
-			'executed' => $this->executed,
-			'calls' => $this->calls,
-		);
-		$tmp = $this->stateFile . '.tmp';
-		file_put_contents($tmp, json_encode($state, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
-		rename($tmp, $this->stateFile);
+		$hash = strtoupper($hash);
+		$this->downloads[$hash] = array_merge($this->newDownload($hash), $fields);
 	}
 
 	/** The calls of one php/xmlrpc.php request body, with typed parameters. */
 	public static function parseRequest($body)
 	{
-		if (!preg_match('|<methodName>(.*?)</methodName>|s', $body, $outer))
-			throw new MiniRtorrentFault(-32600, 'no methodName');
+		if (!preg_match('|<methodName>(.*?)</methodName>|s', $body, $outer)) {
+			throw new MiniRtorrentFault(-32600, 'no methodName'); }
 		if ($outer[1] !== 'system.multicall') {
 			$params = preg_match('|<params>(.*)</params>|s', $body, $match) ? $match[1] : '';
-			return array(array('method' => $outer[1], 'params' => self::parseValues($params)));
+			return [['method' => $outer[1], 'params' => self::parseValues($params)]];
 		}
-		$calls = array();
+		$calls = [];
 		preg_match_all('|<struct><member><name>methodName</name><value><string>(.*?)</string></value></member>'
 			. '<member><name>params</name><value><array><data>(.*?)</data></array></value></member></struct>|s',
 			$body, $members, PREG_SET_ORDER);
-		foreach ($members as $member)
-			$calls[] = array('method' => $member[1], 'params' => self::parseValues($member[2]));
+		foreach ($members as $member) {
+			$calls[] = ['method' => $member[1], 'params' => self::parseValues($member[2])]; }
 		return $calls;
+	}
+
+	// ------------------------------------------------------- command strings
+
+	/** Run a command string the way parse_command() does; the last result. */
+	public function exec($string, $hash, $sub = null)
+	{
+		$result = null;
+		foreach (RtorrentCommandParser::commands($string) as $command) {
+			$args = [];
+			foreach ($command['args'] as $arg) {
+				if (!is_string($arg)) {
+					throw new RtorrentInputError('lists and calls are not modelled'); }
+				// parse_command_execute(): a '$' string is replaced by the
+				// result of running it, after the quotes came off.
+				$args[] = (isset($arg[0]) && $arg[0] === '$') ? $this->exec(substr($arg, 1), $hash, $sub) : $arg;
+			}
+			$result = $this->call($command['name'], $args, $hash, $sub);
+		}
+		return $result;
+	}
+
+	// -------------------------------------------------------------- process
+
+	/**
+	 * Serve this daemon from a child process. The worker loads this file as
+	 * well as FakeRtorrentDaemon.php, so the plan can carry this object.
+	 * Returns array('port' => int, 'process' => resource).
+	 */
+	public function start($logFile)
+	{
+		$source = 'require ' . var_export(__FILE__, true) . '; FakeRtorrentDaemon::runWorker();';
+		// exec: the shell must not stay between proc_terminate() and the
+		// worker, or the listener outlives the test (AGENTS.md, fixture leak).
+		$command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($source);
+		$process = proc_open($command, [
+			0 => ['pipe', 'r'],
+			1 => ['pipe', 'w'],
+			2 => ['file', $logFile . '.server.err', 'a'],
+		], $pipes, dirname($logFile));
+		if (!is_resource($process)) {
+			throw new RuntimeException('cannot start the mini rtorrent'); }
+		fwrite($pipes[0], serialize(['replies' => $this, 'logFile' => $logFile]));
+		fclose($pipes[0]);
+		stream_set_timeout($pipes[1], 10);
+		$ready = fgets($pipes[1]);
+		fclose($pipes[1]);
+		if (!is_string($ready) || !preg_match('/^[1-9][0-9]*\n$/D', $ready)) {
+			proc_terminate($process);
+			proc_close($process);
+			throw new RuntimeException('the mini rtorrent did not announce a port: '
+				. @file_get_contents($logFile . '.server.err'));
+		}
+		return ['port' => (int) $ready, 'process' => $process];
+	}
+
+	public static function stop($served)
+	{
+		if (!is_array($served) || !is_resource($served['process'])) {
+			return; }
+		$status = proc_get_status($served['process']);
+		if ($status['running']) {
+			proc_terminate($served['process']); }
+		proc_close($served['process']);
+	}
+
+	/** What the daemon held after its last request. */
+	public function state()
+	{
+		$state = is_file($this->stateFile) ? json_decode(file_get_contents($this->stateFile), true) : null;
+		if (!is_array($state)) {
+			throw new RuntimeException('the mini rtorrent left no readable state'); }
+		return $state;
+	}
+
+	private function newDownload($hash)
+	{
+		$this->localIds++;
+		return [
+			'hash' => $hash,
+			'name' => '',
+			'directory_base' => '',
+			'directory' => '',
+			'custom1' => '',
+			'custom2' => '',
+			'customs' => [],
+			'throttle_name' => '',
+			'connection_seed' => '',
+			'state' => 0,
+			'open' => 0,
+			'is_meta' => 0,
+			'local_id' => strtoupper(sha1($hash . '/' . $this->localIds)),
+			'views' => ['main'],
+			'tied_to_file' => '',
+			'message' => '',
+			'chunks_hashed' => 0,
+			'completed_bytes' => 0,
+			'complete' => 0,
+			'trackers' => [],
+			// Relative file paths, as f.path answers them, and whether the
+			// metainfo is a multi-file one (d.is_multi_file).
+			'files' => [],
+			'multi' => 1,
+		];
+	}
+
+	private function save()
+	{
+		$state = [
+			'downloads' => $this->downloads,
+			'loads' => $this->loads,
+			'executed' => $this->executed,
+			'calls' => $this->calls,
+		];
+		$tmp = $this->stateFile . '.tmp';
+		file_put_contents($tmp, json_encode($state, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
+		rename($tmp, $this->stateFile);
 	}
 
 	private static function parseValues($xml)
 	{
 		preg_match_all('#<value><(string|i4|i8|base64)>(.*?)</\1></value>#s', $xml, $matches, PREG_SET_ORDER);
-		$values = array();
+		$values = [];
 		foreach ($matches as $match) {
-			if ($match[1] === 'i4' || $match[1] === 'i8')
-				$values[] = (int) $match[2];
-			elseif ($match[1] === 'base64')
-				$values[] = array('base64' => base64_decode($match[2]));
-			else
-				$values[] = htmlspecialchars_decode($match[2], ENT_NOQUOTES);
+			if ($match[1] === 'i4' || $match[1] === 'i8') {
+				$values[] = (int) $match[2]; }
+			elseif ($match[1] === 'base64') {
+				$values[] = ['base64' => base64_decode($match[2])]; }
+			else {
+				$values[] = htmlspecialchars_decode($match[2], ENT_NOQUOTES); }
 		}
 		return $values;
 	}
@@ -203,14 +276,14 @@ class MiniRtorrent
 	{
 		if (is_array($value)) {
 			$body = '';
-			foreach ($value as $item)
-				$body .= self::xmlValue($item);
+			foreach ($value as $item) {
+				$body .= self::xmlValue($item); }
 			return '<value><array><data>' . $body . '</data></array></value>';
 		}
-		if ($value === null || is_int($value))
-			return '<value><i8>' . (int) $value . '</i8></value>';
+		if ($value === null || is_int($value)) {
+			return '<value><i8>' . (int) $value . '</i8></value>'; }
 		return '<value><string>' . strtr((string) $value,
-			array('&' => '&amp;', '<' => '&lt;', '>' => '&gt;')) . '</string></value>';
+			['&' => '&amp;', '<' => '&lt;', '>' => '&gt;']) . '</string></value>';
 	}
 
 	// --------------------------------------------------------------- RPC
@@ -225,8 +298,8 @@ class MiniRtorrent
 	private function target($hash)
 	{
 		$hash = strtoupper((string) $hash);
-		if (!isset($this->downloads[$hash]))
-			throw $this->missing();
+		if (!isset($this->downloads[$hash])) {
+			throw $this->missing(); }
 		return $hash;
 	}
 
@@ -263,10 +336,10 @@ class MiniRtorrent
 		$this->executed[] = $params;
 		if (count($params) === 3 && $params[0] === 'mkdir' && $params[1] === '-p') {
 			$dir = (string) $params[2];
-			if ($dir === '' || $dir[0] !== '/' || strpos($dir . '/', $this->sandbox . '/') !== 0)
-				throw new MiniRtorrentFault(-503, 'execute outside the test sandbox');
-			if (!is_dir($dir) && !@mkdir($dir, 0777, true))
-				throw new MiniRtorrentFault(-503, 'mkdir failed');
+			if ($dir === '' || $dir[0] !== '/' || strpos($dir . '/', $this->sandbox . '/') !== 0) {
+				throw new MiniRtorrentFault(-503, 'execute outside the test sandbox'); }
+			if (!is_dir($dir) && !@mkdir($dir, 0777, true)) {
+				throw new MiniRtorrentFault(-503, 'mkdir failed'); }
 			return 0;
 		}
 		throw new MiniRtorrentFault(-503, 'execute is limited to mkdir -p here');
@@ -279,11 +352,11 @@ class MiniRtorrent
 	 */
 	private function loadRaw($params, $start)
 	{
-		if (isset($params[0]) && $params[0] === '')
-			array_shift($params);
+		if (isset($params[0]) && $params[0] === '') {
+			array_shift($params); }
 		$raw = array_shift($params);
-		if (!is_array($raw) || !isset($raw['base64']))
-			throw new MiniRtorrentFault(-503, 'load_raw needs base64 metainfo');
+		if (!is_array($raw) || !isset($raw['base64'])) {
+			throw new MiniRtorrentFault(-503, 'load_raw needs base64 metainfo'); }
 		$metainfo = MiniBencode::decode($raw['base64']);
 		$hash = strtoupper(sha1($metainfo['info_bytes']));
 		$info = $metainfo['value']['info'];
@@ -291,8 +364,8 @@ class MiniRtorrent
 		$download['name'] = (string) $info['name'];
 		$download['multi'] = isset($info['files']) ? 1 : 0;
 		if (isset($info['files'])) {
-			foreach ($info['files'] as $file)
-				$download['files'][] = implode('/', $file['path']);
+			foreach ($info['files'] as $file) {
+				$download['files'][] = implode('/', $file['path']); }
 		} else {
 			$download['files'][] = (string) $info['name'];
 		}
@@ -302,17 +375,17 @@ class MiniRtorrent
 		$this->downloads[$hash] = $download;
 		// rtorrent keeps its own copy of every loaded metainfo in the session
 		// directory, which is where rTorrent::getSource() reads it back.
-		if ($this->session !== '' && is_dir($this->session))
-			file_put_contents(rtrim($this->session, '/') . '/' . $hash . '.torrent', $raw['base64']);
-		$record = array('hash' => $hash, 'params' => $params, 'aborted' => null);
+		if ($this->session !== '' && is_dir($this->session)) {
+			file_put_contents(rtrim($this->session, '/') . '/' . $hash . '.torrent', $raw['base64']); }
+		$record = ['hash' => $hash, 'params' => $params, 'aborted' => null];
 		foreach ($params as $index => $command) {
 			try {
 				$this->exec((string) $command, $hash);
 			} catch (RtorrentInputError $error) {
-				$record['aborted'] = array('index' => $index, 'error' => $error->getMessage());
+				$record['aborted'] = ['index' => $index, 'error' => $error->getMessage()];
 				break;
 			} catch (MiniRtorrentFault $fault) {
-				$record['aborted'] = array('index' => $index, 'error' => $fault->getMessage());
+				$record['aborted'] = ['index' => $index, 'error' => $fault->getMessage()];
 				break;
 			}
 		}
@@ -327,13 +400,13 @@ class MiniRtorrent
 	private function downloadMulticall($params)
 	{
 		$view = (string) array_shift($params);
-		$values = array();
+		$values = [];
 		foreach ($this->downloads as $hash => $download) {
-			if ($view !== '' && $view !== 'main' && !in_array($view, $download['views'], true))
-				continue;
-			$row = array();
-			foreach ($params as $command)
-				$row[] = $this->exec((string) $command, $hash);
+			if ($view !== '' && $view !== 'main' && !in_array($view, $download['views'], true)) {
+				continue; }
+			$row = [];
+			foreach ($params as $command) {
+				$row[] = $this->exec((string) $command, $hash); }
 			$values[] = $row;
 		}
 		return $values;
@@ -342,42 +415,22 @@ class MiniRtorrent
 	/** t.multicall and f.multicall: each command against each tracker or file. */
 	private function subMulticall($hash, $kind, $commands)
 	{
-		$values = array();
+		$values = [];
 		$rows = $kind === 't' ? $this->downloads[$hash]['trackers'] : $this->downloads[$hash]['files'];
 		foreach (array_keys($rows) as $index) {
-			$row = array();
-			foreach ($commands as $command)
-				$row[] = $this->exec((string) $command, $hash, array($kind, $index));
+			$row = [];
+			foreach ($commands as $command) {
+				$row[] = $this->exec((string) $command, $hash, [$kind, $index]); }
 			$values[] = $row;
 		}
 		return $values;
 	}
 
-	// ------------------------------------------------------- command strings
-
-	/** Run a command string the way parse_command() does; the last result. */
-	public function exec($string, $hash, $sub = null)
-	{
-		$result = null;
-		foreach (RtorrentCommandParser::commands($string) as $command) {
-			$args = array();
-			foreach ($command['args'] as $arg) {
-				if (!is_string($arg))
-					throw new RtorrentInputError('lists and calls are not modelled');
-				// parse_command_execute(): a '$' string is replaced by the
-				// result of running it, after the quotes came off.
-				$args[] = (isset($arg[0]) && $arg[0] === '$') ? $this->exec(substr($arg, 1), $hash, $sub) : $arg;
-			}
-			$result = $this->call($command['name'], $args, $hash, $sub);
-		}
-		return $result;
-	}
-
 	private static function truth($value)
 	{
-		if (is_int($value)) return $value !== 0;
-		if (is_string($value)) return $value !== '';
-		if (is_array($value)) return count($value) && self::truth(reset($value));
+		if (is_int($value)) { return $value !== 0; }
+		if (is_string($value)) { return $value !== ''; }
+		if (is_array($value)) { return count($value) && self::truth(reset($value)); }
 		return false;
 	}
 
@@ -385,7 +438,7 @@ class MiniRtorrent
 	{
 		if (is_array($value)) {
 			$out = '';
-			foreach ($value as $item) $out .= self::text($item);
+			foreach ($value as $item) { $out .= self::text($item); }
 			return $out;
 		}
 		return $value === null ? '' : (string) $value;
@@ -398,12 +451,12 @@ class MiniRtorrent
 
 	private function compare($args, $hash, $sub)
 	{
-		if (!count($args))
-			throw new RtorrentInputError('Wrong argument count.');
+		if (!count($args)) {
+			throw new RtorrentInputError('Wrong argument count.'); }
 		$left = $this->exec((string) $args[0], $hash, $sub);
 		$right = $this->exec((string) $args[count($args) - 1], $hash, $sub);
-		if (gettype($left) !== gettype($right))
-			throw new RtorrentInputError('Type mismatch.');
+		if (gettype($left) !== gettype($right)) {
+			throw new RtorrentInputError('Type mismatch.'); }
 		return is_int($left) ? $left - $right : strcmp($left, $right);
 	}
 
@@ -415,12 +468,12 @@ class MiniRtorrent
 			$arm = self::truth($condition) ? 1 : 2;
 			return isset($args[$arm]) ? $this->exec((string) $args[$arm], $hash, $sub) : null;
 		case 'and':
-			foreach ($args as $arg)
-				if (!self::truth($this->exec((string) $arg, $hash, $sub))) return 0;
+			foreach ($args as $arg) {
+				if (!self::truth($this->exec((string) $arg, $hash, $sub))) { return 0; } }
 			return 1;
 		case 'or':
-			foreach ($args as $arg)
-				if (self::truth($this->exec((string) $arg, $hash, $sub))) return 1;
+			foreach ($args as $arg) {
+				if (self::truth($this->exec((string) $arg, $hash, $sub))) { return 1; } }
 			return 0;
 		case 'not':
 			// apply_not() reads its argument as a value, not as a command;
@@ -437,10 +490,10 @@ class MiniRtorrent
 		case 'view.set_visible':
 		case 'd.views.push_back_unique':
 			$view = (string) self::one($args);
-			if ($name === 'view.set_visible' && !in_array($view, $this->views, true))
-				throw new RtorrentInputError('Could not find view: ' . $view);
-			if (!in_array($view, $this->downloads[$hash]['views'], true))
-				$this->downloads[$hash]['views'][] = $view;
+			if ($name === 'view.set_visible' && !in_array($view, $this->views, true)) {
+				throw new RtorrentInputError('Could not find view: ' . $view); }
+			if (!in_array($view, $this->downloads[$hash]['views'], true)) {
+				$this->downloads[$hash]['views'][] = $view; }
 			return null;
 		}
 		if ($sub !== null && $sub[0] === 't' && strpos($name, 't.') === 0) {
@@ -462,10 +515,10 @@ class MiniRtorrent
 				return $download['open'] ? rtrim($download['directory'], '/') . '/' . $path : '';
 			}
 		}
-		if (strpos($name, 'd.') !== 0)
-			throw new RtorrentInputError('Command "' . $name . '" does not exist.');
-		if ($hash === null || !isset($this->downloads[$hash]))
-			throw $this->missing();
+		if (strpos($name, 'd.') !== 0) {
+			throw new RtorrentInputError('Command "' . $name . '" does not exist.'); }
+		if ($hash === null || !isset($this->downloads[$hash])) {
+			throw $this->missing(); }
 		$download =& $this->downloads[$hash];
 		$value = self::one($args);
 		switch ($name) {
@@ -490,14 +543,14 @@ class MiniRtorrent
 		case 'd.tracker_size': case 'd.get_tracker_size': return count($download['trackers']);
 		case 'd.is_multi_file': return (int) $download['multi'];
 		case 'd.base_path': case 'd.get_base_path':
-			if (!$download['open']) return '';
+			if (!$download['open']) { return ''; }
 			return $download['multi'] ? $download['directory_base']
 				: rtrim($download['directory_base'], '/') . '/' . $download['name'];
 		case 'd.custom': case 'd.get_custom':
 			return isset($download['customs'][$value]) ? $download['customs'][$value] : '';
 		case 'd.custom.set': case 'd.set_custom':
-			if (count($args) !== 2)
-				throw new RtorrentInputError('Wrong argument count.');
+			if (count($args) !== 2) {
+				throw new RtorrentInputError('Wrong argument count.'); }
 			$download['customs'][(string) $args[0]] = (string) $args[1];
 			return null;
 		case 'd.custom1.set': case 'd.set_custom1': $download['custom1'] = (string) $value; return null;
@@ -523,59 +576,6 @@ class MiniRtorrent
 		}
 		throw new RtorrentInputError('Command "' . $name . '" does not exist.');
 	}
-
-	// -------------------------------------------------------------- process
-
-	/**
-	 * Serve this daemon from a child process. The worker loads this file as
-	 * well as FakeRtorrentDaemon.php, so the plan can carry this object.
-	 * Returns array('port' => int, 'process' => resource).
-	 */
-	public function start($logFile)
-	{
-		$source = 'require ' . var_export(__FILE__, true) . '; FakeRtorrentDaemon::runWorker();';
-		// exec: the shell must not stay between proc_terminate() and the
-		// worker, or the listener outlives the test (AGENTS.md, fixture leak).
-		$command = 'exec ' . escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($source);
-		$process = proc_open($command, array(
-			0 => array('pipe', 'r'),
-			1 => array('pipe', 'w'),
-			2 => array('file', $logFile . '.server.err', 'a'),
-		), $pipes, dirname($logFile));
-		if (!is_resource($process))
-			throw new RuntimeException('cannot start the mini rtorrent');
-		fwrite($pipes[0], serialize(array('replies' => $this, 'logFile' => $logFile)));
-		fclose($pipes[0]);
-		stream_set_timeout($pipes[1], 10);
-		$ready = fgets($pipes[1]);
-		fclose($pipes[1]);
-		if (!is_string($ready) || !preg_match('/^[1-9][0-9]*\n$/D', $ready)) {
-			proc_terminate($process);
-			proc_close($process);
-			throw new RuntimeException('the mini rtorrent did not announce a port: '
-				. @file_get_contents($logFile . '.server.err'));
-		}
-		return array('port' => (int) $ready, 'process' => $process);
-	}
-
-	public static function stop($served)
-	{
-		if (!is_array($served) || !is_resource($served['process']))
-			return;
-		$status = proc_get_status($served['process']);
-		if ($status['running'])
-			proc_terminate($served['process']);
-		proc_close($served['process']);
-	}
-
-	/** What the daemon held after its last request. */
-	public function state()
-	{
-		$state = is_file($this->stateFile) ? json_decode(file_get_contents($this->stateFile), true) : null;
-		if (!is_array($state))
-			throw new RuntimeException('the mini rtorrent left no readable state');
-		return $state;
-	}
 }
 
 /** Just enough bencode to find a metainfo's info dictionary and its bytes. */
@@ -586,9 +586,9 @@ class MiniBencode
 		$offset = 0;
 		$infoBytes = null;
 		$value = self::value($bytes, $offset, 0, $infoBytes);
-		if ($offset !== strlen($bytes) || !is_array($value) || !isset($value['info']) || $infoBytes === null)
-			throw new MiniRtorrentFault(-503, 'not a metainfo');
-		return array('value' => $value, 'info_bytes' => $infoBytes);
+		if ($offset !== strlen($bytes) || !is_array($value) || !isset($value['info']) || $infoBytes === null) {
+			throw new MiniRtorrentFault(-503, 'not a metainfo'); }
+		return ['value' => $value, 'info_bytes' => $infoBytes];
 	}
 
 	private static function value($bytes, &$offset, $depth, &$infoBytes)
@@ -602,7 +602,7 @@ class MiniBencode
 		}
 		if ($c === 'l' || $c === 'd') {
 			$offset++;
-			$out = array();
+			$out = [];
 			while ($bytes[$offset] !== 'e') {
 				if ($c === 'l') {
 					$out[] = self::value($bytes, $offset, $depth + 1, $infoBytes);
@@ -611,8 +611,8 @@ class MiniBencode
 				$key = self::value($bytes, $offset, $depth + 1, $infoBytes);
 				$start = $offset;
 				$out[$key] = self::value($bytes, $offset, $depth + 1, $infoBytes);
-				if ($depth === 0 && $key === 'info')
-					$infoBytes = substr($bytes, $start, $offset - $start);
+				if ($depth === 0 && $key === 'info') {
+					$infoBytes = substr($bytes, $start, $offset - $start); }
 			}
 			$offset++;
 			return $out;

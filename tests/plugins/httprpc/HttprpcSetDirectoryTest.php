@@ -45,35 +45,6 @@ class HttprpcSetDirectoryTest extends TestCase
 		PluginEntryDriver::removeTree($this->base);
 	}
 
-	/** Sets the default directory through action.php; true when rtorrent was asked to. */
-	private function setDirectory($directory)
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-		}
-		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
-		// Serializable, so the official images without pcntl run it too.
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies(array()), $this->base . '/calls.log');
-		@unlink($this->base . '/application.log');
-		// The driver seeds settings without aliases; drop them so the probed
-		// ones in the profile's cache name the commands as rtorrent knows them.
-		$before = '$p = new ReflectionProperty("rTorrentSettings", "theSettings");'
-			. ' if(PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, null);'
-			. ' $topDirectory = ' . var_export($this->top . '/', true) . ';'
-			. ' $HTTP_RAW_POST_DATA = ' . var_export('mode=setsettings&s=sdirectory&v='
-				. rawurlencode($this->top . $directory), true) . ';';
-		list($exit, $this->printed, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(),
-			'plugins/httprpc/action.php', array('before' => $before));
-		$this->assertSame('', $err, 'action.php reports nothing on stderr');
-		return $this->daemon->received('directory.default.set');
-	}
-
-	private function logged()
-	{
-		$log = $this->base . '/application.log';
-		return is_file($log) ? file_get_contents($log) : '';
-	}
-
 	public function testALinkOutOfTheTopDirectoryIsNotSet()
 	{
 		$this->assertTrue(!$this->setDirectory('/out'),
@@ -133,5 +104,34 @@ class HttprpcSetDirectoryTest extends TestCase
 		$this->assertTrue($this->setDirectory('/in'), 'the directory is set');
 		$this->assertTrue(strpos($this->logged(), 'setsettings: refused') === false,
 			'and no refusal is logged: ' . $this->logged());
+	}
+
+	/** Sets the default directory through action.php; true when rtorrent was asked to. */
+	private function setDirectory($directory)
+	{
+		if ($this->daemon !== null) {
+			$this->daemon->stop();
+		}
+		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
+		// Serializable, so the official images without pcntl run it too.
+		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies([]), $this->base . '/calls.log');
+		@unlink($this->base . '/application.log');
+		// The driver seeds settings without aliases; drop them so the probed
+		// ones in the profile's cache name the commands as rtorrent knows them.
+		$before = '$p = new ReflectionProperty("rTorrentSettings", "theSettings");'
+			. ' if(PHP_VERSION_ID < 80100) $p->setAccessible(true); $p->setValue(null, null);'
+			. ' $topDirectory = ' . var_export($this->top . '/', true) . ';'
+			. ' $HTTP_RAW_POST_DATA = ' . var_export('mode=setsettings&s=sdirectory&v='
+				. rawurlencode($this->top . $directory), true) . ';';
+		list($exit, $this->printed, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(),
+			'plugins/httprpc/action.php', ['before' => $before]);
+		$this->assertSame('', $err, 'action.php reports nothing on stderr');
+		return $this->daemon->received('directory.default.set');
+	}
+
+	private function logged()
+	{
+		$log = $this->base . '/application.log';
+		return is_file($log) ? file_get_contents($log) : '';
 	}
 }

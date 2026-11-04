@@ -41,11 +41,11 @@ class TorrentAddPathSequenceTest extends TestCase
 	private $previousSettings;
 
 	/** The mtimes the fixture files are given, so the expected bytes are fixed. */
-	private $mtimes = array(
+	private $mtimes = [
 		'test.data'            => 1500000001,
 		'payload/one.data'     => 1500000002,
 		'payload/sub/two.data' => 1500000003,
-	);
+	];
 
 	public function setUp()
 	{
@@ -60,10 +60,10 @@ class TorrentAddPathSequenceTest extends TestCase
 		$settings = $stub->newInstanceWithoutConstructor();
 		$settings->directory = $this->base;
 		$settings->iVersion = 0x904;
-		$settings->aliases = array();
+		$settings->aliases = [];
 
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$this->previousSettings = $property->getValue();
 		$property->setValue(null, $settings);
 	}
@@ -71,7 +71,7 @@ class TorrentAddPathSequenceTest extends TestCase
 	public function tearDown()
 	{
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$property->setValue(null, $this->previousSettings);
 
 		foreach (array_keys($this->mtimes) as $relative) {
@@ -80,34 +80,6 @@ class TorrentAddPathSequenceTest extends TestCase
 		@rmdir($this->base . '/payload/sub');
 		@rmdir($this->base . '/payload');
 		@rmdir($this->base);
-	}
-
-	private function makeFile($relative, $size)
-	{
-		$path = $this->base . '/' . $relative;
-		$dir = dirname($path);
-		if (!is_dir($dir)) {
-			mkdir($dir, 0777, true);
-		}
-		file_put_contents($path, str_repeat("\x00", $size));
-		touch($path, $this->mtimes[$relative]);
-		clearstatcache(true, $path);
-	}
-
-	/** A libtorrent_resume dictionary as fastResume() builds one. */
-	private function expectedResume($chunks, $files)
-	{
-		$entries = array();
-		foreach ($files as $relative) {
-			$entries[] = $this->bdict(array(
-				'mtime'    => $this->bint($this->mtimes[$relative]),
-				'priority' => $this->bint(2),
-			));
-		}
-		return $this->bdict(array(
-			'bitfield' => $this->bint($chunks),
-			'files'    => $this->blist($entries),
-		));
 	}
 
 	// ---- rTorrent::fastResume() ------------------------------------------
@@ -124,13 +96,13 @@ class TorrentAddPathSequenceTest extends TestCase
 		$resumed = rTorrent::fastResume($torrent, $this->base, true);
 		$this->assertTrue($resumed === $torrent, 'fastResume() hands back the torrent it was given');
 
-		$expected = $this->bdict(array(
+		$expected = $this->bdict([
 			'announce'          => $this->bstr('http://one.test/announce'),
 			'created by'        => $this->bstr('uTorrent/3.5.5'),
 			'creation date'     => $this->bint(1234567890),
 			'info'              => $this->singleFileInfo(),
-			'libtorrent_resume' => $this->expectedResume(1, array('test.data')),
-		));
+			'libtorrent_resume' => $this->expectedResume(1, ['test.data']),
+		]);
 		$this->assertTrue((string)$torrent === $expected,
 			'the resume data is written and nothing else moved -- fastResume() is not a setter, '
 				. 'so the creation date the file came with is still there');
@@ -154,7 +126,7 @@ class TorrentAddPathSequenceTest extends TestCase
 		$torrent = new Torrent($this->privateMultiFileTorrent());
 		rTorrent::fastResume($torrent, $this->base, true);
 
-		$expected = $this->bdict(array(
+		$expected = $this->bdict([
 			'announce'          => $this->bstr('http://one.test/announce'),
 			'comment'           => $this->bstr('from the tracker'),
 			'created by'        => $this->bstr('uTorrent/3.5.5'),
@@ -162,8 +134,8 @@ class TorrentAddPathSequenceTest extends TestCase
 			'encoding'          => $this->bstr('UTF-8'),
 			'info'              => $this->multiFileInfo(true),
 			'libtorrent_resume' => $this->expectedResume(1,
-				array('payload/one.data', 'payload/sub/two.data')),
-		));
+				['payload/one.data', 'payload/sub/two.data']),
+		]);
 		$this->assertTrue((string)$torrent === $expected,
 			'both files are stat-ed under the torrent name and written in order');
 	}
@@ -203,36 +175,20 @@ class TorrentAddPathSequenceTest extends TestCase
 
 		rTorrent::fastResume($torrent, $this->base, true);
 
-		$expected = $this->bdict(array(
+		$expected = $this->bdict([
 			'announce'          => $this->bstr('http://one.test/announce'),
-			'announce-list'     => $this->bannounceList(array(
-				array('http://one.test/announce'),
-				array('udp://two.test/announce'),
-			)),
+			'announce-list'     => $this->bannounceList([
+				['http://one.test/announce'],
+				['udp://two.test/announce'],
+			]),
 			'created by'        => $this->bstr('uTorrent/3.5.5'),
 			'creation date'     => $this->bint(1234567890),
 			'info'              => $this->singleFileInfo(),
-			'libtorrent_resume' => $this->expectedResume(1, array('test.data')),
+			'libtorrent_resume' => $this->expectedResume(1, ['test.data']),
 			'rtorrent'          => $this->rtorrentDictionary(),
-		));
+		]);
 		$this->assertTrue((string)$torrent === $expected,
 			'the entry is replaced with the mtime on disk and the rest of the torrent is untouched');
-	}
-
-	/** Writes an empty file the fixture does not own, with any missing directories. */
-	private function writeExtra($relative)
-	{
-		$path = $this->base . '/' . $relative;
-		$missing = array();
-		for ($dir = dirname($path); !is_dir($dir); $dir = dirname($dir)) {
-			$missing[] = $dir;
-		}
-		foreach (array_reverse($missing) as $dir) {
-			mkdir($dir);
-			chmod($dir, 0700);
-		}
-		file_put_contents($path, '');
-		clearstatcache();
 	}
 
 	public function testFastResumeRefusesADifferingSingleFileAliasBeforeWritingProgress()
@@ -242,11 +198,11 @@ class TorrentAddPathSequenceTest extends TestCase
 		$raw = hex2bin('f1e5f0e8ff').'.data';
 		try {
 			$this->writeExtra('x_y.data');
-			foreach (array($raw => 'r', 'серия.data' => 'u') as $name => $byte) {
+			foreach ([$raw => 'r', 'серия.data' => 'u'] as $name => $byte) {
 				file_put_contents($this->base.'/'.$name, str_repeat($byte, 1024));
 				touch($this->base.'/'.$name, 1500000001);
 			}
-			foreach (array('test.data' => 'серия.data', 'x_y.data' => 'x/y.data', $raw => 'серия.data') as $name => $alias) {
+			foreach (['test.data' => 'серия.data', 'x_y.data' => 'x/y.data', $raw => 'серия.data'] as $name => $alias) {
 				$torrent = new Torrent($this->announceOnlyTorrent());
 				$torrent->info['name'] = $name;
 				$torrent->info['name.utf-8'] = $alias;
@@ -256,7 +212,7 @@ class TorrentAddPathSequenceTest extends TestCase
 				$this->assertTrue((string)$torrent === $before, 'refusal leaves the torrent and its progress unchanged');
 			}
 		} finally {
-			foreach (array('x_y.data', $raw, 'серия.data') as $name) @unlink($this->base . '/' . $name);
+			foreach (['x_y.data', $raw, 'серия.data'] as $name) { @unlink($this->base . '/' . $name); }
 		}
 	}
 
@@ -267,9 +223,9 @@ class TorrentAddPathSequenceTest extends TestCase
 		try {
 			file_put_contents($alias, str_repeat('x', 600));
 			touch($alias, 1500000002);
-			foreach (array(true, false) as $addPath) {
+			foreach ([true, false] as $addPath) {
 				$torrent = new Torrent($this->privateMultiFileTorrent());
-				$torrent->info['files'][0]['path.utf-8'] = array('selected.data');
+				$torrent->info['files'][0]['path.utf-8'] = ['selected.data'];
 				$before = (string)$torrent;
 				$base = $addPath ? $this->base : $this->base . '/payload';
 				$this->assertTrue(rTorrent::fastResume($torrent, $base, $addPath) === false,
@@ -282,14 +238,14 @@ class TorrentAddPathSequenceTest extends TestCase
 	public function testFastResumeChecksTheAliasOfEveryFile()
 	{
 		$torrent = new Torrent($this->privateMultiFileTorrent());
-		$torrent->info['files'][1]['path.utf-8'] = array('sub/two.data');
+		$torrent->info['files'][1]['path.utf-8'] = ['sub/two.data'];
 		$this->assertTrue(rTorrent::fastResume($torrent, $this->base, true) === false,
 			'an alias on the second file refuses as well');
 	}
 
 	public function testFastResumeRefusesADifferentRootAliasWhenAddingTheRoot()
 	{
-		foreach (array('selected-root', 'a/b') as $alias) {
+		foreach (['selected-root', 'a/b'] as $alias) {
 			$torrent = new Torrent($this->privateMultiFileTorrent());
 			$torrent->info['name.utf-8'] = $alias;
 			$before = (string)$torrent;
@@ -317,8 +273,8 @@ class TorrentAddPathSequenceTest extends TestCase
 	{
 		$single = new Torrent($this->announceOnlyTorrent());
 		$single->info['name.utf-8'] = 100;
-		$torrents = array($single);
-		foreach (array('selected.data', array(array('one.data')), array('key' => 'one.data')) as $alias) {
+		$torrents = [$single];
+		foreach (['selected.data', [['one.data']], ['key' => 'one.data']] as $alias) {
 			$multi = new Torrent($this->privateMultiFileTorrent());
 			$multi->info['files'][0]['path.utf-8'] = $alias;
 			$torrents[] = $multi;
@@ -343,8 +299,8 @@ class TorrentAddPathSequenceTest extends TestCase
 		$this->assertSame($this->mtimes['test.data'], $single->libtorrent_resume['files'][0]['mtime']);
 		$multi = new Torrent($this->privateMultiFileTorrent());
 		$multi->info['name.utf-8'] = $multi->info['name'];
-		foreach($multi->info['files'] as $index => $file)
-			$multi->info['files'][$index]['path.utf-8'] = $file['path'];
+		foreach($multi->info['files'] as $index => $file) {
+			$multi->info['files'][$index]['path.utf-8'] = $file['path']; }
 		$this->assertSame($multi, rTorrent::fastResume($multi, $this->base),
 			'identical root and file aliases do not disable fast resume');
 		$this->assertSame(2, count($multi->libtorrent_resume['files']));
@@ -362,14 +318,14 @@ class TorrentAddPathSequenceTest extends TestCase
 
 	public function testFastResumeRefusesComponentsTheDaemonRenames()
 	{
-		foreach (array('payload/one.data', '/test.data') as $name) {
+		foreach (['payload/one.data', '/test.data'] as $name) {
 			$single = new Torrent($this->announceOnlyTorrent());
 			$single->info['name'] = $name;
 			$this->assertTrue(rTorrent::fastResume($single, $this->base) === false,
 				'a / in a single-file name does not stay a separator');
 		}
 		$raw = new Torrent($this->privateMultiFileTorrent());
-		$raw->info['files'][1]['path'] = array('sub/two.data');
+		$raw->info['files'][1]['path'] = ['sub/two.data'];
 		$this->assertTrue(rTorrent::fastResume($raw, $this->base, true) === false,
 			'a / in a path component does not stay a separator');
 		try {
@@ -435,19 +391,19 @@ class TorrentAddPathSequenceTest extends TestCase
 
 		$torrent->info['unique'] = 'rutorrent-fixed';
 
-		$info = $this->bdict(array(
+		$info = $this->bdict([
 			'length'       => $this->bint(1024),
 			'name'         => $this->bstr('test.data'),
 			'piece length' => $this->bint(16384),
 			'pieces'       => $this->bstr($this->pieces()),
 			'unique'       => $this->bstr('rutorrent-fixed'),
-		));
-		$expected = $this->bdict(array(
+		]);
+		$expected = $this->bdict([
 			'announce'      => $this->bstr('http://one.test/announce'),
 			'created by'    => $this->bstr('uTorrent/3.5.5'),
 			'creation date' => $this->bint(1234567890),
 			'info'          => $info,
-		));
+		]);
 		$this->assertTrue((string)$torrent === $expected, 'info/unique is written into the info dictionary');
 		$this->assertTrue($torrent->hash_info() === strtoupper(sha1($info)), 'the info hash follows it');
 		$this->assertTrue($torrent->hash_info() !== $was, 'and it is not the hash it had');
@@ -468,20 +424,20 @@ class TorrentAddPathSequenceTest extends TestCase
 		$resumed = rTorrent::fastResume($torrent, $this->base, true);
 		$this->assertTrue($resumed === $torrent, 'the torrent was fast-resumed');
 
-		$info = $this->bdict(array(
+		$info = $this->bdict([
 			'length'       => $this->bint(1024),
 			'name'         => $this->bstr('test.data'),
 			'piece length' => $this->bint(16384),
 			'pieces'       => $this->bstr($this->pieces()),
 			'unique'       => $this->bstr('rutorrent-fixed'),
-		));
-		$expected = $this->bdict(array(
+		]);
+		$expected = $this->bdict([
 			'announce'          => $this->bstr('http://one.test/announce'),
 			'created by'        => $this->bstr('uTorrent/3.5.5'),
 			'creation date'     => $this->bint(1234567890),
 			'info'              => $info,
-			'libtorrent_resume' => $this->expectedResume(1, array('test.data')),
-		));
+			'libtorrent_resume' => $this->expectedResume(1, ['test.data']),
+		]);
 		$this->assertTrue((string)$torrent === $expected, 'both writes are in the bytes handed to rtorrent');
 	}
 
@@ -508,16 +464,16 @@ class TorrentAddPathSequenceTest extends TestCase
 		}
 
 		$this->assertTrue($mustSave === true, 'the torrent was changed, so it has to be saved');
-		$expected = $this->bdict(array(
+		$expected = $this->bdict([
 			'announce'      => $this->bstr('http://one.test/announce'),
-			'announce-list' => $this->bannounceList(array(
-				array('http://one.test/announce'),
-				array('udp://two.test/announce'),
-			)),
+			'announce-list' => $this->bannounceList([
+				['http://one.test/announce'],
+				['udp://two.test/announce'],
+			]),
 			'created by'    => $this->bstr('uTorrent/3.5.5'),
 			'creation date' => $this->bint(1234567890),
 			'info'          => $this->singleFileInfo(),
-		));
+		]);
 		$this->assertTrue((string)$torrent === $expected,
 			'both keys are gone and the rest of the torrent is byte for byte as it was');
 	}
@@ -556,19 +512,63 @@ class TorrentAddPathSequenceTest extends TestCase
 			unset($torrent->{'rtorrent'});
 		}
 
-		$expected = $this->bdict(array(
+		$expected = $this->bdict([
 			'announce'      => $this->bstr('http://one.test/announce'),
-			'announce-list' => $this->bannounceList(array(
-				array('http://one.test/announce'),
-				array('udp://two.test/announce'),
-			)),
+			'announce-list' => $this->bannounceList([
+				['http://one.test/announce'],
+				['udp://two.test/announce'],
+			]),
 			'created by'    => $this->bstr('uTorrent/3.5.5'),
 			'creation date' => $this->bint(1234567890),
 			'info'          => $this->singleFileInfo(),
-		));
+		]);
 		$this->assertTrue((string)$torrent === $expected, 'what is offered for download is the original torrent');
 
 		// plugins/source/action.php names the ZIP entry after this metadata name.
 		$this->assertTrue($torrent->info['name'] === 'test.data', 'and its name is readable for the zip entry');
+	}
+
+	private function makeFile($relative, $size)
+	{
+		$path = $this->base . '/' . $relative;
+		$dir = dirname($path);
+		if (!is_dir($dir)) {
+			mkdir($dir, 0777, true);
+		}
+		file_put_contents($path, str_repeat("\x00", $size));
+		touch($path, $this->mtimes[$relative]);
+		clearstatcache(true, $path);
+	}
+
+	/** A libtorrent_resume dictionary as fastResume() builds one. */
+	private function expectedResume($chunks, $files)
+	{
+		$entries = [];
+		foreach ($files as $relative) {
+			$entries[] = $this->bdict([
+				'mtime'    => $this->bint($this->mtimes[$relative]),
+				'priority' => $this->bint(2),
+			]);
+		}
+		return $this->bdict([
+			'bitfield' => $this->bint($chunks),
+			'files'    => $this->blist($entries),
+		]);
+	}
+
+	/** Writes an empty file the fixture does not own, with any missing directories. */
+	private function writeExtra($relative)
+	{
+		$path = $this->base . '/' . $relative;
+		$missing = [];
+		for ($dir = dirname($path); !is_dir($dir); $dir = dirname($dir)) {
+			$missing[] = $dir;
+		}
+		foreach (array_reverse($missing) as $dir) {
+			mkdir($dir);
+			chmod($dir, 0700);
+		}
+		file_put_contents($path, '');
+		clearstatcache();
 	}
 }

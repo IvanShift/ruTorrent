@@ -37,26 +37,26 @@ class UnpackDiagnosticTest extends TestCase
 
 	public function testRawCommandsStayExecutableAndTheirDebugArgumentsStayVisible()
 	{
-		$commands = array("unzip '/data/raw\xFF.zip'", "echo '映画 %FF'", "echo 'literal\\xFF'");
+		$commands = ["unzip '/data/raw\xFF.zip'", "echo '映画 %FF'", "echo 'literal\\xFF'"];
 		$task = new class {
 			public $id = 'display-probe';
 			public $started = null;
 			public function start($commands, $flags)
 			{
-				$this->started = array($commands, $flags);
-				return array('status' => 0);
+				$this->started = [$commands, $flags];
+				return ['status' => 0];
 			}
 		};
-		$this->assertSame(array('status' => 0), UnpackDiagnosticProbe::process($task, $commands),
+		$this->assertSame(['status' => 0], UnpackDiagnosticProbe::process($task, $commands),
 			'the diagnostic does not prevent the task owner from starting');
-		$this->assertSame(array($commands, 0), $task->started,
+		$this->assertSame([$commands, 0], $task->started,
 			'the task receives the original byte strings without display escaping');
 		$log = file_get_contents($this->log);
 		$marker = ' with arguments ';
 		$offset = strpos($log, $marker);
 		$this->assertTrue($offset !== false, 'the operation logs its argument list');
 		$arguments = $offset === false ? null : json_decode(substr($log, $offset + strlen($marker)), true);
-		$this->assertSame(array("unzip '/data/raw\\xFF.zip'", $commands[1], $commands[2]), $arguments,
+		$this->assertSame(["unzip '/data/raw\\xFF.zip'", $commands[1], $commands[2]], $arguments,
 			'the JSON diagnostic retains every command and represents invalid bytes visibly');
 	}
 	public function testSavedSelectedDirectoryPreservesItsBytes()
@@ -77,8 +77,8 @@ class UnpackDiagnosticTest extends TestCase
 				.'$p=$r->getProperty("theSettings"); if(PHP_VERSION_ID<80100) $p->setAccessible(true); $p->setValue(null,$settings);'
 				.'$topDirectory="/"; $up=new UnpackPathSaveProbe(); $up->set();'
 				.'$saved=new UnpackPathSaveProbe(); $cache=new rCache(); $cache->get($saved); echo json_encode(array(base64_encode($saved->path),$saved->get()));');
-			$server = TestHttpServer::start($tree, array('RU_PROFILE_PATH'=>$tree.'/profile', 'RU_LOG_FILE'=>$tree.'/app.log'), array(), $router);
-			foreach(array("/data/raw\xFF ", '/data/映画 ', '/data/literal%FF ', "/data/with\r\nline ") as $path)
+			$server = TestHttpServer::start($tree, ['RU_PROFILE_PATH'=>$tree.'/profile', 'RU_LOG_FILE'=>$tree.'/app.log'], [], $router);
+			foreach(["/data/raw\xFF ", '/data/映画 ', '/data/literal%FF ', "/data/with\r\nline "] as $path)
 			{
 				$response = TestHttpServer::rawPost($server->port(), '/', 'unpack_enabled=1&unpack_path='.rawurlencode($path), 'application/x-www-form-urlencoded');
 				$value = json_decode($response['body'], true);
@@ -92,7 +92,7 @@ class UnpackDiagnosticTest extends TestCase
 		}
 		finally
 		{
-			if($server !== null) $server->close();
+			if($server !== null) { $server->close(); }
 			TestTree::remove($tree);
 		}
 	}

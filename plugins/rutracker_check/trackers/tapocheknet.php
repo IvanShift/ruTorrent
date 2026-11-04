@@ -7,78 +7,18 @@ class TapochekNetCheckImpl
     // only authoritative deletion signal this handler has, which is why nothing
     // else it fails to read may mean "deleted": a login wall, a ratio gate and
     // a protection page all arrive as HTTP 200 too.
-    const MISSING_MARKER = 'Темы, которую вы запросили, не существует';
+    public const MISSING_MARKER = 'Темы, которую вы запросили, не существует';
 
     // The measured removal page is windows-1251. Literal needles keep this
     // verdict available in production PHP, which has no iconv extension.
-    const MISSING_MARKER_CP1251 = "\xD2\xE5\xEC\xFB\x2C\x20\xEA\xEE\xF2\xEE\xF0\xF3\xFE\x20\xE2\xFB\x20\xE7\xE0\xEF\xF0\xEE\xF1\xE8\xEB\xE8\x2C\x20\xED\xE5\x20\xF1\xF3\xF9\xE5\xF1\xF2\xE2\xF3\xE5\xF2";
-    const INFORMATION_CP1251 = "\xC8\xED\xF4\xEE\xF0\xEC\xE0\xF6\xE8\xFF";
+    public const MISSING_MARKER_CP1251 = "\xD2\xE5\xEC\xFB\x2C\x20\xEA\xEE\xF2\xEE\xF0\xF3\xFE\x20\xE2\xFB\x20\xE7\xE0\xEF\xF0\xEE\xF1\xE8\xEB\xE8\x2C\x20\xED\xE5\x20\xF1\xF3\xF9\xE5\xF1\xF2\xE2\xF3\xE5\xF2";
+    public const INFORMATION_CP1251 = "\xC8\xED\xF4\xEE\xF0\xEC\xE0\xF6\xE8\xFF";
 
-    static private function plainText($html)
-    {
-        $plain = html_entity_decode(strip_tags((string) $html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $plain = str_replace("\xC2\xA0", ' ', $plain);
-        return trim(preg_replace('/[ \t\r\n\f\v]+/', ' ', $plain));
-    }
-
-    static private function renderedMarkup($body)
-    {
-        // A template comment or script literal cannot prove this topic is live.
-        return preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
-            '', (string) $body);
-    }
-
-    static private function hasLivePageSignal($body)
-    {
-        return preg_match('`btih\s*:`i', (string) $body)
-            || preg_match('`href\s*=\s*(["\'])[^"\']*download\.php\?id=\d+[^"\']*\1`i', (string) $body);
-    }
-
-    // The measured deletion answer is not a phrase anywhere on the page. It
-    // is an Information system message whose td contains only that sentence.
-    static private function isMissingAnswer($body)
-    {
-        if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) return false;
-        // Find each table's own close tag. A lazy whole-table regex consumes
-        // a nested system message as part of its outer layout table.
-        if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) return false;
-        $stack = array();
-        foreach ($tags[0] as $tag) {
-            if (strpos($tag[0], '</') !== 0) {
-                $stack[] = array('attrs' => substr($tag[0], 6, -1),
-                    'start' => $tag[1] + strlen($tag[0]));
-                continue;
-            }
-            if (!$stack) continue;
-            $table = array_pop($stack);
-            $table['body'] = substr($body, $table['start'], $tag[1] - $table['start']);
-            if (!preg_match('`\bclass\s*=\s*(["\'])(?P<class>.*?)\1`is', $table['attrs'], $classMatch))
-                continue;
-            $classes = preg_split('/\s+/', strtolower(trim($classMatch['class'])));
-            if (!in_array('forumline', $classes, true) || !in_array('message', $classes, true)) continue;
-            if (!preg_match_all('`<th\b[^>]*>(.*?)</th>`is', $table['body'], $heads)) continue;
-            $information = false;
-            foreach ($heads[1] as $head) {
-                if (in_array(self::plainText($head), array('Информация', self::INFORMATION_CP1251), true)) {
-                    $information = true;
-                    break;
-                }
-            }
-            if (!$information || !preg_match_all('`<td\b[^>]*>(.*?)</td>`is', $table['body'], $cells)) continue;
-            foreach ($cells[1] as $cell) {
-                $text = self::plainText($cell);
-                if (in_array($text, array(self::MISSING_MARKER, self::MISSING_MARKER . '.',
-                    self::MISSING_MARKER_CP1251, self::MISSING_MARKER_CP1251 . '.'), true)) return true;
-            }
-        }
-        return false;
-    }
-
-    static public function download_torrent($url, $hash, $old_torrent)
+    public static function download_torrent($url, $hash, $old_torrent)
     {
         if (preg_match('`^https?://tapochek\.net/viewtopic\.php\?p=(?P<id>\d+)$`', $url, $matches)) {
             $client = ruTrackerChecker::makeClient("https://tapochek.net/viewtopic.php?p=".$matches["id"]);
-            if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            if ($client->status != 200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
             $rendered = self::renderedMarkup($client->results);
 
             if (preg_match('`btih:(?P<hash>[0-9A-Fa-f]{40})&dn`', $rendered, $matches)) {
@@ -102,8 +42,8 @@ class TapochekNetCheckImpl
             }
 
             // Consult the deletion marker only when no valid live evidence (btih) is present
-            if (self::isMissingAnswer($rendered))
-                return ruTrackerChecker::STE_DELETED;
+            if (self::isMissingAnswer($rendered)) {
+                return ruTrackerChecker::STE_DELETED; }
 
             // The topic URL is ours and the tracker answered 200, but nothing
             // in the page could be read: no removal marker, no info hash, or a
@@ -116,6 +56,66 @@ class TapochekNetCheckImpl
         // Reached only for a URL this handler does not own, which is the one
         // thing STE_DECLINED means.
         return ruTrackerChecker::STE_DECLINED;
+    }
+
+    private static function plainText($html)
+    {
+        $plain = html_entity_decode(strip_tags((string) $html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $plain = str_replace("\xC2\xA0", ' ', $plain);
+        return trim(preg_replace('/[ \t\r\n\f\v]+/', ' ', $plain));
+    }
+
+    private static function renderedMarkup($body)
+    {
+        // A template comment or script literal cannot prove this topic is live.
+        return preg_replace('`<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>`is',
+            '', (string) $body);
+    }
+
+    private static function hasLivePageSignal($body)
+    {
+        return preg_match('`btih\s*:`i', (string) $body)
+            || preg_match('`href\s*=\s*(["\'])[^"\']*download\.php\?id=\d+[^"\']*\1`i', (string) $body);
+    }
+
+    // The measured deletion answer is not a phrase anywhere on the page. It
+    // is an Information system message whose td contains only that sentence.
+    private static function isMissingAnswer($body)
+    {
+        if (!is_string($body) || $body === '' || self::hasLivePageSignal($body)) { return false; }
+        // Find each table's own close tag. A lazy whole-table regex consumes
+        // a nested system message as part of its outer layout table.
+        if (!preg_match_all('`</?table\b[^>]*>`is', $body, $tags, PREG_OFFSET_CAPTURE)) { return false; }
+        $stack = [];
+        foreach ($tags[0] as $tag) {
+            if (strpos($tag[0], '</') !== 0) {
+                $stack[] = ['attrs' => substr($tag[0], 6, -1),
+                    'start' => $tag[1] + strlen($tag[0])];
+                continue;
+            }
+            if (!$stack) { continue; }
+            $table = array_pop($stack);
+            $table['body'] = substr($body, $table['start'], $tag[1] - $table['start']);
+            if (!preg_match('`\bclass\s*=\s*(["\'])(?P<class>.*?)\1`is', $table['attrs'], $classMatch)) {
+                continue; }
+            $classes = preg_split('/\s+/', strtolower(trim($classMatch['class'])));
+            if (!in_array('forumline', $classes, true) || !in_array('message', $classes, true)) { continue; }
+            if (!preg_match_all('`<th\b[^>]*>(.*?)</th>`is', $table['body'], $heads)) { continue; }
+            $information = false;
+            foreach ($heads[1] as $head) {
+                if (in_array(self::plainText($head), ['Информация', self::INFORMATION_CP1251], true)) {
+                    $information = true;
+                    break;
+                }
+            }
+            if (!$information || !preg_match_all('`<td\b[^>]*>(.*?)</td>`is', $table['body'], $cells)) { continue; }
+            foreach ($cells[1] as $cell) {
+                $text = self::plainText($cell);
+                if (in_array($text, [self::MISSING_MARKER, self::MISSING_MARKER . '.',
+                    self::MISSING_MARKER_CP1251, self::MISSING_MARKER_CP1251 . '.'], true)) { return true; }
+            }
+        }
+        return false;
     }
 }
 

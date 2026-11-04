@@ -13,7 +13,7 @@ require_once(__DIR__.'/AddTorrentHttpHarness.php');
 final class AddTorrentRedirectTest extends TestCase
 {
     /** The whole "Location: ..." field, as php/addtorrent.php measures it. */
-    const LOCATION_BUDGET = 2048;
+    public const LOCATION_BUDGET = 2048;
 
     private $server = null;
 
@@ -23,43 +23,9 @@ final class AddTorrentRedirectTest extends TestCase
             $diagnostics = $this->server->phpDiagnostics();
             $this->server->close();
             $this->server = null;
-            $this->assertSame(array(), $diagnostics,
+            $this->assertSame([], $diagnostics,
                 'the requests were served without a PHP diagnostic: '.implode(' | ', $diagnostics));
         }
-    }
-
-    private function server()
-    {
-        if ($this->server === null)
-            $this->server = AddTorrentHttpHarness::forAddTorrent(
-                new FakeRtorrentAddTorrentReplies(array(), array(), false),
-                array('phpSelf' => '/internal/php/addtorrent.php'));
-        return $this->server;
-    }
-
-    /** A request as a rewriting proxy forwards it: internal Host, forwarded host. */
-    private function send($method, $query = '', $body = '', $contentType = 'application/x-www-form-urlencoded')
-    {
-        return $this->server()->request($method, '/torrents/php/addtorrent.php'.$query, $body,
-            array('Host' => 'internal:8080', 'X-Forwarded-Host' => 'trap.invalid',
-                'Content-Type' => $contentType));
-    }
-
-    private function upload($names, $json = false)
-    {
-        list($contentType, $body) = AddTorrentHttpHarness::multipart(
-            AddTorrentHttpHarness::torrentFiles($names, 'invalid torrent'));
-        return $this->send('POST', $json ? '?json=1' : '', $body, $contentType);
-    }
-
-    /** The notifications of a result script, decoded. */
-    private function notifications($body)
-    {
-        preg_match_all('/noty\((.*?)\+theUILang\["addTorrent"\+(".*?")\],(".*?")\);/', $body, $calls, PREG_SET_ORDER);
-        $decoded = array();
-        foreach ($calls as $call)
-            $decoded[] = array(json_decode($call[1], true), json_decode($call[2], true), json_decode($call[3], true));
-        return $decoded;
     }
 
     public function testActualPostRedirectStaysRelativeBehindARewritingProxy()
@@ -72,14 +38,6 @@ final class AddTorrentRedirectTest extends TestCase
         $this->assertTrue(strpos($location, 'internal') === false
             && strpos($location, 'trap.invalid') === false,
             'proxy Host rewriting cannot redirect to an internal or forwarded host');
-    }
-
-    private function largeBatchNames()
-    {
-        $names = array();
-        for ($index = 0; $index < 32; $index++)
-            $names[] = sprintf('%02d', $index).'-'.str_repeat('Кириллица', 8).'.torrent';
-        return $names;
     }
 
     public function testLargeCyrillicUploadReturnsEveryResultInThePostBody()
@@ -112,13 +70,13 @@ final class AddTorrentRedirectTest extends TestCase
             'large JSON upload has no oversized redirect');
         $this->assertTrue(stripos($response['headers']['content-type'] ?? '', 'application/json') === 0,
             'the direct response keeps the JSON content type');
-        $this->assertEquals(array('result'=>'FailedFile'), json_decode($response['body'], true),
+        $this->assertEquals(['result'=>'FailedFile'], json_decode($response['body'], true),
             'JSON callers receive the same first status as the result GET endpoint');
     }
 
     public function testSmallUploadKeepsRelativeRedirectAndTheExistingResultRenderer()
     {
-        $response = $this->upload(array('one.torrent'));
+        $response = $this->upload(['one.torrent']);
         $this->assertSame(302, $response['code'], 'a small file batch keeps its redirect');
         $location = $response['headers']['location'] ?? null;
         $this->assertEquals('./addtorrent.php?result[]=FailedFile&name[]=one.torrent&', $location,
@@ -127,35 +85,6 @@ final class AddTorrentRedirectTest extends TestCase
         $result = $this->send('GET', $query);
         $this->assertEquals('noty("one.torrent - "+theUILang["addTorrent"+"FailedFile"],"error");', $result['body'],
             'the redirected result uses the existing iframe notification script');
-    }
-
-    /**
-     * Eight invalid uploads whose redirect field "Location: ./addtorrent.php?..."
-     * is exactly $length bytes. Each file adds "result[]=FailedFile&name[]=<name>&";
-     * the names are unreserved ASCII, so rawurlencode() keeps their length, and
-     * each stays well under a filesystem name limit.
-     */
-    private function namesForLocationOf($length)
-    {
-        $fixed = strlen('Location: ./addtorrent.php?');
-        $perFile = strlen('result[]=FailedFile&name[]=&');
-        $names = array();
-        $left = $length - $fixed;
-        for ($index = 0; $index < 8; $index++) {
-            $size = ($index < 7) ? 225 : ($left - $perFile);
-            $names[] = sprintf('%d-', $index).str_repeat('b', $size - strlen('0-.torrent')).'.torrent';
-            $left -= $perFile + $size;
-        }
-        $this->assertSame(0, $left, 'the fixture names fill the field exactly');
-        return $names;
-    }
-
-    private function locationFor($names)
-    {
-        $location = './addtorrent.php?';
-        foreach ($names as $name)
-            $location .= 'result[]=FailedFile&name[]='.rawurlencode($name).'&';
-        return $location;
     }
 
     public function testLocationAtTheBudgetStillRedirects()
@@ -172,8 +101,8 @@ final class AddTorrentRedirectTest extends TestCase
         $result = $this->send('GET', strstr($expected, '?'));
         $calls = $this->notifications($result['body']);
         $this->assertSame(8, count($calls), 'the redirected result names all eight files');
-        foreach ($calls as $index=>$call)
-            $this->assertSame($names[$index].' - ', $call[0], 'the redirected result keeps name '.$index);
+        foreach ($calls as $index=>$call) {
+            $this->assertSame($names[$index].' - ', $call[0], 'the redirected result keeps name '.$index); }
     }
 
     public function testLocationOneByteOverTheBudgetMovesToThePostBody()
@@ -187,28 +116,28 @@ final class AddTorrentRedirectTest extends TestCase
             'no redirect follows a body response');
         $calls = $this->notifications($response['body']);
         $this->assertSame(8, count($calls), 'the POST body names all eight files');
-        foreach ($calls as $index=>$call)
-            $this->assertSame(array($names[$index].' - ', 'FailedFile', 'error'), $call,
-                'the POST body keeps file '.$index);
+        foreach ($calls as $index=>$call) {
+            $this->assertSame([$names[$index].' - ', 'FailedFile', 'error'], $call,
+                'the POST body keeps file '.$index); }
     }
 
     public function testRedirectKeepsTheBrowserOriginForDirectAndProxiedRequests()
     {
-        foreach (array(
-            array(array('Host' => '127.0.0.1'), ''),
-            array(array('Host' => 'internal.test:8080'), 'https://public.test/app'),
-            array(array('Host' => 'public.test', 'X-Forwarded-Proto' => 'https'), ''),
-            array(array('Host' => 'public.test'), 'ftp://public.test/app'),
-        ) as $case) {
+        foreach ([
+            [['Host' => '127.0.0.1'], ''],
+            [['Host' => 'internal.test:8080'], 'https://public.test/app'],
+            [['Host' => 'public.test', 'X-Forwarded-Proto' => 'https'], ''],
+            [['Host' => 'public.test'], 'ftp://public.test/app'],
+        ] as $case) {
             $server = AddTorrentHttpHarness::forAddTorrent(
-                new FakeRtorrentAddTorrentReplies(array(), array(), false),
-                array('globals' => array('publicURL' => $case[1])));
+                new FakeRtorrentAddTorrentReplies([], [], false),
+                ['globals' => ['publicURL' => $case[1]]]);
             try {
                 $response = $server->request('POST', '/php/addtorrent.php', '', $case[0]);
                 $this->assertSame(302, $response['code'], 'an empty upload redirects with its result');
                 $this->assertSame('./addtorrent.php?result[]=Failed&', $response['headers']['location'] ?? '',
                     'the browser retains its public origin and prefix for every server URL setting');
-                $this->assertSame(array(), $server->phpDiagnostics(),
+                $this->assertSame([], $server->phpDiagnostics(),
                     'the production endpoint returns without a PHP diagnostic');
             } finally {
                 $server->close();
@@ -222,7 +151,78 @@ final class AddTorrentRedirectTest extends TestCase
         $this->assertSame('./addtorrent.php?result[]=Failed&json=1', $response['headers']['location'] ?? '',
             'a small JSON upload redirects to its JSON result with the same public origin');
         $result = $this->send('GET', strstr($response['headers']['location'] ?? '', '?'));
-        $this->assertSame(array('result' => 'Failed'), json_decode($result['body'], true),
+        $this->assertSame(['result' => 'Failed'], json_decode($result['body'], true),
             'the redirected JSON result keeps its first-result contract');
+    }
+
+    private function server()
+    {
+        if ($this->server === null) {
+            $this->server = AddTorrentHttpHarness::forAddTorrent(
+                new FakeRtorrentAddTorrentReplies([], [], false),
+                ['phpSelf' => '/internal/php/addtorrent.php']); }
+        return $this->server;
+    }
+
+    /** A request as a rewriting proxy forwards it: internal Host, forwarded host. */
+    private function send($method, $query = '', $body = '', $contentType = 'application/x-www-form-urlencoded')
+    {
+        return $this->server()->request($method, '/torrents/php/addtorrent.php'.$query, $body,
+            ['Host' => 'internal:8080', 'X-Forwarded-Host' => 'trap.invalid',
+                'Content-Type' => $contentType]);
+    }
+
+    private function upload($names, $json = false)
+    {
+        list($contentType, $body) = AddTorrentHttpHarness::multipart(
+            AddTorrentHttpHarness::torrentFiles($names, 'invalid torrent'));
+        return $this->send('POST', $json ? '?json=1' : '', $body, $contentType);
+    }
+
+    /** The notifications of a result script, decoded. */
+    private function notifications($body)
+    {
+        preg_match_all('/noty\((.*?)\+theUILang\["addTorrent"\+(".*?")\],(".*?")\);/', $body, $calls, PREG_SET_ORDER);
+        $decoded = [];
+        foreach ($calls as $call) {
+            $decoded[] = [json_decode($call[1], true), json_decode($call[2], true), json_decode($call[3], true)]; }
+        return $decoded;
+    }
+
+    private function largeBatchNames()
+    {
+        $names = [];
+        for ($index = 0; $index < 32; $index++) {
+            $names[] = sprintf('%02d', $index).'-'.str_repeat('Кириллица', 8).'.torrent'; }
+        return $names;
+    }
+
+    /**
+     * Eight invalid uploads whose redirect field "Location: ./addtorrent.php?..."
+     * is exactly $length bytes. Each file adds "result[]=FailedFile&name[]=<name>&";
+     * the names are unreserved ASCII, so rawurlencode() keeps their length, and
+     * each stays well under a filesystem name limit.
+     */
+    private function namesForLocationOf($length)
+    {
+        $fixed = strlen('Location: ./addtorrent.php?');
+        $perFile = strlen('result[]=FailedFile&name[]=&');
+        $names = [];
+        $left = $length - $fixed;
+        for ($index = 0; $index < 8; $index++) {
+            $size = ($index < 7) ? 225 : ($left - $perFile);
+            $names[] = sprintf('%d-', $index).str_repeat('b', $size - strlen('0-.torrent')).'.torrent';
+            $left -= $perFile + $size;
+        }
+        $this->assertSame(0, $left, 'the fixture names fill the field exactly');
+        return $names;
+    }
+
+    private function locationFor($names)
+    {
+        $location = './addtorrent.php?';
+        foreach ($names as $name) {
+            $location .= 'result[]=FailedFile&name[]='.rawurlencode($name).'&'; }
+        return $location;
     }
 }

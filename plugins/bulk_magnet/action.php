@@ -12,8 +12,8 @@ function getTorrent( $url )
 	if($fetched && Snoopy::isTorrentResponse($cli))
 	{
 		$name = $cli->get_filename();
-		if($name===false)
-			$name = md5($url).".torrent";
+		if($name===false) {
+			$name = md5($url).".torrent"; }
 		$name = FileUtil::getUniqueUploadedFilename($name);
 		$f = @fopen($name,"w");
 		if($f===false)
@@ -30,9 +30,9 @@ function getTorrent( $url )
 		}
 		FileUtil::toLog("bulk_magnet: torrent save refused: local-write-failed");
 	}
-	else
+	else {
 		FileUtil::toLog("bulk_magnet: torrent fetch refused: "
-			.TorrentFetch::rejectionReason($cli, $fetched));
+			.TorrentFetch::rejectionReason($cli, $fetched)); }
 	return(false);
 }
 
@@ -48,8 +48,8 @@ function parseValue( $value, &$pendingReceipt = null )
 			$ret = rTorrent::sendTorrent($fname, true, true, '', '',
 				$saveUploadedTorrents, false, true, null, $pendingReceipt);
 			if($ret === false || ($ret === null && !$saveUploadedTorrents
-				&& !empty($pendingReceipt['raw'])))
-				@unlink($fname);
+				&& !empty($pendingReceipt['raw']))) {
+				@unlink($fname); }
 		}
 	}
 	else
@@ -64,8 +64,8 @@ function parseValue( $value, &$pendingReceipt = null )
 			$ret = rTorrent::sendMagnet($value, true, true, '', '');
 			// rTorrent drops some malformed magnets without a stub; such a
 			// magnet is pending, not added (R4-NF-1).
-			if(($ret !== false) && !rTorrent::magnetShown($ret, 'bulk_magnet'))
-				$ret = null;
+			if(($ret !== false) && !rTorrent::magnetShown($ret, 'bulk_magnet')) {
+				$ret = null; }
 		}
 	}
 	return($ret);
@@ -74,20 +74,20 @@ function parseValue( $value, &$pendingReceipt = null )
 ignore_user_abort( true );
 set_time_limit( 0 );
 
-$result = array
-(
+$result = 
+[
 	'error' => 0,
 	'success' => 0,
 	'pending' => 0,
 	'duplicate' => 0,
-);
+];
 
-if(!isset($HTTP_RAW_POST_DATA))
-	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-$torrents = array();
+if(!isset($HTTP_RAW_POST_DATA)) {
+	$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+$torrents = [];
 $loaded = rTorrent::loadedHashes();
-if($loaded===false)
-	$result['error']++;
+if($loaded===false) {
+	$result['error']++; }
 else
 {
 	foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
@@ -99,17 +99,17 @@ else
 			{
 				$receipt = null;
 				$hash = parseValue($value, $receipt);
-				if($hash === false)
-					$result['error']++;
+				if($hash === false) {
+					$result['error']++; }
 				elseif($hash === null)
 				{
-					if(isset($receipt['hash']) && isset($loaded[strtoupper($receipt['hash'])]))
-						$result['duplicate']++;
-					else
-						$result['pending']++;
+					if(isset($receipt['hash']) && isset($loaded[strtoupper($receipt['hash'])])) {
+						$result['duplicate']++; }
+					else {
+						$result['pending']++; }
 				}
-				elseif(isset($loaded[strtoupper($hash)]))
-					$result['duplicate']++;
+				elseif(isset($loaded[strtoupper($hash)])) {
+					$result['duplicate']++; }
 				else
 				{
 					$loaded[strtoupper($hash)] = true;

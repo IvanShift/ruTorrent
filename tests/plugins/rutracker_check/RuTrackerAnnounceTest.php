@@ -8,9 +8,9 @@ $suite = new StrictTestSuite();
 $hash = 'C6EE8D83000000000000000000000000000000AB';
 
 $suite->test('hostKey remains a compatibility alias for the canonical host key', function () {
-    foreach (array('BT.T-RU.ORG.', 'bt.t-ru.org', '  EXAMPLE.NET.  ') as $host)
+    foreach (['BT.T-RU.ORG.', 'bt.t-ru.org', '  EXAMPLE.NET.  '] as $host) {
         strictAssertSame(UrlHost::normalize($host), RuTrackerAnnounce::hostKey($host),
-            $host . ' uses the same host normalization as the shared helper');
+            $host . ' uses the same host normalization as the shared helper'); }
 });
 
 $suite->test('buildUrl strips passkey and carries the full identity', function () use ($hash) {
@@ -18,9 +18,9 @@ $suite->test('buildUrl strips passkey and carries the full identity', function (
     strictAssertTrue(strpos($url, 'pk=') === false, 'passkey must be stripped');
     strictAssertTrue(strpos($url, 'http://bt.t-ru.org/ann?') === 0, 'base preserved');
     strictAssertTrue(strpos($url, 'info_hash=' . rawurlencode(hex2bin($hash))) !== false, 'binary info_hash');
-    foreach (array('peer_id=-RC0001-abcdef123456', 'port=63981', 'uploaded=0', 'downloaded=0',
-                   'left=0', 'compact=1', 'numwant=0', 'event=stopped', 'key=k1') as $chunk)
-        strictAssertTrue(strpos($url, $chunk) !== false, "missing {$chunk}");
+    foreach (['peer_id=-RC0001-abcdef123456', 'port=63981', 'uploaded=0', 'downloaded=0',
+                   'left=0', 'compact=1', 'numwant=0', 'event=stopped', 'key=k1'] as $chunk) {
+        strictAssertTrue(strpos($url, $chunk) !== false, "missing {$chunk}"); }
 });
 
 $suite->test('buildUrl rejects a non-hex hash', function () {
@@ -37,19 +37,19 @@ $suite->test('buildUrl rejects a non-hex hash', function () {
 // routes it to the 'unbuildable' branch instead, which hands the slot back
 // and stops the cycle reading as a probe that ran.
 $suite->test('buildUrl builds a probe only for the schemes the fetcher speaks', function () use ($hash) {
-    foreach (array('http://bt.t-ru.org/ann', 'https://bt.t-ru.org/ann') as $url)
+    foreach (['http://bt.t-ru.org/ann', 'https://bt.t-ru.org/ann'] as $url) {
         strictAssertTrue(is_string(RuTrackerAnnounce::buildUrl($url, $hash, '-RC0001-x', 63981, 'k')),
-            $url . ': a scheme the fetcher speaks builds a probe');
-    foreach (array(
+            $url . ': a scheme the fetcher speaks builds a probe'); }
+    foreach ([
         // The row this finding is about: a path is all the old check wanted.
         'udp://bt.t-ru.org:2710/announce',
         'wss://bt.t-ru.org/announce',
         // Not a spelling Snoopy's switch matches either, so not one this
         // probe can be sent over.
         'HTTP://bt.t-ru.org/ann',
-    ) as $url)
+    ] as $url) {
         strictAssertSame(null, RuTrackerAnnounce::buildUrl($url, $hash, '-RC0001-x', 63981, 'k'),
-            $url . ': must not become a probe URL');
+            $url . ': must not become a probe URL'); }
 });
 
 $suite->test('makePeerId is 20 bytes with the plugin prefix', function () {
@@ -67,15 +67,15 @@ $suite->test('makePeerId is 20 bytes with the plugin prefix', function () {
 // rather than left to be re-derived by whoever edits the decoder next.
 $suite->test('the announce body is decoded under exactly the pinned ceilings', function () {
     strictAssertSame(
-        array(
+        [
             'max_bytes' => 8192,
             'max_depth' => 4096,
             'max_tokens' => 4096,
             'max_integer_digits' => 8192,
             'max_length_digits' => 4,
-        ),
+        ],
         RuTrackerAnnounce::BENCODE_LIMITS,
-        'the announce ceilings are exactly 8192 / 4096 / 4096 / 8192 / 4'
+        'the announce ceilings are exactly 8192 / 4096 / 4096 / 8192 / 4',
     );
 
     // One number, not two that can drift: the byte ceiling the grammar
@@ -133,7 +133,7 @@ $suite->test('classify: everything else is uncertain', function () {
 });
 
 $suite->test('classify: malformed positive announce schemas stay uncertain', function () {
-    foreach (array(
+    foreach ([
         'interval without peers' => 'd8:intervali1800ee',
         'peers without interval' => 'd5:peers0:e',
         'integer peers' => 'd8:intervali1800e5:peersi0ee',
@@ -154,7 +154,7 @@ $suite->test('classify: malformed positive announce schemas stay uncertain', fun
         'incomplete has a leading zero' => 'd8:intervali1800e5:peers0:10:incompletei01ee',
         'min interval is a string' => 'd8:intervali1800e5:peers0:12:min interval1:0e',
         'unknown keys cannot replace peers' => 'd8:intervali1800e7:warning5:helloe',
-    ) as $label => $body) {
+    ] as $label => $body) {
         strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
     }
 });
@@ -163,12 +163,12 @@ $suite->test('classify: noncanonical integers in unknown extensions invalidate t
     $successPrefix = 'd8:intervali1800e5:peers0:';
     $reason = RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON;
     $failurePrefix = 'd14:failure reason' . strlen($reason) . ':' . $reason;
-    foreach (array('i01e', 'i-0e', 'i+1e', 'i1.0e') as $token) {
-        foreach (array(
+    foreach (['i01e', 'i-0e', 'i+1e', 'i1.0e'] as $token) {
+        foreach ([
             'direct unknown value' => $successPrefix . '1:x' . $token . 'e',
             'unknown list value' => $successPrefix . '1:xl' . $token . 'ee',
             'unknown dictionary value' => $successPrefix . '1:xd1:y' . $token . 'ee',
-        ) as $context => $body) {
+        ] as $context => $body) {
             strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body),
                 $context . ' rejects ' . $token);
         }
@@ -188,7 +188,7 @@ $suite->test('classify: noncanonical integers in unknown extensions invalidate t
 $suite->test('classify: a duplicate key anywhere in the envelope stays uncertain', function () {
     $reason = RuTrackerAnnounce::UNREGISTERED_FAILURE_REASON;
     $failureReason = '14:failure reason' . strlen($reason) . ':' . $reason;
-    foreach (array(
+    foreach ([
         'required key: duplicate interval' => 'd8:intervali1800e8:intervali1801e5:peers0:e',
         'required key: duplicate peers' => 'd8:intervali1800e5:peers0:5:peers0:e',
         'optional counter: duplicate complete' => 'd8:intervali1800e5:peers0:8:completei1e8:completei2ee',
@@ -199,7 +199,7 @@ $suite->test('classify: a duplicate key anywhere in the envelope stays uncertain
             . '2:ip9:127.0.0.24:porti6881eeee',
         'peer dictionary: duplicate peer port' => 'd8:intervali1800e5:peersld2:ip9:127.0.0.1'
             . '4:porti6881e4:porti6882eeee',
-    ) as $label => $body) {
+    ] as $label => $body) {
         strictAssertSame('uncertain', RuTrackerAnnounce::classify(200, $body), $label);
     }
 });
@@ -308,8 +308,8 @@ $suite->test('repeated 403 answers cap the cooldown at 24 hours', function () {
     strictWithStateDir('chk-announce-cap', function () {
         $host = 'bt.t-ru.org';
         ratProbe($host, 1000, 403, RAT_WINDOW);
-        for ($i = 1; $i <= 6; $i++)
-            RuTrackerAnnounce::recordOutcome($host, 1000 + $i, 403);
+        for ($i = 1; $i <= 6; $i++) {
+            RuTrackerAnnounce::recordOutcome($host, 1000 + $i, 403); }
         $entry = RuTrackerState::load('announce')[$host];
         strictAssertSame(86400, $entry['cooldown_length'],
             '403 doubling stops at one day');
@@ -349,7 +349,7 @@ $suite->test('announce budget: a successful probe clears the remembered cooldown
         ratProbe('bt3.t-ru.org', 2000, 403, RAT_WINDOW);           // next 403 must restart at 3600, not double to 7200
         strictAssertTrue(
             ratAllowProbe('bt3.t-ru.org', 2000 + 3601, 10, RAT_WINDOW),
-            'cooldown restarted at 3600 instead of doubling from the old length'
+            'cooldown restarted at 3600 instead of doubling from the old length',
         );
     });
 });
@@ -371,9 +371,9 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
     $child = ratWriteReservationChild($tmp, 'bt4.t-ru.org', 5);
 
     try {
-        $answers = array();
+        $answers = [];
         for ($click = 0; $click < 6; $click++) {
-            $spec = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+            $spec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
             $proc = proc_open(PHP_BINARY . ' ' . escapeshellarg($child), $spec, $pipes);
             strictAssertTrue(is_resource($proc), 'click ' . $click . ' launched');
             $answers[] = trim(stream_get_contents($pipes[1]));
@@ -383,7 +383,7 @@ $suite->test('announce budget: the windowed cap holds across genuinely separate 
             strictAssertSame(0, proc_close($proc), 'click ' . $click . ' exited cleanly: ' . $stderr);
         }
 
-        strictAssertSame(array('allow', 'allow', 'allow', 'allow', 'allow', 'cap'), $answers,
+        strictAssertSame(['allow', 'allow', 'allow', 'allow', 'allow', 'cap'], $answers,
             'six separate processes share one window: the sixth click finds the budget spent');
     } finally {
         strictRemoveTree($tmp);
@@ -398,27 +398,27 @@ $suite->test('announce budget: simultaneous processes take one slot only once', 
     strictAssertTrue(mkdir($tmp, 0777, true), 'isolated state directory created');
     $child = ratWriteReservationChild($tmp, 'bt-concurrent.t-ru.org', 1);
     $gate = $tmp . '/go';
-    $processes = array();
+    $processes = [];
     try {
         for ($i = 0; $i < 4; $i++) {
             $ready = $tmp . '/ready-' . $i;
             $cmd = 'exec ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($child) .
                 ' ' . escapeshellarg($ready) . ' ' . escapeshellarg($gate);
-            $spec = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+            $spec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
             $proc = proc_open($cmd, $spec, $pipes);
             strictAssertTrue(is_resource($proc), 'reservation child ' . $i . ' launched');
-            $processes[$i] = array($proc, $pipes);
+            $processes[$i] = [$proc, $pipes];
         }
         $deadline = microtime(true) + 10;
         do {
             $readyCount = count((array) glob($tmp . '/ready-*'));
-            if ($readyCount === 4) break;
+            if ($readyCount === 4) { break; }
             usleep(1000);
         } while (microtime(true) < $deadline);
         strictAssertSame(4, $readyCount, 'all children reached the start gate');
         strictAssertTrue(file_put_contents($gate, 'go') !== false, 'the start gate opened');
 
-        $answers = array();
+        $answers = [];
         foreach ($processes as $i => $entry) {
             list($proc, $pipes) = $entry;
             $answers[] = trim(stream_get_contents($pipes[1]));
@@ -430,14 +430,14 @@ $suite->test('announce budget: simultaneous processes take one slot only once', 
             strictAssertSame(0, $code, 'reservation child ' . $i . ' exited cleanly: ' . $stderr);
         }
         sort($answers, SORT_STRING);
-        strictAssertSame(array('allow', 'cap', 'cap', 'cap'), $answers,
+        strictAssertSame(['allow', 'cap', 'cap', 'cap'], $answers,
             'one simultaneous reservation spends the only slot');
     } finally {
         // Release children even when readiness or an assertion fails.
         @file_put_contents($gate, 'go');
         foreach ($processes as $entry) {
             list($proc, $pipes) = $entry;
-            foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
+            foreach ($pipes as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
             proc_close($proc);
         }
         strictRemoveTree($tmp);
@@ -589,7 +589,7 @@ $suite->test('an announce answer too large to decode safely is refused before de
     ');
 
     try {
-        $spec = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+        $spec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $proc = proc_open(escapeshellarg(PHP_BINARY) . ' -d memory_limit=8M ' . escapeshellarg($child),
             $spec, $pipes);
         strictAssertTrue(is_resource($proc), 'the child launched');
@@ -625,7 +625,7 @@ $suite->test('an announce answer too large to decode safely is refused before de
 // as success and wipe cooldown_length, so the next genuine 403 restarted the
 // backoff at one hour instead of continuing to double.
 $suite->test('a refusal that is not a 403 neither doubles nor resets the backoff', function () {
-    foreach (array(0, -2, 429, 500, 503) as $status) {
+    foreach ([0, -2, 429, 500, 503] as $status) {
         strictWithStateDir('chk-announce-notok', function () use ($status) {
             ratProbe('bt.t-ru.org', 1000, 403, RAT_WINDOW);             // -> 3600
             $state = RuTrackerState::load('announce')['bt.t-ru.org'];
@@ -764,25 +764,25 @@ $suite->test('the probe budget and pause are bounded at BOTH ends, not just floo
 // nonnegative integer while the other three stay perfectly ordinary.
 function ratCorruptEntries()
 {
-    $sane = array('cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5,
-        'cooldown_length' => 0);
-    $bad = array('leading zero' => '01', 'plus sign' => '+1', 'negative' => '-1',
+    $sane = ['cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5,
+        'cooldown_length' => 0];
+    $bad = ['leading zero' => '01', 'plus sign' => '+1', 'negative' => '-1',
         'minus zero' => '-0', 'padded' => ' 1', 'float' => 1.5,
-        'bool' => true, 'text' => 'whenever', 'null' => null, 'array' => array(1));
-    $cases = array();
-    foreach (array('cooldown_until', 'window_start', 'window_count', 'cooldown_length') as $field)
+        'bool' => true, 'text' => 'whenever', 'null' => null, 'array' => [1]];
+    $cases = [];
+    foreach (['cooldown_until', 'window_start', 'window_count', 'cooldown_length'] as $field) {
         foreach ($bad as $label => $value) {
             $entry = $sane;
             $entry[$field] = $value;
             $cases[$field . ' is a ' . $label] = $entry;
-        }
+        } }
     return $cases;
 }
 
 $suite->test('a corrupted persisted budget entry is never an available slot', function () {
     strictWithStateDir('chk-announce-corrupt-reserve', function () {
         foreach (ratCorruptEntries() as $label => $entry) {
-            RuTrackerState::save('announce', array('bt.t-ru.org' => $entry));
+            RuTrackerState::save('announce', ['bt.t-ru.org' => $entry]);
 
             // The cap is generous and the window long: on a READABLE entry
             // shaped like this the answer would be 'allow'.
@@ -792,7 +792,7 @@ $suite->test('a corrupted persisted budget entry is never an available slot', fu
             strictAssertSame('unstorable',
                 RuTrackerAnnounce::probeDecision('bt.t-ru.org', 1000, 40, RAT_WINDOW),
                 $label . ': and the read-only view agrees');
-            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+            strictAssertSame(['bt.t-ru.org' => $entry], RuTrackerState::load('announce'),
                 $label . ': the corrupted entry is left byte for byte as it was found');
         }
     });
@@ -814,9 +814,9 @@ $suite->test('a corrupted persisted budget entry is never an available slot', fu
 $suite->test('a budget entry nobody can read reaches the application log at the shipped default', function () {
     strictWithStateDir('chk-announce-corrupt-visible', function () {
         ruTrackerChecker::reset();
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+        RuTrackerState::save('announce', ['bt.t-ru.org' => [
             'cooldown_until' => 0, 'window_start' => 1000,
-            'window_count' => 'whenever', 'cooldown_length' => 0)));
+            'window_count' => 'whenever', 'cooldown_length' => 0]]);
 
         $written = testCapturedAppLog(function () {
             strictAssertSame('unstorable',
@@ -838,7 +838,7 @@ $suite->test('a budget entry nobody can read reaches the application log at the 
 $suite->test('a budget that could not be written reaches the application log', function () {
     $tmp = sys_get_temp_dir() . '/chk-announce-unwritable-' . getmypid();
     strictRemoveTree($tmp);
-    if (!mkdir($tmp, 0777, true)) throw new RuntimeException('Unable to create ' . $tmp);
+    if (!mkdir($tmp, 0777, true)) { throw new RuntimeException('Unable to create ' . $tmp); }
     try {
         ruTrackerChecker::reset();
         // Same ENOTDIR trick as the reservation test above: a path UNDER a
@@ -869,18 +869,18 @@ $suite->test('a corrupted persisted budget entry is never an elapsed cooldown or
             // A success would normally CLEAR a lapsed cooldown, and a 403
             // would normally DOUBLE the stored backoff. Neither may act on a
             // record it could not read.
-            RuTrackerState::save('announce', array('bt.t-ru.org' => $entry));
+            RuTrackerState::save('announce', ['bt.t-ru.org' => $entry]);
             RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 200);
-            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+            strictAssertSame(['bt.t-ru.org' => $entry], RuTrackerState::load('announce'),
                 $label . ': a success neither clears nor rewrites what it cannot read');
 
             RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 100000, 403);
-            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+            strictAssertSame(['bt.t-ru.org' => $entry], RuTrackerState::load('announce'),
                 $label . ': and a refusal does not restart the backoff at one hour either');
 
             // Handing a slot back must not invent a counter to decrement.
             RuTrackerAnnounce::releaseProbe('bt.t-ru.org', 100000);
-            strictAssertSame(array('bt.t-ru.org' => $entry), RuTrackerState::load('announce'),
+            strictAssertSame(['bt.t-ru.org' => $entry], RuTrackerState::load('announce'),
                 $label . ': and a released slot is not refunded into it');
         }
     });
@@ -893,14 +893,14 @@ $suite->test('a corrupted persisted budget entry is never an elapsed cooldown or
 // very bytes it could not read.
 function ratNonEntryValues()
 {
-    return array('string' => 'garbage', 'integer' => 42, 'true' => true,
-        'false' => false, 'float' => 1.5, 'null' => null);
+    return ['string' => 'garbage', 'integer' => 42, 'true' => true,
+        'false' => false, 'float' => 1.5, 'null' => null];
 }
 
 $suite->test('a host stored as something other than an entry is never an available slot', function () {
     strictWithStateDir('chk-announce-corrupt-shape', function () {
         foreach (ratNonEntryValues() as $label => $value) {
-            $document = array('bt.t-ru.org' => $value);
+            $document = ['bt.t-ru.org' => $value];
             RuTrackerState::save('announce', $document);
 
             strictAssertSame('unstorable',
@@ -931,29 +931,29 @@ $suite->test('a host stored as something other than an entry is never an availab
 $suite->test('a canonically spelled persisted budget still allows, caps, cools down and refunds', function () {
     strictWithStateDir('chk-announce-canonical', function () {
         // Absent fields are the fresh host, not corruption.
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array()));
+        RuTrackerState::save('announce', ['bt.t-ru.org' => []]);
         strictAssertSame('allow', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 2, RAT_WINDOW),
             'an entry with no fields yet is a fresh allowance');
 
         // A canonical count at the cap still caps.
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
-            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5, 'cooldown_length' => 0)));
+        RuTrackerState::save('announce', ['bt.t-ru.org' => [
+            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 5, 'cooldown_length' => 0]]);
         strictAssertSame('cap', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 5, RAT_WINDOW),
             'a canonical count still reaches the cap');
 
         // Canonical string spellings are read exactly the same way ints are:
         // this is what a hand-edited or JSON-round-tripped store looks like.
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+        RuTrackerState::save('announce', ['bt.t-ru.org' => [
             'cooldown_until' => '2000', 'window_start' => '900', 'window_count' => '0',
-            'cooldown_length' => '3600')));
+            'cooldown_length' => '3600']]);
         strictAssertSame('cooldown', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 1000, 5, RAT_WINDOW),
             'a canonical decimal string cooldown is still a cooldown');
         strictAssertSame('allow', RuTrackerAnnounce::reserveProbe('bt.t-ru.org', 2001, 5, RAT_WINDOW),
             'and it still lapses on time');
 
         // A canonical entry still doubles, and still refunds.
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
-            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 3, 'cooldown_length' => 3600)));
+        RuTrackerState::save('announce', ['bt.t-ru.org' => [
+            'cooldown_until' => 0, 'window_start' => 900, 'window_count' => 3, 'cooldown_length' => 3600]]);
         RuTrackerAnnounce::recordOutcome('bt.t-ru.org', 1000, 403);
         strictAssertSame(7200, RuTrackerState::load('announce')['bt.t-ru.org']['cooldown_length'],
             'a readable backoff still doubles');

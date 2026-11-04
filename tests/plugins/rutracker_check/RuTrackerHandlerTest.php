@@ -20,7 +20,7 @@ require_once(__DIR__ . '/TestLib.php');
 
 class rTorrent
 {
-    public static $magnets = array();
+    public static $magnets = [];
     public static $sendResult = null;
 
     public static function sendMagnet($magnet, $isStart, $isAddPath, $directory, $label, $addition = null)
@@ -50,7 +50,7 @@ $GLOBALS['tmpState'] = sys_get_temp_dir() . '/chk-handler-' . getmypid();
 function hReset()
 {
     ruTrackerChecker::reset();
-    rTorrent::$magnets = array();
+    rTorrent::$magnets = [];
     rTorrent::$sendResult = null;
     strictRemoveTree($GLOBALS['tmpState']);
     strictSetPrivateStatic('RuTrackerState', 'dir', $GLOBALS['tmpState']);
@@ -59,7 +59,7 @@ function hReset()
     // a single PHP process, so each test here models a fresh cycle and must
     // clear the memo itself, or a later test reusing the same forum id would
     // be served an earlier test's stale dump instead of its own fixture.
-    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', []);
     $GLOBALS['updateInterval'] = 60;
     $GLOBALS['rutrackerDeleteCycles'] = 3;
     // 0 is the documented no-pause setting, and probeSleepSeconds() honours
@@ -82,12 +82,12 @@ function hReset()
 // [url, enabled, failed, success] fields.
 function hAliveRow($host = 'bt.t-ru.org')
 {
-    return array("http://{$host}/ann?pk=x", 1, 0, 5);
+    return ["http://{$host}/ann?pk=x", 1, 0, 5];
 }
 
 function hCandidateRow($host = 'bt.t-ru.org', $failed = 6)
 {
-    return array("http://{$host}/ann?pk=x", 1, $failed, 0);
+    return ["http://{$host}/ann?pk=x", 1, $failed, 0];
 }
 
 // Both counters zero: the torrent has not announced in this rTorrent session,
@@ -95,7 +95,7 @@ function hCandidateRow($host = 'bt.t-ru.org', $failed = 6)
 // 'cold' -- no signal either way, as opposed to a tracker that answered badly.
 function hColdRow($host = 'bt.t-ru.org')
 {
-    return array("http://{$host}/ann?pk=x", 1, 0, 0);
+    return ["http://{$host}/ann?pk=x", 1, 0, 0];
 }
 
 function hQueueLayer1($rows, $message = '')
@@ -112,8 +112,8 @@ function hQueueLayer1($rows, $message = '')
     // parsed ZERO rows out of the answer. The verdict came back 'none' either
     // way, so the case still went green while exercising "the multicall answer
     // was unreadable" instead of the branch it names.
-    $flat = array(count($rows));
-    foreach ($rows as $row) $flat = array_merge($flat, array_values($row));
+    $flat = [count($rows)];
+    foreach ($rows as $row) { $flat = array_merge($flat, array_values($row)); }
     $flat[] = $message;
     rXMLRPCRequest::queue('d.get_tracker_size|t.multicall|d.get_message', true, false, $flat);
 }
@@ -125,12 +125,12 @@ function hQueueLayer1($rows, $message = '')
 // drift away from the first.
 function hTruncatedLayer1Reply()
 {
-    return array(
+    return [
         1,
         'http://bt.t-ru.org/ann?pk=x',
         1,
         0,
-    );
+    ];
 }
 
 function hQueueRawLayer1($values)
@@ -143,7 +143,7 @@ function hQueueRawLayer1($values)
 // rememberTopic() directly instead.
 function hQueueTopicKnown($topicId)
 {
-    rXMLRPCRequest::queue('d.get_custom', true, false, array((string) $topicId));
+    rXMLRPCRequest::queue('d.get_custom', true, false, [(string) $topicId]);
 }
 
 // download_torrent()'s superseded short-circuit reads chk-state and chk-msg
@@ -154,10 +154,10 @@ function hQueueTopicKnown($topicId)
 // hQueueSuperseded() below.
 function hQueueSuperseded($successorHash, $state = ruTrackerChecker::STE_NOT_NEED)
 {
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false, [
         (string) $state,
         ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $successorHash,
-    ));
+    ]);
 }
 
 // The message text recorded for the Nth setMessage call, so token assertions
@@ -165,13 +165,13 @@ function hQueueSuperseded($successorHash, $state = ruTrackerChecker::STE_NOT_NEE
 function hMessage($index)
 {
     $calls = ruTrackerChecker::callsFor('setMessage');
-    if (!isset($calls[$index])) return null;
+    if (!isset($calls[$index])) { return null; }
     return $calls[$index]['arguments'][1];
 }
 
 function hQueueForum($forumId)
 {
-    rXMLRPCRequest::queue('d.get_custom', true, false, array((string) $forumId));
+    rXMLRPCRequest::queue('d.get_custom', true, false, [(string) $forumId]);
 }
 
 // RuTrackerAnnounceTest.php's own bencode fixtures for classify(): a clean
@@ -196,15 +196,15 @@ function hUnregisteredBody()
 function hQueueMetaFetchFlow($hash, $newHash, $topicId, $forumId = 1106, $rows = null)
 {
     hQueueTopicKnown($topicId);
-    hQueueLayer1($rows === null ? array(hCandidateRow()) : $rows);
+    hQueueLayer1($rows === null ? [hCandidateRow()] : $rows);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum($forumId);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . $forumId, 200, fiDump($topicId, 0, $newHash));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());         // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);         // row found: resetDeletion
     ruTrackerChecker::queueResult('torrentExists', false);               // begin(): collision check, missing
     ruTrackerChecker::queueResult('awaitMetadata', false);                // leave the service fetch pending
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        ['d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'],
         true, false, function () use ($hash, $topicId) {
             $deadline = '';
             if (isset(rTorrent::$magnets[0]['addition'])) {
@@ -214,18 +214,18 @@ function hQueueMetaFetchFlow($hash, $newHash, $topicId, $forumId = 1106, $rows =
                     }
                 }
             }
-            return array($hash, (string) (int) $topicId, $deadline, 1);
-        }
+            return [$hash, (string) (int) $topicId, $deadline, 1];
+        },
     );
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
+    rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
     // markOldTorrent: chk-meta-new and chk-meta-until (chk-meta-run removed in M-03)
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue(['d.set_custom', 'd.set_custom'], true, false, []);
 }
 
 // --- Active private helper contracts ---------------------------------------
 
 $suite->test('extractTopicId accepts only canonical positive int32 topic IDs', function () {
-    foreach (array(
+    foreach ([
         '1' => 1,
         '2147483647' => 2147483647,
         '0' => null,
@@ -236,34 +236,34 @@ $suite->test('extractTopicId accepts only canonical positive int32 topic IDs', f
         '%201' => null,
         '1%20' => null,
         '1&t[]=1' => null,
-    ) as $query => $expected) {
-        $actual = strictInvoke('RuTrackerCheckImpl', 'extractTopicId', array(
+    ] as $query => $expected) {
+        $actual = strictInvoke('RuTrackerCheckImpl', 'extractTopicId', [
             'https://rutracker.org/forum/viewtopic.php?t=' . $query,
-        ));
+        ]);
         strictAssertSame($expected, $actual, 'topic query t=' . $query);
     }
 });
 
 $suite->test('layer1Verdict maps the multicall row plus d.get_message through RuTrackerDetector', function () use ($hash) {
     ruTrackerChecker::reset();
-    hQueueLayer1(array(hAliveRow()), '');
-    strictAssertSame('alive', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)), 'alive row');
+    hQueueLayer1([hAliveRow()], '');
+    strictAssertSame('alive', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]), 'alive row');
 
     ruTrackerChecker::reset();
-    hQueueLayer1(array(hCandidateRow()), 'Tracker: [Failure reason "unregistered"]');
-    strictAssertSame('candidate', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+    hQueueLayer1([hCandidateRow()], 'Tracker: [Failure reason "unregistered"]');
+    strictAssertSame('candidate', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
         'candidate row, non-transport message');
 
     ruTrackerChecker::reset();
-    hQueueLayer1(array(hCandidateRow()), 'Tracker: [Could not resolve hostname]');
-    strictAssertSame('transport', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+    hQueueLayer1([hCandidateRow()], 'Tracker: [Could not resolve hostname]');
+    strictAssertSame('transport', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
         'transport message');
 });
 
 $suite->test('layer1Verdict treats a failed XMLRPC request as retryable, not as "none"', function () use ($hash) {
     ruTrackerChecker::reset();
     // Nothing queued -> the double answers with a fault.
-    strictAssertSame('transport', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+    strictAssertSame('transport', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
         'a local RPC failure must not be mistaken for a disabled tracker row');
 });
 
@@ -275,41 +275,41 @@ $suite->test('layer1Verdict treats a failed XMLRPC request as retryable, not as 
 // the row URL that is not a string, the counter that will not parse -- so each
 // of those stays a case of its own rather than joining this table.
 $suite->test('layer1Verdict rejects a reply whose length contradicts its declared tracker count', function () use ($hash) {
-    foreach (array(
-        'a positively parsed reply cut after four scalars' => array(
+    foreach ([
+        'a positively parsed reply cut after four scalars' => [
             hTruncatedLayer1Reply(),
             'A positive transport status cannot make an incomplete tracker projection authoritative',
-        ),
-        'a count of one followed immediately by the message' => array(
-            array(1, ''),
+        ],
+        'a count of one followed immediately by the message' => [
+            [1, ''],
             'A count of one followed immediately by a message is missing its declared tracker row',
-        ),
-    ) as $label => $case) {
+        ],
+    ] as $label => $case) {
         ruTrackerChecker::reset();
         hQueueRawLayer1($case[0]);
 
         strictAssertSame(
             'transport',
-            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-            $label . ': ' . $case[1]
+            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
+            $label . ': ' . $case[1],
         );
     }
 });
 
 $suite->test('layer1Verdict rejects a noncanonical declared tracker count', function () use ($hash) {
-    $cases = array(
+    $cases = [
         'leading zero' => '01',
         'leading plus' => '+1',
         'float' => 1.0,
         'object' => new stdClass(),
-    );
+    ];
     foreach ($cases as $label => $trackerCount) {
         ruTrackerChecker::reset();
-        hQueueRawLayer1(array($trackerCount, ''));
+        hQueueRawLayer1([$trackerCount, '']);
         strictAssertSame(
             'transport',
-            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-            $label . ': the row-count command must contribute a canonical nonnegative integer'
+            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
+            $label . ': the row-count command must contribute a canonical nonnegative integer',
         );
     }
 });
@@ -323,45 +323,45 @@ $suite->test('download_torrent keeps a successful truncated layer1 reply retryab
     strictAssertSame(
         ruTrackerChecker::STE_CANT_REACH_TRACKER,
         $result,
-        'A truncated local RPC answer must retry instead of permanently stamping STE_NOT_NEED'
+        'A truncated local RPC answer must retry instead of permanently stamping STE_NOT_NEED',
     );
-    strictAssertSame(array(), Snoopy::$requests, 'No network layer runs from an incomplete local projection');
+    strictAssertSame([], Snoopy::$requests, 'No network layer runs from an incomplete local projection');
 });
 
 $suite->test('layer1Verdict rejects a non-string tracker URL', function () use ($hash) {
     ruTrackerChecker::reset();
-    hQueueRawLayer1(array(1, 123, 1, 6, 0, ''));
+    hQueueRawLayer1([1, 123, 1, 6, 0, '']);
 
     strictAssertSame(
         'transport',
-        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-        'A tracker row without the daemon URL scalar is not a complete projection'
+        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
+        'A tracker row without the daemon URL scalar is not a complete projection',
     );
 });
 
 $suite->test('layer1Verdict rejects a non-string download message', function () use ($hash) {
     ruTrackerChecker::reset();
-    hQueueRawLayer1(array(0, new stdClass()));
+    hQueueRawLayer1([0, new stdClass()]);
 
     strictAssertSame(
         'transport',
-        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
-        'The final command must contribute its expected message scalar'
+        strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
+        'The final command must contribute its expected message scalar',
     );
 });
 
 $suite->test('resolveForum reads chk-forum, treating blank or non-numeric as unknown', function () use ($hash) {
     ruTrackerChecker::reset();
     hQueueForum(1106);
-    strictAssertSame(1106, strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)), 'numeric forum id');
+    strictAssertSame(1106, strictInvoke('RuTrackerCheckImpl', 'resolveForum', [$hash]), 'numeric forum id');
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    strictAssertSame(null, strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)), 'blank -> unknown');
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    strictAssertSame(null, strictInvoke('RuTrackerCheckImpl', 'resolveForum', [$hash]), 'blank -> unknown');
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('not-a-number'));
-    strictAssertSame(null, strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)), 'garbage -> unknown');
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['not-a-number']);
+    strictAssertSame(null, strictInvoke('RuTrackerCheckImpl', 'resolveForum', [$hash]), 'garbage -> unknown');
 });
 
 // chk-forum is the persisted RPC custom layer 3 fetches a dump BY, and those
@@ -370,62 +370,62 @@ $suite->test('resolveForum reads chk-forum, treating blank or non-numeric as unk
 // fetched from a forum the stored value never named. A spelling this plugin
 // could not have written names no forum, so the crawl is queued instead.
 $suite->test('a non-canonical chk-forum names no forum and fetches no dump', function () use ($hash) {
-    foreach (array('leading zero' => '007', 'zero' => '0', 'plus sign' => '+7',
+    foreach (['leading zero' => '007', 'zero' => '0', 'plus sign' => '+7',
         'negative' => '-7', 'trailing text' => '7abc', 'overflow' => '2147483648',
-        'float' => '7.0', 'hex' => '0x7') as $label => $stored) {
+        'float' => '7.0', 'hex' => '0x7'] as $label => $stored) {
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored));
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]);
         strictAssertSame(null,
-            strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)),
+            strictInvoke('RuTrackerCheckImpl', 'resolveForum', [$hash]),
             $label . ': ' . var_export($stored, true) . ' is not a forum id');
     }
 
     // The control: canonical ids across the whole domain still resolve.
-    foreach (array('1', '1106', '2147483647') as $stored) {
+    foreach (['1', '1106', '2147483647'] as $stored) {
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored));
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]);
         strictAssertSame((int) $stored,
-            strictInvoke('RuTrackerCheckImpl', 'resolveForum', array($hash)),
+            strictInvoke('RuTrackerCheckImpl', 'resolveForum', [$hash]),
             'a canonical forum id still resolves: ' . $stored);
     }
 });
 
 $suite->test('rememberTopic writes chk-topic only when it was blank', function () use ($hash, $topicId) {
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', array($hash, $topicId));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
+    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', [$hash, $topicId]);
     $writes = rXMLRPCRequest::requestsFor('d.set_custom');
     strictAssertSame(1, count($writes), 'one write when blank');
-    strictAssertSame(array($hash, 'chk-topic', (string) $topicId), $writes[0]['commands'][0]->params,
+    strictAssertSame([$hash, 'chk-topic', (string) $topicId], $writes[0]['commands'][0]->params,
         'writes the resolved topic id');
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array((string) $topicId));
-    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', array($hash, $topicId));
+    rXMLRPCRequest::queue('d.get_custom', true, false, [(string) $topicId]);
+    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', [$hash, $topicId]);
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'no write when already known');
 });
 
 $suite->test('handler topic and deletion writes use the checker ownership helper', function () use ($hash, $topicId) {
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', array($hash, $topicId));
-    strictInvoke('RuTrackerCheckImpl', 'resetDeletion', array($hash));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
+    strictInvoke('RuTrackerCheckImpl', 'rememberTopic', [$hash, $topicId]);
+    strictInvoke('RuTrackerCheckImpl', 'resetDeletion', [$hash]);
     $calls = ruTrackerChecker::callsFor('writeHandlerCustom');
-    strictAssertSame(array(
-        array($hash, 'chk-topic', (string) $topicId),
-        array($hash, 'chk-del', ''),
-    ), array_column($calls, 'arguments'),
+    strictAssertSame([
+        [$hash, 'chk-topic', (string) $topicId],
+        [$hash, 'chk-del', ''],
+    ], array_column($calls, 'arguments'),
         'both handler writes pass through the checker ownership guard');
 });
 
 $suite->test('resetDeletion clears its own custom field', function () use ($hash) {
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    strictInvoke('RuTrackerCheckImpl', 'resetDeletion', array($hash));
-    strictAssertSame(array($hash, 'chk-del', ''),
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
+    strictInvoke('RuTrackerCheckImpl', 'resetDeletion', [$hash]);
+    strictAssertSame([$hash, 'chk-del', ''],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'chk-del cleared');
 });
 
@@ -433,35 +433,35 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
     $now = 1000000;
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));  // no prior chk-del
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());    // chk-del write
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);  // no prior chk-del
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);    // chk-del write
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'first miss: 1/3');
-    strictAssertSame(array($hash, 'chk-del', '1:' . $now),
+    strictAssertSame([$hash, 'chk-del', '1:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'count starts at 1');
     strictAssertSame('deleting|1/3', hMessage(0), 'the deleting token carries the cycle counter');
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 10))); // fresh -> no increment
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));                  // no later healthy verdict
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:' . ($now - 10)]); // fresh -> no increment
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);                  // no later healthy verdict
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'within the interval: no increment');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'chk-del is untouched inside the interval');
     strictAssertSame('deleting|2/3', hMessage(0), 'the unchanged count is restated, not advanced');
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 7200))); // old -> increments to 3
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));                    // no later healthy verdict
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());                     // chk-del write
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:' . ($now - 7200)]); // old -> increments to 3
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);                    // no later healthy verdict
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);                     // chk-del write
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]);
     strictAssertSame(ruTrackerChecker::STE_DELETED, $state, 'third confirmation reaches the cap');
-    strictAssertSame(array($hash, 'chk-del', '3:' . $now),
+    strictAssertSame([$hash, 'chk-del', '3:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'count reaches 3');
     strictAssertSame('deleting|3/3', hMessage(0), 'the final cycle is still the deleting token');
 
-    foreach (ruTrackerChecker::callsFor('setMessage') as $call)
+    foreach (ruTrackerChecker::callsFor('setMessage') as $call) {
         strictAssertTrue(preg_match('/^[a-z-]+\|[^|]+$/', $call['arguments'][1]) === 1,
-            'token|parameter, one separator, no prose: ' . $call['arguments'][1]);
+            'token|parameter, one separator, no prose: ' . $call['arguments'][1]); }
 
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'row missing from the dump for',
         'the consecutive-cycle count is logged');
@@ -480,29 +480,29 @@ $suite->test('confirmDeletion increments at most once per interval and reaches S
 $suite->test('a non-canonical deletion counter reaches no deletion verdict', function () use ($hash) {
     $now = 1000000;
     $GLOBALS['rutrackerDeleteCycles'] = 3;
-    foreach (array('leading zero' => '03:1000', 'padded count' => ' 3:1000',
-        'padded stamp' => '3: 1000', 'leading zero stamp' => '3:01000') as $label => $stored) {
+    foreach (['leading zero' => '03:1000', 'padded count' => ' 3:1000',
+        'padded stamp' => '3: 1000', 'leading zero stamp' => '3:01000'] as $label => $stored) {
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
-        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));      // no healthy verdict yet
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());        // the restart
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]); // chk-del
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['']);      // no healthy verdict yet
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);        // the restart
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
             $label . ': a counter nobody can read is not three consecutive cycles');
         $writes = rXMLRPCRequest::requestsFor('d.set_custom');
         strictAssertSame(1, count($writes), $label . ': the counter is rewritten canonically');
-        strictAssertSame(array($hash, 'chk-del', '1:' . $now), $writes[0]['commands'][0]->params,
+        strictAssertSame([$hash, 'chk-del', '1:' . $now], $writes[0]['commands'][0]->params,
             $label . ': and it restarts at one rather than resuming a number it could not read');
     }
 
     // Control: the canonical spelling of the same count still reaches the cap.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:1000'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:1000']);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
     strictAssertSame(ruTrackerChecker::STE_DELETED,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
         'a canonical count still reaches the third consecutive cycle');
 });
 
@@ -513,17 +513,17 @@ $suite->test('a non-canonical deletion counter reaches no deletion verdict', fun
 // contract change) one that ran and answered 'uncertain'.
 $suite->test('a non-canonical deletion counter is not a settled deletion either',
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array('leading zero' => '03:1000', 'padded' => ' 3:1000',
-        'plus sign' => '+3:1000') as $label => $stored) {
+    foreach (['leading zero' => '03:1000', 'padded' => ' 3:1000',
+        'plus sign' => '+3:1000'] as $label => $stored) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         $GLOBALS['rutrackerAnnounceCap'] = 0; // the recheck lands on an exhausted budget
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());        // forgetForum
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);        // forgetForum
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]); // chk-del
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -542,19 +542,19 @@ $suite->test('a deletion counter with trailing bytes is a counter to neither rea
     function () use ($hash) {
     $now = 1000000;
     $GLOBALS['rutrackerDeleteCycles'] = 3;
-    foreach (array('trailing text' => '3:1000 junk',
-        'trailing newline' => "3:1000\n") as $label => $stored) {
+    foreach (['trailing text' => '3:1000 junk',
+        'trailing newline' => "3:1000\n"] as $label => $stored) {
         // confirmDeletion(): the count restarts rather than resuming.
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
-        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));      // no healthy verdict yet
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());        // the restart
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]); // chk-del
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['']);      // no healthy verdict yet
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);        // the restart
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
             $label . ': trailing bytes are not three consecutive cycles');
         $writes = rXMLRPCRequest::requestsFor('d.set_custom');
         strictAssertSame(1, count($writes), $label . ': the counter is rewritten canonically');
-        strictAssertSame(array($hash, 'chk-del', '1:' . $now), $writes[0]['commands'][0]->params,
+        strictAssertSame([$hash, 'chk-del', '1:' . $now], $writes[0]['commands'][0]->params,
             $label . ': and it restarts at one rather than resuming what it could not read');
 
         // deletionConfirmedOnce(): the same value is no settled deletion
@@ -562,10 +562,10 @@ $suite->test('a deletion counter with trailing bytes is a counter to neither rea
         // a reader that accepted the value would find the run unbroken and
         // answer true -- which is the disagreement this pins.
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stored)); // chk-del
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('999'));   // chk-stime
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stored]); // chk-del
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['999']);   // chk-stime
         strictAssertSame(false,
-            strictInvoke('RuTrackerCheckImpl', 'deletionConfirmedOnce', array($hash)),
+            strictInvoke('RuTrackerCheckImpl', 'deletionConfirmedOnce', [$hash]),
             $label . ': and it is no record of a completed confirmation run');
     }
 });
@@ -579,27 +579,27 @@ $suite->test('confirmDeletion floors a zero interval so the per-cycle cap surviv
     $now = 1000000;
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 0));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 0]);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'first click: 1/3');
-    strictAssertSame(array($hash, 'chk-del', '1:' . $now),
+    strictAssertSame([$hash, 'chk-del', '1:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params, 'count starts at 1');
 
     // A second click the very same instant (interval "disabled" -> 0) must
     // not be free to advance the count: the floor still applies.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . $now));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 0));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . $now]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 0]);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'same-instant re-click stays at 1/3');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'chk-del remains untouched');
 
     // A third click 30 seconds later is still well inside the floor.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . $now));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now + 30, 0));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . $now]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    $state = strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now + 30, 0]);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $state, 'still 1/3, thirty seconds later');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')), 'three clicks in a row must not touch chk-del');
 });
@@ -607,27 +607,27 @@ $suite->test('confirmDeletion floors a zero interval so the per-cycle cap surviv
 $suite->test('nonpositive deletion cycles settle exactly one recorded confirmation', function () use ($hash) {
     $now = 1000000;
     try {
-        foreach (array(0, -5) as $configuredCycles) {
+        foreach ([0, -5] as $configuredCycles) {
             hReset();
             $GLOBALS['rutrackerDeleteCycles'] = $configuredCycles;
-            rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-            rXMLRPCRequest::queue('d.set_custom', true, false, array());
+            rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+            rXMLRPCRequest::queue('d.set_custom', true, false, []);
             strictAssertSame(ruTrackerChecker::STE_DELETED,
-                strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+                strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
                 'one observed missing row completes the floored one-cycle run');
-            strictAssertSame(array($hash, 'chk-del', '1:' . $now),
+            strictAssertSame([$hash, 'chk-del', '1:' . $now],
                 rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
                 'the settled verdict records one actual confirmation');
-            strictAssertSame(array($hash, ruTrackerChecker::CHKMSG_DELETING . '|1/1'),
+            strictAssertSame([$hash, ruTrackerChecker::CHKMSG_DELETING . '|1/1'],
                 ruTrackerChecker::callsFor('setMessage')[0]['arguments'],
                 'the UI shows one of one, never zero or negative cycles');
 
             hReset();
             $GLOBALS['rutrackerDeleteCycles'] = $configuredCycles;
-            rXMLRPCRequest::queue('d.get_custom', true, false, array('0:1000'));
-            rXMLRPCRequest::queue('d.get_custom', true, false, array('999'));
+            rXMLRPCRequest::queue('d.get_custom', true, false, ['0:1000']);
+            rXMLRPCRequest::queue('d.get_custom', true, false, ['999']);
             strictAssertSame(false,
-                strictInvoke('RuTrackerCheckImpl', 'deletionConfirmedOnce', array($hash)),
+                strictInvoke('RuTrackerCheckImpl', 'deletionConfirmedOnce', [$hash]),
                 'a zero-count record cannot reaffirm a settled deletion');
         }
     } finally {
@@ -639,20 +639,20 @@ $suite->test('classifyDump follows the design table order for a found row, and n
     $localHash = str_repeat('A', 40);
     $newHash = str_repeat('B', 40);
     $rowOf = function ($status, $hash) use ($topicId) {
-        return array($topicId => array('tor_status' => $status, 'info_hash' => $hash, 'seeders' => 1));
+        return [$topicId => ['tor_status' => $status, 'info_hash' => $hash, 'seeders' => 1]];
     };
     $classify = function ($rows) use ($topicId, $localHash) {
-        return strictInvoke('RuTrackerCheckImpl', 'classifyDump', array($rows, $topicId, $localHash));
+        return strictInvoke('RuTrackerCheckImpl', 'classifyDump', [$rows, $topicId, $localHash]);
     };
 
-    strictAssertSame(null, $classify(array()), 'missing row');
-    strictAssertSame(array('verdict' => 'absorbed', 'status' => 7), $classify($rowOf(7, $newHash)), 'absorbed');
-    strictAssertSame(array('verdict' => 'closed', 'status' => 1), $classify($rowOf(1, $newHash)), 'closed (1)');
-    strictAssertSame(array('verdict' => 'closed', 'status' => 5), $classify($rowOf(5, $newHash)), 'closed (5)');
-    strictAssertSame(array('verdict' => 'unknown', 'status' => 9), $classify($rowOf(9, $newHash)), 'ambiguous status');
-    strictAssertSame(array('verdict' => 'unknown', 'status' => 42), $classify($rowOf(42, $newHash)), 'unrecognised status');
-    strictAssertSame(array('verdict' => 'uptodate', 'status' => 0), $classify($rowOf(0, $localHash)), 'hash matches');
-    strictAssertSame(array('verdict' => 'updated', 'status' => 0, 'newHash' => $newHash),
+    strictAssertSame(null, $classify([]), 'missing row');
+    strictAssertSame(['verdict' => 'absorbed', 'status' => 7], $classify($rowOf(7, $newHash)), 'absorbed');
+    strictAssertSame(['verdict' => 'closed', 'status' => 1], $classify($rowOf(1, $newHash)), 'closed (1)');
+    strictAssertSame(['verdict' => 'closed', 'status' => 5], $classify($rowOf(5, $newHash)), 'closed (5)');
+    strictAssertSame(['verdict' => 'unknown', 'status' => 9], $classify($rowOf(9, $newHash)), 'ambiguous status');
+    strictAssertSame(['verdict' => 'unknown', 'status' => 42], $classify($rowOf(42, $newHash)), 'unrecognised status');
+    strictAssertSame(['verdict' => 'uptodate', 'status' => 0], $classify($rowOf(0, $localHash)), 'hash matches');
+    strictAssertSame(['verdict' => 'updated', 'status' => 0, 'newHash' => $newHash],
         $classify($rowOf(0, $newHash)), 'valid status, hash differs');
 });
 
@@ -662,21 +662,21 @@ $suite->test('an unrecognised url is declined without any request', function () 
     ruTrackerChecker::reset();
     $result = RuTrackerCheckImpl::download_torrent('not a rutracker url', str_repeat('A', 40), null);
     strictAssertSame(ruTrackerChecker::STE_DECLINED, $result, 'no topic id -> not this handler');
-    strictAssertSame(array(), rXMLRPCRequest::$requests, 'no request attempted');
+    strictAssertSame([], rXMLRPCRequest::$requests, 'no request attempted');
 });
 
 $suite->test('1: layer1 alive short-circuits with no HTTP requests and resets chk-del', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hAliveRow()));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    hQueueLayer1([hAliveRow()]);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'alive -> up to date');
-    strictAssertSame(array(), Snoopy::$requests, 'layer 1 makes no HTTP requests at all');
+    strictAssertSame([], Snoopy::$requests, 'layer 1 makes no HTTP requests at all');
     $writes = rXMLRPCRequest::requestsFor('d.set_custom');
-    strictAssertSame(array($hash, 'chk-del', ''), $writes[0]['commands'][0]->params, 'chk-del reset');
+    strictAssertSame([$hash, 'chk-del', ''], $writes[0]['commands'][0]->params, 'chk-del reset');
     strictAssertSame('', hMessage(0), 'chk-msg cleared through the checker seam');
 });
 
@@ -687,15 +687,15 @@ $suite->test('1: layer1 alive short-circuits with no HTTP requests and resets ch
 // handler answered STE_NOT_NEED, and the scheduler wrote "no need to check"
 // permanently for a torrent that was perfectly ordinary.
 $suite->test('a topic URL on any of RuTracker\'s own hosts is read, not dismissed', function () use ($hash, $topicId, $announceUrl) {
-    foreach (array(
+    foreach ([
         'https://www.rutracker.org/forum/viewtopic.php?t=' . $topicId => 'the www host the site itself links to',
         'https://rutracker.cc/forum/viewtopic.php?t=' . $topicId      => 'the .cc domain, which the detector has always known',
         'https://RuTracker.ORG/forum/viewtopic.php?t=' . $topicId     => 'and case is not a difference',
-    ) as $url => $why) {
+    ] as $url => $why) {
         hReset();
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hAliveRow()));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+        hQueueLayer1([hAliveRow()]);
+        rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
         $torrent = new Torrent(strictTorrentRaw('release name', $announceUrl, $url));
         strictAssertSame(ruTrackerChecker::STE_UPTODATE,
@@ -714,27 +714,27 @@ $suite->test('a topic URL on any of RuTracker\'s own hosts is read, not dismisse
     strictAssertSame(ruTrackerChecker::STE_DECLINED,
         RuTrackerCheckImpl::download_torrent($lookalike, $hash, $strangerTorrent),
         'a look-alike host is not a topic URL');
-    strictAssertSame(array(), rXMLRPCRequest::$requests, 'and nothing is asked about it');
+    strictAssertSame([], rXMLRPCRequest::$requests, 'and nothing is asked about it');
 });
 
 $suite->test('2: layer1 candidate + layer2 registered -> up to date via exactly one passkey-less announce', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hRegisteredBody());
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'registered -> up to date');
     $deletionWrites = rXMLRPCRequest::requestsFor('d.set_custom');
     strictAssertSame(1, count($deletionWrites), 'registered announce resets deletion once');
-    strictAssertSame(array($hash, 'chk-del', ''),
+    strictAssertSame([$hash, 'chk-del', ''],
         $deletionWrites[0]['commands'][0]->params, 'registered announce clears the deletion count');
     $messages = ruTrackerChecker::callsFor('setMessage');
     strictAssertSame(1, count($messages), 'registered announce clears the prior message once');
-    strictAssertSame(array($hash, ''), $messages[0]['arguments'],
+    strictAssertSame([$hash, ''], $messages[0]['arguments'],
         'registered announce clears chk-msg for the same hash');
     strictAssertSame(1, count(Snoopy::$requests), 'exactly one announce request');
     strictAssertTrue(strpos(Snoopy::$requests[0][1], 'pk=') === false, 'passkey stripped from the probe URL');
@@ -753,9 +753,9 @@ $suite->test('2: layer1 candidate + layer2 registered -> up to date via exactly 
     // test green. The other half is
     // CheckerTest::testMakeClientSendsTheAgentItWasGivenAndOtherwiseTheBrowser,
     // which loads the real class; both mutations are covered only by the pair.
-    strictAssertSame(array(RuTrackerAnnounce::PROBE_USER_AGENT), ruTrackerChecker::$agents,
+    strictAssertSame([RuTrackerAnnounce::PROBE_USER_AGENT], ruTrackerChecker::$agents,
         'the probe was asked for with the announce agent, not the browser default');
-    strictAssertSame(array(RuTrackerAnnounce::PROBE_USER_AGENT), Snoopy::$agentsLog,
+    strictAssertSame([RuTrackerAnnounce::PROBE_USER_AGENT], Snoopy::$agentsLog,
         'and the client that fetched actually carried it');
     strictAssertSame(false, (bool) preg_match('/Mozilla|Chrome/i', Snoopy::$agentsLog[0]),
         'nothing a browser would send reaches an announce host');
@@ -800,10 +800,10 @@ $suite->test('3: layer1 candidate + layer2 unregistered + dump with a new hash b
 $suite->test('4: dump row tor_status=7 is absorbed, with the topic id tokenised into chk-msg', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 7, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -818,10 +818,10 @@ $suite->test('4: dump row tor_status=7 is absorbed, with the topic id tokenised 
 $suite->test('4b: a closed/duplicate dump row tokenises its tor_status and is terminal', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 5, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -837,22 +837,22 @@ $suite->test('4b: a closed/duplicate dump row tokenises its tor_status and is te
         'what the dump returned: ' . $joined);
     strictAssertTrue(strpos($joined, 'layer3 topic=' . $topicId . ' verdict=closed tor_status=5') !== false,
         'the classification decision: ' . $joined);
-    foreach (ruTrackerChecker::$logs as $line) strictAssertEnglish($line, 'every layer-3 log line');
+    foreach (ruTrackerChecker::$logs as $line) { strictAssertEnglish($line, 'every layer-3 log line'); }
 });
 
 $suite->test('5: dump row with an ambiguous tor_status (9) is retried, not acted on, but still resets chk-del', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 9, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'ambiguous status is retried, not acted on');
     $writes = rXMLRPCRequest::requestsFor('d.set_custom');
-    strictAssertSame(array($hash, 'chk-del', ''), $writes[0]['commands'][0]->params,
+    strictAssertSame([$hash, 'chk-del', ''], $writes[0]['commands'][0]->params,
         'row present -> chk-del reset even though the verdict itself is ambiguous');
     strictAssertSame('', hMessage(0), 'stale deletion-progress message cleared');
 });
@@ -860,16 +860,16 @@ $suite->test('5: dump row with an ambiguous tor_status (9) is retried, not acted
 $suite->test('6: dump row with a matching hash is up to date and resets chk-del', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 0, $hash));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'matching hash -> up to date');
     $writes = rXMLRPCRequest::requestsFor('d.set_custom');
-    strictAssertSame(array($hash, 'chk-del', ''), $writes[0]['commands'][0]->params, 'chk-del reset');
+    strictAssertSame([$hash, 'chk-del', ''], $writes[0]['commands'][0]->params, 'chk-del reset');
     strictAssertSame('', hMessage(0), 'chk-msg cleared');
 });
 
@@ -878,14 +878,14 @@ $suite->test('7: missing row + tracker-confirmed + a stale chk-del count reaches
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $now = time();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40))); // our topic absent
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());                    // forgetForum (chk-forum)
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 7200))); // confirmDeletion read: old
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));                    // no later healthy verdict
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());                    // chk-del write
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);                    // forgetForum (chk-forum)
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:' . ($now - 7200)]); // confirmDeletion read: old
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);                    // no later healthy verdict
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);                    // chk-del write
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -898,12 +898,12 @@ $suite->test('8: missing row + tracker-confirmed + a fresh chk-del count does no
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $now = time();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:' . ($now - 10))); // fresh: less than the interval ago
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));                 // no later healthy verdict
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:' . ($now - 10)]); // fresh: less than the interval ago
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);                 // no later healthy verdict
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -917,18 +917,18 @@ $suite->test('8: missing row + tracker-confirmed + a fresh chk-del count does no
 $suite->test('9: with layer 2 disabled a missing row can never reach STE_DELETED', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset(); // layer 2 disabled by default
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // forgetForum
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // forgetForum
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'never deleted without an independent tracker confirmation');
-    strictAssertSame(array(array('fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106')), Snoopy::$requests,
+    strictAssertSame([['fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106']], Snoopy::$requests,
         'layer 2 disabled: only the dump fetch happens, no announce attempted');
-    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
-        strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del', 'chk-del must never be touched without layer 2');
+    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write) {
+        strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del', 'chk-del must never be touched without layer 2'); }
     // Diagnostics only: nothing here is worth a sentence in the UI, so
     // chk-msg is cleared (never left carrying a stale token) and the reason
     // goes to the debug log instead.
@@ -943,14 +943,14 @@ $suite->test('9: with layer 2 disabled a missing row can never reach STE_DELETED
 $suite->test('10: an unresolved forum queues the topic for the crawl and stays retryable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank
+    hQueueLayer1([hCandidateRow()]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']); // resolveForum: blank
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'forum unknown -> retry later');
-    strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(), 'topic queued for the forum crawl');
-    strictAssertSame(array(), Snoopy::$requests, 'no dump fetch is attempted without a forum id');
+    strictAssertSame([$topicId], RuTrackerForumIndex::takeQueuePeek(), 'topic queued for the forum crawl');
+    strictAssertSame([], Snoopy::$requests, 'no dump fetch is attempted without a forum id');
     strictAssertSame('', hMessage(0), 'a queued-for-sweep notice is diagnostics, so chk-msg is cleared');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'forum unknown for topic',
         'the notice is logged instead');
@@ -968,8 +968,8 @@ $suite->test('11: regression -- nothing in the flow ever requests rutracker.org'
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertTrue(count(Snoopy::$requests) > 0, 'sanity: the flow actually made HTTP requests');
-    foreach (Snoopy::$requests as $request)
-        strictAssertTrue(!preg_match('/rutracker\.org/i', $request[1]), 'no request ever targets rutracker.org: ' . $request[1]);
+    foreach (Snoopy::$requests as $request) {
+        strictAssertTrue(!preg_match('/rutracker\.org/i', $request[1]), 'no request ever targets rutracker.org: ' . $request[1]); }
 });
 
 $suite->test('12: layer2 enabled but the announce budget denies the probe -- no announce, no deletion, stays retryable', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
@@ -977,18 +977,18 @@ $suite->test('12: layer2 enabled but the announce budget denies the probe -- no 
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerAnnounceCap'] = 0; // cap exhausted before any probe is attempted
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40))); // our topic absent
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // forgetForum
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // forgetForum
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result, 'budget denial cannot conclude deletion, only retry');
-    strictAssertSame(array(array('fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106')), Snoopy::$requests,
+    strictAssertSame([['fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106']], Snoopy::$requests,
         'budget denied the probe: only the dump fetch happens, no announce request is issued');
-    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
-        strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del', 'chk-del must never be touched without an independent tracker confirmation');
+    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write) {
+        strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del', 'chk-del must never be touched without an independent tracker confirmation'); }
 });
 
 // init.js appends chk-msg to whatever chk-state is current, so a token an
@@ -997,15 +997,15 @@ $suite->test('12: layer2 enabled but the announce budget denies the probe -- no 
 // the forum list; confirmation cycle 2/3" -- two statements that cannot both
 // be about the same torrent.
 $suite->test('an exit that changes the verdict clears the sentence that explained the old one', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
+    foreach ([
         // rTorrent itself blames the network. A missing enabled row is the
         // separate H05 no-signal case and preserves the old verdict/message.
-        'the tracker cannot be reached at all' => array(
-            'rows' => array(hCandidateRow()),
+        'the tracker cannot be reached at all' => [
+            'rows' => [hCandidateRow()],
             'message' => 'Tracker: [Could not connect to server]',
             'state' => ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        ),
-    ) as $label => $case) {
+        ],
+    ] as $label => $case) {
         hReset();
         hQueueTopicKnown($topicId);
         hQueueLayer1($case['rows'], isset($case['message']) ? $case['message'] : '');
@@ -1039,12 +1039,12 @@ $suite->test('uncertain announce permits an independent absorbed dump row',
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(403, '');
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200,
             fiDump($topicId, 7, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);
         $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
         strictAssertSame(ruTrackerChecker::STE_ABSORBED, $result,
             'the independent dump row determines absorption');
@@ -1063,13 +1063,13 @@ $suite->test('13: an unmatched failure reason confirms nothing, and no longer ve
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     $rateLimited = 'Too many requests, slow down';
     Snoopy::queueAny(200, 'd14:failure reason' . strlen($rateLimited) . ':' . $rateLimited . 'e');
     hQueueForum(1106);
     // The row IS in the dump and up to date, which only layer 3 can know.
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 0, $hash));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -1082,10 +1082,10 @@ $suite->test('13: an unmatched failure reason confirms nothing, and no longer ve
     strictAssertTrue(strpos($line, 'layer2 verdict=uncertain') !== false,
         'and it is named as uncertain: ' . $line);
     strictAssertEnglish($line, 'the layer-2 verdict line');
-    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
+    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write) {
         strictAssertTrue($write['commands'][0]->params[1] !== 'chk-del'
             || $write['commands'][0]->params[2] === '',
-            'an uncertain layer 2 never contributes to a deletion count');
+            'an uncertain layer 2 never contributes to a deletion count'); }
 });
 
 // Every shape classify() calls 'uncertain': a transport failure, the three
@@ -1095,24 +1095,24 @@ $suite->test('13: an unmatched failure reason confirms nothing, and no longer ve
 $suite->test('every uncertain announce answer reaches the independent dump',
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     $foreign = 'Too many requests, slow down';
-    foreach (array(
-        'a transport failure' => array(-1, ''),
-        'HTTP 403' => array(403, ''),
-        'HTTP 429' => array(429, ''),
-        'HTTP 500' => array(500, ''),
-        'a 200 that is HTML, not bencode' => array(200, '<html><body>nope</body></html>'),
+    foreach ([
+        'a transport failure' => [-1, ''],
+        'HTTP 403' => [403, ''],
+        'HTTP 429' => [429, ''],
+        'HTTP 500' => [500, ''],
+        'a 200 that is HTML, not bencode' => [200, '<html><body>nope</body></html>'],
         'a 200 dict with somebody else\'s failure reason' =>
-            array(200, 'd14:failure reason' . strlen($foreign) . ':' . $foreign . 'e'),
-    ) as $label => $answer) {
+            [200, 'd14:failure reason' . strlen($foreign) . ':' . $foreign . 'e'],
+    ] as $label => $answer) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny($answer[0], $answer[1]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200,
             fiDump($topicId, 7, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+        rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
         strictAssertSame(ruTrackerChecker::STE_ABSORBED,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1132,18 +1132,18 @@ $suite->test('an uncertain announce whose chk-forum cannot be read concludes and
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(403, '');
-    rXMLRPCRequest::queue('d.get_custom', false, false, array()); // resolveForum: the read fails
+    rXMLRPCRequest::queue('d.get_custom', false, false, []); // resolveForum: the read fails
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'nothing was learned about the forum, so nothing is concluded');
     strictAssertSame(1, count(Snoopy::$requests),
         'only the announce ran: no dump can be fetched without a forum id');
-    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([], RuTrackerForumIndex::takeQueuePeek(),
         'and no tracker-wide crawl is queued on a read that did not happen');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+    strictAssertSame([], rXMLRPCRequest::requestsFor('d.set_custom'),
         'the stored token stands, exactly as before the contract change');
 });
 
@@ -1151,27 +1151,27 @@ $suite->test('an uncertain announce whose chk-forum cannot be read concludes and
 // previously unreachable on any cycle whose announce came back inconclusive.
 $suite->test('after an uncertain announce every dump verdict still decides on its own',
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
-        'absorbed (7)' => array(7, str_repeat('C', 40), ruTrackerChecker::STE_ABSORBED),
-        'closed (5)' => array(5, str_repeat('C', 40), ruTrackerChecker::STE_NOT_NEED),
-        'ambiguous (9)' => array(9, str_repeat('C', 40), ruTrackerChecker::STE_CANT_REACH_TRACKER),
-        'up to date (0, same hash)' => array(0, $hash, ruTrackerChecker::STE_UPTODATE),
-    ) as $label => $case) {
+    foreach ([
+        'absorbed (7)' => [7, str_repeat('C', 40), ruTrackerChecker::STE_ABSORBED],
+        'closed (5)' => [5, str_repeat('C', 40), ruTrackerChecker::STE_NOT_NEED],
+        'ambiguous (9)' => [9, str_repeat('C', 40), ruTrackerChecker::STE_CANT_REACH_TRACKER],
+        'up to date (0, same hash)' => [0, $hash, ruTrackerChecker::STE_UPTODATE],
+    ] as $label => $case) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(403, '');
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, $case[0], $case[1]));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array()); // row found: resetDeletion
+        rXMLRPCRequest::queue('d.set_custom', true, false, []); // row found: resetDeletion
 
         strictAssertSame($case[2],
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
             $label . ': the dump verdict is the answer');
         $writes = rXMLRPCRequest::requestsFor('d.set_custom');
         strictAssertSame(1, count($writes), $label . ': exactly the stale-counter clear');
-        strictAssertSame(array($hash, 'chk-del', ''), $writes[0]['commands'][0]->params,
+        strictAssertSame([$hash, 'chk-del', ''], $writes[0]['commands'][0]->params,
             $label . ': and it clears chk-del, because the row is present');
     }
 });
@@ -1185,15 +1185,15 @@ $suite->test('an uncertain announce still hands a genuinely new hash to the meta
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     rTorrent::$sendResult = $newHash;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(403, ''); // uncertain, not unregistered
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 0, $newHash));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());   // row found: resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);   // row found: resetDeletion
     ruTrackerChecker::queueResult('torrentExists', false);
     ruTrackerChecker::queueResult('awaitMetadata', false);
     rXMLRPCRequest::queue(
-        array('d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'),
+        ['d.get_custom', 'd.get_custom', 'd.get_custom', 'd.is_meta'],
         true, false, function () use ($hash, $topicId) {
             $deadline = '';
             if (isset(rTorrent::$magnets[0]['addition'])) {
@@ -1203,11 +1203,11 @@ $suite->test('an uncertain announce still hands a genuinely new hash to the meta
                     }
                 }
             }
-            return array($hash, (string) (int) $topicId, $deadline, 1);
-        }
+            return [$hash, (string) (int) $topicId, $deadline, 1];
+        },
     );
-    rXMLRPCRequest::queue('branch', true, false, array(RuTrackerAtomicOwnership::SENTINEL_ACTED));
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.set_custom'), true, false, array());
+    rXMLRPCRequest::queue('branch', true, false, [RuTrackerAtomicOwnership::SENTINEL_ACTED]);
+    rXMLRPCRequest::queue(['d.set_custom', 'd.set_custom'], true, false, []);
 
     strictAssertSame(ruTrackerChecker::STE_META_PENDING,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1224,36 +1224,36 @@ $suite->test('an uncertain announce still hands a genuinely new hash to the meta
 // a deletion verdict, however the counter reads.
 $suite->test('an uncertain announce never confirms a new deletion',
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
+    foreach ([
         // No record of any confirmation run at all.
-        'no counter yet' => array(array(true, '')),
+        'no counter yet' => [[true, '']],
         // A spelling confirmDeletion() cannot have written.
-        'a malformed counter' => array(array(true, '03:1000')),
+        'a malformed counter' => [[true, '03:1000']],
         // The read itself failed: that proves nothing either.
-        'an unreadable counter' => array(array(false, '')),
+        'an unreadable counter' => [[false, '']],
         // Settled once, but a healthy verdict has landed since, so the run
         // was interrupted and the record no longer stands.
         'a settled counter interrupted by a newer healthy verdict' =>
-            array(array(true, '3:1000'), array(true, '2000')),
+            [[true, '3:1000'], [true, '2000']],
         // Settled once, but this cycle cannot check the stamp at all.
         'a settled counter whose stamp cannot be read' =>
-            array(array(true, '3:1000'), array(false, '')),
-    ) as $label => $reads) {
+            [[true, '3:1000'], [false, '']],
+    ] as $label => $reads) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(403, '');
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200,
             fiDump(99999, 0, str_repeat('C', 40))); // our topic is absent
-        foreach ($reads as $read)
-            rXMLRPCRequest::queue('d.get_custom', $read[0], false, array($read[1]));
+        foreach ($reads as $read) {
+            rXMLRPCRequest::queue('d.get_custom', $read[0], false, [$read[1]]); }
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
             $label . ': an uncertain announce cannot make a missing row a deletion');
-        strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+        strictAssertSame([], rXMLRPCRequest::requestsFor('d.set_custom'),
             $label . ': and the counter is never touched');
         strictAssertSame('', hMessage(0),
             $label . ': nothing was decided, so nothing is reported');
@@ -1270,13 +1270,13 @@ $suite->test('an uncertain announce re-affirms a settled deletion only via the c
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(403, '');
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200,
             fiDump(99999, 0, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000')); // chk-del: settled
-        rXMLRPCRequest::queue('d.get_custom', $stimeReadable, false, array($stime));
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']); // chk-del: settled
+        rXMLRPCRequest::queue('d.get_custom', $stimeReadable, false, [$stime]);
         return RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     };
 
@@ -1311,13 +1311,13 @@ $suite->test('a positive row after an uncertain announce still defers when the s
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(403, '');
     hQueueForum(1106);
     // tor_status 5 is terminal and never writes chk-stime, so a surviving
     // counter would have nothing to invalidate it later.
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 5, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', false, false, array()); // the clear is lost
+    rXMLRPCRequest::queue('d.set_custom', false, false, []); // the clear is lost
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1331,18 +1331,18 @@ $suite->test('a positive row after an uncertain announce still defers when the s
 // them invents presence or deletion.
 $suite->test('an uncertain announce plus an unusable dump still concludes nothing',
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
-        'the dump host refuses' => array('forum' => 1106, 'status' => 503, 'body' => ''),
-        'the dump is not a dump' => array('forum' => 1106, 'status' => 200, 'body' => 'not json at all'),
-        'the forum is unknown' => array('forum' => null),
-    ) as $label => $case) {
+    foreach ([
+        'the dump host refuses' => ['forum' => 1106, 'status' => 503, 'body' => ''],
+        'the dump is not a dump' => ['forum' => 1106, 'status' => 200, 'body' => 'not json at all'],
+        'the forum is unknown' => ['forum' => null],
+    ] as $label => $case) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(403, '');
         if ($case['forum'] === null) {
-            rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // chk-forum unset
+            rXMLRPCRequest::queue('d.get_custom', true, false, ['']); // chk-forum unset
         } else {
             hQueueForum($case['forum']);
             Snoopy::queue(RuTrackerForumIndex::DUMP_URL . $case['forum'], $case['status'], $case['body']);
@@ -1351,11 +1351,11 @@ $suite->test('an uncertain announce plus an unusable dump still concludes nothin
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
             $label . ': still retryable, never a verdict');
-        strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+        strictAssertSame([], rXMLRPCRequest::requestsFor('d.set_custom'),
             $label . ': and no handler-owned custom is written');
-        if ($case['forum'] === null)
-            strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(),
-                $label . ': an unset forum is queued for the crawl');
+        if ($case['forum'] === null) {
+            strictAssertSame([$topicId], RuTrackerForumIndex::takeQueuePeek(),
+                $label . ': an unset forum is queued for the crawl'); }
     }
 });
 
@@ -1366,14 +1366,14 @@ $suite->test('a registered announce still decides before layer 3 and fetches no 
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hRegisteredBody());
     hQueueForum(1106);
     // Queued but never expected to be requested: if the early return were
     // moved above the registered gate this dump would answer instead.
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200,
         fiDump($topicId, 7, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1398,13 +1398,13 @@ $suite->test('14: a recorded superseded token short-circuits the whole chain wit
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result, 'settled: still nothing to replace');
-    strictAssertSame(array(), Snoopy::$requests, 'no announce probe, no dump fetch -- no HTTP at all');
+    strictAssertSame([], Snoopy::$requests, 'no announce probe, no dump fetch -- no HTTP at all');
     $keys = array_map(function ($request) { return $request['key']; }, rXMLRPCRequest::$requests);
-    strictAssertSame(array('d.get_custom|d.get_custom'), $keys,
+    strictAssertSame(['d.get_custom|d.get_custom'], $keys,
         'only the token read reaches the XMLRPC transport');
-    strictAssertSame(array($newHash), ruTrackerChecker::callsFor('torrentExists')[0]['arguments'],
+    strictAssertSame([$newHash], ruTrackerChecker::callsFor('torrentExists')[0]['arguments'],
         'the successor hash is handed to the existence seam once');
-    strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'), 'a settled torrent is not rewritten');
+    strictAssertSame([], ruTrackerChecker::callsFor('setMessage'), 'a settled torrent is not rewritten');
 });
 
 // check.php's run() writes STE_INPROGRESS immediately before dispatching, so
@@ -1418,7 +1418,7 @@ $suite->test('14b: the short-circuit also fires under the in-flight STE_INPROGRE
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result, 'the check-in-progress marker is not another verdict');
-    strictAssertSame(array(), Snoopy::$requests, 'still no HTTP request');
+    strictAssertSame([], Snoopy::$requests, 'still no HTTP request');
 });
 
 $suite->test('15: the short-circuit falls through once the successor is gone and a live answer clears its marker', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
@@ -1426,17 +1426,17 @@ $suite->test('15: the short-circuit falls through once the successor is gone and
     hQueueSuperseded($newHash);
     ruTrackerChecker::queueResult('torrentExists', false);      // the user deleted the successor
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hAliveRow()));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    hQueueLayer1([hAliveRow()]);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'the normal flow decides again');
-    strictAssertSame(array($hash, $newHash),
+    strictAssertSame([$hash, $newHash],
         ruTrackerChecker::callsFor('recordMissingSuccessor')[0]['arguments'],
         'the absent successor was recorded before the live layer decided');
     strictAssertSame('', hMessage(0), 'the live answer clears the pending retry marker');
-    strictAssertSame(array($hash, ''),
+    strictAssertSame([$hash, ''],
         ruTrackerChecker::callsFor('setMessage')[0]['arguments'], 'cleared on the checked torrent');
 });
 
@@ -1445,43 +1445,43 @@ $suite->test('H07: absent successor records a retry marker before a cold answer'
     hQueueSuperseded($newHash);
     ruTrackerChecker::queueResult('torrentExists', false);
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hColdRow()));
+    hQueueLayer1([hColdRow()]);
 
     strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'a cold tracker does not invent a topic verdict');
-    strictAssertSame(array($hash, $newHash),
+    strictAssertSame([$hash, $newHash],
         ruTrackerChecker::callsFor('recordMissingSuccessor')[0]['arguments'] ?? null,
         'the durable marker precedes inconclusive layers');
-    strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+    strictAssertSame([], ruTrackerChecker::callsFor('setMessage'),
         'the old settled token is not merely cleared into an invisible buffer');
 });
 
 $suite->test('H07: a persisted missing-successor marker is rearmed without another presence probe', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false, [
         (string) ruTrackerChecker::STE_ERROR,
         ruTrackerChecker::CHKMSG_SUCCESSOR_MISSING . '|' . $newHash,
-    ));
+    ]);
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hColdRow()));
+    hQueueLayer1([hColdRow()]);
 
     strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'a later cold answer still decides nothing');
-    strictAssertSame(array($hash, $newHash),
+    strictAssertSame([$hash, $newHash],
         ruTrackerChecker::callsFor('retainMissingSuccessor')[0]['arguments'] ?? null,
         'the marker is revalidated for the current run');
-    strictAssertSame(array(), ruTrackerChecker::callsFor('torrentExists'),
+    strictAssertSame([], ruTrackerChecker::callsFor('torrentExists'),
         'a confirmed-absent successor is not probed again');
-    strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+    strictAssertSame([], ruTrackerChecker::callsFor('setMessage'),
         'the retry marker stays until a conclusive answer');
 });
 
 $suite->test('H05: owned topic without an enabled RuTracker row retains its verdict and message', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array('missing' => array(), 'disabled' => array(
-        array('http://bt.t-ru.org/ann?pk=x', 0, 6, 0),
-    )) as $label => $rows) {
+    foreach (['missing' => [], 'disabled' => [
+        ['http://bt.t-ru.org/ann?pk=x', 0, 6, 0],
+    ]] as $label => $rows) {
         hReset();
         hQueueTopicKnown($topicId);
         hQueueLayer1($rows);
@@ -1489,9 +1489,9 @@ $suite->test('H05: owned topic without an enabled RuTracker row retains its verd
         strictAssertSame(ruTrackerChecker::STE_UNCHANGED,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
             $label . ': no enabled canonical row supplies a topic verdict');
-        strictAssertSame(array(), ruTrackerChecker::callsFor('setMessage'),
+        strictAssertSame([], ruTrackerChecker::callsFor('setMessage'),
             $label . ': the existing verdict explanation remains untouched');
-        strictAssertSame(array(), Snoopy::$requests,
+        strictAssertSame([], Snoopy::$requests,
             $label . ': no network request can make up for absent local authority');
         strictAssertOneLogMatching(ruTrackerChecker::$logs, 'no-enabled-row',
             $label . ': the no-signal branch is classified');
@@ -1500,18 +1500,18 @@ $suite->test('H05: owned topic without an enabled RuTracker row retains its verd
 
 $suite->test('16: a superseded token recorded against another state is stale and never short-circuits', function () use ($hash, $newHash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false, array(
+    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false, [
         (string) ruTrackerChecker::STE_DELETED,
         ruTrackerChecker::CHKMSG_SUPERSEDED . '|' . $newHash,
-    ));
+    ]);
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hAliveRow()));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    hQueueLayer1([hAliveRow()]);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'another verdict has since been recorded');
-    strictAssertSame(array(), ruTrackerChecker::callsFor('torrentExists'),
+    strictAssertSame([], ruTrackerChecker::callsFor('torrentExists'),
         'no existence probe is spent on a stale token');
 });
 
@@ -1526,14 +1526,14 @@ $suite->test('16: a superseded token recorded against another state is stale and
 
 $suite->test('18: a candidate logs layer 1\'s verdict together with the counters it came from, and never its passkey', function () use ($hash) {
     ruTrackerChecker::reset();
-    hQueueLayer1(array(hAliveRow()), '');
-    strictAssertSame('alive', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)), 'healthy row');
-    strictAssertSame(array(), ruTrackerChecker::$logs,
+    hQueueLayer1([hAliveRow()], '');
+    strictAssertSame('alive', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]), 'healthy row');
+    strictAssertSame([], ruTrackerChecker::$logs,
         'the healthy majority logs nothing at all -- hundreds of lines an hour would bury everything else');
 
     ruTrackerChecker::reset();
-    hQueueLayer1(array(hCandidateRow('bt.t-ru.org', 6)), '');
-    strictAssertSame('candidate', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)), 'candidate row');
+    hQueueLayer1([hCandidateRow('bt.t-ru.org', 6)], '');
+    strictAssertSame('candidate', strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]), 'candidate row');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer1 verdict=candidate',
         'a candidate logs its verdict');
     strictAssertEnglish($line, 'the layer-1 verdict line');
@@ -1549,8 +1549,8 @@ $suite->test('20: layer 2 names which of its three skip reasons applied', functi
     // (a) switched off in the configuration.
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    hQueueLayer1([hCandidateRow()]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']); // resolveForum: blank, stop here
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
     strictAssertEnglish($line, 'the layer-2 skip line');
@@ -1561,8 +1561,8 @@ $suite->test('20: layer 2 names which of its three skip reasons applied', functi
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerAnnounceCap'] = 0;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    hQueueLayer1([hCandidateRow()]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
     strictAssertEnglish($line, 'the layer-2 skip line');
@@ -1576,20 +1576,20 @@ $suite->test('20: layer 2 names which of its three skip reasons applied', functi
     RuTrackerAnnounce::reserveProbe('bt.t-ru.org', time(), PHP_INT_MAX, 3600);
     RuTrackerAnnounce::recordOutcome('bt.t-ru.org', time(), 403);
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    hQueueLayer1([hCandidateRow()]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'a skip is logged');
     strictAssertEnglish($line, 'the layer-2 skip line');
     strictAssertTrue(strpos($line, 'cooldown') !== false, 'reason (c): ' . $line);
-    strictAssertSame(array(), Snoopy::$requests, 'a cooldown really does stop the probe');
+    strictAssertSame([], Snoopy::$requests, 'a cooldown really does stop the probe');
 });
 
 $suite->test('22: layer 3 reports an unavailable dump and a missing row distinctly', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     // Unavailable: a non-200 dump fetch tells layer 3 nothing at all.
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 503, '');
 
@@ -1604,18 +1604,18 @@ $suite->test('22: layer 3 reports an unavailable dump and a missing row distinct
     strictAssertTrue(strpos($line, 'dump-refused') !== false
         && strpos($line, 'http-status=503') !== false,
         'and says which failure it was, in the shared status vocabulary: ' . $line);
-    strictAssertSame(array(), strictLogsMatching(ruTrackerChecker::$logs, 'layer3 topic='),
+    strictAssertSame([], strictLogsMatching(ruTrackerChecker::$logs, 'layer3 topic='),
         'no classification is claimed for a dump that was never read');
-    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([], RuTrackerForumIndex::takeQueuePeek(),
         'a temporary refusal does not launch a tracker-wide crawl');
 
     // Present but missing our row: that IS a classification outcome.
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // forgetForum
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // forgetForum
 
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer3 topic=' . $topicId,
@@ -1630,14 +1630,14 @@ $suite->test('22: layer 3 reports an unavailable dump and a missing row distinct
 $suite->test('a feed-mapped forum without a dump queues its topic for resolution', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(267);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'an absent forum dump is not a verdict about the topic');
-    strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([$topicId], RuTrackerForumIndex::takeQueuePeek(),
         'the queued topic is eligible for a crawl despite its stored chk-forum');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer3 dump forum=267',
         'the absence and recovery path are visible');
@@ -1653,34 +1653,34 @@ $suite->test('a new feed forum mapping lifts an old crawl miss before an absent-
     // Control: the same 404 alone does not override a completed crawl's
     // backoff, or this path would request a full sweep on every cycle.
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(267);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
     RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
-    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([], RuTrackerForumIndex::takeQueuePeek(),
         'an old 404 without new feed evidence still respects miss backoff');
 
     // The feed's authoritative write changes chk-forum from 2 to 267. The
     // response queues model the real read and write under the mapping lock.
     rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue(array('d.get_custom', 'd.get_custom'), true, false,
-        array((string) $topicId, '2'));
-    rXMLRPCRequest::queue('branch', true, false, array('APPLIED'));
+    rXMLRPCRequest::queue(['d.get_custom', 'd.get_custom'], true, false,
+        [(string) $topicId, '2']);
+    rXMLRPCRequest::queue('branch', true, false, ['APPLIED']);
     strictAssertSame(RuTrackerForumIndex::FORUM_WRITE_WRITTEN,
         RuTrackerForumIndex::writeForumMapping($hash, $topicId, 267, '2', true),
         'the new feed mapping really landed');
 
     rXMLRPCRequest::reset();
     Snoopy::reset();
-    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', array());
+    strictSetPrivateStatic('RuTrackerForumIndex', 'memo', []);
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(267);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '267', 404, '');
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'the archive dump remains unavailable after the feed correction');
-    strictAssertSame(array($topicId), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([$topicId], RuTrackerForumIndex::takeQueuePeek(),
         'the new mapping invalidates the old miss and makes its topic crawlable');
 });
 
@@ -1696,13 +1696,13 @@ $suite->test('a cold torrent keeps its previous verdict instead of being reporte
     function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hColdRow()));
+    hQueueLayer1([hColdRow()]);
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_UNCHANGED, $result,
         'cold means "no data to judge by", so the stored verdict must be left alone');
-    strictAssertSame(array(), Snoopy::$requests, 'a cold verdict costs no HTTP request');
+    strictAssertSame([], Snoopy::$requests, 'a cold verdict costs no HTTP request');
 });
 
 
@@ -1719,15 +1719,15 @@ $suite->test('a chk-forum that could not be READ queues nothing: it is not the s
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = false;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
-    rXMLRPCRequest::queue('d.get_custom', false, false, array());  // resolveForum: the read fails
+    hQueueLayer1([hCandidateRow()]);
+    rXMLRPCRequest::queue('d.get_custom', false, false, []);  // resolveForum: the read fails
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'nothing was learned, so the row stays retryable');
-    strictAssertSame(array(), RuTrackerForumIndex::takeQueuePeek(),
+    strictAssertSame([], RuTrackerForumIndex::takeQueuePeek(),
         'and no crawl is queued on the strength of a read that did not happen');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.set_custom'),
+    strictAssertSame([], rXMLRPCRequest::requestsFor('d.set_custom'),
         'the stored sentence stands: an unread field explains nothing');
 });
 
@@ -1747,20 +1747,20 @@ $suite->test('the configured announce cap is clamped ON THE WAY INTO the budget,
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         $GLOBALS['rutrackerAnnounceCap'] = 100000;
         // The host has already spent the ceiling this window.
-        RuTrackerState::save('announce', array('bt.t-ru.org' => array(
+        RuTrackerState::save('announce', ['bt.t-ru.org' => [
             'window_start' => time(), 'window_count' => RuTrackerAnnounce::PROBE_CAP_MAX,
-        )));
+        ]]);
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));  // resolveForum: blank, stop after layer 2
+        hQueueLayer1([hCandidateRow()]);
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['']);  // resolveForum: blank, stop after layer 2
 
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
         strictAssertSame(0, count(Snoopy::$requests),
             'no announce goes out: the budget is judged on the clamped cap, not the configured one');
     } finally {
-        if ($previous === null) unset($GLOBALS['rutrackerAnnounceCap']);
-        else $GLOBALS['rutrackerAnnounceCap'] = $previous;
+        if ($previous === null) { unset($GLOBALS['rutrackerAnnounceCap']); }
+        else { $GLOBALS['rutrackerAnnounceCap'] = $previous; }
         strictRemoveTree($tmp);
     }
 });
@@ -1771,14 +1771,14 @@ $suite->test('layer 2 refuses a host that merely looks like RuTracker\'s', funct
     // The broad detector may classify the row as a candidate, but the URL
     // selector must drop it before layer 2 constructs any outgoing action.
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow('rutracker.evil.example')));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    hQueueLayer1([hCandidateRow('rutracker.evil.example')]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']); // resolveForum: blank, stop here
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'no layer may conclude anything from a look-alike host');
-    strictAssertSame(array(), Snoopy::$requests, 'and nothing at all is sent to it');
+    strictAssertSame([], Snoopy::$requests, 'and nothing at all is sent to it');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'layer2 skipped:', 'the skip is logged');
     strictAssertEnglish($line, 'the layer-2 skip line');
     strictAssertTrue(strpos($line, 'no announce host') !== false,
@@ -1796,9 +1796,9 @@ $suite->test('layer 2 accepts RuTracker\'s own host written as a fully qualified
     // and a stranger for the purpose of being CHECKED: layer 2 skipped, and
     // metafetch refused to build the magnet.
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow('bt.t-ru.org.')));
+    hQueueLayer1([hCandidateRow('bt.t-ru.org.')]);
     Snoopy::queueAny(200, hRegisteredBody());
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -1817,9 +1817,9 @@ $suite->test('layer 2 probes the torrent\'s RuTracker row, not whatever tracker 
     // tracker that never heard of it.
     $foreignPrimary = new Torrent(strictTorrentRaw('release name', 'http://tracker.example.org/ann?pk=SECRET', $topicUrl));
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hRegisteredBody());
-    rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+    rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $foreignPrimary),
@@ -1840,9 +1840,9 @@ $suite->test('a real 403 answer from the tracker installs the persisted cooldown
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(403, '');
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('')); // resolveForum: blank, stop here
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']); // resolveForum: blank, stop here
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -1863,18 +1863,18 @@ $suite->test('a spent probe budget cannot downgrade a fully-confirmed DELETED ve
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerAnnounceCap'] = 0; // the recheck lands on an exhausted budget
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40))); // row still missing
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // forgetForum
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000'));  // chk-del: confirmed to the threshold
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));        // chk-stime: no healthy verdict since
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);          // forgetForum
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']);  // chk-del: confirmed to the threshold
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);        // chk-stime: no healthy verdict since
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
     strictAssertSame(ruTrackerChecker::STE_DELETED, $result,
         'the settled verdict stands: only a probe that actually ran may move it');
-    strictAssertSame(array('deleting|3/3'),
+    strictAssertSame(['deleting|3/3'],
         array_map(function ($call) { return $call['arguments'][1]; },
             ruTrackerChecker::callsFor('setMessage')),
         'and its deleting|3/3 message is re-asserted exactly once, never blanked');
@@ -1887,11 +1887,11 @@ $suite->test('a spent probe budget cannot downgrade a fully-confirmed DELETED ve
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerAnnounceCap'] = 0;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // forgetForum
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:1000'));  // one confirmation short
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);          // forgetForum
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:1000']);  // one confirmation short
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1902,14 +1902,14 @@ $suite->test('a spent probe budget cannot downgrade a fully-confirmed DELETED ve
 // from there it becomes a magnet target and a torrent the client is asked to
 // load. Anything that is not a hash must not become a verdict.
 $suite->test('a dump row whose info_hash is not a hash starts no metadata fetch', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array('', 'not-a-hash', str_repeat('F', 39), str_repeat('F', 41),
-                   'magnet:?xt=urn:btih:' . str_repeat('F', 40)) as $garbage) {
+    foreach (['', 'not-a-hash', str_repeat('F', 39), str_repeat('F', 41),
+                   'magnet:?xt=urn:btih:' . str_repeat('F', 40)] as $garbage) {
         hReset();
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 0, $garbage));
-        rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+        rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
         $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
 
@@ -1930,20 +1930,20 @@ $suite->test('a missing row keeps the forum, so the confirmation count can actua
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerDeleteCycles'] = 2;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:1000'));  // one confirmation already, long ago
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));        // no later healthy verdict
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());          // chk-del -> 2
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:1000']);  // one confirmation already, long ago
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);        // no later healthy verdict
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);          // chk-del -> 2
 
     strictAssertSame(ruTrackerChecker::STE_DELETED,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'the second confirmation settles it');
-    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
+    foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write) {
         strictAssertTrue($write['commands'][0]->params[1] !== 'chk-forum',
-            'chk-forum is never cleared on a missing row');
+            'chk-forum is never cleared on a missing row'); }
 });
 
 // A transport hiccup reading chk-del must not walk a torrent at 2 of 3 back
@@ -1952,11 +1952,11 @@ $suite->test('an unreadable deletion counter defers instead of restarting the co
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', false, false, array()); // the counter cannot be read
+    rXMLRPCRequest::queue('d.get_custom', false, false, []); // the counter cannot be read
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -1974,40 +1974,40 @@ $suite->test('an unreadable deletion counter defers instead of restarting the co
 // the tracker never gave consecutively. chk-stime is the independent record of
 // the last up-to-date verdict, so a count older than it cannot be consecutive.
 $suite->test('a deletion count older than the last healthy verdict is restarted, not resumed', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
+    foreach ([
         // The lost-clear case: two cycles counted, then a healthy cycle whose
         // clear did not land, then the row goes missing again.
-        'the healthy verdict is newer than the count' => array(
+        'the healthy verdict is newer than the count' => [
             'chkDel' => '2:1000', 'stime' => '2000', 'expect' => ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            'written' => '1:', 'why' => 'the run was broken, so the count starts over'),
+            'written' => '1:', 'why' => 'the run was broken, so the count starts over'],
         // The genuine run: the count is newer than the last healthy verdict.
-        'the count is newer than any healthy verdict' => array(
+        'the count is newer than any healthy verdict' => [
             'chkDel' => '2:3000', 'stime' => '2000', 'expect' => ruTrackerChecker::STE_DELETED,
-            'written' => '3:', 'why' => 'an unbroken run still reaches the verdict'),
+            'written' => '3:', 'why' => 'an unbroken run still reaches the verdict'],
         // A torrent that was never up to date has no chk-stime at all.
-        'there is no healthy verdict on record' => array(
+        'there is no healthy verdict on record' => [
             'chkDel' => '2:1000', 'stime' => '', 'expect' => ruTrackerChecker::STE_DELETED,
-            'written' => '3:', 'why' => 'an empty chk-stime invalidates nothing'),
-    ) as $label => $case) {
+            'written' => '3:', 'why' => 'an empty chk-stime invalidates nothing'],
+    ] as $label => $case) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(200, hUnregisteredBody());
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($case['chkDel']));   // chk-del
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($case['stime']));    // chk-stime
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());                  // the advance
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$case['chkDel']]);   // chk-del
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$case['stime']]);    // chk-stime
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);                  // the advance
 
         strictAssertSame($case['expect'],
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
             $label . ': ' . $case['why']);
 
-        $counters = array();
-        foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write)
-            if ($write['commands'][0]->params[1] === 'chk-del')
-                $counters[] = $write['commands'][0]->params[2];
+        $counters = [];
+        foreach (rXMLRPCRequest::requestsFor('d.set_custom') as $write) {
+            if ($write['commands'][0]->params[1] === 'chk-del') {
+                $counters[] = $write['commands'][0]->params[2]; } }
         strictAssertSame(1, count($counters), $label . ': the counter is advanced once');
         strictAssertTrue(strpos($counters[0], $case['written']) === 0,
             $label . ': it now reads ' . $case['written'] . '..., saw ' . $counters[0]);
@@ -2020,15 +2020,15 @@ $suite->test('a deletion count older than the last healthy verdict is restarted,
 // the count stood. A stamp that will not read cannot prove a run consecutive.
 $suite->test('a non-canonical healthy-verdict timestamp restarts the deletion count', function () use ($hash) {
     $GLOBALS['rutrackerDeleteCycles'] = 3;
-    foreach (array('text' => 'garbage', 'leading zero' => '02000', 'padded' => ' 2000',
-        'float' => '2000.0', 'plus sign' => '+2000', 'negative' => '-2000') as $label => $stime) {
+    foreach (['text' => 'garbage', 'leading zero' => '02000', 'padded' => ' 2000',
+        'float' => '2000.0', 'plus sign' => '+2000', 'negative' => '-2000'] as $label => $stime) {
         ruTrackerChecker::reset();
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('2:3000')); // chk-del at the door
-        rXMLRPCRequest::queue('d.get_custom', true, false, array($stime));   // chk-stime
-        rXMLRPCRequest::queue('d.set_custom', true, false, array());         // the restart
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['2:3000']); // chk-del at the door
+        rXMLRPCRequest::queue('d.get_custom', true, false, [$stime]);   // chk-stime
+        rXMLRPCRequest::queue('d.set_custom', true, false, []);         // the restart
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, 5000, 1000)),
+            strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, 5000, 1000]),
             $label . ': an unreadable guard is never a deletion verdict');
         $writes = rXMLRPCRequest::requestsFor('d.set_custom');
         strictAssertSame(1, count($writes), $label . ': the count is rewritten');
@@ -2036,29 +2036,29 @@ $suite->test('a non-canonical healthy-verdict timestamp restarts the deletion co
             $label . ': and it starts over rather than reaching the third cycle');
         strictAssertEnglish(strictAssertOneLogMatching(ruTrackerChecker::$logs, 'restarting it',
             $label . ': the restart is logged'), $label . ': the restart line');
-        foreach (ruTrackerChecker::$logs as $line)
+        foreach (ruTrackerChecker::$logs as $line) {
             strictAssertTrue(strpos($line, $stime) === false,
-                $label . ': the unreadable value itself is never echoed back: ' . $line);
+                $label . ': the unreadable value itself is never echoed back: ' . $line); }
     }
 
     // Control: a canonical stamp older than the count leaves the run standing.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:3000'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2000'));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:3000']);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2000']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
     strictAssertSame(ruTrackerChecker::STE_DELETED,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, 5000, 1000)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, 5000, 1000]),
         'a canonical older stamp still leaves an unbroken run alone');
 });
 
 $suite->test('an unreadable healthy-verdict timestamp cannot advance an existing deletion count', function () use ($hash) {
     $GLOBALS['rutrackerDeleteCycles'] = 3;
     rXMLRPCRequest::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:1000')); // chk-del
-    rXMLRPCRequest::queue('d.get_custom', false, false, array());       // chk-stime unreadable
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:1000']); // chk-del
+    rXMLRPCRequest::queue('d.get_custom', false, false, []);       // chk-stime unreadable
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, 5000, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, 5000, 3600]),
         'an unreadable consecutiveness guard is retryable, never a deletion verdict');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'the old counter is not advanced until chk-stime can be read');
@@ -2071,13 +2071,13 @@ $suite->test('a deletion verdict whose counter could not be written is deferred'
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     Snoopy::queueAny(200, hUnregisteredBody());
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2:3000'));  // chk-del, at the threshold's door
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2000'));    // chk-stime, older: the run stands
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());         // ...and the advance is lost
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2:3000']);  // chk-del, at the threshold's door
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2000']);    // chk-stime, older: the run stands
+    rXMLRPCRequest::queue('d.set_custom', false, false, []);         // ...and the advance is lost
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -2093,22 +2093,22 @@ $suite->test('a deletion verdict whose counter could not be written is deferred'
 // become true again, so a downgraded verdict can never be re-earned, and every
 // previously deleted topic costs a dump lookup every hour for ever.
 $suite->test('a settled deletion survives every way a probe can fail to run', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
-    foreach (array(
-        'the per-host cap is spent' => array('layer2' => true, 'host' => 'bt.t-ru.org', 'cap' => 0),
-        'layer 2 is switched off'   => array('layer2' => false, 'host' => 'bt.t-ru.org', 'cap' => 10),
-    ) as $label => $case) {
+    foreach ([
+        'the per-host cap is spent' => ['layer2' => true, 'host' => 'bt.t-ru.org', 'cap' => 0],
+        'layer 2 is switched off'   => ['layer2' => false, 'host' => 'bt.t-ru.org', 'cap' => 10],
+    ] as $label => $case) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = $case['layer2'];
         $GLOBALS['rutrackerAnnounceCap'] = $case['cap'];
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
         // The counter is already at the threshold and no healthy verdict has
         // landed since: the deletion was fully confirmed once, that record
         // still stands, and only a probe that RAN may overturn it.
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000'));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']);
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
 
         strictAssertSame(ruTrackerChecker::STE_DELETED,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -2127,12 +2127,12 @@ $suite->test('a settled deletion survives every way a probe can fail to run', fu
 $suite->test('a present row whose stale deletion counter cannot be cleared defers', function () use ($hash, $oldTorrent, $topicId, $topicUrl) {
     hReset();
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     // tor_status 5: a closed topic -- terminal, and NOT an up-to-date verdict,
     // so nothing would write chk-stime to invalidate the counter later.
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump($topicId, 5, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.set_custom', false, false, array());   // the clear is lost
+    rXMLRPCRequest::queue('d.set_custom', false, false, []);   // the clear is lost
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -2147,10 +2147,10 @@ $suite->test('an enabled official tracker row feeds both layer 2 and layer 4 aft
     rTorrent::$sendResult = $newHash;
 
     // Row 1 is a lookalike; Row 2 is the official RuTracker host
-    $rows = array(
-        array('http://rutracker.evil.example/announce', 1, 0, 0),
-        array('http://bt.t-ru.org/announce', 1, 6, 0),
-    );
+    $rows = [
+        ['http://rutracker.evil.example/announce', 1, 0, 0],
+        ['http://bt.t-ru.org/announce', 1, 6, 0],
+    ];
     hQueueMetaFetchFlow($hash, $newHash, $topicId, 1106, $rows);
 
     $result = RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
@@ -2169,12 +2169,12 @@ $suite->test('an enabled official tracker row feeds both layer 2 and layer 4 aft
 });
 
 $suite->test('ruTrackerRowUrl returns empty when every enabled row is a lookalike', function () {
-    $rows = array(
-        array('url' => 'http://rutracker.evil.example/announce', 'enabled' => 1),
-        array('url' => 'http://bt.t-ru.org.evil.example/announce', 'enabled' => 1),
-    );
+    $rows = [
+        ['url' => 'http://rutracker.evil.example/announce', 'enabled' => 1],
+        ['url' => 'http://bt.t-ru.org.evil.example/announce', 'enabled' => 1],
+    ];
 
-    strictAssertSame('', strictInvoke('RuTrackerCheckImpl', 'ruTrackerRowUrl', array($rows)),
+    strictAssertSame('', strictInvoke('RuTrackerCheckImpl', 'ruTrackerRowUrl', [$rows]),
         'no noncanonical URL may leave the row-selection boundary');
 });
 
@@ -2186,31 +2186,31 @@ $suite->test('ruTrackerRowUrl returns empty when every enabled row is a lookalik
 // 0, '') that used to say so in a case of its own is the 'failed as a digits
 // then letters' row below, byte for byte.
 $suite->test('layer1Verdict rejects a noncanonical counter in any tracker-row column', function () use ($hash) {
-    $bad = array('leading zero' => '01', 'leading plus' => '+1', 'minus zero' => '-0',
+    $bad = ['leading zero' => '01', 'leading plus' => '+1', 'minus zero' => '-0',
         'negative' => '-1', 'padded' => ' 1', 'trailing space' => '1 ',
         'digits then letters' => '6oops', 'decimal string' => '1.0', 'float' => 1.0,
-        'bool' => true, 'null' => null, 'object' => new stdClass());
+        'bool' => true, 'null' => null, 'object' => new stdClass()];
     // enabled, failed, success are values 2, 3 and 4 of a one-row reply.
-    foreach (array('enabled' => 2, 'failed' => 3, 'success' => 4) as $column => $slot) {
+    foreach (['enabled' => 2, 'failed' => 3, 'success' => 4] as $column => $slot) {
         foreach ($bad as $label => $value) {
-            $reply = array(1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, '');
+            $reply = [1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, ''];
             $reply[$slot] = $value;
             ruTrackerChecker::reset();
             hQueueRawLayer1($reply);
             strictAssertSame('transport',
-                strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+                strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
                 $column . ' as a ' . $label . ': an unreadable counter is not a verdict');
         }
     }
 
     // Control: the canonical int and canonical string spellings of the very
     // same reply still produce the real verdict.
-    foreach (array('ints' => array(1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, ''),
-                   'strings' => array('1', 'http://bt.t-ru.org/ann?pk=x', '1', '6', '0', '')) as $label => $reply) {
+    foreach (['ints' => [1, 'http://bt.t-ru.org/ann?pk=x', 1, 6, 0, ''],
+                   'strings' => ['1', 'http://bt.t-ru.org/ann?pk=x', '1', '6', '0', '']] as $label => $reply) {
         ruTrackerChecker::reset();
         hQueueRawLayer1($reply);
         strictAssertSame('candidate',
-            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', array($hash)),
+            strictInvoke('RuTrackerCheckImpl', 'layer1Verdict', [$hash]),
             $label . ': a canonical reply still yields the real layer 1 verdict');
     }
 });
@@ -2237,15 +2237,15 @@ $suite->test('a scheduled cycle that arrives seconds early still advances the de
     // One second early: this is the production boundary, and until the
     // tolerance existed the only cases pinned here were $now-10 and $now-7200.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . ($now - 3599)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . ($now - 3599)]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
         'a cycle one second early is still the next cycle');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'the attempt is not silently dropped by sub-minute scheduler jitter');
-    strictAssertSame(array($hash, 'chk-del', '2:' . $now),
+    strictAssertSame([$hash, 'chk-del', '2:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
         'and the count it brought is recorded');
     strictAssertSame('deleting|2/3', hMessage(0), 'the progress the UI shows actually moved');
@@ -2253,10 +2253,10 @@ $suite->test('a scheduled cycle that arrives seconds early still advances the de
     // The tolerance is bounded: a re-check well inside the window is still a
     // re-check, not a second cycle.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . ($now - 3239)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . ($now - 3239)]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
         'six minutes early is not a cycle boundary');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'so chk-del is left exactly as it was');
@@ -2268,13 +2268,13 @@ $suite->test('a scheduled cycle that arrives seconds early still advances the de
     // invisible, and the defect this case exists for is an 18 s early arrival,
     // not a 1 s one.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . ($now - 3240)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . ($now - 3240)]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
         'a full tenth of the interval early is still the next cycle');
-    strictAssertSame(array($hash, 'chk-del', '2:' . $now),
+    strictAssertSame([$hash, 'chk-del', '2:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
         'the tolerance ends at 3240 s exactly, and the count it brought is recorded');
     strictAssertSame('deleting|2/3', hMessage(0), 'and the progress the UI shows moved');
@@ -2283,10 +2283,10 @@ $suite->test('a scheduled cycle that arrives seconds early still advances the de
     // gate(60) is max(60, 60 - 6) = 60, so 54 s early is early. Only interval
     // 60 can reach it, because confirmDeletion() floors $interval there.
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('1:' . ($now - 54)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['1:' . ($now - 54)]);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 60)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 60]),
         'at the minimum interval the tolerance is swallowed by the floor');
     strictAssertSame(0, count(rXMLRPCRequest::requestsFor('d.set_custom')),
         'so a tenth of a 60 s interval early does not advance the count');
@@ -2304,14 +2304,14 @@ $suite->test('a re-confirmed deletion stops at the threshold instead of reportin
     $now = 1000000;
 
     ruTrackerChecker::reset();
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('3:' . ($now - 7200))); // already settled
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));                   // no healthy verdict since
-    rXMLRPCRequest::queue('d.set_custom', true, false, array());
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['3:' . ($now - 7200)]); // already settled
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);                   // no healthy verdict since
+    rXMLRPCRequest::queue('d.set_custom', true, false, []);
 
     strictAssertSame(ruTrackerChecker::STE_DELETED,
-        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', array($hash, $now, 3600)),
+        strictInvoke('RuTrackerCheckImpl', 'confirmDeletion', [$hash, $now, 3600]),
         're-confirming a settled deletion keeps the verdict');
-    strictAssertSame(array($hash, 'chk-del', '3:' . $now),
+    strictAssertSame([$hash, 'chk-del', '3:' . $now],
         rXMLRPCRequest::requestsFor('d.set_custom')[0]['commands'][0]->params,
         'the count stays at the threshold, and only its stamp is refreshed');
     strictAssertSame('deleting|3/3', hMessage(0), 'no torrent is ever "confirmation cycle 4 of 3"');
@@ -2332,27 +2332,27 @@ $suite->test('a deletion counter older than the last healthy verdict is not a se
     // which one it saw, so this call site has to as well. 'says' is the exact
     // clause each cause owes the log, and the collected lines are compared
     // pairwise afterwards, so re-merging any two of them fails here.
-    $refusals = array();
-    foreach (array(
-        'a healthy verdict landed after the last increment' => array(
+    $refusals = [];
+    foreach ([
+        'a healthy verdict landed after the last increment' => [
             'stime' => '2000', 'readable' => true,
-            'says' => 'predates the last up-to-date verdict at 2000'),
-        'the healthy-verdict stamp will not parse' => array(
+            'says' => 'predates the last up-to-date verdict at 2000'],
+        'the healthy-verdict stamp will not parse' => [
             'stime' => '02000', 'readable' => true,
-            'says' => 'predates the last up-to-date verdict at a stamp that will not parse'),
-        'the healthy-verdict stamp cannot be read at all' => array(
+            'says' => 'predates the last up-to-date verdict at a stamp that will not parse'],
+        'the healthy-verdict stamp cannot be read at all' => [
             'stime' => '', 'readable' => false,
-            'says' => 'cannot be checked against an unreadable healthy-verdict timestamp'),
-    ) as $label => $case) {
+            'says' => 'cannot be checked against an unreadable healthy-verdict timestamp'],
+    ] as $label => $case) {
         hReset();
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         $GLOBALS['rutrackerAnnounceCap'] = 0; // the probe budget denies the recheck
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000'));  // chk-del: at the threshold
-        rXMLRPCRequest::queue('d.get_custom', $case['readable'], false, array($case['stime']));
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']);  // chk-del: at the threshold
+        rXMLRPCRequest::queue('d.get_custom', $case['readable'], false, [$case['stime']]);
 
         strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -2368,20 +2368,20 @@ $suite->test('a deletion counter older than the last healthy verdict is not a se
         // canonicalNonnegativeInteger() accepted may reach the log, which is
         // why the first case may (and does) print its stamp and the second
         // must not.
-        if ($case['stime'] === '02000')
-            foreach (ruTrackerChecker::$logs as $logged)
+        if ($case['stime'] === '02000') {
+            foreach (ruTrackerChecker::$logs as $logged) {
                 strictAssertTrue(strpos($logged, $case['stime']) === false,
-                    $label . ': an unparseable stored value is never echoed back: ' . $logged);
+                    $label . ': an unparseable stored value is never echoed back: ' . $logged); } }
     }
     // Three causes, three sentences. Hard-coding one for all of them is the
     // regression this pins: it told an operator to hunt for a recent healthy
     // verdict when the field was simply corrupt.
-    foreach ($refusals as $labelA => $lineA)
-        foreach ($refusals as $labelB => $lineB)
-            if ($labelA !== $labelB)
+    foreach ($refusals as $labelA => $lineA) {
+        foreach ($refusals as $labelB => $lineB) {
+            if ($labelA !== $labelB) {
                 strictAssertTrue($lineA !== $lineB,
                     'two different causes must not produce the same refusal line: '
-                    . $labelA . ' vs ' . $labelB . ': ' . $lineA);
+                    . $labelA . ' vs ' . $labelB . ': ' . $lineA); } } }
 
     // Control: the same denial with the count NEWER than the healthy verdict
     // is the case the settled-verdict guard exists for, and it still holds.
@@ -2389,11 +2389,11 @@ $suite->test('a deletion counter older than the last healthy verdict is not a se
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     $GLOBALS['rutrackerAnnounceCap'] = 0;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(hCandidateRow()));
+    hQueueLayer1([hCandidateRow()]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('3:3000'));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('2000'));
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['3:3000']);
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['2000']);
 
     strictAssertSame(ruTrackerChecker::STE_DELETED,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
@@ -2413,11 +2413,11 @@ $suite->test('a settled deletion that survives a transient bad read gets its pro
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         $GLOBALS['rutrackerAnnounceCap'] = 0; // the probe budget denies the recheck
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         hQueueForum(1106);
         Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-        rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000')); // chk-del: settled
-        rXMLRPCRequest::queue('d.get_custom', $stimeReadable, false, array($stime));
+        rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']); // chk-del: settled
+        rXMLRPCRequest::queue('d.get_custom', $stimeReadable, false, [$stime]);
         return RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent);
     };
 
@@ -2449,16 +2449,16 @@ $suite->test('an announce row that cannot become a probe URL does not read as a 
     hReset();
     $GLOBALS['rutrackerLayer2Enabled'] = true;
     hQueueTopicKnown($topicId);
-    hQueueLayer1(array(array('udp://bt.t-ru.org:2710', 1, 6, 0)));
+    hQueueLayer1([['udp://bt.t-ru.org:2710', 1, 6, 0]]);
     hQueueForum(1106);
     Snoopy::queue(RuTrackerForumIndex::DUMP_URL . '1106', 200, fiDump(99999, 0, str_repeat('C', 40)));
-    rXMLRPCRequest::queue('d.get_custom', true, false, array('3:1000')); // chk-del: fully confirmed
-    rXMLRPCRequest::queue('d.get_custom', true, false, array(''));       // no healthy verdict on record
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['3:1000']); // chk-del: fully confirmed
+    rXMLRPCRequest::queue('d.get_custom', true, false, ['']);       // no healthy verdict on record
 
     strictAssertSame(ruTrackerChecker::STE_DELETED,
         RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),
         'a probe that was never sent cannot downgrade the settled verdict');
-    strictAssertSame(array(array('fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106')), Snoopy::$requests,
+    strictAssertSame([['fetchComplex', RuTrackerForumIndex::DUMP_URL . '1106']], Snoopy::$requests,
         'and no announce request went out to earn that: only the dump was fetched');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'cannot be turned into a probe URL',
         'the unusable announce row is logged as a skip');
@@ -2474,7 +2474,7 @@ $suite->test('an announce row that cannot become a probe URL does not read as a 
 // PROBE_PAUSE_MAX.
 $suite->test('the probe pause and its jitter both come out of probePause\'s clamp', function () {
     $sleepFor = function ($configured) {
-        return strictInvoke('RuTrackerCheckImpl', 'probeSleepSeconds', array($configured));
+        return strictInvoke('RuTrackerCheckImpl', 'probeSleepSeconds', [$configured]);
     };
     // The jitter is random, so every case is drawn repeatedly rather than once.
     for ($draw = 0; $draw < 40; $draw++) {
@@ -2503,9 +2503,9 @@ $suite->test('a configured pause of 0 costs the probe path no wall-clock time',
         $GLOBALS['rutrackerLayer2Enabled'] = true;
         $GLOBALS['rutrackerAnnouncePause'] = 0;
         hQueueTopicKnown($topicId);
-        hQueueLayer1(array(hCandidateRow()));
+        hQueueLayer1([hCandidateRow()]);
         Snoopy::queueAny(200, hRegisteredBody());
-        rXMLRPCRequest::queue('d.set_custom', true, false, array()); // resetDeletion
+        rXMLRPCRequest::queue('d.set_custom', true, false, []); // resetDeletion
 
         strictAssertSame(ruTrackerChecker::STE_UPTODATE,
             RuTrackerCheckImpl::download_torrent($topicUrl, $hash, $oldTorrent),

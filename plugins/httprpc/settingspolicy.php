@@ -6,7 +6,7 @@
  */
 class HttprpcSettingsPolicy
 {
-	private static $writableKeys = array(
+	private static $writableKeys = [
 		'ncheck_hash', 'sbind', 'sdht_port', 'sdirectory', 'sdownload_rate',
 		'shash_interval', 'shash_max_tries', 'shash_read_ahead', 'shttp_cacert', 'shttp_capath',
 		'shttp_proxy', 'sip', 'smax_downloads_div', 'nmax_downloads_global', 'smax_file_size',
@@ -17,13 +17,13 @@ class HttprpcSettingsPolicy
 		'nscgi_dont_route', 'ssend_buffer_size', 'ssession', 'nsession_lock', 'nsession_on_completion',
 		'ssplit_file_size', 'ssplit_suffix', 'stimeout_safe_sync', 'stimeout_sync', 'stracker_numwant',
 		'nuse_udp_trackers', 'smax_uploads_div',
-	);
+	];
 
 	public static function readCommands()
 	{
-		$commands = array();
-		foreach(self::$writableKeys as $key)
-			$commands[] = 'get_'.substr($key, 1);
+		$commands = [];
+		foreach(self::$writableKeys as $key) {
+			$commands[] = 'get_'.substr($key, 1); }
 		// This value is shown by the settings page but has no input.
 		$commands[] = 'get_max_open_sockets';
 		return $commands;

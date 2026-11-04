@@ -19,7 +19,7 @@ require_once(__DIR__ . '/AddTorrentHttpHarness.php');
 final class AddTorrentUploadLimitTest extends TestCase
 {
 	/** What PHP-FPM 8.5 with register_argc_argv on raises after the upload warning. */
-	const LATER_STARTUP_DIAGNOSTIC = '@trigger_error(\'Deriving $_SERVER["argv"] from the query string is deprecated\', E_USER_DEPRECATED);';
+	public const LATER_STARTUP_DIAGNOSTIC = '@trigger_error(\'Deriving $_SERVER["argv"] from the query string is deprecated\', E_USER_DEPRECATED);';
 
 	private $server = null;
 
@@ -27,45 +27,21 @@ final class AddTorrentUploadLimitTest extends TestCase
 	{
 		if ($this->server !== null) {
 			// PHP's own refusals of the upload are what these cases provoke.
-			$diagnostics = $this->server->phpDiagnostics(array(
+			$diagnostics = $this->server->phpDiagnostics([
 				'/Maximum number of allowable file uploads has been exceeded/',
 				'/POST Content-Length of [0-9]+ bytes exceeds the limit/',
-				'/Deriving \$_SERVER\["argv"\] from the query string is deprecated/'));
+				'/Deriving \$_SERVER\["argv"\] from the query string is deprecated/']);
 			$this->server->close();
-			$this->assertSame(array(), $diagnostics,
+			$this->assertSame([], $diagnostics,
 				'no PHP diagnostic beyond the provoked ones: ' . implode(' | ', $diagnostics));
 		}
 		$this->server = null;
 	}
 
-	/**
-	 * Upload $count invalid torrents to a server that accepts $limit files,
-	 * declaring $declared selected files when it is not null.
-	 */
-	private function upload($count, $limit, $declared = null, array $options = array())
-	{
-		$this->server = AddTorrentHttpHarness::forAddTorrent(
-			new FakeRtorrentAddTorrentReplies(array(), array(), false),
-			array_merge(array('ini' => array('max_file_uploads' => (string)$limit)), $options));
-		$names = array();
-		for ($index = 0; $index < $count; $index++)
-			$names[] = sprintf('%02d.torrent', $index);
-		list($contentType, $body) = AddTorrentHttpHarness::multipart(
-			AddTorrentHttpHarness::torrentFiles($names, str_repeat('x', 512)));
-		$query = $declared === null ? '' : '?torrent_file_count=' . rawurlencode((string)$declared);
-		$response = $this->server->request('POST', '/php/addtorrent.php' . $query, $body,
-			array('Content-Type' => $contentType));
-		$this->assertSame(302, $response['code'], 'the upload answers with its result redirect');
-		$location = $response['headers']['location'] ?? '';
-		parse_str((string)substr((string)strstr($location, '?'), 1), $fields);
-		return array('location' => $location,
-			'results' => $fields['result'] ?? array(), 'names' => $fields['name'] ?? array());
-	}
-
 	public function testTheDialogCountNamesTheFilesBeyondTheLimit()
 	{
 		$answer = $this->upload(5, 3, 5);
-		$this->assertSame(array('FailedFile', 'FailedFile', 'FailedFile', 'Failed'), $answer['results'],
+		$this->assertSame(['FailedFile', 'FailedFile', 'FailedFile', 'Failed'], $answer['results'],
 			'the three registered files keep their results and the rest are one failure');
 		$this->assertSame('Not processed: 2 of the 5 selected files (max_file_uploads=3)',
 			$answer['names'][3] ?? null, 'the failure counts the files left out and names the limit');
@@ -80,7 +56,7 @@ final class AddTorrentUploadLimitTest extends TestCase
 
 	public function testTheCountSurvivesALaterStartupDiagnostic()
 	{
-		$answer = $this->upload(5, 3, 5, array('preamble' => self::LATER_STARTUP_DIAGNOSTIC));
+		$answer = $this->upload(5, 3, 5, ['preamble' => self::LATER_STARTUP_DIAGNOSTIC]);
 		$this->assertSame('Not processed: 2 of the 5 selected files (max_file_uploads=3)',
 			$answer['names'][3] ?? null,
 			'a diagnostic after the upload warning cannot hide what the count shows');
@@ -89,7 +65,7 @@ final class AddTorrentUploadLimitTest extends TestCase
 	public function testWithoutACountThePhpWarningStillReportsTheDrop()
 	{
 		$answer = $this->upload(5, 3);
-		$this->assertSame(array('FailedFile', 'FailedFile', 'FailedFile', 'Failed'), $answer['results'],
+		$this->assertSame(['FailedFile', 'FailedFile', 'FailedFile', 'Failed'], $answer['results'],
 			'a client without a count still learns that files were left out');
 		$this->assertSame('Not processed: the files after the first 3 (max_file_uploads=3)',
 			$answer['names'][3] ?? null, 'from the warning PHP left when nothing replaced it');
@@ -97,9 +73,9 @@ final class AddTorrentUploadLimitTest extends TestCase
 
 	public function testAnUploadWithinTheLimitHasNoLimitFailure()
 	{
-		foreach (array(3, null) as $declared) {
+		foreach ([3, null] as $declared) {
 			$answer = $this->upload(3, 3, $declared);
-			$this->assertSame(array('FailedFile', 'FailedFile', 'FailedFile'), $answer['results'],
+			$this->assertSame(['FailedFile', 'FailedFile', 'FailedFile'], $answer['results'],
 				'an upload at the limit answers for its files only, count ' . var_export($declared, true));
 			$this->assertTrue(strpos($this->server->applicationLog(), 'upload incomplete') === false,
 				'and logs no refusal, count ' . var_export($declared, true));
@@ -109,9 +85,9 @@ final class AddTorrentUploadLimitTest extends TestCase
 
 	public function testAnImplausibleCountIsIgnored()
 	{
-		foreach (array('2', 'x', '-1', '1e3', '') as $declared) {
+		foreach (['2', 'x', '-1', '1e3', ''] as $declared) {
 			$answer = $this->upload(3, 5, $declared);
-			$this->assertSame(array('FailedFile', 'FailedFile', 'FailedFile'), $answer['results'],
+			$this->assertSame(['FailedFile', 'FailedFile', 'FailedFile'], $answer['results'],
 				'a count of ' . var_export($declared, true) . ' adds no failure');
 			$this->tearDown();
 		}
@@ -119,11 +95,35 @@ final class AddTorrentUploadLimitTest extends TestCase
 
 	public function testFilesLostToPostMaxSizeAreCountedWithoutBlamingTheFileLimit()
 	{
-		$answer = $this->upload(3, 100, 3, array('ini' => array('max_file_uploads' => '100',
-			'post_max_size' => '1K')));
-		$this->assertSame(array('Failed'), $answer['results'],
+		$answer = $this->upload(3, 100, 3, ['ini' => ['max_file_uploads' => '100',
+			'post_max_size' => '1K']]);
+		$this->assertSame(['Failed'], $answer['results'],
 			'PHP discarded the whole body, and the answer is the one failure');
-		$this->assertSame(array('Not processed: 3 of the 3 selected files'), $answer['names'],
+		$this->assertSame(['Not processed: 3 of the 3 selected files'], $answer['names'],
 			'it counts the files and does not name a limit that was not reached');
+	}
+
+	/**
+	 * Upload $count invalid torrents to a server that accepts $limit files,
+	 * declaring $declared selected files when it is not null.
+	 */
+	private function upload($count, $limit, $declared = null, array $options = [])
+	{
+		$this->server = AddTorrentHttpHarness::forAddTorrent(
+			new FakeRtorrentAddTorrentReplies([], [], false),
+			array_merge(['ini' => ['max_file_uploads' => (string)$limit]], $options));
+		$names = [];
+		for ($index = 0; $index < $count; $index++) {
+			$names[] = sprintf('%02d.torrent', $index); }
+		list($contentType, $body) = AddTorrentHttpHarness::multipart(
+			AddTorrentHttpHarness::torrentFiles($names, str_repeat('x', 512)));
+		$query = $declared === null ? '' : '?torrent_file_count=' . rawurlencode((string)$declared);
+		$response = $this->server->request('POST', '/php/addtorrent.php' . $query, $body,
+			['Content-Type' => $contentType]);
+		$this->assertSame(302, $response['code'], 'the upload answers with its result redirect');
+		$location = $response['headers']['location'] ?? '';
+		parse_str((string)substr((string)strstr($location, '?'), 1), $fields);
+		return ['location' => $location,
+			'results' => $fields['result'] ?? [], 'names' => $fields['name'] ?? []];
 	}
 }

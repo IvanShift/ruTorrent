@@ -23,13 +23,13 @@ class DataDirTestState
     public static $active = true;
     public static $open = true;
     public static $label = '';
-    public static $customs = array();
-    public static $calls = array();
-    public static $logs = array();
-    public static $created = array();
+    public static $customs = [];
+    public static $calls = [];
+    public static $logs = [];
+    public static $created = [];
     public static $crashAtFiles = false;
     public static $basePath = '/data/downloads/file';
-    public static $files = array('file');
+    public static $files = ['file'];
     public static $runFailure = null;
     public static $restoredStart = false;
     public static $afterRetireFailure = false;
@@ -40,7 +40,7 @@ class DataDirTestState
     public static $filesystem = null;
     public static $hideJob = false;
 
-    public static function reset($active = true, $open = true, $label = '', $customs = array())
+    public static function reset($active = true, $open = true, $label = '', $customs = [])
     {
         self::$filesystem = null;
         self::$hideJob = false;
@@ -48,25 +48,25 @@ class DataDirTestState
         self::$open = $open;
         self::$label = $label;
         self::$customs = $customs;
-        self::$calls = array();
-        self::$logs = array();
-        self::$created = array();
+        self::$calls = [];
+        self::$logs = [];
+        self::$created = [];
         self::$crashAtFiles = false;
         self::$basePath = '/data/downloads/file';
-        self::$files = array('file');
+        self::$files = ['file'];
         self::$runFailure = null;
         self::$restoredStart = false;
         self::$afterRetireFailure = false;
         self::$cancelRefusal = false;
-        if (self::$root !== null) strictRemoveTree(self::$root);
+        if (self::$root !== null) { strictRemoveTree(self::$root); }
         self::$root = realpath(getenv('TMPDIR') ?: sys_get_temp_dir()) . '/setdir-guard-' . bin2hex(random_bytes(6));
         mkdir(self::$root, 0700);
         mkdir(self::$root . '/jobs', 0700);
         self::helper(null);
         rXMLRPCRequest::reset();
         $keys = RuTrackerAtomicOwnership::ownershipKeys();
-        $commands = array('d.get_custom1');
-        $values = array($label);
+        $commands = ['d.get_custom1'];
+        $values = [$label];
         foreach ($keys as $key) {
             $commands[] = 'd.get_custom';
             $values[] = isset($customs[$key]) ? $customs[$key] : '';
@@ -89,18 +89,18 @@ class DataDirTestState
     public static function probes()
     {
         $log = @file(self::$root . '/helper.log', FILE_IGNORE_NEW_LINES);
-        $probes = array();
-        foreach ($log === false ? array() : $log as $line)
-            if (strpos($line, '--probe ') === 0) $probes[] = substr($line, 8);
+        $probes = [];
+        foreach ($log === false ? [] : $log as $line) {
+            if (strpos($line, '--probe ') === 0) { $probes[] = substr($line, 8); } }
         return $probes;
     }
 }
 
 register_shutdown_function(function () {
-    if (DataDirTestState::$root !== null) strictRemoveTree(DataDirTestState::$root);
+    if (DataDirTestState::$root !== null) { strictRemoveTree(DataDirTestState::$root); }
 });
 
-class DataDirMoveIntent { const MAX_FILES = 100000; public static function trustedDirectory($path) { return true; } }
+class DataDirMoveIntent { public const MAX_FILES = 100000; public static function trustedDirectory($path) { return true; } }
 class DataDirMoveRefused extends RuntimeException {}
 class DataDirMoveJob
 {
@@ -116,20 +116,20 @@ class DataDirMoveJob
         // A phase write renames the document in place; its new name may then
         // answer ENOENT for a while (drvfs over 9p, 2026-10-11).
         if (DataDirTestState::$hideJob
-            && !DataDirTestState::$filesystem->hide(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json'))
-            throw new LogicException('job document fixture unavailable');
+            && !DataDirTestState::$filesystem->hide(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json')) {
+            throw new LogicException('job document fixture unavailable'); }
         if (DataDirTestState::$cancelRefusal) {
             unlink(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json');
             throw new DataDirMoveRefused('proven-cancellation');
         }
-        if (DataDirTestState::$runFailure !== null)
-            throw new RuntimeException(DataDirTestState::$runFailure);
+        if (DataDirTestState::$runFailure !== null) {
+            throw new RuntimeException(DataDirTestState::$runFailure); }
         @unlink(DataDirTestState::$root . '/jobs/' . str_repeat('A', 40) . '.json');
         return true;
     }
     public function restoredStart()
     {
-        if (DataDirTestState::$afterRetireFailure) throw new RuntimeException('after-retire');
+        if (DataDirTestState::$afterRetireFailure) { throw new RuntimeException('after-retire'); }
         return DataDirTestState::$restoredStart;
     }
 }
@@ -149,28 +149,28 @@ function rtDataDirJournal() { return DataDirTestState::$root . '/jobs'; }
 function rtDataDirFilesystem()
 {
     static $files = null;
-    if (DataDirTestState::$filesystem !== null) return DataDirTestState::$filesystem;
-    if ($files === null) $files = new DataDirScriptedFilesystem();
+    if (DataDirTestState::$filesystem !== null) { return DataDirTestState::$filesystem; }
+    if ($files === null) { $files = new DataDirScriptedFilesystem(); }
     return $files;
 }
 function rtExec($commands, $hash, $debug = false)
 {
     DataDirTestState::$calls[] = $commands;
-    if ($commands === array('d.is_open', 'd.local_id', 'd.directory'))
-        return (object) array('val' => array((int) DataDirTestState::$open,
-            '0123456789abcdef0123456789abcdef', '/data/downloads'));
-    if ($commands === array('d.get_name', 'd.get_base_path', 'd.get_base_filename',
-        'd.is_multi_file'))
-        return (object) array('val' => array('file', DataDirTestState::$basePath, 'file', 0));
-    if ($commands === array('d.open', 'd.get_name', 'd.get_base_path',
-        'd.get_base_filename', 'd.is_multi_file', 'd.close')) {
-        $values = array(0, 'file', DataDirTestState::$basePath, 'file', 0, 0);
-        return (object) array('val' => $values);
+    if ($commands === ['d.is_open', 'd.local_id', 'd.directory']) {
+        return (object) ['val' => [(int) DataDirTestState::$open,
+            '0123456789abcdef0123456789abcdef', '/data/downloads']]; }
+    if ($commands === ['d.get_name', 'd.get_base_path', 'd.get_base_filename',
+        'd.is_multi_file']) {
+        return (object) ['val' => ['file', DataDirTestState::$basePath, 'file', 0]]; }
+    if ($commands === ['d.open', 'd.get_name', 'd.get_base_path',
+        'd.get_base_filename', 'd.is_multi_file', 'd.close']) {
+        $values = [0, 'file', DataDirTestState::$basePath, 'file', 0, 0];
+        return (object) ['val' => $values];
     }
     if ($commands === 'f.multicall') {
-        if (DataDirTestState::$crashAtFiles)
-            throw new RuntimeException('injected worker crash');
-        return (object) array('val' => DataDirTestState::$files);
+        if (DataDirTestState::$crashAtFiles) {
+            throw new RuntimeException('injected worker crash'); }
+        return (object) ['val' => DataDirTestState::$files];
     }
     throw new RuntimeException('unexpected command');
 }
@@ -179,11 +179,11 @@ function rtExec($commands, $hash, $debug = false)
 define('DATADIR_START_CHECK_SECONDS', 0.3);
 
 $source = getenv('DATADIR_TEST_SOURCE');
-if (!$source) $source = testFindRepoRoot() . '/plugins/datadir/util_setdir.php';
-foreach (array('rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirCollision', 'rtDataDirProbeRename',
+if (!$source) { $source = testFindRepoRoot() . '/plugins/datadir/util_setdir.php'; }
+foreach (['rtDataDirOwnership', 'rtDataDirSnapshot', 'rtDataDirCollision', 'rtDataDirProbeRename',
     'rtSetDataDir', 'rtDataDirStartOutcome', 'rtDataDirHeld', 'rtDataDirPendingRefusal',
-    'rtDataDirWorkerRefusal') as $name)
-    eval(loadFunctionDefinition($source, $name));
+    'rtDataDirWorkerRefusal'] as $name) {
+    eval(loadFunctionDefinition($source, $name)); }
 eval(loadFunctionDefinition(testFindRepoRoot() . '/plugins/datadir/apply.php', 'rtDataDirClaimRefusal'));
 
 $suite = new StrictTestSuite();
@@ -193,14 +193,14 @@ $suite->test('a prior document refuses before claiming and stays visibly recover
     DataDirTestState::reset();
     $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
     file_put_contents($path, '{}');
-    rXMLRPCRequest::queue('d.get_directory', true, false, array('/original'));
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.message.set'), true, false, array(0, 0));
-    rXMLRPCRequest::queue('d.save_full_session', true, false, array(0));
+    rXMLRPCRequest::queue('d.get_directory', true, false, ['/original']);
+    rXMLRPCRequest::queue(['d.set_custom', 'd.message.set'], true, false, [0, 0]);
+    rXMLRPCRequest::queue('d.save_full_session', true, false, [0]);
     strictAssertSame('prior-job-pending', rtDataDirPendingRefusal($hash), 'web admission refuses the existing document');
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, true, false, false, $failure),
         'the worker refuses the existing document under its lock');
     strictAssertSame('prior-job-pending', $failure, 'the owning document is the actual refusal');
-    strictAssertSame(array(), DataDirTestState::$calls, 'no new claim or payload probe runs');
+    strictAssertSame([], DataDirTestState::$calls, 'no new claim or payload probe runs');
     strictAssertSame('{}', file_get_contents($path), 'unknown document bytes remain untouched');
     $writes = rXMLRPCRequest::requestsFor('d.set_custom|d.message.set');
     strictAssertSame(1, count($writes), 'held refusal is saved in the durable outcome and immediate message');
@@ -214,9 +214,9 @@ $suite->test('a detached worker cannot hide its refusal behind an existing docum
     DataDirTestState::reset();
     $path = DataDirTestState::$root . '/jobs/' . $hash . '.json';
     file_put_contents($path, '{}');
-    rXMLRPCRequest::queue('d.get_directory', true, false, array('/original'));
-    rXMLRPCRequest::queue(array('d.set_custom', 'd.message.set'), true, false, array(0, 0));
-    rXMLRPCRequest::queue('d.save_full_session', true, false, array(0));
+    rXMLRPCRequest::queue('d.get_directory', true, false, ['/original']);
+    rXMLRPCRequest::queue(['d.set_custom', 'd.message.set'], true, false, [0, 0]);
+    rXMLRPCRequest::queue('d.save_full_session', true, false, [0]);
     rtDataDirWorkerRefusal($hash, 'job-paths-ambiguous-unmoved-unproven');
     strictAssertSame(1, count(rXMLRPCRequest::requestsFor('d.set_custom|d.message.set')),
         'a held worker publishes its outcome');
@@ -235,19 +235,19 @@ $suite->test('a closed torrent preflight refuses an unsupported new destination 
         strictAssertSame('rename-noreplace-unsupported path=' . erasedataLogPath($ancestor) . ' errno=95',
             $e->getMessage(), 'the filesystem refusal is classified with its path and errno');
     }
-    strictAssertSame(array($ancestor), DataDirTestState::probes(), 'existing destination ancestor is probed');
-    strictAssertSame(array(array('d.is_open', 'd.local_id', 'd.directory')), DataDirTestState::$calls,
+    strictAssertSame([$ancestor], DataDirTestState::probes(), 'existing destination ancestor is probed');
+    strictAssertSame([['d.is_open', 'd.local_id', 'd.directory']], DataDirTestState::$calls,
         'closed torrent is never opened or claimed');
     strictAssertSame(false, file_exists($destination), 'preflight never creates the destination');
-    strictAssertSame(array(), DataDirTestState::$logs, 'the shared preflight writes no erasedata line');
+    strictAssertSame([], DataDirTestState::$logs, 'the shared preflight writes no erasedata line');
 });
 
 $suite->test('a closed torrent on a supported destination remains eligible for worker dispatch', function () use ($hash) {
     DataDirTestState::reset(false, false);
     $ancestor = DataDirTestState::$root;
     strictAssertSame('', rtDataDirCollision($hash, $ancestor, false), 'closed metadata does not invent a collision');
-    strictAssertSame(array($ancestor), DataDirTestState::probes(), 'destination support is checked despite closed metadata');
-    strictAssertSame(array(array('d.is_open', 'd.local_id', 'd.directory')), DataDirTestState::$calls,
+    strictAssertSame([$ancestor], DataDirTestState::probes(), 'destination support is checked despite closed metadata');
+    strictAssertSame([['d.is_open', 'd.local_id', 'd.directory']], DataDirTestState::$calls,
         'read-only admission leaves torrent state untouched');
 });
 
@@ -255,19 +255,19 @@ $suite->test('service label refuses before claim and records the reason once', f
     DataDirTestState::reset(true, true, '.chk-meta');
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, true, false, $failure),
         'service item stays held');
-    strictAssertSame(array(), DataDirTestState::$calls, 'no claim or stop was attempted');
+    strictAssertSame([], DataDirTestState::$calls, 'no claim or stop was attempted');
     strictAssertSame('active-checker-transaction-or-service-label', $failure, 'the caller receives the reason');
-    strictAssertSame(array('datadir: change refused hash=' . $hash
-        . ' reason=active-checker-transaction-or-service-label'), DataDirTestState::$logs,
+    strictAssertSame(['datadir: change refused hash=' . $hash
+        . ' reason=active-checker-transaction-or-service-label'], DataDirTestState::$logs,
         'one classified line per refusal');
 });
 
 $suite->test('predecessor and staged markers refuse before claim', function () use ($hash) {
-    foreach (array('chk-meta-new', 'chk-replacing') as $key) {
-        DataDirTestState::reset(true, true, '', array($key => str_repeat('B', 40)));
+    foreach (['chk-meta-new', 'chk-replacing'] as $key) {
+        DataDirTestState::reset(true, true, '', [$key => str_repeat('B', 40)]);
         strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, false),
             'active role is held');
-        strictAssertSame(array(), DataDirTestState::$calls, 'no daemon action for ' . $key);
+        strictAssertSame([], DataDirTestState::$calls, 'no daemon action for ' . $key);
     }
 });
 
@@ -276,20 +276,20 @@ $suite->test('unreadable ownership refuses before claim with a visible reason', 
     rXMLRPCRequest::reset();
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, false, true),
         'unreadable preflight is held');
-    strictAssertSame(array(), DataDirTestState::$calls, 'no claim after failed preflight');
+    strictAssertSame([], DataDirTestState::$calls, 'no claim after failed preflight');
     strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs),
         'unreadable-checker-ownership') !== false, 'unknown ownership is visible');
 });
 
 $suite->test('the claim ABI answer maps to one refusal vocabulary', function () {
-    $map = array();
-    foreach (array('available', 'unsupported', 'unknown') as $capability) {
+    $map = [];
+    foreach (['available', 'unsupported', 'unknown'] as $capability) {
         $GLOBALS['dataDirCapability'] = $capability;
         $map[$capability] = rtDataDirClaimRefusal();
     }
     unset($GLOBALS['dataDirCapability']);
-    strictAssertSame(array('available' => '', 'unsupported' => 'daemon-claim-unavailable',
-        'unknown' => 'daemon-claim-unconfirmed'), $map, 'a missing method is never inferred from an unknown answer');
+    strictAssertSame(['available' => '', 'unsupported' => 'daemon-claim-unavailable',
+        'unknown' => 'daemon-claim-unconfirmed'], $map, 'a missing method is never inferred from an unknown answer');
 });
 
 $suite->test('a directory change does not read the claim ABI again', function () use ($hash) {
@@ -350,8 +350,8 @@ $suite->test('missing no-replace helper refuses before a native claim', function
     DataDirTestState::helper(null, false);
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, true, false),
         'move cannot publish a job without its primitive');
-    strictAssertSame(array(), DataDirTestState::$calls, 'no claim or stop is attempted');
-    strictAssertSame(array(), DataDirTestState::$created, 'no job is published');
+    strictAssertSame([], DataDirTestState::$calls, 'no claim or stop is attempted');
+    strictAssertSame([], DataDirTestState::$created, 'no job is published');
     strictAssertTrue(strpos(implode(' ', DataDirTestState::$logs),
         'rename-noreplace-helper-unavailable') !== false, 'missing helper is visible');
 });
@@ -362,12 +362,12 @@ $suite->test('initially closed payload read returns to closed state before job',
     strictAssertSame(false, rtSetDataDir($hash, DataDirTestState::$root, true, true, false),
         'failed projection does not start a job');
     strictAssertSame(false, DataDirTestState::$open, 'closed state is preserved');
-    strictAssertSame(array(), DataDirTestState::$created, 'no partial job is published');
+    strictAssertSame([], DataDirTestState::$created, 'no partial job is published');
 });
 
 $suite->test('ordinary checker customs are retained in the job handoff', function () use ($hash) {
-    DataDirTestState::reset(true, true, '', array('chk-state' => '3',
-        'chk-forum-version' => '1234567890123456'));
+    DataDirTestState::reset(true, true, '', ['chk-state' => '3',
+        'chk-forum-version' => '1234567890123456']);
     strictAssertSame(true, rtSetDataDir($hash, DataDirTestState::$root, false, false, false),
         'ordinary checker values permit job');
     strictAssertSame(1, count(DataDirTestState::$created), 'one job is created');
@@ -415,31 +415,31 @@ $suite->test('unsupported move mount refuses before a job or daemon stop, once a
     DataDirTestState::$basePath = $root . '/source/file';
     DataDirTestState::helper($root . '/destination');
     strictAssertSame(false, rtSetDataDir($hash, $root . '/destination', false, true, false), 'Unsupported filesystem refuses');
-    strictAssertSame(array(), DataDirTestState::$created, 'No move journal is published');
+    strictAssertSame([], DataDirTestState::$created, 'No move journal is published');
     strictAssertSame(true, DataDirTestState::$active, 'Preflight does not stop the daemon');
     strictAssertSame('source', file_get_contents($root . '/source/file'), 'Payload is unchanged');
-    strictAssertSame(array('datadir: change refused hash=' . $hash . ' reason=rename-noreplace-unsupported path='
-        . erasedataLogPath($root . '/destination') . ' errno=95'), DataDirTestState::$logs,
+    strictAssertSame(['datadir: change refused hash=' . $hash . ' reason=rename-noreplace-unsupported path='
+        . erasedataLogPath($root . '/destination') . ' errno=95'], DataDirTestState::$logs,
         'one datadir line carries the classified reason and errno');
-    strictAssertSame(array($root . '/source', $root . '/destination'), DataDirTestState::probes(),
+    strictAssertSame([$root . '/source', $root . '/destination'], DataDirTestState::probes(),
         'source and destination parents are each probed once');
 });
 
 $suite->test('a link inside the payload cannot point the move preflight outside its root', function () use ($hash) {
     DataDirTestState::reset();
     $root = DataDirTestState::$root;
-    foreach (array('/source', '/outside', '/destination') as $directory) mkdir($root . $directory, 0700);
+    foreach (['/source', '/outside', '/destination'] as $directory) { mkdir($root . $directory, 0700); }
     symlink($root . '/outside', $root . '/source/link');
     file_put_contents($root . '/source/file', 'source');
     DataDirTestState::$basePath = $root . '/source/file';
-    DataDirTestState::$files = array('file', 'link/escaped');
+    DataDirTestState::$files = ['file', 'link/escaped'];
     strictAssertSame(false, rtSetDataDir($hash, $root . '/destination', false, true, false, false, $failure),
         'a payload parent outside its root refuses');
     strictAssertSame(0, strpos($failure, 'rename-noreplace-parent-outside-root path='
         . erasedataLogPath($root . '/source/link')), 'the outside parent is classified: ' . $failure);
     strictAssertSame(false, in_array($root . '/outside', DataDirTestState::probes(), true),
         'the helper never probes the outside directory');
-    strictAssertSame(array(), DataDirTestState::$created, 'no job is published');
+    strictAssertSame([], DataDirTestState::$created, 'no job is published');
 });
 
 // R4-FS-02: a source parent must exist; only destination parents may be
@@ -448,10 +448,10 @@ $suite->test('a link inside the payload cannot point the move preflight outside 
 $suite->test('a missing source subdirectory refuses the move preflight with its classified reason', function () use ($hash) {
     DataDirTestState::reset();
     $root = DataDirTestState::$root;
-    foreach (array('/source', '/destination') as $directory) mkdir($root . $directory, 0700);
+    foreach (['/source', '/destination'] as $directory) { mkdir($root . $directory, 0700); }
     file_put_contents($root . '/source/file', 'source');
     DataDirTestState::$basePath = $root . '/source/file';
-    DataDirTestState::$files = array('file', 'sub/missing');
+    DataDirTestState::$files = ['file', 'sub/missing'];
     try {
         rtDataDirCollision($hash, $root . '/destination', false);
         throw new LogicException('a missing source parent was admitted');
@@ -461,7 +461,7 @@ $suite->test('a missing source subdirectory refuses the move preflight with its 
     }
     strictAssertSame(false, in_array($root . '/source', DataDirTestState::probes(), true),
         'nothing is probed before the source is known to exist');
-    strictAssertSame(array(), DataDirTestState::$created, 'no job is published');
+    strictAssertSame([], DataDirTestState::$created, 'no job is published');
     strictAssertSame(false, file_exists($root . '/destination/source'), 'no destination directory is made');
 });
 
@@ -469,12 +469,12 @@ $suite->test('a restored start that rTorrent stops after its hash check is a vis
     DataDirTestState::reset();
     mkdir(DataDirTestState::$root . '/new', 0700);
     DataDirTestState::$restoredStart = true;
-    rXMLRPCRequest::queue(array('d.hashing', 'd.state'), true, false, array('1', '1'));
-    rXMLRPCRequest::queue(array('d.hashing', 'd.state'), true, false, array('0', '0'));
-    rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, array(DataDirTestState::$root . '/new'));
+    rXMLRPCRequest::queue(['d.hashing', 'd.state'], true, false, ['1', '1']);
+    rXMLRPCRequest::queue(['d.hashing', 'd.state'], true, false, ['0', '0']);
+    rXMLRPCRequest::queue(getCmd('d.get_directory'), true, false, [DataDirTestState::$root . '/new']);
     $write = getCmd('d.set_custom') . '|' . getCmd('d.message.set');
-    rXMLRPCRequest::queue($write, true, false, array('0', '0'));
-    rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, array('0'));
+    rXMLRPCRequest::queue($write, true, false, ['0', '0']);
+    rXMLRPCRequest::queue(getCmd('d.save_full_session'), true, false, ['0']);
     strictAssertSame(true, rtSetDataDir($hash, DataDirTestState::$root . '/new', true, false, false, false, $failure, $warning),
         'the directory change itself succeeded');
     strictAssertSame('stopped-after-hash-check', $warning, 'the caller receives the classified stop');
@@ -486,33 +486,33 @@ $suite->test('a restored start that rTorrent stops after its hash check is a vis
         . DataDirTestState::$root . '/new; '), 'the message is classified: ' . $message->params[1]);
     // ACC-OWNB-01: the next tracker answer clears d.message; the outcome stays.
     $outcome = json_decode(rawurldecode($custom->params[2]), true);
-    strictAssertSame(array($hash, 'x-datadir-outcome', 'stopped-after-hash-check', $message->params[1], true),
-        array($custom->params[0], $custom->params[1], $outcome['reason'], $outcome['message'], $outcome['while_stopped']),
+    strictAssertSame([$hash, 'x-datadir-outcome', 'stopped-after-hash-check', $message->params[1], true],
+        [$custom->params[0], $custom->params[1], $outcome['reason'], $outcome['message'], $outcome['while_stopped']],
         'and is kept on the download while it stays stopped');
-    strictAssertSame(array('datadir: change applied hash=' . $hash . ' warning=stopped-after-hash-check directory='
-        . DataDirTestState::$root . '/new'), DataDirTestState::$logs, 'one log line records the stop');
+    strictAssertSame(['datadir: change applied hash=' . $hash . ' warning=stopped-after-hash-check directory='
+        . DataDirTestState::$root . '/new'], DataDirTestState::$logs, 'one log line records the stop');
 });
 
 $suite->test('a start that survives the check, or a check still running, is no warning', function () use ($hash) {
-    foreach (array('started' => array(array('0', '1')), 'still hashing' => array_fill(0, 20, array('1', '1')),
-        'unanswered' => array()) as $case => $answers) {
+    foreach (['started' => [['0', '1']], 'still hashing' => array_fill(0, 20, ['1', '1']),
+        'unanswered' => []] as $case => $answers) {
         DataDirTestState::reset();
         DataDirTestState::$restoredStart = true;
-        foreach ($answers as $answer) rXMLRPCRequest::queue(array('d.hashing', 'd.state'), true, false, $answer);
+        foreach ($answers as $answer) { rXMLRPCRequest::queue(['d.hashing', 'd.state'], true, false, $answer); }
         $started = microtime(true);
         strictAssertSame(true, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure, $warning),
             'the change succeeds: ' . $case);
         strictAssertSame('', $warning, 'no warning: ' . $case);
-        strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.message.set'), 'no message: ' . $case);
+        strictAssertSame([], rXMLRPCRequest::requestsFor('d.message.set'), 'no message: ' . $case);
         strictAssertTrue(microtime(true) - $started < 2, 'the check is bounded: ' . $case);
     }
     DataDirTestState::reset();
     strictAssertSame(true, rtSetDataDir($hash, DataDirTestState::$root, true, false, false, false, $failure, $warning),
         'a change without a restored start succeeds');
-    strictAssertSame(array(), rXMLRPCRequest::requestsFor('d.hashing|d.state'), 'it reads no run state');
+    strictAssertSame([], rXMLRPCRequest::requestsFor('d.hashing|d.state'), 'it reads no run state');
 });
 
-foreach (array('after-retire', 'proven-cancellation') as $case) {
+foreach (['after-retire', 'proven-cancellation'] as $case) {
     $suite->test('retired job classification: ' . $case, function () use ($hash, $case) {
         DataDirTestState::reset();
         DataDirTestState::$afterRetireFailure = $case === 'after-retire';
@@ -522,7 +522,7 @@ foreach (array('after-retire', 'proven-cancellation') as $case) {
         strictAssertSame($case, $failure, 'the original exception is retained');
         strictAssertSame(false, file_exists(DataDirTestState::$root . '/jobs/' . $hash . '.json'),
             'the owning job was retired');
-        strictAssertSame(array('datadir: change refused hash=' . $hash . ' reason=' . $case),
+        strictAssertSame(['datadir: change refused hash=' . $hash . ' reason=' . $case],
             DataDirTestState::$logs, 'a retired job does not invent a held obligation');
     });
 }

@@ -13,9 +13,9 @@ class InitLockoutTest extends TestCase
         mkdir($this->fixture . '/php', 0700, true);
         mkdir($this->fixture . '/plugins/retrackers', 0700, true);
         $root = realpath(__DIR__ . '/../../..');
-        foreach (array('init.php', 'done.php') as $file)
+        foreach (['init.php', 'done.php'] as $file) {
             copy($root . '/plugins/retrackers/' . $file,
-                $this->fixture . '/plugins/retrackers/' . $file);
+                $this->fixture . '/plugins/retrackers/' . $file); }
         copy($root . '/php/doneplugins.php', $this->fixture . '/php/doneplugins.php');
         file_put_contents($this->fixture . '/php/rtorrent.php', '<?php');
         file_put_contents($this->fixture . '/php/xmlrpc.php', '<?php');
@@ -129,41 +129,21 @@ RUNNER
 
     public function tearDown()
     {
-        if (!is_dir($this->fixture)) return;
+        if (!is_dir($this->fixture)) { return; }
         $files = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($this->fixture,
                 FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($files as $file) {
-            if ($file->isDir() && !$file->isLink()) rmdir($file->getPathname());
-            else unlink($file->getPathname());
+            if ($file->isDir() && !$file->isLink()) { rmdir($file->getPathname()); }
+            else { unlink($file->getPathname()); }
         }
         rmdir($this->fixture);
     }
 
-    private function runFixture($name, $options = array())
-    {
-        $process = proc_open(array(PHP_BINARY, '-f', $this->fixture . '/php/' . $name),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'),
-                2 => array('pipe', 'w')), $pipes, $this->fixture . '/php',
-            array_merge($_ENV, array('RT_LOCKOUT_STATE' => $this->fixture . '/state.json'), $options));
-        $this->assertTrue(is_resource($process), 'the shipped ' . $name . ' entrypoint starts');
-        if (!is_resource($process)) return false;
-        fclose($pipes[0]);
-        $output = stream_get_contents($pipes[1]);
-        $error = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $status = proc_close($process);
-        $result = json_decode($output, true);
-        $this->assertTrue($status === 0 && $error === '' && is_array($result),
-            $name . ' returns a clean inspectable result: ' . $error);
-        return $result;
-    }
-
     public function testSuccessfulInitKeepsShutdownAvailableAfterLateRemoteFailure()
     {
-        $init = $this->runFixture('run-init.php', array('RT_LOCKOUT_INIT_OK' => '1'));
-        if ($init === false) return;
+        $init = $this->runFixture('run-init.php', ['RT_LOCKOUT_INIT_OK' => '1']);
+        if ($init === false) { return; }
         $this->assertTrue($init['registered_before'] === true &&
             strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false &&
             strpos($init['init_output'], 'plugin.disable()') === false,
@@ -183,7 +163,7 @@ RUNNER
             'getplugins can append a remote-check disable after successful PHP init');
 
         $done = $this->runFixture('run-done.php');
-        if ($done === false) return;
+        if ($done === false) { return; }
         $this->assertTrue($done['done_calls'] === 1 && $done['registered_after'] === true &&
             strpos($done['done_output'], 'hook-teardown-pending') !== false &&
             strpos($done['done_output'], '.remove()') === false,
@@ -192,8 +172,8 @@ RUNNER
 
     public function testJobsInFlightPostponeInitWithoutDisablingThePlugin()
     {
-        $init = $this->runFixture('run-init.php', array('RT_LOCKOUT_INIT_FAILURE' => 'recovery-in-flight'));
-        if ($init === false) return;
+        $init = $this->runFixture('run-init.php', ['RT_LOCKOUT_INIT_FAILURE' => 'recovery-in-flight']);
+        if ($init === false) { return; }
         $this->assertTrue($init['registered_before'] === true &&
             strpos($init['init_output'], 'plugin.disable()') === false &&
             strpos($init['init_output'], 'retrackers: recovery-in-flight') !== false,
@@ -205,7 +185,7 @@ RUNNER
     public function testFailedInitKeepsAReachableDoneAttemptAndItsRefusalRetryable()
     {
         $init = $this->runFixture('run-init.php');
-        if ($init === false) return;
+        if ($init === false) { return; }
         $this->assertTrue($init['registered_before'] === true &&
             strpos($init['init_output'], 'plugin.disable()') !== false &&
             strpos($init['init_output'], 'plugin.shutdownWhileDisabled = true') !== false,
@@ -214,12 +194,32 @@ RUNNER
             'a disabled plugin pays no terminal-jobs read and shows no notice');
 
         $done = $this->runFixture('run-done.php');
-        if ($done === false) return;
+        if ($done === false) { return; }
         $this->assertEquals(1, $done['done_calls'],
             'doneplugins invokes retrackers done after failed init');
         $this->assertTrue($done['registered_after'] === true &&
             strpos($done['done_output'], 'hook-teardown-pending') !== false &&
             strpos($done['done_output'], '.remove()') === false,
             'a refused cancellation preserves registration and a visible retry path');
+    }
+
+    private function runFixture($name, $options = [])
+    {
+        $process = proc_open([PHP_BINARY, '-f', $this->fixture . '/php/' . $name],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
+                2 => ['pipe', 'w']], $pipes, $this->fixture . '/php',
+            array_merge($_ENV, ['RT_LOCKOUT_STATE' => $this->fixture . '/state.json'], $options));
+        $this->assertTrue(is_resource($process), 'the shipped ' . $name . ' entrypoint starts');
+        if (!is_resource($process)) { return false; }
+        fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]);
+        $error = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $status = proc_close($process);
+        $result = json_decode($output, true);
+        $this->assertTrue($status === 0 && $error === '' && is_array($result),
+            $name . ' returns a clean inspectable result: ' . $error);
+        return $result;
     }
 }

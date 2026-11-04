@@ -38,10 +38,10 @@ class UrlHost
 	 * A host name folded to the one spelling the tests below compare: lower
 	 * case, without the root dot. Anything that is not a string folds to ''.
 	 */
-	static public function normalize($host)
+	public static function normalize($host)
 	{
-		if(!is_string($host))
-			return '';
+		if(!is_string($host)) {
+			return ''; }
 		return strtolower(rtrim($host, '.'));
 	}
 
@@ -54,22 +54,22 @@ class UrlHost
 	 * spellings are compared as supplied, without Unicode/punycode
 	 * conversion.
 	 */
-	static public function of($url)
+	public static function of($url)
 	{
 		$host = @parse_url((string) $url, PHP_URL_HOST);
-		if(!is_string($host) || $host === '')
-			return null;
+		if(!is_string($host) || $host === '') {
+			return null; }
 		$host = self::normalize($host);
 		return $host === '' ? null : $host;
 	}
 
 	/** Allow only the default-port HTTP to HTTPS upgrade on the same host. */
-	static public function isHttpsUpgrade($source, $target)
+	public static function isHttpsUpgrade($source, $target)
 	{
 		$a = @parse_url((string) $source);
 		$b = @parse_url((string) $target);
-		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme']))
-			return false;
+		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
+			return false; }
 		$host = self::of($source);
 		return strtolower($a['scheme']) === 'http' && strtolower($b['scheme']) === 'https'
 			&& $host !== null && $host === self::of($target)
@@ -78,15 +78,15 @@ class UrlHost
 	}
 
 	/** Compare normalized HTTP(S) scheme, host and effective port. */
-	static public function sameOrigin($left, $right)
+	public static function sameOrigin($left, $right)
 	{
 		$a = @parse_url((string) $left);
 		$b = @parse_url((string) $right);
-		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme']))
-			return false;
+		if(!is_array($a) || !is_array($b) || !isset($a['scheme'], $b['scheme'])) {
+			return false; }
 		$scheme = strtolower($a['scheme']);
-		if(!in_array($scheme, array('http', 'https'), true) || $scheme !== strtolower($b['scheme']))
-			return false;
+		if(!in_array($scheme, ['http', 'https'], true) || $scheme !== strtolower($b['scheme'])) {
+			return false; }
 		$host = self::of($left);
 		$port = $scheme === 'https' ? 443 : 80;
 		return $host !== null && $host === self::of($right)
@@ -97,16 +97,16 @@ class UrlHost
 	 * True when $host is one of $hosts or a subdomain of one. Both sides are
 	 * normalized; an empty host or an empty candidate matches nothing.
 	 */
-	static public function isOneOf($host, $hosts)
+	public static function isOneOf($host, $hosts)
 	{
 		$host = self::normalize($host);
-		if($host === '')
-			return false;
+		if($host === '') {
+			return false; }
 		foreach((array) $hosts as $candidate)
 		{
 			$candidate = self::normalize($candidate);
-			if($candidate !== '' && (($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate)))
-				return true;
+			if($candidate !== '' && (($host === $candidate) || (substr($host, -strlen($candidate) - 1) === '.' . $candidate))) {
+				return true; }
 		}
 		return false;
 	}
@@ -115,10 +115,10 @@ class UrlHost
 	 * True when $host is exactly one of $hosts, subdomains excluded: for a
 	 * list that names every host it admits. Both sides are normalized.
 	 */
-	static public function isExactlyOneOf($host, $hosts)
+	public static function isExactlyOneOf($host, $hosts)
 	{
 		$host = self::normalize($host);
-		return $host !== '' && in_array($host, array_map(array(__CLASS__, 'normalize'), (array) $hosts), true);
+		return $host !== '' && in_array($host, array_map([__CLASS__, 'normalize'], (array) $hosts), true);
 	}
 
 	/**
@@ -134,22 +134,22 @@ class UrlHost
 	 * by the user. The other direction is allowed -- an https URL to a site
 	 * still configured http simply fails to connect, and costs nothing.
 	 */
-	static public function urlIsOneOf($url, $hosts, $scheme = null, $pathPrefix = null)
+	public static function urlIsOneOf($url, $hosts, $scheme = null, $pathPrefix = null)
 	{
 		$parts = @parse_url((string) $url);
-		if(!is_array($parts) || empty($parts['host']))
-			return false;
+		if(!is_array($parts) || empty($parts['host'])) {
+			return false; }
 		if($scheme !== null)
 		{
 			$urlScheme = strtolower(isset($parts['scheme']) ? $parts['scheme'] : '');
-			if(($urlScheme !== strtolower($scheme)) && ($urlScheme !== 'https'))
-				return false;
+			if(($urlScheme !== strtolower($scheme)) && ($urlScheme !== 'https')) {
+				return false; }
 		}
 		if($pathPrefix !== null)
 		{
 			$path = isset($parts['path']) ? $parts['path'] : '/';
-			if(strncasecmp($path, $pathPrefix, strlen($pathPrefix)) !== 0)
-				return false;
+			if(strncasecmp($path, $pathPrefix, strlen($pathPrefix)) !== 0) {
+				return false; }
 		}
 		return self::isOneOf($parts['host'], $hosts);
 	}

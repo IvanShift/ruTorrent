@@ -11,13 +11,13 @@ $jResult = "";
 
 $cmd = isset($_REQUEST["cmd"]) ? $_REQUEST["cmd"] : "done";
 
-$userPermissions = array( "__hash__"=>"plugins.dat" );
+$userPermissions = [ "__hash__"=>"plugins.dat" ];
 $cache = new rCache();
 $cache->get($userPermissions);
 
-if(!isset($HTTP_RAW_POST_DATA))
-	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-$processedPlugins = array();
+if(!isset($HTTP_RAW_POST_DATA)) {
+	$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+$processedPlugins = [];
 $vars = explode('&', $HTTP_RAW_POST_DATA);
 foreach($vars as $var)
 {
@@ -41,8 +41,8 @@ foreach($vars as $var)
 				if($canShutdown)
 				{
 					$php = "../plugins/".$pluginName."/done.php";
-					if(is_file($php) && is_readable($php))
-						require_once($php);
+					if(is_file($php) && is_readable($php)) {
+						require_once($php); }
 				}
 				if($pluginDone !== false)
 				{
@@ -72,9 +72,9 @@ foreach($vars as $var)
 	}
 }
 
-if($cmd=="done")
-	$theSettings->store();
-else
-	$cache->set($userPermissions);
+if($cmd=="done") {
+	$theSettings->store(); }
+else {
+	$cache->set($userPermissions); }
 
 CachedEcho::send($jResult,"application/javascript");

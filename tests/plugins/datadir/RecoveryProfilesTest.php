@@ -6,7 +6,7 @@ class FileUtil
 {
     public static $settings;
     public static $profile;
-    public static $logs = array();
+    public static $logs = [];
     public static function getSettingsPathEx($user = null) { return self::$settings; }
     public static function getProfilePathEx($user = null) { return self::$profile; }
     public static function toLog($message) { self::$logs[] = $message; }
@@ -27,9 +27,9 @@ class DataDirMoveJob
 {
     public static function journalDirectory($path)
     {
-        if (!file_exists($path) && !is_link($path)) mkdir($path, 0700);
-        if (!is_dir($path) || is_link($path) || (fileperms($path) & 0077) !== 0)
-            throw new RuntimeException('job-directory-untrusted');
+        if (!file_exists($path) && !is_link($path)) { mkdir($path, 0700); }
+        if (!is_dir($path) || is_link($path) || (fileperms($path) & 0077) !== 0) {
+            throw new RuntimeException('job-directory-untrusted'); }
         return realpath($path);
     }
 }
@@ -57,12 +57,12 @@ $suite->test('fresh Docker writable share uses its trusted parent for private jo
             'journal authority is outside the group-writable profile share');
         strictAssertSame(0700, fileperms($journal) & 0777,
             'private profile journal remains owner-only');
-        strictAssertSame(array(), rtDataDirRecoveryProfiles(),
+        strictAssertSame([], rtDataDirRecoveryProfiles(),
             'empty protected journal does not start a recovery worker');
         file_put_contents($journal . '/' . str_repeat('A', 40) . '.json', '{}');
         chmod($root . '/share', 0755);
         chmod($root . '/share/settings', 0755);
-        strictAssertSame(array('torrent'), rtDataDirRecoveryProfiles(),
+        strictAssertSame(['torrent'], rtDataDirRecoveryProfiles(),
             'permission repair must not hide a pending job in the existing root');
         mkdir($root . '/share/settings/datadir-jobs', 0700);
         try {
@@ -147,7 +147,7 @@ $suite->test('trusted settings symlink keeps existing journal despite untrusted 
     try {
         strictAssertSame($root . '/secure-settings/datadir-jobs/alice', rtDataDirJournal(),
             'canonical trusted settings keep their existing journal');
-        strictAssertSame(array('alice'), rtDataDirRecoveryProfiles(),
+        strictAssertSame(['alice'], rtDataDirRecoveryProfiles(),
             'global recovery still sees the pending job');
         strictAssertSame(false, file_exists($root . '/profile-parent/datadir-jobs'),
             'untrusted profile parent never receives a competing root');
@@ -177,7 +177,7 @@ $suite->test('one canonical root is not mistaken for two roots', function () {
         strictAssertSame($root . '/datadir-jobs/alice', $journal,
             'identical legacy and private paths name one authority');
         file_put_contents($journal . '/' . str_repeat('A', 40) . '.json', '{}');
-        strictAssertSame(array('alice'), rtDataDirRecoveryProfiles(),
+        strictAssertSame(['alice'], rtDataDirRecoveryProfiles(),
             'scanner finds the single canonical journal');
     } finally {
         User::$user = '';
@@ -242,9 +242,9 @@ $suite->test('global recovery selects only protected profiles that hold a real j
     file_put_contents($root . '/datadir-jobs/orphan/' . str_repeat('C', 40) . '.json.move', '{}');
     FileUtil::$settings = $root . '/share/settings';
     FileUtil::$profile = $root . '/share';
-    FileUtil::$logs = array();
+    FileUtil::$logs = [];
     try {
-        strictAssertSame(array('alice', 'default', 'orphan', '~default'), rtDataDirRecoveryProfiles(),
+        strictAssertSame(['alice', 'default', 'orphan', '~default'], rtDataDirRecoveryProfiles(),
             'only protected profile with a job gets a child worker');
         strictAssertTrue(strpos(implode(' ', FileUtil::$logs), 'unsafe') !== false,
             'unsafe profile is visibly skipped');

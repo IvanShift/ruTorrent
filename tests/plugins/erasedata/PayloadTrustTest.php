@@ -16,9 +16,9 @@ require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
 function payloadTrustRoot()
 {
     $root = realpath(getenv('TMPDIR') ?: sys_get_temp_dir()) . '/payload-trust-' . bin2hex(random_bytes(6));
-    foreach (array('', '/top', '/top/win', '/top/win/sub', '/outside') as $directory)
-        if (!mkdir($root . $directory, 0755))
-            throw new RuntimeException('fixture directory was not created');
+    foreach (['', '/top', '/top/win', '/top/win/sub', '/outside'] as $directory) {
+        if (!mkdir($root . $directory, 0755)) {
+            throw new RuntimeException('fixture directory was not created'); } }
     chmod($root, 0700);
     return $root;
 }
@@ -63,7 +63,7 @@ $suite->test('without a resolvable top every component is strict', function () {
     $root = payloadTrustRoot();
     try {
         chmod($root . '/top/win', 0777);
-        foreach (array(null, '', 'relative/top', $root . '/absent') as $top) {
+        foreach ([null, '', 'relative/top', $root . '/absent'] as $top) {
             unset($GLOBALS['topDirectory']);
             strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
                 'no relaxed region for top ' . var_export($top, true));
@@ -80,7 +80,7 @@ $suite->test('a top of / is no boundary: every component stays strict', function
         file_put_contents($root . '/top/win/payload', 'x');
         chmod($root . '/top/win/payload', 0666);
         symlink('/', $root . '/root-alias');
-        foreach (array('/', '/.', '//', $root . '/root-alias') as $top) {
+        foreach (['/', '/.', '//', $root . '/root-alias'] as $top) {
             strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($root . '/top/win', $top),
                 'a writable directory refuses with top ' . var_export($top, true));
             strictAssertSame(false, ErasedataFilesystemOps::payloadFileTrusted($root . '/top/win/payload', $top),
@@ -113,10 +113,10 @@ $suite->test('a symlink component, a non-physical path or a non-directory refuse
         symlink($root . '/outside', $root . '/top/escape');
         symlink($root . '/top/win', $root . '/top/alias');
         file_put_contents($root . '/top/file', 'x');
-        foreach (array($root . '/top/escape', $root . '/top/alias', $root . '/top/alias/sub',
-            $root . '/top/win/../win', $root . '/top/file', 'top/win', '') as $path)
+        foreach ([$root . '/top/escape', $root . '/top/alias', $root . '/top/alias/sub',
+            $root . '/top/win/../win', $root . '/top/file', 'top/win', ''] as $path) {
             strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted($path, $root . '/top'),
-                'refused: ' . $path);
+                'refused: ' . $path); }
         chmod($root . '/outside', 0777);
         strictAssertSame(false, ErasedataFilesystemOps::payloadDirectoryTrusted(realpath($root . '/top/escape'), $root . '/top'),
             'an escape target outside the top keeps the strict rule');
@@ -165,8 +165,8 @@ $suite->test('a spelled path through a link is checked where the spelling goes',
             'while the physical path alone is trusted');
         strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($top . '/via-shared/sub', $top),
             'a link target that passes the writable directory refuses as well');
-        foreach (array($root . '/shared/../top/win', $root . '/./top/win', 'top/win', '', "$top/win\0") as $path)
-            strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top), 'refused: ' . $path);
+        foreach ([$root . '/shared/../top/win', $root . '/./top/win', 'top/win', '', "$top/win\0"] as $path) {
+            strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top), 'refused: ' . $path); }
     } finally { chmod($root . '/shared', 0700); payloadTrustClean($root); }
 });
 
@@ -180,9 +180,9 @@ $suite->test('a missing name is accepted only as the tail the caller creates', f
             'a missing directory is not trusted by default');
         strictAssertSame(true, ErasedataFilesystemOps::payloadPathTrusted($top . '/win/new/deeper', $top, true),
             'a missing tail under a trusted prefix is');
-        foreach (array($top . '/dangling', $top . '/dangling/new', $top . '/loop', $top . '/loop/new') as $path)
+        foreach ([$top . '/dangling', $top . '/dangling/new', $top . '/loop', $top . '/loop/new'] as $path) {
             strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($path, $top, true),
-                'a name a link leads to must exist: ' . $path);
+                'a name a link leads to must exist: ' . $path); }
         chmod($root . '/outside', 0777);
         strictAssertSame(false, ErasedataFilesystemOps::payloadPathTrusted($root . '/outside/new', $top, true),
             'the existing prefix of a missing tail is still checked');

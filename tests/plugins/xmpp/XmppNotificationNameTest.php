@@ -35,35 +35,12 @@ class XmppNotificationNameTest extends TestCase
 	}
 	public function tearDown() { TestTree::remove($this->base); }
 
-	private function source($name, $alias = null, $encoding = null)
-	{
-		$info = array('name'=>$name, 'length'=>1);
-		if($alias !== null) $info['name.utf-8'] = $alias;
-		$meta = array('info'=>$info);
-		if($encoding !== null) $meta['encoding'] = $encoding;
-		$hash = strtoupper(sha1(XmppNameTorrent::bytes($info)));
-		file_put_contents($this->base.'/'.$hash.'.torrent', XmppNameTorrent::bytes($meta));
-		return $hash;
-	}
-
-	private function body($name, $hash = '', $paths = false)
-	{
-		$config = new rXmpp();
-		$config->message = 'Done: {TORRENT}';
-		$wire = new XmppNameWire();
-		$wire->message('recipient@example.test', $config->notificationMessage($name,$hash,$paths), 'chat', '');
-		$xml = new DOMDocument();
-		$this->assertTrue($xml->loadXML($wire->sent), 'notification stays well-formed XML');
-		$this->assertSame(1, $xml->getElementsByTagName('body')->length, 'name cannot insert another body');
-		return $xml->getElementsByTagName('body')->item(0)->textContent;
-	}
-
 	public function testMatchingAliasIsTextAndKeepsTheSource()
 	{
 		$hash = $this->source("raw\xFF", 'Название <&>');
 		$path = $this->base.'/'.$hash.'.torrent';
 		$before = file_get_contents($path);
-		$this->assertSame('Done: Название <&>', $this->body("raw\xFF",$hash,array($this->base.'/', '')), 'alias is readable');
+		$this->assertSame('Done: Название <&>', $this->body("raw\xFF",$hash,[$this->base.'/', '']), 'alias is readable');
 		$this->assertSame($before,file_get_contents($path),'notification does not modify metainfo');
 	}
 
@@ -71,17 +48,17 @@ class XmppNotificationNameTest extends TestCase
 	// the notification still goes out with the name's bytes.
 	public function testAThrowingSourceReadKeepsTheNotification()
 	{
-		if(!in_array('xmppthrowing', stream_get_wrappers(), true))
-			stream_wrapper_register('xmppthrowing', 'XmppThrowingStream');
+		if(!in_array('xmppthrowing', stream_get_wrappers(), true)) {
+			stream_wrapper_register('xmppthrowing', 'XmppThrowingStream'); }
 		$hash = $this->source("raw\xFF", 'Alias');
-		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF", $hash, array('xmppthrowing://session/', '')),
+		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF", $hash, ['xmppthrowing://session/', '']),
 			'the name shows its bytes');
 	}
 
 	public function testOldHooksAndUnavailableMetadataKeepDifferentBytes()
 	{
 		$this->assertSame('Done: raw\\xFE', $this->body("raw\xFE"), 'old hook arguments need no daemon lookup');
-		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF",str_repeat('A',40),array('', '')), 'unavailable source has a readable fallback');
+		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF",str_repeat('A',40),['', '']), 'unavailable source has a readable fallback');
 		$this->assertSame('Done: имя \\xFF', $this->body('имя \\xFF'), 'valid Unicode and literal escapes stay unchanged');
 	}
 
@@ -89,14 +66,14 @@ class XmppNotificationNameTest extends TestCase
 	{
 		$hash = $this->source("raw\xFF", 'wrong alias');
 		$path = $this->base.'/'.$hash.'.torrent';
-		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF",str_repeat('A',40),array('', $path)), 'another torrent cannot supply its alias');
-		$this->assertSame('Done: other\\xFF', $this->body("other\xFF",$hash,array('', $path)), 'changed live name cannot borrow the old alias');
+		$this->assertSame('Done: raw\\xFF', $this->body("raw\xFF",str_repeat('A',40),['', $path]), 'another torrent cannot supply its alias');
+		$this->assertSame('Done: other\\xFF', $this->body("other\xFF",$hash,['', $path]), 'changed live name cannot borrow the old alias');
 	}
 
 	public function testDeclaredEncodingIsUsedWithoutAnAlias()
 	{
 		$hash = $this->source("\xCF\xF0\xE8\xE2\xE5\xF2",null,'windows-1251');
-		$this->assertSame('Done: Привет', $this->body("\xCF\xF0\xE8\xE2\xE5\xF2",$hash,array($this->base.'/', '')), 'explicit lossless encoding supplies text');
+		$this->assertSame('Done: Привет', $this->body("\xCF\xF0\xE8\xE2\xE5\xF2",$hash,[$this->base.'/', '']), 'explicit lossless encoding supplies text');
 	}
 
 	public function testNotifyEntryReadsAppendedEvidenceAndOldArguments()
@@ -131,20 +108,20 @@ PHP
 			.'$config=new rXmpp(); $config->message="Done: {TORRENT}";'
 			.'$config->jabberFor="recipient@example.test"; $config->store();'
 			.'require '.var_export($tree.'/plugins/xmpp/notify.php',true).';';
-		foreach(array(array(array("raw\xFF",'', $hash,$this->base.'/', ''),'Done: Название'),
-			array(array("raw\xFF",''),'Done: raw\\xFF')) as $case)
+		foreach([[["raw\xFF",'', $hash,$this->base.'/', ''],'Done: Название'],
+			[["raw\xFF",''],'Done: raw\\xFF']] as $case)
 		{
-			$result = PhpProcess::run(array_merge(array('-d','display_errors=stderr','-r',$driver,'--'),$case[0]));
+			$result = PhpProcess::run(array_merge(['-d','display_errors=stderr','-r',$driver,'--'],$case[0]));
 			$this->assertSame(0,$result['code'],'notification child exits');
 			$this->assertSame('',$result['err'],'notification child has no diagnostics');
-			$this->assertSame(array('to'=>'recipient@example.test','message'=>$case[1]),json_decode($result['out'],true),'real entry maps hook arguments into display evidence');
+			$this->assertSame(['to'=>'recipient@example.test','message'=>$case[1]],json_decode($result['out'],true),'real entry maps hook arguments into display evidence');
 		}
 	}
 
 	public function testFinishedHookCarriesDisplayEvidenceAfterLegacyArguments()
 	{
 		global $scgi_host, $scgi_port;
-		$oldAddress = array($scgi_host, $scgi_port);
+		$oldAddress = [$scgi_host, $scgi_port];
 		$reflection = new ReflectionClass('rTorrentSettings');
 		$property = self::makeAccessible($reflection->getProperty('theSettings'));
 		$oldSettings = $property->getValue();
@@ -171,9 +148,32 @@ PHP
 		}
 		finally
 		{
-			if($peer !== null) $peer->close();
+			if($peer !== null) { $peer->close(); }
 			$property->setValue(null,$oldSettings);
 			list($scgi_host,$scgi_port) = $oldAddress;
 		}
+	}
+
+	private function source($name, $alias = null, $encoding = null)
+	{
+		$info = ['name'=>$name, 'length'=>1];
+		if($alias !== null) { $info['name.utf-8'] = $alias; }
+		$meta = ['info'=>$info];
+		if($encoding !== null) { $meta['encoding'] = $encoding; }
+		$hash = strtoupper(sha1(XmppNameTorrent::bytes($info)));
+		file_put_contents($this->base.'/'.$hash.'.torrent', XmppNameTorrent::bytes($meta));
+		return $hash;
+	}
+
+	private function body($name, $hash = '', $paths = false)
+	{
+		$config = new rXmpp();
+		$config->message = 'Done: {TORRENT}';
+		$wire = new XmppNameWire();
+		$wire->message('recipient@example.test', $config->notificationMessage($name,$hash,$paths), 'chat', '');
+		$xml = new DOMDocument();
+		$this->assertTrue($xml->loadXML($wire->sent), 'notification stays well-formed XML');
+		$this->assertSame(1, $xml->getElementsByTagName('body')->length, 'name cannot insert another body');
+		return $xml->getElementsByTagName('body')->item(0)->textContent;
 	}
 }

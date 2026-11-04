@@ -20,7 +20,7 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 
 class SourceRecordingSnoopy extends Snoopy
 {
-    public $requests = array();
+    public $requests = [];
     public $redirectTo = null;
 
     public function connect() { return fopen('php://memory', 'r+'); }
@@ -39,7 +39,7 @@ class SourceRecordingSnoopy extends Snoopy
 
     private function record($url)
     {
-        $this->requests[] = array('url' => $url, 'cookies' => $this->cookiesForRequest($url));
+        $this->requests[] = ['url' => $url, 'cookies' => $this->cookiesForRequest($url)];
         $this->status = 200;
         $this->results = 'readable tracker page';
         $this->_redirectaddr = count($this->requests) === 1 ? $this->redirectTo : false;
@@ -52,7 +52,7 @@ class SourceAltAccount extends RedirectProbeAccount
 {
     public function test($url)
     {
-        return UrlHost::urlIsOneOf($url, array('rutracker.org'), 'https', '/second/');
+        return UrlHost::urlIsOneOf($url, ['rutracker.org'], 'https', '/second/');
     }
 }
 
@@ -82,30 +82,30 @@ function sourceLog()
 
 function sourceRemoveTree($path)
 {
-    if (!is_dir($path)) return;
+    if (!is_dir($path)) { return; }
     foreach (new FilesystemIterator($path) as $item) {
-        if ($item->isDir()) sourceRemoveTree($item->getPathname());
-        else unlink($item->getPathname());
+        if ($item->isDir()) { sourceRemoveTree($item->getPathname()); }
+        else { unlink($item->getPathname()); }
     }
     rmdir($path);
 }
 
 function sourceWireRows($path)
 {
-    $rows = array();
-    foreach(is_file($path) ? file($path, FILE_IGNORE_NEW_LINES) : array() as $line)
+    $rows = [];
+    foreach(is_file($path) ? file($path, FILE_IGNORE_NEW_LINES) : [] as $line)
     {
         $row = explode("\t", $line, 2);
-        $rows[] = array('url' => $row[0], 'cookie' => isset($row[1]) ? $row[1] : '');
+        $rows[] = ['url' => $row[0], 'cookie' => isset($row[1]) ? $row[1] : ''];
     }
     return $rows;
 }
 
 function sourceWireHasCookie($row, $pair)
 {
-    foreach(explode(';', substr($row['cookie'], 7)) as $entry)
-        if(trim($entry) === $pair)
-            return true;
+    foreach(explode(';', substr($row['cookie'], 7)) as $entry) {
+        if(trim($entry) === $pair) {
+            return true; } }
     return false;
 }
 
@@ -115,14 +115,14 @@ try {
     rTorrentSettings::get()->registerPlugin('loginmgr');
 
     $pluginCookies = new rCookies();
-    $pluginCookies->list['rutracker.org'] = array('plugin_marker' => 'plugin-value');
-    $pluginCookies->list['cookie.test'] = array('plugin_marker' => 'plugin-value');
-    $pluginCookies->list['tracker.example'] = array('plugin_marker' => 'plugin-value');
-    $pluginCookies->list['mteam.fr'] = array('plugin_marker' => 'plugin-value');
+    $pluginCookies->list['rutracker.org'] = ['plugin_marker' => 'plugin-value'];
+    $pluginCookies->list['cookie.test'] = ['plugin_marker' => 'plugin-value'];
+    $pluginCookies->list['tracker.example'] = ['plugin_marker' => 'plugin-value'];
+    $pluginCookies->list['mteam.fr'] = ['plugin_marker' => 'plugin-value'];
     sourceSame(true, $pluginCookies->store(), 'cookies plugin fixture saved');
 
     $manager = new accountManager();
-    $manager->accounts['RUTracker'] = array(
+    $manager->accounts['RUTracker'] = [
         'name' => 'RUTracker',
         'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php'),
         'object' => 'ruTrackerAccount',
@@ -130,8 +130,8 @@ try {
         'password' => 'fixture-password',
         'enabled' => 1,
         'auto' => 0,
-    );
-    $manager->accounts['RedirectProbe'] = array(
+    ];
+    $manager->accounts['RedirectProbe'] = [
         'name' => 'RedirectProbe',
         'path' => realpath(__DIR__ . '/RedirectProbeAccountFixture.php'),
         'object' => 'RedirectProbeAccount',
@@ -139,8 +139,8 @@ try {
         'password' => 'fixture-password',
         'enabled' => 1,
         'auto' => 0,
-    );
-    $manager->accounts['SourceAlt'] = array(
+    ];
+    $manager->accounts['SourceAlt'] = [
         'name' => 'SourceAlt',
         'path' => realpath(__DIR__ . '/RedirectProbeAccountFixture.php'),
         'object' => 'SourceAltAccount',
@@ -148,8 +148,8 @@ try {
         'password' => 'fixture-password',
         'enabled' => 1,
         'auto' => 0,
-    );
-    $manager->accounts['mTeam'] = array(
+    ];
+    $manager->accounts['mTeam'] = [
         'name' => 'mTeam',
         'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/mTeam.php'),
         'object' => 'mTeamAccount',
@@ -157,34 +157,34 @@ try {
         'password' => 'fixture-password',
         'enabled' => 1,
         'auto' => 0,
-    );
-    $manager->accounts['KinozalTV'] = array(
+    ];
+    $manager->accounts['KinozalTV'] = [
         'name' => 'KinozalTV',
         'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/KinozalTV.php'),
         'object' => 'KinozalTVAccount',
         'login' => 'fixture-user', 'password' => 'fixture-password',
         'enabled' => 1, 'auto' => 0,
-    );
+    ];
     sourceSame(true, $manager->store(), 'loginmgr account fixture saved');
     sourceSame('SourceAlt', $manager->getAccount('https://rutracker.org/second/file'),
         'the second path selects a different account on the same host');
 
     $session = new privateData('ruTracker');
-    $session->cookies = array('loginmgr_marker' => 'session-value');
+    $session->cookies = ['loginmgr_marker' => 'session-value'];
     sourceSame(true, (new rCache('/accounts'))->set($session), 'loginmgr session fixture saved');
     $mteamSession = new privateData('mTeam');
-    $mteamSession->cookies = array('loginmgr_marker' => 'mteam-session');
+    $mteamSession->cookies = ['loginmgr_marker' => 'mteam-session'];
     $mteamSession->referer = 'https://mteam.fr/landing';
     sourceSame(true, (new rCache('/accounts'))->set($mteamSession),
         'mTeam session fixture saved');
 
     // Legacy host-only cookies are treated as HTTPS-only. A URL's own
     // :COOKIE: source remains an explicit choice by the caller.
-    sourceSame(array('plugin_marker' => 'plugin-value'),
+    sourceSame(['plugin_marker' => 'plugin-value'],
         rCookies::load()->getCookiesForHost('rutracker.org'), 'cookies plugin source');
     $urlWithCookie = 'http://RuTracker.Org./forum/index.php:COOKIE:url_marker=url-value';
     $urlForSourceCheck = $urlWithCookie;
-    sourceSame(array('url_marker' => 'url-value'), Snoopy::getURLCookies($urlForSourceCheck), ':COOKIE: source');
+    sourceSame(['url_marker' => 'url-value'], Snoopy::getURLCookies($urlForSourceCheck), ':COOKIE: source');
 
     $reloaded = new SourceRecordingSnoopy();
     $cached = privateData::load('ruTracker', $reloaded);
@@ -198,23 +198,23 @@ try {
         'cached account refusal is visible without cookie data');
     sourceSame(false, strpos(sourceLog(), 'session-value') !== false,
         'cached account cookie value stays out of the log');
-    $reloaded->requests = array();
+    $reloaded->requests = [];
     sourceSame(true, $reloaded->fetchComplex('http://rutracker.org/forum/index.php'),
         'fetchComplex after a direct cache load completed');
     sourceSame(false, isset($reloaded->requests[0]['cookies']['loginmgr_marker']),
         'fetchComplex keeps a previously loaded account session off HTTP');
-    $reloaded->requests = array();
+    $reloaded->requests = [];
     sourceSame(true, $reloaded->fetchComplex(
         'http://rutracker.org/forum/index.php:COOKIE:loginmgr_marker=explicit-value'),
         'explicit URL cookie remains available on HTTP');
     sourceSame('explicit-value', $reloaded->requests[0]['cookies']['loginmgr_marker'] ?? null,
         'the URL source is distinct from the cached account session');
-    $reloaded->requests = array();
+    $reloaded->requests = [];
     sourceSame(true, $reloaded->fetch('http://rutracker.org/forum/index.php'),
         'client remains usable after explicit URL cookie');
     sourceSame(false, isset($reloaded->requests[0]['cookies']['loginmgr_marker']),
         'cached session remains protected after fetchComplex restores the facade');
-    $reloaded->requests = array();
+    $reloaded->requests = [];
     sourceSame(true, $reloaded->fetchComplex('https://rutracker.org/forum/index.php'),
         'account HTTPS request remains available');
     sourceSame('session-value', $reloaded->requests[0]['cookies']['loginmgr_marker'] ?? null,
@@ -286,9 +286,9 @@ try {
     sourceSame(true, $upgrade->fetchComplex('http://COOKIE.TEST./file'),
         'anonymous HTTP to HTTPS upgrade completed');
     sourceSame(2, count($upgrade->requests), 'upgrade has HTTP and HTTPS requests');
-    foreach($upgrade->requests as $request)
+    foreach($upgrade->requests as $request) {
         sourceSame(false, isset($request['cookies']['plugin_marker']),
-            'plugin cookie is absent on both hops when the source URL is HTTP');
+            'plugin cookie is absent on both hops when the source URL is HTTP'); }
     sourceSame(1, substr_count(sourceLog(),
         'cookies: http-refused: source=cookies host=cookie.test; use HTTPS URL'),
         'plugin refusal without loginmgr account logs only the normalized host');
@@ -302,7 +302,7 @@ try {
     // An account may trust a sibling download host, but persisted and URL
     // cookies were supplied for the source host alone.
     $sibling = new SourceRecordingSnoopy();
-    $sibling->cookies = array('preset_marker' => 'preset-value');
+    $sibling->cookies = ['preset_marker' => 'preset-value'];
     $sibling->redirectTo = 'https://dl.tracker.example/file/next';
     sourceSame(true, $sibling->fetchComplex('https://tracker.example/file/start:COOKIE:url_marker=url-value'),
         'allowed sibling redirect completed');
@@ -331,7 +331,7 @@ try {
         'account session cookie remains persisted');
 
     $sameHost = new SourceRecordingSnoopy();
-    $sameHost->cookies = array('preset_marker' => 'preset-value');
+    $sameHost->cookies = ['preset_marker' => 'preset-value'];
     $sameHost->redirectTo = 'https://tracker.example/file/next';
     sourceSame(true, $sameHost->fetchComplex('https://tracker.example/file/start:COOKIE:url_marker=url-value'),
         'same-host redirect completed');
@@ -350,7 +350,7 @@ try {
     }
 
     $mteamClient = new SourceRecordingSnoopy();
-    $mteamClient->cookies = array('preset_marker' => 'preset-value');
+    $mteamClient->cookies = ['preset_marker' => 'preset-value'];
     sourceSame(true, $mteamClient->fetchComplex('https://mteam.fr/file:COOKIE:url_marker=url-value'),
         'mTeam cached account request completed');
     sourceSame('plugin-value', $mteamClient->requests[0]['cookies']['plugin_marker'] ?? null,
@@ -370,37 +370,37 @@ try {
     sourceSame('plugin-value', $rootDotClient->requests[0]['cookies']['plugin_marker'] ?? null,
         'normalized equivalent host finds the existing plugin cookie');
     $legacy = new rCookies();
-    $legacy->list['legacy.test.'] = array('old' => 'secret');
+    $legacy->list['legacy.test.'] = ['old' => 'secret'];
     sourceSame(true, (new rCache())->set($legacy), 'legacy root-dot key saved verbatim');
-    sourceSame(array('old' => 'secret'), rCookies::load()->getCookiesForHost('legacy.test'),
+    sourceSame(['old' => 'secret'], rCookies::load()->getCookiesForHost('legacy.test'),
         'old root-dot key is readable under its canonical host');
-    sourceSame(array('legacy.test' => true), rCookies::load()->getInfo(),
+    sourceSame(['legacy.test' => true], rCookies::load()->getInfo(),
         'loading legacy keys exposes only the normalized host without its value');
     $legacy = rCookies::load();
     $legacy->add('legacy.test', '');
-    sourceSame(array(), rCookies::load()->getCookiesForHost('legacy.test.'),
+    sourceSame([], rCookies::load()->getCookiesForHost('legacy.test.'),
         'deleting a normalized host cannot resurrect its old root-dot key');
-    foreach(array(
-        array('Rutracker.org' => array('sid' => 'folded'),
-            'rutracker.org' => array('sid' => 'exact'),
-            'rutracker.org.' => array('sid' => 'root-dot')),
-        array('rutracker.org' => array('sid' => 'exact'),
-            'Rutracker.org' => array('sid' => 'folded'),
-            'rutracker.org.' => array('sid' => 'root-dot')),
-    ) as $collision)
+    foreach([
+        ['Rutracker.org' => ['sid' => 'folded'],
+            'rutracker.org' => ['sid' => 'exact'],
+            'rutracker.org.' => ['sid' => 'root-dot']],
+        ['rutracker.org' => ['sid' => 'exact'],
+            'Rutracker.org' => ['sid' => 'folded'],
+            'rutracker.org.' => ['sid' => 'root-dot']],
+    ] as $collision)
     {
         $legacy = new rCookies();
         $legacy->list = $collision;
         sourceSame(true, (new rCache())->set($legacy), 'colliding legacy keys saved verbatim');
-        sourceSame(array('sid' => 'exact'), rCookies::load()->getCookiesForHost('rutracker.org.'),
+        sourceSame(['sid' => 'exact'], rCookies::load()->getCookiesForHost('rutracker.org.'),
             'the exact canonical host wins regardless of legacy insertion order');
     }
     $legacy = rCookies::load();
     $legacy->add('rutracker.org.', 'sid=updated');
-    sourceSame(array('sid' => 'updated'), rCookies::load()->getCookiesForHost('rutracker.org'),
+    sourceSame(['sid' => 'updated'], rCookies::load()->getCookiesForHost('rutracker.org'),
         'add through a root-dot host replaces the canonical value');
 
-    foreach(array('http', 'https') as $scheme)
+    foreach(['http', 'https'] as $scheme)
     {
         $pathless = new SourceRecordingSnoopy();
         sourceSame(true, $pathless->fetchComplex($scheme.'://cookie.test:COOKIE:sid=explicit'),
@@ -411,12 +411,12 @@ try {
 
     $equalsCookie = new rCookies();
     $equalsCookie->add('equal.test', 'token=abc==; malformed; other=ok');
-    sourceSame(array('token' => 'abc==', 'other' => 'ok'),
+    sourceSame(['token' => 'abc==', 'other' => 'ok'],
         rCookies::load()->getCookiesForHost('equal.test'),
         'plugin add keeps equals inside values and ignores malformed pairs');
     $postedCookie = new rCookies();
     $postedCookie->set('cookie=' . rawurlencode('equal.test|token=abc==;other=ok'));
-    sourceSame(array('token' => 'abc==', 'other' => 'ok'),
+    sourceSame(['token' => 'abc==', 'other' => 'ok'],
         rCookies::load()->getCookiesForHost('equal.test'),
         'plugin form input keeps equals inside cookie values');
     // Public account selection and the serialized curl Cookie header must
@@ -476,7 +476,7 @@ SH;
     $pathToExternals['curl'] = $curlPath;
     try
     {
-        $gateFailures = array();
+        $gateFailures = [];
         try
         {
             $partitioned = new Snoopy();
@@ -534,8 +534,8 @@ SH;
             sourceSame(true, $kinozal->fetchComplex('https://kinozal.guru/other'),
                 'real Kinozal login and caller fetch completed');
             $pathRows = array_slice(sourceWireRows($wirePath), $before);
-            sourceSame(array('https://kinozal.guru/login.php', 'https://kinozal.guru/takelogin.php',
-                'https://kinozal.guru/other'), array_column($pathRows, 'url'),
+            sourceSame(['https://kinozal.guru/login.php', 'https://kinozal.guru/takelogin.php',
+                'https://kinozal.guru/other'], array_column($pathRows, 'url'),
                 'captured form GET, login POST and caller URL reached the wire');
             sourceSame(false, sourceWireHasCookie($pathRows[0], 'path_marker=from-login'),
                 'caller did not inject the response cookie');
@@ -543,7 +543,7 @@ SH;
                 'response cookie reaches its allowed login Path');
             sourceSame(false, sourceWireHasCookie($pathRows[2], 'path_marker=from-login'),
                 'response cookie stays off a different Path after setcookies');
-            foreach(array('wrong_domain=from-login', 'expired_marker=from-login') as $rejected)
+            foreach(['wrong_domain=from-login', 'expired_marker=from-login'] as $rejected)
             {
                 sourceSame(false, sourceWireHasCookie($pathRows[1], $rejected),
                     'rejected response cookie stays off the login Path');
@@ -608,7 +608,7 @@ SH;
             $manager->checkAuto();
             $autoRows = array_slice(sourceWireRows($wirePath), $autoBefore);
             // A refresh has no request URL, so it logs in at the account origin.
-            sourceSame(array('https://kinozal.jumpingcrab.com/login.php', 'https://kinozal.jumpingcrab.com/takelogin.php'),
+            sourceSame(['https://kinozal.jumpingcrab.com/login.php', 'https://kinozal.jumpingcrab.com/takelogin.php'],
                 array_column($autoRows, 'url'), 'auto refresh sent captured form GET and login POST');
             $autoSession = new privateData('KinozalTV');
             sourceSame(true, (new rCache('/accounts'))->get($autoSession),
@@ -625,7 +625,7 @@ SH;
                 'auto-refreshed cookie reaches only its matching Path');
 
             $legacySession = new privateData('KinozalTV');
-            $legacySession->cookies = array('path_marker' => 'legacy-flat');
+            $legacySession->cookies = ['path_marker' => 'legacy-flat'];
             $legacyBytes = serialize($legacySession);
             $legacyBytes = str_replace('s:13:"scopedCookies";a:0:{}', '', $legacyBytes);
             $legacyBytes = preg_replace('/^O:11:"privateData":6:/',
@@ -642,9 +642,9 @@ SH;
                 'legacy account session is renewed');
             $legacyRows = array_slice(sourceWireRows($wirePath), $legacyBefore);
             sourceSame(3, count($legacyRows), 'legacy session causes a fresh login');
-            foreach($legacyRows as $row)
+            foreach($legacyRows as $row) {
                 sourceSame(false, sourceWireHasCookie($row, 'path_marker=legacy-flat'),
-                    'legacy unscoped cookie never reaches the wire');
+                    'legacy unscoped cookie never reaches the wire'); }
             $migratedSession = new privateData('KinozalTV');
             sourceSame(true, (new rCache('/accounts'))->get($migratedSession),
                 'renewed account session saved');
@@ -668,14 +668,14 @@ SH;
         try
         {
             $cache = new rCache('/accounts');
-            $manager->accounts['SourcePort'] = array(
+            $manager->accounts['SourcePort'] = [
                 'name' => 'SourcePort', 'path' => __FILE__, 'object' => 'SourcePortAccount',
                 'login' => 'fixture-user', 'password' => 'fixture-password',
                 'enabled' => 1, 'auto' => 0,
-            );
+            ];
             sourceSame(true, $manager->store(), 'port-scoped account fixture saved');
             $portSession = new privateData('SourcePort');
-            $portSession->cookies = array('port_marker' => 'port-session');
+            $portSession->cookies = ['port_marker' => 'port-session'];
             sourceSame(true, $cache->set($portSession), 'port-scoped flat session saved');
             $portClient = new Snoopy();
             sourceSame(true, $portClient->fetchComplex('https://tracker.example:8443/port'),
@@ -699,21 +699,21 @@ SH;
         {
             $gateFailures[] = $error->getMessage();
         }
-        if($gateFailures)
-            throw new RuntimeException(implode('; ', $gateFailures));
+        if($gateFailures) {
+            throw new RuntimeException(implode('; ', $gateFailures)); }
     }
     finally
     {
-        if($previousCurl === null) unset($pathToExternals['curl']);
-        else $pathToExternals['curl'] = $previousCurl;
+        if($previousCurl === null) { unset($pathToExternals['curl']); }
+        else { $pathToExternals['curl'] = $previousCurl; }
         putenv('SOURCE_WIRE_LOG');
         putenv('SOURCE_ROTATE_COOKIE');
     }
 
     $log = sourceLog();
-    foreach(array('plugin-value', 'url-value', 'session-value', 'mteam-session') as $secret)
+    foreach(['plugin-value', 'url-value', 'session-value', 'mteam-session'] as $secret) {
         sourceSame(false, strpos($log, $secret) !== false,
-            'refusal and account diagnostics never log cookie values');
+            'refusal and account diagnostics never log cookie values'); }
 
     echo "ok - fetchComplex keeps loginmgr credentials off HTTP and parses URL cookies\n";
 } catch (Throwable $error) {

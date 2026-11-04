@@ -9,20 +9,20 @@ if (!is_executable(RTASK_KILL_HELPER) || !is_executable(RTASK_SUPERVISOR_HELPER)
 }
 // A controlled child must map to the file we executed. QEMU user-mode or an
 // explicit loader changes /proc/exe; process-identity guarantees stay failclosed.
-$control = proc_open(array(PHP_BINARY, '-r', 'fwrite(STDOUT, "ready\n"); sleep(10);'),
-    array(0=>array('file','/dev/null','r'), 1=>array('pipe','w'), 2=>array('file','/dev/null','w')), $controlPipes);
-if (!is_resource($control)) throw new RuntimeException('Could not start the native-execution control');
+$control = proc_open([PHP_BINARY, '-r', 'fwrite(STDOUT, "ready\n"); sleep(10);'],
+    [0=>['file','/dev/null','r'], 1=>['pipe','w'], 2=>['file','/dev/null','w']], $controlPipes);
+if (!is_resource($control)) { throw new RuntimeException('Could not start the native-execution control'); }
 $emulatedExecutable = null;
 try {
     stream_set_timeout($controlPipes[1], 2);
-    if (fgets($controlPipes[1]) !== "ready\n") throw new RuntimeException('Native-execution control did not become ready');
+    if (fgets($controlPipes[1]) !== "ready\n") { throw new RuntimeException('Native-execution control did not become ready'); }
     $controlState = proc_get_status($control);
     $actualPath = '/proc/'.$controlState['pid'].'/exe';
     $actual = @stat($actualPath);
     $expected = @stat(PHP_BINARY);
-    if (!is_array($actual) || !is_array($expected)) throw new RuntimeException('Native-execution identity is unreadable');
-    if ($actual['dev'] !== $expected['dev'] || $actual['ino'] !== $expected['ino'])
-        $emulatedExecutable = @readlink($actualPath) ?: '<unreadable>';
+    if (!is_array($actual) || !is_array($expected)) { throw new RuntimeException('Native-execution identity is unreadable'); }
+    if ($actual['dev'] !== $expected['dev'] || $actual['ino'] !== $expected['ino']) {
+        $emulatedExecutable = @readlink($actualPath) ?: '<unreadable>'; }
 } finally {
     fclose($controlPipes[1]);
     proc_terminate($control);
@@ -36,14 +36,14 @@ $profile = $_ENV['RU_PROFILE_PATH'];
 $marker = $profile.'/grandchild-pid';
 $inner = 'sleep 30 & printf "%s\n" "$!" > '.escapeshellarg($marker).'; wait';
 $middle = 'sh -c '.escapeshellarg($inner).' & wait';
-$task = new rTask(array('name'=>'image supervisor smoke'));
-$result = $task->start(array('setsid sh -c '.escapeshellarg($middle).' & wait'), rTask::FLG_RUN_AS_WEB);
+$task = new rTask(['name'=>'image supervisor smoke']);
+$result = $task->start(['setsid sh -c '.escapeshellarg($middle).' & wait'], rTask::FLG_RUN_AS_WEB);
 $dir = rTask::formatPath($task->id);
 $grandchild = 0;
 try {
     // The shell creates the marker before it writes the PID.
-    for ($attempt=0; $attempt<200 && ($grandchild=(int)trim((string)@file_get_contents($marker)))<=1; ++$attempt) usleep(10000);
-    if ($grandchild<=1) throw new RuntimeException('The image did not start the detached grandchild');
+    for ($attempt=0; $attempt<200 && ($grandchild=(int)trim((string)@file_get_contents($marker)))<=1; ++$attempt) { usleep(10000); }
+    if ($grandchild<=1) { throw new RuntimeException('The image did not start the detached grandchild'); }
     if ($result['status'] !== -1 || !is_file($dir.'/supervisor.version')
         || !is_file($dir.'/pid.identity')) {
         throw new RuntimeException('The image did not start a supervised process tree: '.json_encode($result['errors']));
@@ -56,11 +56,11 @@ try {
     if (is_file($dir.'/pid') && is_file($dir.'/pid.identity')) {
         $pid = trim(file_get_contents($dir.'/pid'));
         if (ctype_digit($pid) && (int)$pid > 1) {
-            $cleanup = proc_open(array(RTASK_KILL_HELPER, $pid, $dir.'/pid.identity'), array(
-                0=>array('file','/dev/null','r'), 1=>array('file','/dev/null','w'),
-                2=>array('file','/dev/null','w')), $pipes);
-            if (is_resource($cleanup)) proc_close($cleanup);
+            $cleanup = proc_open([RTASK_KILL_HELPER, $pid, $dir.'/pid.identity'], [
+                0=>['file','/dev/null','r'], 1=>['file','/dev/null','w'],
+                2=>['file','/dev/null','w']], $pipes);
+            if (is_resource($cleanup)) { proc_close($cleanup); }
         }
     }
-    if (is_dir($profile)) FileUtil::deleteDirectory($profile);
+    if (is_dir($profile)) { FileUtil::deleteDirectory($profile); }
 }

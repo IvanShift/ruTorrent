@@ -11,15 +11,15 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 
 function legacyNoticeSession($root, $owner = 'KinozalTV', $cookie = 'private-session', $loaded = false)
 {
-    if (!is_dir($root . '/settings/accounts')) mkdir($root . '/settings/accounts', 0700, true);
+    if (!is_dir($root . '/settings/accounts')) { mkdir($root . '/settings/accounts', 0700, true); }
     $session = new privateData($owner);
-    $session->cookies = array('sid' => $cookie);
+    $session->cookies = ['sid' => $cookie];
     $session->loaded = $loaded;
     unset($session->scopedCookies);
     $path = $root . '/settings/accounts/' . $owner . '.dat';
     $bytes = serialize($session);
     testAssertTrue(file_put_contents($path, $bytes) !== false, 'legacy session fixture saved');
-    return array($path, $bytes);
+    return [$path, $bytes];
 }
 
 function legacyNoticeStart($root, $owner = 'KinozalTV', $action = 'load')
@@ -66,11 +66,11 @@ $client = new Snoopy();
 $session = privateData::load($argv[2], $client);
 echo json_encode(array($session->loaded, $client->cookies));
 PHP;
-    $process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r',
-        $script, $root, $owner, realpath(__DIR__ . '/../../../plugins/loginmgr/accounts.php'), $action),
-        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+    $process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r',
+        $script, $root, $owner, realpath(__DIR__ . '/../../../plugins/loginmgr/accounts.php'), $action],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
     testAssertTrue(is_resource($process), 'independent request process started');
-    return array($process, $pipes);
+    return [$process, $pipes];
 }
 
 function legacyNoticeRelease(&$child)
@@ -85,7 +85,7 @@ function legacyNoticeFinish($child, $expected = null)
     $stderr = stream_get_contents($child[1][2]); fclose($child[1][2]);
     testAssertSame(0, proc_close($child[0]), 'independent request completed: ' . $stdout . $stderr);
     testAssertSame('', $stderr, 'request has no PHP diagnostics');
-    testAssertSame($expected === null ? array(false, array()) : $expected, json_decode($stdout, true),
+    testAssertSame($expected === null ? [false, []] : $expected, json_decode($stdout, true),
         'a refused legacy cache cannot act as an authenticated session');
 }
 
@@ -101,7 +101,7 @@ function legacyNoticeLog($root)
     return is_file($root . '/app.log') ? file_get_contents($root . '/app.log') : '';
 }
 
-$tests = array(
+$tests = [
     'a persisted loaded flag cannot make a refused legacy session warm' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/persisted-loaded';
         list($path, $bytes) = legacyNoticeSession($root, 'KinozalTV', 'private-session', true);
@@ -113,7 +113,7 @@ $tests = array(
         legacyNoticeSession($root, 'KinozalTV', 'private-session', true);
         $child = legacyNoticeStart($root, 'KinozalTV', 'fetch');
         legacyNoticeRelease($child);
-        legacyNoticeFinish($child, array(true, 1));
+        legacyNoticeFinish($child, [true, 1]);
     },
     'separate requests explain one legacy session once and preserve its bytes' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/sequential';
@@ -129,11 +129,11 @@ $tests = array(
     'concurrent requests claim one legacy session explanation' => function () use ($legacyNoticeRoot) {
         $root = $legacyNoticeRoot . '/concurrent';
         legacyNoticeSession($root);
-        $children = array();
-        for ($i = 0; $i < 4; $i++) $children[] = legacyNoticeStart($root);
-        foreach ($children as &$child) legacyNoticeRelease($child);
+        $children = [];
+        for ($i = 0; $i < 4; $i++) { $children[] = legacyNoticeStart($root); }
+        foreach ($children as &$child) { legacyNoticeRelease($child); }
         unset($child);
-        foreach ($children as $child) legacyNoticeFinish($child);
+        foreach ($children as $child) { legacyNoticeFinish($child); }
         testAssertSame(1, substr_count(legacyNoticeLog($root), 'legacy-cookie-cache-needs-refresh: KinozalTV'),
             'racing PHP requests leave one explanation');
     },
@@ -184,9 +184,9 @@ $tests = array(
         $key = hash('sha256', 'rollover-account' . "\0" . hash('sha256', 'rollover-session'));
         $newerAt = time();
         $older->notices[$key] = $newerAt - 1;
-        foreach (array('claimKey' => $key, 'claimed' => true) as $name => $value) {
+        foreach (['claimKey' => $key, 'claimed' => true] as $name => $value) {
             $property = new ReflectionProperty(legacyCookieNotices::class, $name);
-            if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+            if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
             $property->setValue($older, $value);
         }
         $newer = new legacyCookieNotices();
@@ -194,7 +194,7 @@ $tests = array(
         testAssertSame(true, $cache->set($newer), 'next-second winner published');
         testAssertSame(true, $cache->set($older), 'older contender reconciled under the real cache lock');
         $claimed = new ReflectionProperty(legacyCookieNotices::class, 'claimed');
-        if (PHP_VERSION_ID < 80100) $claimed->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) { $claimed->setAccessible(true); }
         testAssertSame(false, $claimed->getValue($older), 'older contender does not own another explanation');
         $saved = new legacyCookieNotices();
         testAssertSame(true, $cache->get($saved), 'winning notice remains readable');
@@ -212,7 +212,7 @@ $tests = array(
             'the fallback retains the repair action');
         testAssertSame($bytes, file_get_contents($path), 'failed notice write never rewrites session data');
     },
-);
+];
 
 try {
     $status = testRunCases($tests);
@@ -220,8 +220,8 @@ try {
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($legacyNoticeRoot,
         FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
     foreach ($files as $file) {
-        if ($file->isDir()) rmdir($file->getPathname());
-        else unlink($file->getPathname());
+        if ($file->isDir()) { rmdir($file->getPathname()); }
+        else { unlink($file->getPathname()); }
     }
     rmdir($legacyNoticeRoot);
 }

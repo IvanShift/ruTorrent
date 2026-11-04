@@ -6,9 +6,9 @@ require_once(__DIR__ . '/../../php/SCGITransportFixture.php');
 /** Drive the shipped httprpc action through the shared SCGI transport fixture. */
 class SetpropsTest extends TestCase
 {
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 	private $base;
 	private $peer;
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	public function setUp()
 	{
@@ -23,46 +23,11 @@ class SetpropsTest extends TestCase
 			$this->peer->close();
 			$this->peer = null;
 		}
-		foreach(array('driver.php', 'refusals.log', 'profile/settings/rtorrent.dat') as $name)
-			@unlink($this->base.'/'.$name);
+		foreach(['driver.php', 'refusals.log', 'profile/settings/rtorrent.dat'] as $name) {
+			@unlink($this->base.'/'.$name); }
 		@rmdir($this->base.'/profile/settings');
 		@rmdir($this->base.'/profile');
 		@rmdir($this->base);
-	}
-
-	private function post($body)
-	{
-		$root = realpath(__DIR__.'/../../..');
-		$xml = '<?xml version="1.0"?><methodResponse><params><param><value>'
-			.'<array><data><value><i8>0</i8></value></data></array>'
-			.'</value></param></params></methodResponse>';
-		$response = 'Content-Length: '.strlen($xml)."\r\nContent-Type: text/xml\r\n\r\n".$xml;
-		$this->peer = SCGITransportFixture::start($response);
-		$driver = $this->base.'/driver.php';
-		file_put_contents($driver, "<?php\n"
-			.'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->base.'/profile', true).";\n"
-			.'require_once('.var_export($root.'/conf/config.php', true).");\n"
-			// Keep this one-shot SCGI peer for the action; use the shipped 0.9.8 alias map.
-			.'require_once('.var_export($root.'/php/settings.php', true).");\n"
-			.'$settings = (new ReflectionClass("rTorrentSettings"))->newInstanceWithoutConstructor();'."\n"
-			.'$settings->linkExist = true; $settings->version = "0.9.8"; $settings->iVersion = 0x0908;'."\n"
-			.'$settings->aliases = array('.
-				'"d.set_peer_exchange" => array("name" => "d.peer_exchange.set", "prm" => 0),'.
-				'"d.set_connection_seed" => array("name" => "d.connection_seed.set", "prm" => 0));'."\n"
-			.'(function($map) { require $map; })->call($settings, '.
-				var_export($root.'/php/methods-0.9.4.php', true).");\n"
-			.'$settings->store();'."\n"
-			.'$scgi_host = "127.0.0.1";' . "\n"
-			.'$scgi_port = '.$this->peer->port().";\n"
-			.'$rpcTimeOut = 3;' . "\n"
-			.'$log_file = '.var_export($this->base.'/refusals.log', true).";\n"
-			.'$HTTP_RAW_POST_DATA = '.var_export($body, true).";\n"
-			.'chdir('.var_export($root.'/plugins/httprpc', true).");\n"
-			.'require('.var_export($root.'/plugins/httprpc/action.php', true).");\n");
-		$output = array();
-		exec(escapeshellarg(PHP_BINARY).' -d error_reporting=0 '
-			.escapeshellarg($driver).' 2>&1', $output);
-		return implode("\n", $output);
 	}
 
 	public function testUnlistedSetterIsRefusedBeforeTrustedRpc()
@@ -107,11 +72,11 @@ class SetpropsTest extends TestCase
 		$this->assertTrue($this->peer->accepted(),
 			'the property batch opens an SCGI connection');
 		$request = $this->peer->request();
-		foreach(array('d.peers_max.set', 'd.peers_min.set',
+		foreach(['d.peers_max.set', 'd.peers_min.set',
 			'd.tracker_numwant.set', 'd.uploads_max.set',
-			'd.peer_exchange.set', 'branch') as $method)
+			'd.peer_exchange.set', 'branch'] as $method) {
 			$this->assertTrue(strpos($request['payload'], $method) !== false,
-				'the shipped property method reaches rtorrent: '.$method);
+				'the shipped property method reaches rtorrent: '.$method); }
 		$this->assertTrue(strpos($request['payload'], 'initial_seed') !== false,
 			'superseed=1 selects the initial_seed branch');
 	}
@@ -146,9 +111,9 @@ class SetpropsTest extends TestCase
 		$request = $this->peer->request();
 		$this->assertTrue(strpos($request['payload'], 'd.is_open') !== false,
 			'the first request reads the current open state');
-		foreach(array('d.open', 'd.close') as $method)
+		foreach(['d.open', 'd.close'] as $method) {
 			$this->assertTrue(strpos($request['payload'], $method) === false,
-				'the state read itself does not change the torrent: '.$method);
+				'the state read itself does not change the torrent: '.$method); }
 		$this->assertTrue(strpos($request['payload'], self::HASH) !== false,
 			'the server uses the requested hash');
 	}
@@ -179,7 +144,7 @@ class SetpropsTest extends TestCase
 
 	public function testRecheckAndRemoveKeepMultiHashDelivery()
 	{
-		foreach(array('recheck' => 'd.check_hash', 'remove' => 'd.erase') as $mode => $method)
+		foreach(['recheck' => 'd.check_hash', 'remove' => 'd.erase'] as $mode => $method)
 		{
 			$this->post('mode='.$mode.'&hash='.self::HASH.'&hash='.str_repeat('B', 40));
 			$request = $this->peer->request();
@@ -200,5 +165,40 @@ class SetpropsTest extends TestCase
             'negative zero is not a canonical daemon integer');
         $this->assertTrue(!$this->peer->accepted(), 'invalid property never reaches the daemon');
     }
+
+	private function post($body)
+	{
+		$root = realpath(__DIR__.'/../../..');
+		$xml = '<?xml version="1.0"?><methodResponse><params><param><value>'
+			.'<array><data><value><i8>0</i8></value></data></array>'
+			.'</value></param></params></methodResponse>';
+		$response = 'Content-Length: '.strlen($xml)."\r\nContent-Type: text/xml\r\n\r\n".$xml;
+		$this->peer = SCGITransportFixture::start($response);
+		$driver = $this->base.'/driver.php';
+		file_put_contents($driver, "<?php\n"
+			.'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->base.'/profile', true).";\n"
+			.'require_once('.var_export($root.'/conf/config.php', true).");\n"
+			// Keep this one-shot SCGI peer for the action; use the shipped 0.9.8 alias map.
+			.'require_once('.var_export($root.'/php/settings.php', true).");\n"
+			.'$settings = (new ReflectionClass("rTorrentSettings"))->newInstanceWithoutConstructor();'."\n"
+			.'$settings->linkExist = true; $settings->version = "0.9.8"; $settings->iVersion = 0x0908;'."\n"
+			.'$settings->aliases = array('.
+				'"d.set_peer_exchange" => array("name" => "d.peer_exchange.set", "prm" => 0),'.
+				'"d.set_connection_seed" => array("name" => "d.connection_seed.set", "prm" => 0));'."\n"
+			.'(function($map) { require $map; })->call($settings, '.
+				var_export($root.'/php/methods-0.9.4.php', true).");\n"
+			.'$settings->store();'."\n"
+			.'$scgi_host = "127.0.0.1";' . "\n"
+			.'$scgi_port = '.$this->peer->port().";\n"
+			.'$rpcTimeOut = 3;' . "\n"
+			.'$log_file = '.var_export($this->base.'/refusals.log', true).";\n"
+			.'$HTTP_RAW_POST_DATA = '.var_export($body, true).";\n"
+			.'chdir('.var_export($root.'/plugins/httprpc', true).");\n"
+			.'require('.var_export($root.'/plugins/httprpc/action.php', true).");\n");
+		$output = [];
+		exec(escapeshellarg(PHP_BINARY).' -d error_reporting=0 '
+			.escapeshellarg($driver).' 2>&1', $output);
+		return implode("\n", $output);
+	}
 
 }

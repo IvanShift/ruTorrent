@@ -10,16 +10,16 @@ class MediaEmptyPathTaskTest extends TestCase
     {
         $this->root = dirname(__DIR__, 2);
         $this->scratch = sys_get_temp_dir() . '/rt-media-empty-' . getmypid() . '-' . bin2hex(random_bytes(4));
-        foreach (array('php/utility', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo') as $dir)
-            mkdir($this->scratch . '/' . $dir, 0777, true);
-        foreach (array('plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
-            'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php') as $file)
-            copy($this->root . '/' . $file, $this->scratch . '/' . $file);
-        foreach (array('rtorrent.php', 'commandargs.php') as $file)
-            copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file);
+        foreach (['php/utility', 'plugins/_task', 'plugins/screenshots', 'plugins/spectrogram', 'plugins/mediainfo'] as $dir) {
+            mkdir($this->scratch . '/' . $dir, 0777, true); }
+        foreach (['plugins/screenshots/action.php', 'plugins/screenshots/ffmpeg.php',
+            'plugins/spectrogram/action.php', 'plugins/mediainfo/action.php'] as $file) {
+            copy($this->root . '/' . $file, $this->scratch . '/' . $file); }
+        foreach (['rtorrent.php', 'commandargs.php'] as $file) {
+            copy($this->root . '/php/' . $file, $this->scratch . '/php/' . $file); }
         copy($this->root . '/php/utility/utility.php', $this->scratch . '/php/utility/utility.php');
-        foreach (array('util.php', 'xmlrpc.php', 'Torrent.php') as $stub)
-            file_put_contents($this->scratch . '/php/' . $stub, "<?php\n");
+        foreach (['util.php', 'xmlrpc.php', 'Torrent.php'] as $stub) {
+            file_put_contents($this->scratch . '/php/' . $stub, "<?php\n"); }
         file_put_contents($this->scratch . '/php/settings.php', "<?php\n");
         file_put_contents($this->scratch . '/plugins/_task/task.php', <<<'PHPSTUB'
 <?php
@@ -75,45 +75,24 @@ PHPREQUEST
     {
         $entries = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($this->scratch, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
+            RecursiveIteratorIterator::CHILD_FIRST,
         );
-        foreach ($entries as $entry)
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        foreach ($entries as $entry) {
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
         rmdir($this->scratch);
-    }
-
-    private function request($plugin, $command, $rpcCase)
-    {
-        $env = array(
-            'ROUTE_FILE' => $this->scratch . '/plugins/' . $plugin . '/action.php',
-            'ROUTE_CMD' => $command,
-            'RPC_CASE' => $rpcCase,
-            'TASK_TRACE' => $this->scratch . '/task-started',
-        );
-        $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr',
-            $this->scratch . '/request.php'),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, null, $env);
-        if (!is_resource($process)) throw new RuntimeException('media route child did not start');
-        fclose($pipes[0]);
-        $out = stream_get_contents($pipes[1]);
-        $err = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        return array(proc_close($process), $out, $err);
     }
 
     public function testEmptyPathSkipsTaskAcrossFallbacks()
     {
-        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox'),
-            array('mediainfo', 'mediainfo')) as $route) {
-            foreach (array('fallback-empty', 'fallback-failure') as $rpcCase) {
+        foreach ([['screenshots', 'ffmpeg'], ['spectrogram', 'sox'],
+            ['mediainfo', 'mediainfo']] as $route) {
+            foreach (['fallback-empty', 'fallback-failure'] as $rpcCase) {
                 @unlink($this->scratch . '/task-started');
                 list($exit, $out, $err) = $this->request($route[0], $route[1], $rpcCase);
                 $label = $route[1] . ' ' . $rpcCase;
                 $this->assertSame(0, $exit, $label . ' exits cleanly: ' . $err);
                 $this->assertSame('', $err, $label . ' emits no PHP warning');
-                $expected = $route[0] === 'mediainfo' ? 255 : array();
+                $expected = $route[0] === 'mediainfo' ? 255 : [];
                 $actual = json_decode($out, true);
                 $this->assertSame($expected, $route[0] === 'mediainfo' ? $actual['status'] : $actual,
                     $label . ' returns no task');
@@ -124,8 +103,8 @@ PHPREQUEST
 
     public function testNonemptyPathStillStartsTask()
     {
-        foreach (array(array('screenshots', 'ffmpeg'), array('spectrogram', 'sox'),
-            array('mediainfo', 'mediainfo')) as $route) {
+        foreach ([['screenshots', 'ffmpeg'], ['spectrogram', 'sox'],
+            ['mediainfo', 'mediainfo']] as $route) {
             @unlink($this->scratch . '/task-started');
             list($exit, $out, $err) = $this->request($route[0], $route[1], 'present');
             $this->assertSame(0, $exit, $route[1] . ' positive path exits cleanly: ' . $err);
@@ -133,5 +112,26 @@ PHPREQUEST
             $this->assertTrue((int)$out > 0 && (int)file_get_contents($this->scratch . '/task-started') > 0,
                 $route[1] . ' positive path still starts its task');
         }
+    }
+
+    private function request($plugin, $command, $rpcCase)
+    {
+        $env = [
+            'ROUTE_FILE' => $this->scratch . '/plugins/' . $plugin . '/action.php',
+            'ROUTE_CMD' => $command,
+            'RPC_CASE' => $rpcCase,
+            'TASK_TRACE' => $this->scratch . '/task-started',
+        ];
+        $process = proc_open([PHP_BINARY, '-d', 'display_errors=stderr',
+            $this->scratch . '/request.php'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, null, $env);
+        if (!is_resource($process)) { throw new RuntimeException('media route child did not start'); }
+        fclose($pipes[0]);
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        return [proc_close($process), $out, $err];
     }
 }

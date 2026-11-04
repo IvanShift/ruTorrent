@@ -4,10 +4,10 @@ rutorrent_require_cli(__FILE__);
 
 
 if (PHP_SAPI !== 'cli' || !isset($_SERVER['SCRIPT_FILENAME'])
-    || realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__)
-    exit(1);
-if (!chdir(__DIR__))
-    exit(1);
+    || realpath($_SERVER['SCRIPT_FILENAME']) !== __FILE__) {
+    exit(1); }
+if (!chdir(__DIR__)) {
+    exit(1); }
 if (isset($argv[1]) && $argv[1] === '--retry') {
     if (count($argv) !== 4 || preg_match('/^[0-9A-Fa-f]{40}$/D', $argv[2]) !== 1
         || preg_match('/^[a-z0-9_-]*$/D', $argv[3]) !== 1) {
@@ -15,8 +15,8 @@ if (isset($argv[1]) && $argv[1] === '--retry') {
         exit(2);
     }
     $_SERVER['REMOTE_USER'] = $argv[3];
-} elseif (isset($argv[1]) && $argv[1] !== '--all')
-    $_SERVER['REMOTE_USER'] = $argv[1];
+} elseif (isset($argv[1]) && $argv[1] !== '--all') {
+    $_SERVER['REMOTE_USER'] = $argv[1]; }
 
 require_once '../../php/xmlrpc.php';
 require_once './util_setdir.php';
@@ -30,13 +30,13 @@ if (isset($argv[1]) && $argv[1] === '--all') {
     }
     $ok = true;
     foreach ($profiles as $profile) {
-        $descriptors = array(
-            0 => array('file', '/dev/null', 'r'),
-            1 => array('file', '/dev/null', 'w'),
-            2 => array('file', '/dev/null', 'w'),
-        );
-        $child = @proc_open(array(Utility::getPHP(), __FILE__,
-            $profile === '~default' ? '' : $profile), $descriptors, $pipes);
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+        $child = @proc_open([Utility::getPHP(), __FILE__,
+            $profile === '~default' ? '' : $profile], $descriptors, $pipes);
         if (!is_resource($child) || proc_close($child) !== 0) {
             FileUtil::toLog('datadir: global recovery held profile=' . $profile
                 . ' reason=worker-failed');
@@ -81,7 +81,7 @@ if (isset($argv[1]) && $argv[1] === '--retry') {
             . "; see plugins/datadir/RECOVERY.md\n");
         $ok = false;
     }
-} else
-    $ok = rtDataDirRecover();
+} else {
+    $ok = rtDataDirRecover(); }
 rtDataDirUnlock($lock);
 exit($ok ? 0 : 1);

@@ -13,8 +13,8 @@ require_once(__DIR__ . '/UnpackArchiveFixture.php');
  */
 class UnpackPlaceArgumentsTest extends TestCase
 {
-	const HASH = UnpackArchiveFixture::HASH;
-	const USER = 'unpackargs';
+	public const HASH = UnpackArchiveFixture::HASH;
+	public const USER = 'unpackargs';
 
 	private $base;
 	private $daemon;
@@ -30,10 +30,37 @@ class UnpackPlaceArgumentsTest extends TestCase
 
 	public function tearDown()
 	{
-		if ($this->daemon !== null)
-			$this->daemon->stop();
+		if ($this->daemon !== null) {
+			$this->daemon->stop(); }
 		$this->daemon = null;
 		PluginEntryDriver::removeTree($this->base);
+	}
+
+	public function testAutomaticUnpack()
+	{
+		$this->assertPlacementArguments($this->command('plugins/unpack/update.php', [], ['before' =>
+			' $argv = ' . var_export(['update.php', $this->base . '/data', 'a.zip', '0', '', 'a', self::HASH, '',
+			self::USER], true) . '; $argc = count($argv);']), 'automatic');
+	}
+
+	public function testManualUnpackOfOneArchive()
+	{
+		$frozen = [$this->base . '/data/a.zip'];
+		$this->assertPlacementArguments($this->command('plugins/unpack/action.php',
+			['f.get_frozen_path' => $frozen, 'f.frozen_path' => $frozen],
+			['post' => ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => 'zip', 'no' => '0']]),
+			'manual');
+	}
+
+	public function testManualUnpackOfTheWholeDownload()
+	{
+		$this->assertPlacementArguments($this->command('plugins/unpack/action.php', [
+			'd.get_base_path' => [$this->base . '/data/whole'], 'd.base_path' => [$this->base . '/data/whole'],
+			'd.get_custom1' => [''], 'd.custom1' => [''],
+			'd.get_name' => ['whole'], 'd.name' => ['whole'],
+			'f.multicall' => ['b.zip'],
+		], ['post' => ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => '', 'no' => '0']]),
+			'manual');
 	}
 
 	/**
@@ -62,35 +89,8 @@ class UnpackPlaceArgumentsTest extends TestCase
 	private function assertPlacementArguments(array $arguments, $how)
 	{
 		$this->assertSame(11, count($arguments), 'the script gets ten arguments: ' . implode(' ', $arguments));
-		$this->assertSame(array(escapeshellarg(file_get_contents($this->base . '/php')), "'" . $how . "'",
-			"'" . self::HASH . "'", "'" . self::USER . "'"), array_slice($arguments, 7),
+		$this->assertSame([escapeshellarg(file_get_contents($this->base . '/php')), "'" . $how . "'",
+			"'" . self::HASH . "'", "'" . self::USER . "'"], array_slice($arguments, 7),
 			'PHP, "' . $how . '", the hash and the user end the command');
-	}
-
-	public function testAutomaticUnpack()
-	{
-		$this->assertPlacementArguments($this->command('plugins/unpack/update.php', array(), array('before' =>
-			' $argv = ' . var_export(array('update.php', $this->base . '/data', 'a.zip', '0', '', 'a', self::HASH, '',
-			self::USER), true) . '; $argc = count($argv);')), 'automatic');
-	}
-
-	public function testManualUnpackOfOneArchive()
-	{
-		$frozen = array($this->base . '/data/a.zip');
-		$this->assertPlacementArguments($this->command('plugins/unpack/action.php',
-			array('f.get_frozen_path' => $frozen, 'f.frozen_path' => $frozen),
-			array('post' => array('cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => 'zip', 'no' => '0'))),
-			'manual');
-	}
-
-	public function testManualUnpackOfTheWholeDownload()
-	{
-		$this->assertPlacementArguments($this->command('plugins/unpack/action.php', array(
-			'd.get_base_path' => array($this->base . '/data/whole'), 'd.base_path' => array($this->base . '/data/whole'),
-			'd.get_custom1' => array(''), 'd.custom1' => array(''),
-			'd.get_name' => array('whole'), 'd.name' => array('whole'),
-			'f.multicall' => array('b.zip'),
-		), array('post' => array('cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => '', 'no' => '0'))),
-			'manual');
 	}
 }

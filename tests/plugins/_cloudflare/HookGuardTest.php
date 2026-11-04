@@ -26,18 +26,18 @@ putenv('CLOUDFLARE_HOOK_CAPTURE=' . $cloudflareHookScratch . '/capture');
 register_shutdown_function(function () use ($cloudflareHookScratch) {
     $entries = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($cloudflareHookScratch, FilesystemIterator::SKIP_DOTS),
-        RecursiveIteratorIterator::CHILD_FIRST
+        RecursiveIteratorIterator::CHILD_FIRST,
     );
     foreach ($entries as $entry) {
-        if ($entry->isDir()) rmdir($entry->getPathname());
-        else unlink($entry->getPathname());
+        if ($entry->isDir()) { rmdir($entry->getPathname()); }
+        else { unlink($entry->getPathname()); }
     }
     rmdir($cloudflareHookScratch);
 });
 
 class CloudflareHookChallengeClient extends Snoopy
 {
-    public $retries = array();
+    public $retries = [];
 
     public function fetch($URI, $method = 'GET', $content_type = '', $body = '')
     {
@@ -51,6 +51,12 @@ class CloudflareHookGuardTest extends TestCase
     private $url = 'http://synthetic-public.example/favicon.ico';
     private $settings;
 
+    public function setUp()
+    {
+        global $cloudflareHookScratch;
+        @unlink($cloudflareHookScratch . '/capture');
+    }
+
     public function setUpClass()
     {
         // Use the real event registry without its singleton's SCGI discovery.
@@ -58,37 +64,14 @@ class CloudflareHookGuardTest extends TestCase
         $this->settings->registerEventHook('_cloudflare', 'URLFetched');
     }
 
-    public function setUp()
-    {
-        global $cloudflareHookScratch;
-        @unlink($cloudflareHookScratch . '/capture');
-    }
-
-    private function dispatchChallenge($guarded, $status = 503)
-    {
-        $client = new CloudflareHookChallengeClient();
-        $client->block_private = $guarded;
-        $client->status = $status;
-        $client->results = 'synthetic challenge';
-        $client->headers = array('Server: cloudflare');
-        $this->settings->pushEvent('URLFetched', array(
-            'client' => $client,
-            'uri' => $this->url,
-            'method' => 'GET',
-            'content_type' => '',
-            'body' => ''
-        ));
-        return $client;
-    }
-
     public function testGuardedChallengeDoesNotStartUnpinnedCloudscraperRetry()
     {
         global $cloudflareHookScratch;
-        foreach (array(503, 429) as $status) {
+        foreach ([503, 429] as $status) {
             $client = $this->dispatchChallenge(true, $status);
             $this->assertSame(false, file_exists($cloudflareHookScratch . '/capture'),
                 'Guarded client started the unpinned cloudscraper process for ' . $status);
-            $this->assertSame(array(), $client->retries,
+            $this->assertSame([], $client->retries,
                 'Guarded client retried the URL after Cloudflare response ' . $status);
         }
     }
@@ -99,9 +82,26 @@ class CloudflareHookGuardTest extends TestCase
         $client = $this->dispatchChallenge(false);
         $this->assertSame(true, file_exists($cloudflareHookScratch . '/capture'),
             'Unguarded client did not start cloudscraper');
-        $this->assertSame(array($this->url), $client->retries,
+        $this->assertSame([$this->url], $client->retries,
             'Unguarded client did not retry the challenged URL');
         $this->assertSame('synthetic', $client->cookies['clearance'] ?? null,
             'Unguarded client did not use cloudscraper tokens');
+    }
+
+    private function dispatchChallenge($guarded, $status = 503)
+    {
+        $client = new CloudflareHookChallengeClient();
+        $client->block_private = $guarded;
+        $client->status = $status;
+        $client->results = 'synthetic challenge';
+        $client->headers = ['Server: cloudflare'];
+        $this->settings->pushEvent('URLFetched', [
+            'client' => $client,
+            'uri' => $this->url,
+            'method' => 'GET',
+            'content_type' => '',
+            'body' => '',
+        ]);
+        return $client;
     }
 }

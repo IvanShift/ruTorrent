@@ -16,15 +16,15 @@ require_once(__DIR__ . '/../../php/rtorrent.php');
  */
 class MagnetShownTest extends TestCase
 {
-	const PRESENT = '5555555555555555555555555555555555555555';
-	const MISSING = '6666666666666666666666666666666666666666';
-	const UNKNOWN = '7777777777777777777777777777777777777777';
+	public const PRESENT = '5555555555555555555555555555555555555555';
+	public const MISSING = '6666666666666666666666666666666666666666';
+	public const UNKNOWN = '7777777777777777777777777777777777777777';
 
 	private $daemon;
 	private $base;
 	private $settingsProperty;
 	private $settingsBefore;
-	private $globalsBefore = array();
+	private $globalsBefore = [];
 
 	public function setUp()
 	{
@@ -35,15 +35,15 @@ class MagnetShownTest extends TestCase
 		$this->settingsBefore = $this->settingsProperty->getValue();
 		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
 		$settings->iVersion = 0x1018;
-		$settings->aliases = array();
+		$settings->aliases = [];
 		$this->settingsProperty->setValue(null, $settings);
-		foreach (array('scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut', 'topDirectory') as $name)
-			$this->globalsBefore[$name] = array_key_exists($name, $GLOBALS) ? $GLOBALS[$name] : null;
+		foreach (['scgi_host', 'scgi_port', 'log_file', 'rpcTimeOut', 'topDirectory'] as $name) {
+			$this->globalsBefore[$name] = array_key_exists($name, $GLOBALS) ? $GLOBALS[$name] : null; }
 		$GLOBALS['log_file'] = $this->base . '/app.log';
 		$GLOBALS['rpcTimeOut'] = 10;
 		$this->daemon = new FakeRtorrentDaemon(
-			new FakeRtorrentAddTorrentReplies(array(self::PRESENT), array(), false,
-				array('unknown' => array(self::UNKNOWN))),
+			new FakeRtorrentAddTorrentReplies([self::PRESENT], [], false,
+				['unknown' => [self::UNKNOWN]]),
 			$this->base . '/calls.log');
 		$GLOBALS['scgi_host'] = '127.0.0.1';
 		$GLOBALS['scgi_port'] = $this->daemon->port();
@@ -53,27 +53,13 @@ class MagnetShownTest extends TestCase
 	{
 		$this->daemon->stop();
 		foreach ($this->globalsBefore as $name => $value) {
-			if ($value === null) unset($GLOBALS[$name]);
-			else $GLOBALS[$name] = $value;
+			if ($value === null) { unset($GLOBALS[$name]); }
+			else { $GLOBALS[$name] = $value; }
 		}
-		foreach (glob($this->base . '/*') ?: array() as $entry)
-			@unlink($entry);
+		foreach (glob($this->base . '/*') ?: [] as $entry) {
+			@unlink($entry); }
 		@rmdir($this->base);
 		$this->settingsProperty->setValue(null, $this->settingsBefore);
-	}
-
-	private function reads($hash)
-	{
-		$reads = 0;
-		foreach ($this->daemon->bodies() as $body)
-			if (strpos($body, 'd.hash') !== false && strpos($body, $hash) !== false)
-				$reads++;
-		return $reads;
-	}
-
-	private function logged()
-	{
-		return (string)@file_get_contents($this->base . '/app.log');
 	}
 
 	public function testAStubThatIsThereIsShownAfterOneRead()
@@ -136,14 +122,14 @@ class MagnetShownTest extends TestCase
 			'an unsupported v2-only topic cannot supply a v1 hash');
 		$this->assertSame(false, rTorrent::sendMagnet('magnet:?'.$v2, false, false, null, null),
 			'an unsupported v2-only topic is refused before RPC');
-		$this->assertSame(array(), $this->daemon->bodies(), 'a v2-only topic sends no load call');
+		$this->assertSame([], $this->daemon->bodies(), 'a v2-only topic sends no load call');
 		$this->assertSame(false, rTorrent::magnetHash('magnet:?'.$v1.'&'.$v2.'&xt=urn:btih:bad'),
 			'a hybrid still refuses a malformed applicable hash');
 	}
 
 	public function testHybridSendForwardsTheOriginalUriAndChecksItsV1Stub()
 	{
-		rTorrentSettings::get()->aliases['load'] = array('name' => 'load.normal', 'prm' => 1);
+		rTorrentSettings::get()->aliases['load'] = ['name' => 'load.normal', 'prm' => 1];
 		rTorrentSettings::get()->directory = '';
 		$magnet = 'magnet:?xt=urn:btih:'.self::MISSING
 			.'&xt=urn:btmh:1220'.str_repeat('ab', 32).'&dn=hybrid+name';
@@ -160,9 +146,9 @@ class MagnetShownTest extends TestCase
 	public function testIgnoredExactTopicsStillRequireValidPercentEncoding()
 	{
 		$prefix = 'magnet:?xt=urn:btih:'.self::PRESENT.'&xt=urn:btmh:';
-		foreach(array('%', '%0', '%GG') as $invalid)
+		foreach(['%', '%0', '%GG'] as $invalid) {
 			$this->assertSame(false, rTorrent::magnetHash($prefix.$invalid),
-				'an ignored exact topic cannot hide a malformed percent escape');
+				'an ignored exact topic cannot hide a malformed percent escape'); }
 		$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:12345678901234567%GG'),
 			'a malformed escape cannot be mistaken for a twenty-byte binary hash');
 		$this->assertSame(str_repeat('25', 20), rTorrent::magnetHash(
@@ -176,23 +162,23 @@ class MagnetShownTest extends TestCase
 	public function testZeroInfoHashesAreRefusedBeforeAnyLoadOrMkdirRpc()
 	{
 		// Captured on native c8b228b: load replies succeed while zero-info-hash is refused.
-		rTorrentSettings::get()->aliases['load'] = array('name' => 'load.normal', 'prm' => 1);
+		rTorrentSettings::get()->aliases['load'] = ['name' => 'load.normal', 'prm' => 1];
 		rTorrentSettings::get()->directory = '';
 		$GLOBALS['topDirectory'] = $this->base;
-		$zeroForms = array(str_repeat('0', 40), str_repeat('A', 32), str_repeat('a', 32),
-			str_repeat('%00', 20), str_repeat('%30', 40));
-		foreach($zeroForms as $text)
-			foreach(array('', '&xt=urn:btmh:1220'.str_repeat('ab', 32)) as $suffix)
+		$zeroForms = [str_repeat('0', 40), str_repeat('A', 32), str_repeat('a', 32),
+			str_repeat('%00', 20), str_repeat('%30', 40)];
+		foreach($zeroForms as $text) {
+			foreach(['', '&xt=urn:btmh:1220'.str_repeat('ab', 32)] as $suffix)
 			{
 				$magnet = 'magnet:?xt=urn:btih:'.$text.$suffix;
 				$this->assertSame(false, rTorrent::magnetHash($magnet),
 					'the final decoded zero info hash is not a loadable identity');
 				$this->assertSame(false, rTorrent::sendMagnet($magnet, false, false,
 					$this->base.'/requested', null), 'zero info hashes refuse before submission');
-			}
+			} }
 		$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat("\0", 20)),
 			'a raw twenty-byte zero info hash is refused too');
-		$this->assertSame(array(), $this->daemon->bodies(),
+		$this->assertSame([], $this->daemon->bodies(),
 			'zero info hashes send neither load nor directory-creation commands');
 	}
 
@@ -215,10 +201,24 @@ class MagnetShownTest extends TestCase
 			'a nearly zero hexadecimal hash is still valid');
 		$this->assertSame(str_repeat('0', 39).'1', rTorrent::magnetHash('magnet:?xt=urn:btih:'.str_repeat('%00', 19).'%01'),
 			'nonzero percent-encoded binary hashes preserve all zero-valued bytes');
-		foreach(array(str_repeat('B', 31), str_repeat('B', 33), str_repeat('B', 31).'1',
-			str_repeat('Q', 19), str_repeat('Q', 21), str_repeat('0', 39).'g') as $invalid)
+		foreach([str_repeat('B', 31), str_repeat('B', 33), str_repeat('B', 31).'1',
+			str_repeat('Q', 19), str_repeat('Q', 21), str_repeat('0', 39).'g'] as $invalid) {
 			$this->assertSame(false, rTorrent::magnetHash('magnet:?xt=urn:btih:'.$invalid),
-				'invalid identity lengths and alphabets remain refused');
+				'invalid identity lengths and alphabets remain refused'); }
+	}
+
+	private function reads($hash)
+	{
+		$reads = 0;
+		foreach ($this->daemon->bodies() as $body) {
+			if (strpos($body, 'd.hash') !== false && strpos($body, $hash) !== false) {
+				$reads++; } }
+		return $reads;
+	}
+
+	private function logged()
+	{
+		return (string)@file_get_contents($this->base . '/app.log');
 	}
 
 }

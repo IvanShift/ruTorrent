@@ -70,7 +70,7 @@ try {
     $engine->client->nextReturn = false;
     fetchPolicySame(false, $engine->fetch('https://tracker.example/file'),
         'a transport failure cannot reuse a previous 2xx status');
-    foreach (array(new KATFetchPolicyEngine(), new RARbgFetchPolicyEngine()) as $override) {
+    foreach ([new KATFetchPolicyEngine(), new RARbgFetchPolicyEngine()] as $override) {
         $override->client = new FetchPolicyClient();
         $override->client->nextError = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
         $override->client->nextBody = '<html>Login required</html>';

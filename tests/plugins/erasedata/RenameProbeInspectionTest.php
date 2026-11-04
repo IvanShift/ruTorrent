@@ -13,8 +13,8 @@ require_once(__DIR__.'/RenameProbeReadFixture.php');
 // process, so these tests hold that lock themselves: no helper, load or timing.
 class RenameProbeInspectionTest extends TestCase
 {
-	const NAME = '.rutorrent-rename-probe-4242-06ade481acbaf577';
-	const REFUSAL = 'queue refused: unsafe-rename-probe path=';
+	public const NAME = '.rutorrent-rename-probe-4242-06ade481acbaf577';
+	public const REFUSAL = 'queue refused: unsafe-rename-probe path=';
 
 	private $dir;
 	private $queue;
@@ -28,72 +28,18 @@ class RenameProbeInspectionTest extends TestCase
 		mkdir($this->queue, 0700);
 		$this->root = $this->queue.'/'.self::NAME;
 		FileUtil::$settingsPath = $this->dir;
-		FileUtil::$log = array();
-		rXMLRPCRequest::$responses = array(
-			'system.client_version' => array('ok' => true, 'val' => array('0.16.24')));
+		FileUtil::$log = [];
+		rXMLRPCRequest::$responses = [
+			'system.client_version' => ['ok' => true, 'val' => ['0.16.24']]];
 		\ErasedataRetirementScanFixture\DirectoryEntries::$entries = null;
 		\ErasedataRenameProbeReadFixture\Script::$lockRefused = false;
 		\ErasedataRenameProbeReadFixture\Script::$beforeRead = null;
-		\ErasedataRenameProbeReadFixture\Script::$lstatChanges = array();
+		\ErasedataRenameProbeReadFixture\Script::$lstatChanges = [];
 	}
 
 	public function tearDown()
 	{
 		$this->remove($this->dir);
-	}
-
-	private function remove($path)
-	{
-		if(is_link($path) || !is_dir($path)) { unlink($path); return; }
-		chmod($path, 0700);
-		foreach(array_diff(scandir($path), array('.', '..')) as $name)
-			$this->remove($path.'/'.$name);
-		rmdir($path);
-	}
-
-	private function hold($operation)
-	{
-		// Close-on-exec: a helper that inherited this description would hold the lock
-		// it is waiting for after the test released it.
-		$handle = fopen($this->queue, 're');
-		$this->assertTrue(is_resource($handle) && flock($handle, $operation | LOCK_NB),
-			'the fixture holds the flock on the queue directory');
-		return($handle);
-	}
-
-	private function parentLockIsFree()
-	{
-		$other = fopen($this->queue, 'r');
-		return(flock($other, LOCK_EX | LOCK_NB));
-	}
-
-	private function workspace($extra = 'unexpected')
-	{
-		mkdir($this->root, 0700);
-		foreach(array('.lock', 'from-file') as $name)
-		{
-			file_put_contents($this->root.'/'.$name, '');
-			chmod($this->root.'/'.$name, 0600);
-		}
-		mkdir($this->root.'/from-dir', 0700);
-		if($extra !== null) file_put_contents($this->root.'/'.$extra, 'keep');
-	}
-
-	private function valid($path = null)
-	{
-		return(erasedataRenameProbeWorkspaceValid($path === null ? $this->root : $path, fileowner($this->queue)));
-	}
-
-	// Through the fixture's copy, with a scripted lock and announced reads.
-	private function validScripted()
-	{
-		return(call_user_func('ErasedataRenameProbeReadFixture\\erasedataRenameProbeWorkspaceValid',
-			$this->root, fileowner($this->queue)));
-	}
-
-	private function logged()
-	{
-		return(implode("\n", FileUtil::$log));
 	}
 
 	public function testABusyParentLockSkipsTheReadUntilTheHolderLetsGo()
@@ -102,9 +48,9 @@ class RenameProbeInspectionTest extends TestCase
 		$holder = $this->hold(LOCK_EX);
 		$this->assertSame(true, $this->valid(), 'a live holder of the parent lock owns the workspace state');
 		$this->assertSame(true, erasedataEnsureQueueDirectory($this->queue), 'and does not refuse the queue');
-		$scan = erasedataRetirementScan(array('listPath' => $this->queue));
+		$scan = erasedataRetirementScan(['listPath' => $this->queue]);
 		$this->assertSame(0, $scan['classes']['residue'], 'nor count as residue');
-		$this->assertEquals(array(), FileUtil::$log, 'and nothing is logged');
+		$this->assertEquals([], FileUtil::$log, 'and nothing is logged');
 		fclose($holder);
 		$this->assertSame(false, erasedataEnsureQueueDirectory($this->queue), 'once it lets go the read runs');
 		$this->assertTrue(strpos($this->logged(), self::REFUSAL) !== false, 'and refuses with the classified reason');
@@ -122,7 +68,7 @@ class RenameProbeInspectionTest extends TestCase
 	public function testTheReadRunsUnderTheLockAndReleasesIt()
 	{
 		$this->workspace(null);
-		$held = array();
+		$held = [];
 		\ErasedataRenameProbeReadFixture\Script::$beforeRead = function() use (&$held) {
 			$held[] = !$this->parentLockIsFree();
 		};
@@ -154,16 +100,16 @@ class RenameProbeInspectionTest extends TestCase
 	public function testTheReadsDescriptionIsCloseOnExec()
 	{
 		$this->workspace(null);
-		$flags = array();
+		$flags = [];
 		\ErasedataRenameProbeReadFixture\Script::$beforeRead = function() use (&$flags) {
-			foreach(array_diff(scandir('/proc/self/fd'), array('.', '..')) as $fd)
+			foreach(array_diff(scandir('/proc/self/fd'), ['.', '..']) as $fd) {
 				if(@readlink('/proc/self/fd/'.$fd) === realpath($this->queue)
-					&& preg_match('/^flags:\s+([0-7]+)$/m', (string)file_get_contents('/proc/self/fdinfo/'.$fd), $match))
-					$flags[] = octdec($match[1]) & 02000000;
+					&& preg_match('/^flags:\s+([0-7]+)$/m', (string)file_get_contents('/proc/self/fdinfo/'.$fd), $match)) {
+					$flags[] = octdec($match[1]) & 02000000; } }
 		};
 		$this->assertSame(true, $this->validScripted(), 'the read passes');
-		$this->assertTrue($flags !== array(), 'the description was seen during the read');
-		$this->assertEquals(array(), array_filter($flags, function($flag) { return($flag === 0); }),
+		$this->assertTrue($flags !== [], 'the description was seen during the read');
+		$this->assertEquals([], array_filter($flags, function($flag) { return($flag === 0); }),
 			'every description of the parent is close-on-exec');
 	}
 
@@ -171,12 +117,12 @@ class RenameProbeInspectionTest extends TestCase
 	{
 		$this->assertSame(true, $this->valid(), 'a probe that finished after the listing left nothing to refuse');
 		$this->assertTrue($this->parentLockIsFree(), 'and that exit releases the lock too');
-		\ErasedataRetirementScanFixture\DirectoryEntries::$entries = array('.', '..', self::NAME);
+		\ErasedataRetirementScanFixture\DirectoryEntries::$entries = ['.', '..', self::NAME];
 		// The fixture evaluates this function at load, out of PHPStan's sight.
-		$scan = call_user_func('ErasedataRetirementScanFixture\\erasedataRetirementScan', array('listPath' => $this->queue));
+		$scan = call_user_func('ErasedataRetirementScanFixture\\erasedataRetirementScan', ['listPath' => $this->queue]);
 		$this->assertSame(0, $scan['classes']['residue'], 'a finished probe is not residue');
 		$this->assertSame(true, $scan['empty'], 'and it does not hold retirement');
-		$this->assertEquals(array(), FileUtil::$log, 'and nothing is logged');
+		$this->assertEquals([], FileUtil::$log, 'and nothing is logged');
 	}
 
 	// A readable, unsearchable queue answers no lookup, so the lock proves nothing
@@ -192,7 +138,7 @@ class RenameProbeInspectionTest extends TestCase
 			return;
 		}
 		$this->assertSame(false, $this->valid(), 'a name this process may not look at is not a finished probe');
-		$scan = erasedataRetirementScan(array('listPath' => $this->queue));
+		$scan = erasedataRetirementScan(['listPath' => $this->queue]);
 		$this->assertSame(1, $scan['classes']['residue'], 'it stays residue at retirement');
 		$this->assertSame(false, $scan['empty'], 'and holds retirement');
 	}
@@ -208,7 +154,7 @@ class RenameProbeInspectionTest extends TestCase
 			return;
 		}
 		$loud = 0;
-		set_error_handler(function($level) use (&$loud) { if(error_reporting() & $level) $loud++; return(true); });
+		set_error_handler(function($level) use (&$loud) { if(error_reporting() & $level) { $loud++; } return(true); });
 		$this->assertSame(true, $this->valid(), 'an intact workspace passes without the lock');
 		restore_error_handler();
 		$this->assertSame(0, $loud, 'and the failed open writes no warning');
@@ -235,10 +181,10 @@ class RenameProbeInspectionTest extends TestCase
 			.'$uid = fileowner($argv[1]);'
 			.'echo json_encode(array(erasedataRenameProbeWorkspaceValid($argv[1]."/".$argv[2], $uid),'
 			.' erasedataRenameProbeWorkspaceValid($argv[1]."/.rutorrent-rename-probe-1-0123456789abcdef", $uid)));';
-		foreach(array('flock', 'fopen') as $builtin)
+		foreach(['flock', 'fopen'] as $builtin)
 		{
-			$child = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'disable_functions='.$builtin,
-				'-r', $code, '--', $this->queue, self::NAME)), array('timeout' => 30));
+			$child = PhpProcess::run(array_merge(PhpProcess::sameIni(), ['-d', 'disable_functions='.$builtin,
+				'-r', $code, '--', $this->queue, self::NAME]), ['timeout' => 30]);
 			$this->assertSame('[false,false]', $child['out'],
 				'with '.$builtin.' disabled neither a foreign nor a missing root is valid: '.$child['err']);
 		}
@@ -250,12 +196,12 @@ class RenameProbeInspectionTest extends TestCase
 	{
 		$this->workspace(null);
 		$other = fileowner($this->queue) + 1;
-		$changes = array(
-			'a root that is a link with the private mode' => array($this->root => array('mode' => 0120700)),
-			'a root owned by someone else' => array($this->root => array('uid' => $other)),
-			'an entry owned by someone else' => array($this->root.'/from-file' => array('uid' => $other)),
-			'a file name that is a one-link directory' => array($this->root.'/from-file' => array('mode' => 0040600)),
-		);
+		$changes = [
+			'a root that is a link with the private mode' => [$this->root => ['mode' => 0120700]],
+			'a root owned by someone else' => [$this->root => ['uid' => $other]],
+			'an entry owned by someone else' => [$this->root.'/from-file' => ['uid' => $other]],
+			'a file name that is a one-link directory' => [$this->root.'/from-file' => ['mode' => 0040600]],
+		];
 		$this->assertSame(true, $this->validScripted(), 'the unchanged workspace passes');
 		foreach($changes as $case => $change)
 		{
@@ -264,67 +210,36 @@ class RenameProbeInspectionTest extends TestCase
 		}
 	}
 
-	// Real bytes through the real doors: admission, the worker and retirement.
-	private function unsafeWorkspaces()
-	{
-		$outside = $this->dir.'/outside';
-		return(array(
-			'root is a file' => function($root) { file_put_contents($root, 'bytes'); chmod($root, 0700); },
-			'root is a link' => function($root) use ($outside) { mkdir($outside, 0700); symlink($outside, $root); },
-			'root mode' => function($root) { $this->workspace(null); chmod($root, 0755); },
-			'unknown name' => function($root) { $this->workspace(null); file_put_contents($root.'/unexpected', 'keep'); },
-			'unknown directory' => function($root) { $this->workspace(null); mkdir($root.'/unexpected', 0700); },
-			'child link' => function($root) use ($outside) {
-				$this->workspace(null); file_put_contents($outside, 'keep'); unlink($root.'/from-file'); symlink($outside, $root.'/from-file');
-			},
-			'child type' => function($root) { $this->workspace(null); mkdir($root.'/to-file', 0700); },
-			'child mode' => function($root) { $this->workspace(null); chmod($root.'/from-file', 0644); },
-			'second hard link' => function($root) use ($outside) { $this->workspace(null); link($root.'/from-file', $outside); },
-			'directory contents' => function($root) { $this->workspace(null); file_put_contents($root.'/from-dir/payload', 'keep'); },
-			'lock with bytes' => function($root) { $this->workspace(null); file_put_contents($root.'/.lock', 'keep'); },
-		));
-	}
-
-	private function fingerprint($path)
-	{
-		if(is_link($path)) return(array('link' => readlink($path)));
-		if(!is_dir($path)) return(array('bytes' => file_get_contents($path), 'mode' => fileperms($path)));
-		$listing = array('mode' => fileperms($path));
-		foreach(array_diff(scandir($path), array('.', '..')) as $name)
-			$listing[$name] = $this->fingerprint($path.'/'.$name);
-		return($listing);
-	}
-
 	public function testUnsafeWorkspaceIsRefusedVisiblyAtEveryDoorAndKept()
 	{
-		$dependencies = array('listPath' => $this->queue, 'user' => '', 'filesystem' => new ErasedataFilesystemOps(),
-			'log' => array('FileUtil', 'toLog'), 'ackTimeout' => 0.1, 'ackPoll' => 0.01);
+		$dependencies = ['listPath' => $this->queue, 'user' => '', 'filesystem' => new ErasedataFilesystemOps(),
+			'log' => ['FileUtil', 'toLog'], 'ackTimeout' => 0.1, 'ackPoll' => 0.01];
 		foreach($this->unsafeWorkspaces() as $case => $build)
 		{
 			$build($this->root);
 			$before = $this->fingerprint($this->root);
-			$doors = array(
+			$doors = [
 				'queue admission' => function() { return(erasedataEnsureQueueDirectory($this->queue)); },
 				'removal admission' => function() use ($dependencies) {
-					return(erasedataRemovalAdmissionRun($dependencies, array(str_repeat('A', 40)), 1));
+					return(erasedataRemovalAdmissionRun($dependencies, [str_repeat('A', 40)], 1));
 				},
 				'drain worker' => function() use ($dependencies) { return(erasedataDrainWorkerRun($dependencies)); },
-			);
+			];
 			foreach($doors as $door => $call)
 			{
-				FileUtil::$log = array();
+				FileUtil::$log = [];
 				$this->assertSame(false, $call(), $case.' refuses at '.$door);
 				$this->assertTrue(strpos($this->logged(), self::REFUSAL) !== false, $case.' names the reason at '.$door);
-				if($door !== 'queue admission')
+				if($door !== 'queue admission') {
 					$this->assertTrue(strpos($this->logged(), 'queue-unavailable') !== false,
-						$case.' reports queue-unavailable at '.$door);
+						$case.' reports queue-unavailable at '.$door); }
 			}
-			$scan = erasedataRetirementScan(array('listPath' => $this->queue));
+			$scan = erasedataRetirementScan(['listPath' => $this->queue]);
 			$this->assertSame(1, $scan['classes']['residue'], $case.' stays residue at retirement');
 			$this->assertSame(false, $scan['empty'], $case.' holds retirement');
 			$this->assertEquals($before, $this->fingerprint($this->root), $case.' is kept byte for byte');
 			$this->remove($this->root);
-			if(file_exists($this->dir.'/outside') || is_link($this->dir.'/outside')) $this->remove($this->dir.'/outside');
+			if(file_exists($this->dir.'/outside') || is_link($this->dir.'/outside')) { $this->remove($this->dir.'/outside'); }
 		}
 	}
 
@@ -342,20 +257,105 @@ class RenameProbeInspectionTest extends TestCase
 		$holder = $this->hold(LOCK_EX);
 		$this->assertSame(true, $this->valid(), 'the reader asks the flock this test holds');
 		$this->remove($this->root);
-		$process = proc_open(array($helper, '--probe', $this->queue), array(0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'), 2 => array('file', '/dev/null', 'w')), $pipes);
+		$process = proc_open([$helper, '--probe', $this->queue], [0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
 		$this->assertTrue(is_resource($process), 'the fixture starts the helper');
 		// However late the helper starts, it may not get past this lock while it is held.
 		$until = microtime(true) + 0.3;
 		do
 		{
-			$waiting = proc_get_status($process)['running'] && !array_diff(scandir($this->queue), array('.', '..'));
+			$waiting = proc_get_status($process)['running'] && !array_diff(scandir($this->queue), ['.', '..']);
 			usleep(10000);
 		} while($waiting && microtime(true) < $until);
 		$this->assertTrue($waiting, 'the helper waits on the flock this test holds');
 		fclose($holder);
 		$status = proc_close($process);
 		$this->assertTrue($status === 0 || $status === 5, 'after the release the probe is usable: '.$status);
-		$this->assertEquals(array('.', '..'), scandir($this->queue), 'and removes its own workspace');
+		$this->assertEquals(['.', '..'], scandir($this->queue), 'and removes its own workspace');
+	}
+
+	private function remove($path)
+	{
+		if(is_link($path) || !is_dir($path)) { unlink($path); return; }
+		chmod($path, 0700);
+		foreach(array_diff(scandir($path), ['.', '..']) as $name) {
+			$this->remove($path.'/'.$name); }
+		rmdir($path);
+	}
+
+	private function hold($operation)
+	{
+		// Close-on-exec: a helper that inherited this description would hold the lock
+		// it is waiting for after the test released it.
+		$handle = fopen($this->queue, 're');
+		$this->assertTrue(is_resource($handle) && flock($handle, $operation | LOCK_NB),
+			'the fixture holds the flock on the queue directory');
+		return($handle);
+	}
+
+	private function parentLockIsFree()
+	{
+		$other = fopen($this->queue, 'r');
+		return(flock($other, LOCK_EX | LOCK_NB));
+	}
+
+	private function workspace($extra = 'unexpected')
+	{
+		mkdir($this->root, 0700);
+		foreach(['.lock', 'from-file'] as $name)
+		{
+			file_put_contents($this->root.'/'.$name, '');
+			chmod($this->root.'/'.$name, 0600);
+		}
+		mkdir($this->root.'/from-dir', 0700);
+		if($extra !== null) { file_put_contents($this->root.'/'.$extra, 'keep'); }
+	}
+
+	private function valid($path = null)
+	{
+		return(erasedataRenameProbeWorkspaceValid($path === null ? $this->root : $path, fileowner($this->queue)));
+	}
+
+	// Through the fixture's copy, with a scripted lock and announced reads.
+	private function validScripted()
+	{
+		return(call_user_func('ErasedataRenameProbeReadFixture\\erasedataRenameProbeWorkspaceValid',
+			$this->root, fileowner($this->queue)));
+	}
+
+	private function logged()
+	{
+		return(implode("\n", FileUtil::$log));
+	}
+
+	// Real bytes through the real doors: admission, the worker and retirement.
+	private function unsafeWorkspaces()
+	{
+		$outside = $this->dir.'/outside';
+		return([
+			'root is a file' => function($root) { file_put_contents($root, 'bytes'); chmod($root, 0700); },
+			'root is a link' => function($root) use ($outside) { mkdir($outside, 0700); symlink($outside, $root); },
+			'root mode' => function($root) { $this->workspace(null); chmod($root, 0755); },
+			'unknown name' => function($root) { $this->workspace(null); file_put_contents($root.'/unexpected', 'keep'); },
+			'unknown directory' => function($root) { $this->workspace(null); mkdir($root.'/unexpected', 0700); },
+			'child link' => function($root) use ($outside) {
+				$this->workspace(null); file_put_contents($outside, 'keep'); unlink($root.'/from-file'); symlink($outside, $root.'/from-file');
+			},
+			'child type' => function($root) { $this->workspace(null); mkdir($root.'/to-file', 0700); },
+			'child mode' => function($root) { $this->workspace(null); chmod($root.'/from-file', 0644); },
+			'second hard link' => function($root) use ($outside) { $this->workspace(null); link($root.'/from-file', $outside); },
+			'directory contents' => function($root) { $this->workspace(null); file_put_contents($root.'/from-dir/payload', 'keep'); },
+			'lock with bytes' => function($root) { $this->workspace(null); file_put_contents($root.'/.lock', 'keep'); },
+		]);
+	}
+
+	private function fingerprint($path)
+	{
+		if(is_link($path)) { return(['link' => readlink($path)]); }
+		if(!is_dir($path)) { return(['bytes' => file_get_contents($path), 'mode' => fileperms($path)]); }
+		$listing = ['mode' => fileperms($path)];
+		foreach(array_diff(scandir($path), ['.', '..']) as $name) {
+			$listing[$name] = $this->fingerprint($path.'/'.$name); }
+		return($listing);
 	}
 }

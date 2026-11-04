@@ -31,20 +31,20 @@ class rRatioRule
 		$this->channel = $channel;
 		$this->no = $no;
 	}
-	static public function isTrackerPrivate( $trackers )
+	public static function isTrackerPrivate( $trackers )
 	{
 		$trks = explode( '#', $trackers );
 		foreach( $trks as $trk )
 		{
 			$ret = null;
-			rTorrentSettings::get()->pushEvent( "CheckTracker", array( "announce"=>$trk, "result"=>&$ret ) );
+			rTorrentSettings::get()->pushEvent( "CheckTracker", [ "announce"=>$trk, "result"=>&$ret ] );
 			if( $ret ||
 				(is_null($ret) &&
 					(preg_match( '`^(http|https|udp)://(?:[0-9]{1,3}\.){3}[0-9]{1,3}((:(\d){2,5})|).*(/a.*(\?.+=.+|/.+)|\?.+=.+)`i', $trk ) ||
 					preg_match( '`^(http|https|udp)://(?:[0-9]{1,3}\.){3}[0-9]{1,3}((:(\d){2,5})|)/.*[0-9a-z]{8,32}/a`i', $trk ) ||
 					preg_match( '`^(http|https|udp)://[a-z0-9-\.]+\.[a-z]{2,253}((:(\d){2,5})|).*(/a.*(\?.+=.+|/.+)|\?.+=.+)`i', $trk ) ||
-					preg_match( '`^(http|https|udp)://[a-z0-9-\.]+\.[a-z]{2,253}((:(\d){2,5})|)/.*[0-9a-z]{8,32}/a`i', $trk ))) )
-				return(true);
+					preg_match( '`^(http|https|udp)://[a-z0-9-\.]+\.[a-z]{2,253}((:(\d){2,5})|)/.*[0-9a-z]{8,32}/a`i', $trk ))) ) {
+				return(true); }
 		}
 		return(false);
 	}
@@ -85,14 +85,14 @@ class rRatioRulesList
 {
 	public $hash = "ratiorules.dat";
 	public $modified = false;
-        public $lst = array();
+        public $lst = [];
 
-	static public function cacheClasses()
+	public static function cacheClasses()
 	{
-		return(array('rRatioRule'));
+		return(['rRatioRule']);
 	}
 
-	static public function load()
+	public static function load()
 	{
 		$cache = new rCache();
 		$ar = new rRatioRulesList();
@@ -110,57 +110,51 @@ class rRatioRulesList
 	}
         public function set()
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		$this->lst = array();
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+		$this->lst = [];
 		$rule = null;
 		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
 		{
 			if($parts[0]=="name")
 			{
-				if($rule)
-					$this->add($rule);
+				if($rule) {
+					$this->add($rule); }
 				$rule = new rRatioRule($parts[1]);
 			}
-			else
-			if($parts[0]=="pattern")
+			elseif($parts[0]=="pattern")
 			{
-				if($rule)
-					$rule->pattern = trim($parts[1]);
+				if($rule) {
+					$rule->pattern = trim($parts[1]); }
 			}
-			else
-			if($parts[0]=="reason")
+			elseif($parts[0]=="reason")
 			{
-				if($rule)
-					$rule->reason = intval($parts[1]);
+				if($rule) {
+					$rule->reason = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="enabled")
+			elseif($parts[0]=="enabled")
 			{
-				if($rule)
-					$rule->enabled = intval($parts[1]);
+				if($rule) {
+					$rule->enabled = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="no")
+			elseif($parts[0]=="no")
 			{
-				if($rule)
-					$rule->no = intval($parts[1]);
+				if($rule) {
+					$rule->no = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="ratio")
+			elseif($parts[0]=="ratio")
 			{
-				if($rule)
-					$rule->ratio = $parts[1];
+				if($rule) {
+					$rule->ratio = $parts[1]; }
 			}
-			else
-			if($parts[0]=="channel")
+			elseif($parts[0]=="channel")
 			{
-				if($rule)
-					$rule->channel = $parts[1];
+				if($rule) {
+					$rule->channel = $parts[1]; }
 			}
   	                }
-		if($rule)
-			$this->add($rule);
+		if($rule) {
+			$this->add($rule); }
 		$this->store();
 		$this->setHandlers();
 	}
@@ -172,8 +166,8 @@ class rRatioRulesList
 	{
 		foreach( $this->lst as $item )
 		{
-			if($item->isApplicable( $label, $trackers ))
-				return($item);
+			if($item->isApplicable( $label, $trackers )) {
+				return($item); }
 		}
 		return(null);
 	}
@@ -184,64 +178,64 @@ class rRatioRulesList
 		{
 			$req->addCommand( new rXMLRPCCommand( "d.get_custom1", $hash ) );
 			$req->addCommand( new rXMLRPCCommand( "d.get_state", $hash ) );
-			$req->addCommand( new rXMLRPCCommand("branch", array
-			(
+			$req->addCommand( new rXMLRPCCommand("branch", 
+			[
 				$hash,
 				'',
 				getCmd("cat").'=$'.getCmd("d.views="),
 				getCmd("cat").'=$'.getCmd("d.views="),
-			)));
+			]));
 			$req->addCommand( new rXMLRPCCommand( "d.get_throttle_name", $hash ) );
 		}
 		if($req->getCommandsCount() && $req->success())
 		{
 			$out = new rXMLRPCRequest();
-			$changed = array();
+			$changed = [];
 			foreach( $hashes as $ndx=>$hash )
 			{
 				$before = $out->getCommandsCount();
 				$label = rawurldecode($req->val[$ndx*4]);
 				$state = !empty($req->val[$ndx*4+1]);
 				$ratio = null;
-				if( preg_match( '`rat_(\d+)`',$req->val[$ndx*4+2],$matches ) )
-					$ratio = 'rat_'.$matches[1];
+				if( preg_match( '`rat_(\d+)`',$req->val[$ndx*4+2],$matches ) ) {
+					$ratio = 'rat_'.$matches[1]; }
 				$throttle = $req->val[$ndx*4+3];
 
 				$trackers = '';
-			        $req1 = new rXMLRPCRequest( array(
+			        $req1 = new rXMLRPCRequest( [
 					new rXMLRPCCommand("t.multicall",
-						array($hash,"",getCmd("t.get_url=")))));
-				if($req1->success())
-					$trackers = implode( '#', $req1->val );
+						[$hash,"",getCmd("t.get_url=")])]);
+				if($req1->success()) {
+					$trackers = implode( '#', $req1->val ); }
 				$rule = $this->getRule( $label, $trackers );
 				if($rule)
 				{
 					if(!empty($rule->channel) && ($rule->channel!=$throttle))
 					{
-						if($state)
-							$out->addCommand( new rXMLRPCCommand('d.stop', $hash) );
-						$out->addCommand( new rXMLRPCCommand('d.set_throttle_name', array($hash,$rule->channel)) );
-						if($state)
-							$out->addCommand( new rXMLRPCCommand('d.start', $hash) );
+						if($state) {
+							$out->addCommand( new rXMLRPCCommand('d.stop', $hash) ); }
+						$out->addCommand( new rXMLRPCCommand('d.set_throttle_name', [$hash,$rule->channel]) );
+						if($state) {
+							$out->addCommand( new rXMLRPCCommand('d.start', $hash) ); }
 					}
 					if(!empty($rule->ratio) && ($rule->ratio!=$ratio))
 					{
 						if(!is_null($ratio))
 						{
-							$out->addCommand( new rXMLRPCCommand('view.set_not_visible', array($hash, $ratio) ) );
-							$out->addCommand( new rXMLRPCCommand('d.views.remove', array($hash, $ratio) ) );
+							$out->addCommand( new rXMLRPCCommand('view.set_not_visible', [$hash, $ratio] ) );
+							$out->addCommand( new rXMLRPCCommand('d.views.remove', [$hash, $ratio] ) );
 						}
-						$out->addCommand( new rXMLRPCCommand('d.views.push_back_unique', array($hash, $rule->ratio) ) );
-						$out->addCommand( new rXMLRPCCommand('view.set_visible', array($hash, $rule->ratio) ) );
+						$out->addCommand( new rXMLRPCCommand('d.views.push_back_unique', [$hash, $rule->ratio] ) );
+						$out->addCommand( new rXMLRPCCommand('view.set_visible', [$hash, $rule->ratio] ) );
 					}
 				}
-				if($out->getCommandsCount() > $before)
-					$changed[] = $hash;
+				if($out->getCommandsCount() > $before) {
+					$changed[] = $hash; }
 			}
 			// The channel and the ratio group live in the session; save the
 			// downloads the rules moved with the change.
-			if($out->getCommandsCount())
-				$out->addSessionSaves($changed)->run();
+			if($out->getCommandsCount()) {
+				$out->addSessionSaves($changed)->run(); }
 		}
 	}
 	public function setHandlers()
@@ -251,10 +245,10 @@ class rRatioRulesList
 	        $ratioRulesExist = false;
 		foreach( $this->lst as $item )
 		{
-			if($item->ratio!='')
-				$ratioRulesExist = true;
-			if($item->channel!='')
-				$throttleRulesExist = true;
+			if($item->ratio!='') {
+				$ratioRulesExist = true; }
+			if($item->channel!='') {
+				$throttleRulesExist = true; }
 		}
 		if($ratioRulesExist || $throttleRulesExist)
 		{
@@ -275,10 +269,10 @@ class rRatioRulesList
 			getCmd('d.set_custom').'=x-extratio2,'.rTorrent::quoteCommandArg($capture.'channel'.$user).' ; '.
 			getCmd('branch').'='.getCmd('d.get_custom').'=x-extratio2,'.
 			getCmd('d.set_throttle_name').'=$'.getCmd('d.get_custom').'=x-extratio2' : getCmd('cat=');
-		$req = new rXMLRPCRequest( array(
-			rTorrentSettings::get()->getOnInsertCommand( array('_exratio1'.User::getUser(), $ratCmd ) ),
-			rTorrentSettings::get()->getOnInsertCommand( array('_exratio2'.User::getUser(), $thrCmd ) ),
-			));
+		$req = new rXMLRPCRequest( [
+			rTorrentSettings::get()->getOnInsertCommand( ['_exratio1'.User::getUser(), $ratCmd ] ),
+			rTorrentSettings::get()->getOnInsertCommand( ['_exratio2'.User::getUser(), $thrCmd ] ),
+			]);
 		return($req->success());
 	}
 }

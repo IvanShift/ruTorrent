@@ -5,80 +5,79 @@ class AutoToolsMoveDaemonReplies
 {
     public $state;
     public function __construct($state) { $this->state = $state; }
-    private function save() { file_put_contents($this->state['root'] . '/native.json', JSON::encodeBytes($this->state)); }
     public function __invoke($body, $methods)
     {
         preg_match_all('~<string>(.*?)</string>~s', $body, $matches);
         $args = array_map(function ($v) { return html_entity_decode($v, ENT_QUOTES | ENT_XML1, 'UTF-8'); }, $matches[1]);
-        foreach ($methods as $method) if (isset($args[0]) && $args[0] === $method) array_shift($args);
+        foreach ($methods as $method) { if (isset($args[0]) && $args[0] === $method) { array_shift($args); } }
         $s =& $this->state;
         $method = $methods[0];
         $receipt = $s['token'] . '|' . $s['run'][0] . '|' . $s['run'][1] . '|' . $s['run'][2] . '|' . $s['hash'];
         $queue = 'queued:' . hash('sha256', 'tester') . ':' . $s['qid'] . ':' . $s['hash'] . ':' . $s['retry'];
-        $answer = array('0');
+        $answer = ['0'];
         switch ($method) {
-            case 'system.client_version': $answer=array('0.16.25');break;
+            case 'system.client_version': $answer=['0.16.25'];break;
             case 'directory.default':
-                $answer=array($s['root'].'/dl',$s['root'].'/session','0.16.25','test','50000-50000','','');break;
+                $answer=[$s['root'].'/dl',$s['root'].'/session','0.16.25','test','50000-50000','',''];break;
 
             case 'system.listMethods':
                 if(isset($s['capabilities'])) { $answer=$s['capabilities']; break; }
-                $answer = array('system.listMethods', 'system.autotools.move_queue', 'system.autotools.move_dispatch',
+                $answer = ['system.listMethods', 'system.autotools.move_queue', 'system.autotools.move_dispatch',
                     'system.autotools.move_state', 'system.autotools.move_owner', 'system.autotools.move_reset',
                     'd.autotools.move_enqueue', 'd.autotools.move_begin', 'd.autotools.move_defer',
                     'd.autotools.move_finish', 'd.autotools.move_cancel', 'd.stop_close_claim_state',
                     'd.stop_close_claim', 'd.replay_stop_close_claim', 'd.ack_stop_close_claim',
                     'd.directory.set_if_stop_close_claim', 'd.directory.base.set_if_stop_close_claim',
-                    'd.start_if_stop_close_claim', 'd.open_if_stop_close_claim', 'd.release_stop_close_claim'); break;
+                    'd.start_if_stop_close_claim', 'd.open_if_stop_close_claim', 'd.release_stop_close_claim']; break;
             case 'system.autotools.move_state':
-                if(isset($s['nativeState'])) { $answer=array($s['nativeState']); break; }
-                $answer = array(!$s['queued'] ? 'none' : ($s['lease'] !== 'absent'
-                    ? 'leased:' . hash('sha256', 'tester') . ':' . $s['qid'] . ':' . $s['token'] : $queue)); break;
-            case 'd.get_directory': $answer = array($s['directory']); break;
-            case 'd.is_multi_file': $answer = array($s['multi'] ? '1' : '0'); break;
-            case 'd.get_base_filename': $answer = array($s['basename']); break;
-            case 'd.get_name': $answer = array($s['name']); break;
-            case 'd.get_custom1': $answer = array(''); break;
+                if(isset($s['nativeState'])) { $answer=[$s['nativeState']]; break; }
+                $answer = [!$s['queued'] ? 'none' : ($s['lease'] !== 'absent'
+                    ? 'leased:' . hash('sha256', 'tester') . ':' . $s['qid'] . ':' . $s['token'] : $queue)]; break;
+            case 'd.get_directory': $answer = [$s['directory']]; break;
+            case 'd.is_multi_file': $answer = [$s['multi'] ? '1' : '0']; break;
+            case 'd.get_base_filename': $answer = [$s['basename']]; break;
+            case 'd.get_name': $answer = [$s['name']]; break;
+            case 'd.get_custom1': $answer = ['']; break;
             case 'f.multicall':
-                if (array_key_exists('filePathsReply', $s))
-                    return $s['filePathsReply'] === null ? null : new FakeRtorrentRawReply($s['filePathsReply']);
-                $paths = isset($s['filePaths']) ? $s['filePaths'] : array($s['multi'] ? 'item' : $s['basename']);
+                if (array_key_exists('filePathsReply', $s)) {
+                    return $s['filePathsReply'] === null ? null : new FakeRtorrentRawReply($s['filePathsReply']); }
+                $paths = isset($s['filePaths']) ? $s['filePaths'] : [$s['multi'] ? 'item' : $s['basename']];
                 $rows = '';
-                foreach ($paths as $path)
+                foreach ($paths as $path) {
                     $rows .= '<value><array><data><value><base64>' . base64_encode($path)
-                        . '</base64></value></data></array></value>';
+                        . '</base64></value></data></array></value>'; }
                 return new FakeRtorrentRawReply(ScgiToolPeer::response('<array><data>' . $rows . '</data></array>'));
             case 'd.complete':
-                if (!empty($s['missing'])) return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
-                $answer = array('1'); break;
+                if (!empty($s['missing'])) { return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500); }
+                $answer = ['1']; break;
             case 'd.hash':
-                if (!empty($s['missing'])) return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500);
-                $answer = array($s['hash']); break;
-            case 'd.get_base_path': $answer = array($s['multi'] ? $s['directory'] : $s['directory'] . '/' . $s['basename']); break;
-            case 'd.is_open': $answer = array((string)$s['open']); break;
-            case 'd.is_active': $answer = array((string)$s['active']); break;
+                if (!empty($s['missing'])) { return FakeRtorrentDaemon::fault('invalid parameters: info-hash not found', -500); }
+                $answer = [$s['hash']]; break;
+            case 'd.get_base_path': $answer = [$s['multi'] ? $s['directory'] : $s['directory'] . '/' . $s['basename']]; break;
+            case 'd.is_open': $answer = [(string)$s['open']]; break;
+            case 'd.is_active': $answer = [(string)$s['active']]; break;
             case 'd.stop_close_claim_state':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
-                $answer = array($s['lease'] === 'absent' ? 'absent' : ($s['lease'] === 'active'
-                    ? 'active|' . $receipt : $s['lease'] . '|' . $s['mode'] . '|' . $receipt)); break;
+                if (!isset($args[1]) || $args[1] !== $s['qid']) { return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500); }
+                $answer = [$s['lease'] === 'absent' ? 'absent' : ($s['lease'] === 'active'
+                    ? 'active|' . $receipt : $s['lease'] . '|' . $s['mode'] . '|' . $receipt)]; break;
             case 'd.autotools.move_enqueue':
-                $s['queued'] = true; $answer = array('queued:' . $s['qid']); break;
+                $s['queued'] = true; $answer = ['queued:' . $s['qid']]; break;
             case 'd.autotools.move_begin':
-                if ($args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stale Q', -500);
-                if (!empty($s['busy'])) { $answer = array('busy:owner'); break; }
+                if ($args[1] !== $s['qid']) { return FakeRtorrentDaemon::fault('stale Q', -500); }
+                if (!empty($s['busy'])) { $answer = ['busy:owner']; break; }
                 $s['lease'] = 'active'; $s['active'] = 0; $s['open'] = 0;
-                if (!empty($s['collision'])) file_put_contents($s['destination'], 'foreign payload');
+                if (!empty($s['collision'])) { file_put_contents($s['destination'], 'foreign payload'); }
                 // A directory moved away and a link left in its place, once,
                 // after the worker has planned its destination.
                 if (!empty($s['swapAtBegin'])) {
                     foreach ($s['swapAtBegin'] as $from => $to) { rename($from, $to); symlink($to, $from); }
-                    $s['swapAtBegin'] = array();
+                    $s['swapAtBegin'] = [];
                 }
-                $answer = array('active|' . $receipt); break;
+                $answer = ['active|' . $receipt]; break;
             case 'd.directory.base.set_if_stop_close_claim':
-                $s['directory'] = $args[2]; $answer = array('1'); break;
+                $s['directory'] = $args[2]; $answer = ['1']; break;
             case 'd.directory.set_if_stop_close_claim':
-                $s['directory'] = $args[2] . ($s['multi'] ? '/' . $s['name'] : ''); $answer = array('1'); break;
+                $s['directory'] = $args[2] . ($s['multi'] ? '/' . $s['name'] : ''); $answer = ['1']; break;
             case 'd.start_if_stop_close_claim':
             case 'd.open_if_stop_close_claim':
             case 'd.release_stop_close_claim':
@@ -86,47 +85,47 @@ class AutoToolsMoveDaemonReplies
                     : ($method === 'd.open_if_stop_close_claim' ? 'O' : 'R'));
                 $s['lease'] = 'done';
                 $s['active'] = $s['mode'] === 'S' ? 1 : 0;
-                $s['open'] = in_array($s['mode'], array('S','O'), true) ? 1 : 0;
-                $answer = array($s['mode'] === 'K' ? '0' : '1'); break;
+                $s['open'] = in_array($s['mode'], ['S','O'], true) ? 1 : 0;
+                $answer = [$s['mode'] === 'K' ? '0' : '1']; break;
             case 'd.replay_stop_close_claim':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
-                $s['lease'] = 'done'; $answer = array('1'); break;
+                if (!isset($args[1]) || $args[1] !== $s['qid']) { return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500); }
+                $s['lease'] = 'done'; $answer = ['1']; break;
             case 'd.ack_stop_close_claim':
-                if (!isset($args[1]) || $args[1] !== $s['qid']) return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500);
-                $s['lease'] = 'absent'; $answer = array('1'); break;
+                if (!isset($args[1]) || $args[1] !== $s['qid']) { return FakeRtorrentDaemon::fault('stop claim: reserved by another job', -500); }
+                $s['lease'] = 'absent'; $answer = ['1']; break;
             case 'd.autotools.move_finish':
-                if ($s['lease'] !== 'absent') return FakeRtorrentDaemon::fault('lease held', -500);
-                $s['queued'] = false; $answer = array('finished'); break;
+                if ($s['lease'] !== 'absent') { return FakeRtorrentDaemon::fault('lease held', -500); }
+                $s['queued'] = false; $answer = ['finished']; break;
             case 'd.autotools.move_cancel':
                 // The reasons native admits (rutorrent-native src/file_jobs_commands.h).
-                if (!isset($args[2]) || !in_array($args[2], array('configuration-declined', 'source-outside-downloads',
+                if (!isset($args[2]) || !in_array($args[2], ['configuration-declined', 'source-outside-downloads',
                     'skip-filter-match', 'destination-outside-finished-root', 'manifest-path-invalid',
-                    'source-name-mismatch', 'manifest-empty'), true))
-                    return FakeRtorrentDaemon::fault('autotools: move cancel reason invalid', -500);
-                $s['queued'] = false; $answer = array('cancelled'); break;
+                    'source-name-mismatch', 'manifest-empty'], true)) {
+                    return FakeRtorrentDaemon::fault('autotools: move cancel reason invalid', -500); }
+                $s['queued'] = false; $answer = ['cancelled']; break;
             case 'd.autotools.move_defer':
-                if ($args[1] !== $s['qid'] || $args[2] !== $s['retry'] || $s['lease'] !== 'absent')
-                    return FakeRtorrentDaemon::fault('CAS refused', -500);
-                $s['retry'] = $args[3]; $answer = array('deferred'); break;
+                if ($args[1] !== $s['qid'] || $args[2] !== $s['retry'] || $s['lease'] !== 'absent') {
+                    return FakeRtorrentDaemon::fault('CAS refused', -500); }
+                $s['retry'] = $args[3]; $answer = ['deferred']; break;
             case 'd.custom.items':
-                if ($args !== array($s['hash'])) return FakeRtorrentDaemon::fault('d.custom.keys/items takes no arguments.', -500);
-                if (array_key_exists('customReply', $s))
-                    return $s['customReply'] === null ? null : new FakeRtorrentRawReply(ScgiToolPeer::response($s['customReply']));
+                if ($args !== [$s['hash']]) { return FakeRtorrentDaemon::fault('d.custom.keys/items takes no arguments.', -500); }
+                if (array_key_exists('customReply', $s)) {
+                    return $s['customReply'] === null ? null : new FakeRtorrentRawReply(ScgiToolPeer::response($s['customReply'])); }
                 $members='';
-                foreach (isset($s['customItems']) ? $s['customItems'] : array() as $key=>$value)
+                foreach (isset($s['customItems']) ? $s['customItems'] : [] as $key=>$value) {
                     $members.='<member><name>'.htmlspecialchars($key,ENT_XML1).'</name><value><string>'
-                        .htmlspecialchars($value,ENT_XML1).'</string></value></member>';
+                        .htmlspecialchars($value,ENT_XML1).'</string></value></member>'; }
                 return new FakeRtorrentRawReply(ScgiToolPeer::response('<struct>'.$members.'</struct>'));
             case 'd.multicall':
             case 'd.multicall2':
-                if(isset($s['aliasVersion']) && (count($args)<3 || $args[0]!=='' || $args[1]!=='main'))
-                    return FakeRtorrentDaemon::fault("Could not find '=' in command 'main'.", -500);
-                if (array_key_exists('inventoryReply', $s))
-                    return $s['inventoryReply'] === null ? null : new FakeRtorrentRawReply($s['inventoryReply']);
-                $rows=array();
+                if(isset($s['aliasVersion']) && (count($args)<3 || $args[0]!=='' || $args[1]!=='main')) {
+                    return FakeRtorrentDaemon::fault("Could not find '=' in command 'main'.", -500); }
+                if (array_key_exists('inventoryReply', $s)) {
+                    return $s['inventoryReply'] === null ? null : new FakeRtorrentRawReply($s['inventoryReply']); }
+                $rows=[];
                 if(!empty($s['inventoryLoaded'])) {
-                    $row=array($s['hash']);
-                    if(in_array('d.name=',$args,true))$row[]=$s['name'];
+                    $row=[$s['hash']];
+                    if(in_array('d.name=',$args,true)) {$row[]=$s['name']; }
                     $rows[]=$row;
                 }
                 return new FakeRtorrentRawReply(ScgiToolPeer::rows($rows));
@@ -136,4 +135,5 @@ class AutoToolsMoveDaemonReplies
         if (isset($s['drop']) && $s['drop'] === $method) { $s['drop'] = ''; $this->save(); return null; }
         return $answer;
     }
+    private function save() { file_put_contents($this->state['root'] . '/native.json', JSON::encodeBytes($this->state)); }
 }

@@ -56,7 +56,7 @@ define('TAP_GONE_UTF8', 'Темы, которую вы запросили, не 
 // evidence the topic is gone.
 function sibNotFound()
 {
-    return array(
+    return [
         'a Cloudflare challenge'      => 403,
         'rate limiting'               => 429,
         'a bad gateway'               => 502,
@@ -64,7 +64,7 @@ function sibNotFound()
         'a curl exit code'            => 28,     // https path: timeout
         'a socket errno'              => 111,    // plain path: ECONNREFUSED
         "Snoopy's read-timeout"       => -100,
-    );
+    ];
 }
 
 // --- shared download response checks --------------------------------------
@@ -80,42 +80,42 @@ class SibAniDubTorrent
 
 function sibHandlers($hash = SIB_NEW_HASH)
 {
-    return array(
-        'tfile' => array(
-            'call'  => array('TfileCheckImpl', 'download_torrent'),
+    return [
+        'tfile' => [
+            'call'  => ['TfileCheckImpl', 'download_torrent'],
             'topic' => 'http://tfile.me/forum/viewtopic.php?p=7',
             'page'  => 'https://tfile.example/forum/viewtopic.php?p=7',
             'down'  => 'https://tfile.example/forum/download.php?id=99',
             'body'  => 'Info hash:</td><td><strong>' . $hash . '</strong></td> <a href="download.php?id=99">get</a>',
             'old'   => null,
-        ),
-        'tapochek' => array(
-            'call'  => array('TapochekNetCheckImpl', 'download_torrent'),
+        ],
+        'tapochek' => [
+            'call'  => ['TapochekNetCheckImpl', 'download_torrent'],
             'topic' => 'https://tapochek.net/viewtopic.php?p=7',
             'page'  => 'https://tapochek.net/viewtopic.php?p=7',
             'down'  => 'https://tapochek.net/download.php?id=99',
             'body'  => 'btih:' . $hash . '&dn=x "download.php?id=99"',
             'old'   => null,
-        ),
-        'anidub' => array(
-            'call'  => array('AniDUBCheckImpl', 'download_torrent'),
+        ],
+        'anidub' => [
+            'call'  => ['AniDUBCheckImpl', 'download_torrent'],
             'topic' => 'http://tr.anidub.com/?newsid=7',
             'page'  => 'https://tr.anidub.com/?newsid=7',
             'down'  => 'https://tr.anidub.com/engine/download.php?id=99',
             'body'  => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href="/engine/download.php?id=99" ',
             'old'   => 'SibAniDubTorrent',
-        ),
+        ],
         // toloka joins the table since its Cloudflare pause is declared away
         // above; before that every case of it cost the suite ten seconds.
-        'toloka' => array(
-            'call'  => array('tolokaCheckImpl', 'download_torrent'),
+        'toloka' => [
+            'call'  => ['tolokaCheckImpl', 'download_torrent'],
             'topic' => 'https://toloka.to/p7',
             'page'  => 'https://toloka.to/p7',
             'down'  => 'https://toloka.to/download.php?id=99',
             'body'  => 'href="magnet:?xt=urn:btih:' . $hash . '" <a href="download.php?id=99">get</a>',
             'old'   => null,
-        ),
-    );
+        ],
+    ];
 }
 
 $suite->test('a failed second fetch cannot reuse the previous topic page as a download', function () {
@@ -203,14 +203,14 @@ $suite->test('a download link that did not answer 200 is not a deletion', functi
 $suite->test('anidub reads every quality tag it claims to support', function () {
     $saved = SibAniDubTorrent::$torrentName;
     try {
-        foreach (array(
+        foreach ([
             'Show_[720p]_ep01'       => 'tv720',
             'Show_[1080p]_ep01'      => 'tv1080',
             'Show_[PSP]_ep01'        => 'psp',
             'Show_[HWP]_ep01'        => 'hwp',
             'Show_[bdrip720p]_ep01'  => 'bd720',
             'Show_[bdrip1080p]_ep01' => 'bd1080',
-        ) as $name => $blockId) {
+        ] as $name => $blockId) {
             SibAniDubTorrent::$torrentName = $name;
             sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
@@ -234,10 +234,10 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
         // 'PSP' and 'HWP' alternatives are anchored to nothing and match
         // anywhere in the name, so a release that merely MENTIONS them is read
         // as that quality and sent to the wrong block.
-        foreach (array(
+        foreach ([
             'PSP_Port_Show_[720p]_ep01'   => 'tv720',
             'Show_HWP_remux_[1080p]_ep01' => 'tv1080',
-        ) as $name => $blockId) {
+        ] as $name => $blockId) {
             SibAniDubTorrent::$torrentName = $name;
             sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
@@ -263,7 +263,7 @@ $suite->test('anidub reads every quality tag it claims to support', function () 
 $suite->test('anidub: a missing or unsupported quality tag is retryable and logged without guessing', function () {
     $saved = SibAniDubTorrent::$torrentName;
     try {
-        foreach (array('Show_without_a_tag', 'Show_[HDTVRip]_ep01') as $name) {
+        foreach (['Show_without_a_tag', 'Show_[HDTVRip]_ep01'] as $name) {
             sibReset();
             SibAniDubTorrent::$torrentName = $name;
 
@@ -291,7 +291,7 @@ $suite->test('handlers delegate HTTP-200 payload validation and propagate its re
           . '<input name="login_username"></form></body></html>';
 
     foreach (sibHandlers(SIB_NEW_HASH) as $name => $h) {
-        foreach (array('a login wall' => $wall, 'an empty body' => '', 'truncated bytes' => 'd8:announce') as $why => $payload) {
+        foreach (['a login wall' => $wall, 'an empty body' => '', 'truncated bytes' => 'd8:announce'] as $why => $payload) {
             sibReset();
             ruTrackerChecker::queueResult('createTorrentFromDownload',
                 ruTrackerChecker::STE_CANT_REACH_TRACKER);
@@ -326,11 +326,11 @@ $suite->test('handlers delegate HTTP-200 payload validation and propagate its re
 // was no `return` -- so a page matching neither pattern read an array key that
 // does not exist and then fetched the bare host.
 $suite->test('anidub: a page whose quality block is missing stops instead of fetching the bare host', function () {
-    foreach (array(
+    foreach ([
         'no block for this quality' => '<div id="tv1080"><div id=\'x1\'> <div class="torrent_h"> <a href="/engine/download.php?id=99" ',
         'a block with a foreign link' => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href="/other/path.php?id=99" ',
         'a host suffix disguised as a download path' => '<div id="tv720"><div id=\'x1\'> <div class="torrent_h"> <a href=".evil.test/engine/download.php?id=99" ',
-    ) as $label => $page) {
+    ] as $label => $page) {
         Snoopy::reset();
         Snoopy::queue('https://tr.anidub.com/?newsid=7', 200, $page);
 
@@ -421,7 +421,7 @@ $suite->test('tapochek: the captured live missing-topic page is a deletion', fun
 // A phrase on an otherwise live or unreadable topic cannot stand in for
 // the captured Information system message. Each shape reaches a different
 // structural gate in isMissingAnswer(), with no btih to short-circuit it.
-foreach (array(
+foreach ([
     'a phrase in a user post' => '<div class="post_body">' . TAP_GONE_UTF8 . '</div>',
     'a non-system table' => '<table class="post_body"><tr><th>Информация</th></tr>'
         . '<tr><td>' . TAP_GONE_UTF8 . '</td></tr></table>',
@@ -431,7 +431,7 @@ foreach (array(
     'a longer message in the system cell' => '<table class="forumline message">'
         . '<tr><th>Информация</th></tr><tr><td>' . TAP_GONE_UTF8
         . ' while maintenance is in progress</td></tr></table>',
-) as $description => $body) {
+] as $description => $body) {
     $suite->test('tapochek: ' . $description . ' is not a deletion', function () use ($body) {
         Snoopy::reset();
         Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $body);
@@ -456,8 +456,8 @@ $suite->test('tapochek: a commented system table is not a deletion answer', func
 
 $suite->test('tapochek: an invisible btih cannot hide the captured deletion answer', function () {
     $body = file_get_contents(__DIR__ . '/fixtures/tapochek-p7-2026-09-25.html');
-    foreach (array('<!-- btih: -->', '<!-- btih:' . SIB_OLD_HASH . '&dn=x -->',
-        '<script>var hint = "btih:";</script>', '<style>/* btih: */</style>') as $invisible) {
+    foreach (['<!-- btih: -->', '<!-- btih:' . SIB_OLD_HASH . '&dn=x -->',
+        '<script>var hint = "btih:";</script>', '<style>/* btih: */</style>'] as $invisible) {
         Snoopy::reset();
         Snoopy::queue('https://tapochek.net/viewtopic.php?p=7', 200, $invisible . $body);
         strictAssertSame(ruTrackerChecker::STE_DELETED,
@@ -522,24 +522,24 @@ $suite->test('tfile: a changed hash with no download link is retryable too', fun
 // matches any character: 'tolokaXto' claimed the Toloka handler for years
 // because every sibling escaped and that one did not.
 $suite->test('no handler claims a look-alike of its own host', function () {
-    $cases = array(
-        'toloka'   => array('call' => array('tolokaCheckImpl', 'download_torrent'),
-                            'real' => 'https://toloka.to/p7'),
-        'tapochek' => array('call' => array('TapochekNetCheckImpl', 'download_torrent'),
-                            'real' => 'https://tapochek.net/viewtopic.php?p=7'),
-        'tfile'    => array('call' => array('TfileCheckImpl', 'download_torrent'),
-                            'real' => 'http://tfile.me/forum/viewtopic.php?p=7'),
-        'anidub'   => array('call' => array('AniDUBCheckImpl', 'download_torrent'),
-                            'real' => 'http://tr.anidub.com/?newsid=7'),
-    );
+    $cases = [
+        'toloka'   => ['call' => ['tolokaCheckImpl', 'download_torrent'],
+                            'real' => 'https://toloka.to/p7'],
+        'tapochek' => ['call' => ['TapochekNetCheckImpl', 'download_torrent'],
+                            'real' => 'https://tapochek.net/viewtopic.php?p=7'],
+        'tfile'    => ['call' => ['TfileCheckImpl', 'download_torrent'],
+                            'real' => 'http://tfile.me/forum/viewtopic.php?p=7'],
+        'anidub'   => ['call' => ['AniDUBCheckImpl', 'download_torrent'],
+                            'real' => 'http://tr.anidub.com/?newsid=7'],
+    ];
     foreach ($cases as $name => $case) {
         // Kinozal has its own suite and is not loaded here.
-        if (!class_exists($case['call'][0])) continue;
+        if (!class_exists($case['call'][0])) { continue; }
         // Every dot in the host, one at a time, replaced by a character that a
         // greedy '.' would happily match.
         $host = parse_url($case['real'], PHP_URL_HOST);
-        $offsets = array();
-        for ($i = 0; $i < strlen($host); $i++) if ($host[$i] === '.') $offsets[] = $i;
+        $offsets = [];
+        for ($i = 0; $i < strlen($host); $i++) { if ($host[$i] === '.') { $offsets[] = $i; } }
         strictAssertTrue(count($offsets) > 0, $name . ': its host has a dot to test');
         foreach ($offsets as $at) {
             $lookalike = $host;
@@ -592,7 +592,7 @@ $suite->test('toloka same hash needs no download link', function () {
 
 $suite->test('AniDUB accepts old and HTTPS comments but sends both requests over HTTPS', function () {
     $h = sibHandlers()['anidub'];
-    foreach (array('http', 'https') as $scheme) {
+    foreach (['http', 'https'] as $scheme) {
         sibReset();
         Snoopy::queue($h['page'], 200, $h['body']);
         Snoopy::queue($h['down'], 200, 'metainfo');
@@ -600,7 +600,7 @@ $suite->test('AniDUB accepts old and HTTPS comments but sends both requests over
         strictAssertSame(ruTrackerChecker::STE_UPTODATE,
             AniDUBCheckImpl::download_torrent($scheme . '://tr.anidub.com/?newsid=7', SIB_OLD_HASH, new SibAniDubTorrent()),
             'both stored comment schemes remain accepted');
-        strictAssertSame(array(array('fetchComplex', $h['page']), array('fetchComplex', $h['down'])),
+        strictAssertSame([['fetchComplex', $h['page']], ['fetchComplex', $h['down']]],
             Snoopy::$requests, 'the initial page and the download use canonical HTTPS URLs');
     }
 });

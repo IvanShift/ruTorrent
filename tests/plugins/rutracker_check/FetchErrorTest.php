@@ -28,16 +28,16 @@ $suite->test('every shared Snoopy message classifies to its token', function () 
 $suite->test('the request body write refusal has one exact classified token', function () {
     strictAssertSame('request-body-not-written', RuTrackerFetchError::classify('request-body-not-written'),
         'the local temporary-body failure remains visible without echoing a payload');
-    foreach (array('request-body-not-written extra', 'prefix-request-body-not-written') as $message)
+    foreach (['request-body-not-written extra', 'prefix-request-body-not-written'] as $message) {
         strictAssertSame('unclassified', RuTrackerFetchError::classify($message),
-            'a near-match cannot claim the local write-failure token');
+            'a near-match cannot claim the local write-failure token'); }
 });
 
 // The sentences php/Snoopy.class.inc actually writes, spelled here with
 // the values that file interpolates, so a merge that rewords one is caught by
 // the token it stops producing rather than by a live log nobody reads.
 $suite->test('each of Snoopy own messages has its own token', function () {
-    $expected = array(
+    $expected = [
         'invalid-url' => 'invalid-url',
         'invalid-protocol "gopher"' => 'invalid-protocol',
         'request-body-not-written' => 'request-body-not-written',
@@ -62,7 +62,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'request-deadline' => 'request-deadline',
         'request-throttled' => 'request-throttled',
         'credential-post-failed' => 'credential-post-failed',
-    );
+    ];
     $source = file_get_contents(__DIR__ . '/../../../php/Snoopy.class.inc');
     strictAssertTrue(is_string($source), 'Snoopy source is readable');
     preg_match_all('/\$this->error\s*=/', $source, $assignments);
@@ -74,10 +74,10 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     // reuse a refusal, while a new reason still needs explicit classification.
     preg_match_all('/refuse(?:ResponseBody|Request)\(\s*\'([^\']+)\'\s*\)/', $source, $refusals);
     $actualRefusals = array_values(array_unique($refusals[1]));
-    $expectedRefusals = array('invalid-url', 'too-many-interim-responses', 'missing-final-response',
+    $expectedRefusals = ['invalid-url', 'too-many-interim-responses', 'missing-final-response',
         'unsupported-transfer-encoding', 'invalid-or-oversized-chunked',
         'oversized-response', 'invalid-or-oversized-gzip', 'gzip-decoder-unavailable',
-        'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline');
+        'unreadable-or-oversized-response', 'request-body-not-written', 'request-deadline'];
     sort($actualRefusals);
     sort($expectedRefusals);
     strictAssertSame($expectedRefusals, $actualRefusals,
@@ -88,7 +88,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
     // include the opening quote and literal prefix: a changed first word
     // otherwise still matches a needle taken from the middle of the message.
     // Body refusal tokens are exact helper arguments.
-    $sourceNeedles = array(
+    $sourceNeedles = [
         'invalid-url' => 'invalid-url',
         'invalid-protocol' => '\'invalid-protocol "',
         'request-body-not-written' => 'request-body-not-written',
@@ -110,7 +110,7 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         'gzip-decoder-unavailable' => 'gzip-decoder-unavailable',
         'unreadable-or-oversized-response' => 'unreadable-or-oversized-response',
         'request-deadline' => 'request-deadline',
-    );
+    ];
     strictAssertSame(1, preg_match("/const CREDENTIAL_REDIRECT_REFUSED\s*=\s*'credential-redirect-refused';/", $source),
         'the redirect refusal constant retains the classified token');
     // The throttle refusal is a constant too, so the literal scan above
@@ -128,12 +128,12 @@ $suite->test('each of Snoopy own messages has its own token', function () {
         $pattern = $isHelperRefusal
             ? '/refuse(?:ResponseBody|Request)\(\s*\'' . preg_quote($needle, '/') . '\'\s*\)/'
             : '/\$this->error\s*=\s*[^;]*' . preg_quote($needle, '/') . '[^;]*;/s';
-        if ($token === 'invalid-protocol')
-            $pattern = '/refuseRequest\(\s*' . preg_quote($needle, '/') . '/';
+        if ($token === 'invalid-protocol') {
+            $pattern = '/refuseRequest\(\s*' . preg_quote($needle, '/') . '/'; }
         strictAssertSame(1, preg_match($pattern, $source),
             $token . ': Snoopy still writes the reason this token classifies');
     }
-    $seen = array();
+    $seen = [];
     foreach ($expected as $message => $token) {
         strictAssertSame($token, RuTrackerFetchError::classify($message),
             'token for ' . var_export($message, true));
@@ -160,7 +160,7 @@ $suite->test('the zero errno resolver message retains the existing DNS token', f
 // reason that has nothing to do with what it says.
 $suite->test('leading, trailing, repeated and embedded whitespace does not change the class',
         function () {
-    $variants = array(
+    $variants = [
         'connection failed (111)',
         '  connection failed (111)',
         "connection failed (111)\n",
@@ -171,14 +171,14 @@ $suite->test('leading, trailing, repeated and embedded whitespace does not chang
         "connection\r\nfailed (111)",
         "  \t connection   failed\t(111)\nhost bt4.t-ru.org  ",
         "\n\n connection \r\n\t failed  (111) \n\n",
-    );
+    ];
     foreach ($variants as $variant) {
         strictAssertSame('connect-errno', RuTrackerFetchError::classify($variant),
             'whitespace variant ' . var_export($variant, true));
     }
     // A message that is nothing but whitespace carries no more information
     // than an absent one, and says so the same way.
-    foreach (array(' ', "\t", "\n", "  \r\n\t  ") as $blank) {
+    foreach ([' ', "\t", "\n", "  \r\n\t  "] as $blank) {
         strictAssertSame('', RuTrackerFetchError::classify($blank),
             'whitespace-only message ' . var_export($blank, true));
     }
@@ -194,7 +194,7 @@ $suite->test('an empty or non-string message is reported as no message at all', 
     strictAssertSame('', RuTrackerFetchError::classify(0), 'integer zero');
     strictAssertSame('', RuTrackerFetchError::classify(111), 'a bare errno');
     strictAssertSame('', RuTrackerFetchError::classify(1.5), 'a float');
-    strictAssertSame('', RuTrackerFetchError::classify(array('connection failed (0)')),
+    strictAssertSame('', RuTrackerFetchError::classify(['connection failed (0)']),
         'an array is not unwrapped');
     strictAssertSame('', RuTrackerFetchError::classify(new stdClass()), 'an object');
 });
@@ -202,7 +202,7 @@ $suite->test('an empty or non-string message is reported as no message at all', 
 // A sentence php/Snoopy.class.inc does not write today is the one nobody has
 // audited, and the only kind that could carry a credential.
 $suite->test('an unrecognised message classifies rather than echoing', function () {
-    $unknown = array(
+    $unknown = [
         'something php/Snoopy.class.inc does not say today',
         'Error fetching http://bt.t-ru.org/ann?pk=deadbeefcafe: refused',
         'Refusing to fetch: uk=AbCdEf0123456789AbCdEf0123456789 leaked',
@@ -218,7 +218,7 @@ $suite->test('an unrecognised message classifies rather than echoing', function 
         'request-body-not-written extra',
         'prefix-request-body-not-written',
         'invalid--protocol "gopher"',
-    );
+    ];
     foreach ($unknown as $message) {
         strictAssertSame('unclassified', RuTrackerFetchError::classify($message),
             'unrecognised message ' . var_export($message, true));
@@ -232,8 +232,8 @@ $suite->test('an unrecognised message classifies rather than echoing', function 
 // messages cannot.
 $suite->test('no input produces anything but a token from the fixed vocabulary', function () {
     $vocabulary = fetchErrorTokenVocabulary();
-    $inputs = array(
-        '', null, false, 0, 1.5, array(), new stdClass(),
+    $inputs = [
+        '', null, false, 0, 1.5, [], new stdClass(),
         'connection failed (111)',
         'Error fetching http://bt.t-ru.org/ann?pk=deadbeefcafe: refused',
         'uk=AbCdEf0123456789AbCdEf0123456789',
@@ -242,7 +242,7 @@ $suite->test('no input produces anything but a token from the fixed vocabulary',
         str_repeat('A', 4096),
         "\x00\x01\x02 binary \xff",
         'Поглощено',
-    );
+    ];
     foreach ($inputs as $input) {
         $token = RuTrackerFetchError::classify($input);
         strictAssertTrue(in_array($token, $vocabulary, true),
@@ -260,7 +260,7 @@ $suite->test('no input produces anything but a token from the fixed vocabulary',
 // write ` error=<token>` unquoted at the end of a record.
 $suite->test('every token is one plain-ASCII word with no whitespace', function () {
     foreach (fetchErrorTokenVocabulary() as $token) {
-        if ($token === '') continue;
+        if ($token === '') { continue; }
         strictAssertSame(1, preg_match('/^[a-z][a-z-]*[a-z]$/', $token),
             'the token is lower-case ASCII with no separator to break a log record: ' . $token);
     }
@@ -274,42 +274,42 @@ $suite->test('every token is one plain-ASCII word with no whitespace', function 
 
 
 $suite->test('challenge routing needs interstitial evidence, not prose or JavaScript Detections', function () {
-    foreach (array('Please wait just a moment', '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>',
-        '<p>cf-chl challenge-platform</p>') as $body)
-        strictAssertSame(false, RuTrackerFetchError::isChallenge(array(), $body), 'ordinary body is not a routing signal');
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(' CF-Mitigated: challenge '), ''), 'explicit header');
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(array('cf-mitigated: challenge'),
+    foreach (['Please wait just a moment', '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>',
+        '<p>cf-chl challenge-platform</p>'] as $body) {
+        strictAssertSame(false, RuTrackerFetchError::isChallenge([], $body), 'ordinary body is not a routing signal'); }
+    strictAssertSame(true, RuTrackerFetchError::isChallenge([' CF-Mitigated: challenge '], ''), 'explicit header');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge(['cf-mitigated: challenge'],
         '<title>Подождите</title><script src="/cdn-cgi/changed.js"></script>'),
         'the documented header routes a changed or localised body');
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), '<title>Just a moment...</title>'), 'interstitial title');
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'), 'interstitial script');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge([], '<title>Just a moment...</title>'), 'interstitial title');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge([], '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'), 'interstitial script');
 });
 
 $suite->test('a long unrelated script path does not hide a later challenge title', function () {
     $body = '/cdn-cgi/challenge-platform/' . str_repeat('segment/', 30)
         . 'not-a-challenge.js<title>Just a moment...</title>';
-    strictAssertSame(true, RuTrackerFetchError::isChallenge(array(), $body), 'later title is still inspected');
+    strictAssertSame(true, RuTrackerFetchError::isChallenge([], $body), 'later title is still inspected');
 });
 
 $suite->test('repeated challenge path prefixes preserve signals with bounded work', function () {
     $prefixes = '/' . str_repeat('cdn-cgi/challenge-platform/', 20000);
-    $cases = array(
-        array($prefixes . '<title>Just a moment...</title>', true, 'later title'),
-        array($prefixes . 'orchestrate/chl_page/v1', true, 'path marker'),
-        array($prefixes . 'not-a-challenge.js', false, 'unrelated path'),
-    );
-    $failures = array();
+    $cases = [
+        [$prefixes . '<title>Just a moment...</title>', true, 'later title'],
+        [$prefixes . 'orchestrate/chl_page/v1', true, 'path marker'],
+        [$prefixes . 'not-a-challenge.js', false, 'unrelated path'],
+    ];
+    $failures = [];
     // Run this file in separate JIT-on/off processes: changing the ini value
     // cannot remove JIT code from a regex already in PCRE's pattern cache.
     foreach ($cases as $case) {
         $start = microtime(true);
-        $actual = RuTrackerFetchError::isChallenge(array(), $case[0]);
+        $actual = RuTrackerFetchError::isChallenge([], $case[0]);
         $elapsed = microtime(true) - $start;
-        if ($actual !== $case[1] || preg_last_error() !== PREG_NO_ERROR || $elapsed > 2.0)
+        if ($actual !== $case[1] || preg_last_error() !== PREG_NO_ERROR || $elapsed > 2.0) {
             $failures[] = $case[2] . ' jit=' . ini_get('pcre.jit') . ' answer=' . (int) $actual
-                . ' pcre=' . preg_last_error() . ' elapsed=' . $elapsed;
+                . ' pcre=' . preg_last_error() . ' elapsed=' . $elapsed; }
     }
-    strictAssertSame(array(), $failures, 'signals and negative control remain readable within two seconds');
+    strictAssertSame([], $failures, 'signals and negative control remain readable within two seconds');
 });
 
 exit($suite->run());

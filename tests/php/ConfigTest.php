@@ -31,22 +31,6 @@ class ConfigTest extends TestCase
 		}
 	}
 
-	private function configuredProfileMask($value, &$diagnostic = null)
-	{
-		$_ENV['RU_PROFILE_MASK'] = $value;
-		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
-		$oldErrorLog = ini_get('error_log');
-		ini_set('error_log', $errorLog);
-		try {
-			include(__DIR__ . '/../../conf/config.php');
-		} finally {
-			$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
-			ini_set('error_log', $oldErrorLog);
-			unlink($errorLog);
-		}
-		return $profileMask;
-	}
-
 	public function testEnvironmentProfileMaskIsParsedAsOctalInteger()
 	{
 		$mask = $this->configuredProfileMask('0770');
@@ -59,7 +43,7 @@ class ConfigTest extends TestCase
 		$this->assertEquals(
 			0777,
 			$this->configuredProfileMask(''),
-			'An empty RU_PROFILE_MASK behaves like an unset value instead of crashing requests'
+			'An empty RU_PROFILE_MASK behaves like an unset value instead of crashing requests',
 		);
 	}
 
@@ -134,7 +118,7 @@ class ConfigTest extends TestCase
 		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
 		$code = '$_ENV["RU_PROFILE_MASK"] = "02770"; require '
 			. var_export(__DIR__ . '/../../conf/config.php', true) . ';';
-		$output = array();
+		$output = [];
 		$status = 0;
 		exec(
 			escapeshellarg(PHP_BINARY)
@@ -143,7 +127,7 @@ class ConfigTest extends TestCase
 				. ' -d error_log=' . escapeshellarg($errorLog)
 				. ' -r ' . escapeshellarg($code) . ' 2>&1',
 			$output,
-			$status
+			$status,
 		);
 		$response = implode("\n", $output);
 		$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
@@ -170,8 +154,8 @@ class ConfigTest extends TestCase
 		$process = null;
 		try {
 			$socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-			if ($socket === false)
-				throw new RuntimeException('Could not reserve a configuration HTTP port: ' . $error);
+			if ($socket === false) {
+				throw new RuntimeException('Could not reserve a configuration HTTP port: ' . $error); }
 			$address = stream_socket_get_name($socket, false);
 			fclose($socket);
 			// exec keeps proc_terminate directed at PHP rather than a shell parent.
@@ -179,10 +163,10 @@ class ConfigTest extends TestCase
 				. ' -d variables_order=GPCS -d error_reporting=-1 -d display_errors=1 -d log_errors=0'
 				. ' -d error_log=' . escapeshellarg($errorLog)
 				. ' -S ' . escapeshellarg($address) . ' ' . escapeshellarg($router);
-			$process = proc_open($command, array(0 => array('pipe', 'r'),
-				1 => array('file', $serverLog, 'a'), 2 => array('file', $serverLog, 'a')), $pipes);
-			if (!is_resource($process))
-				throw new RuntimeException('Could not start the configuration HTTP fixture');
+			$process = proc_open($command, [0 => ['pipe', 'r'],
+				1 => ['file', $serverLog, 'a'], 2 => ['file', $serverLog, 'a']], $pipes);
+			if (!is_resource($process)) {
+				throw new RuntimeException('Could not start the configuration HTTP fixture'); }
 			fclose($pipes[0]);
 			$ready = false;
 			$deadline = microtime(true) + 5;
@@ -195,12 +179,12 @@ class ConfigTest extends TestCase
 				}
 				usleep(10000);
 			} while (microtime(true) < $deadline && proc_get_status($process)['running']);
-			if (!$ready)
-				throw new RuntimeException('Configuration HTTP fixture did not become ready: ' . file_get_contents($serverLog));
-			$context = stream_context_create(array('http' => array('timeout' => 5, 'ignore_errors' => true)));
+			if (!$ready) {
+				throw new RuntimeException('Configuration HTTP fixture did not become ready: ' . file_get_contents($serverLog)); }
+			$context = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
 			$response = fopen('http://' . $address . '/', 'r', false, $context);
-			if ($response === false)
-				throw new RuntimeException('Could not read the configuration HTTP response');
+			if ($response === false) {
+				throw new RuntimeException('Could not read the configuration HTTP response'); }
 			$body = stream_get_contents($response);
 			$headers = stream_get_meta_data($response)['wrapper_data'];
 			fclose($response);
@@ -217,8 +201,8 @@ class ConfigTest extends TestCase
 				proc_terminate($process);
 				proc_close($process);
 			}
-			foreach (array($router, $errorLog, $serverLog) as $file)
-				if (is_file($file)) unlink($file);
+			foreach ([$router, $errorLog, $serverLog] as $file) {
+				if (is_file($file)) { unlink($file); } }
 			rmdir($directory);
 		}
 	}
@@ -239,19 +223,8 @@ class ConfigTest extends TestCase
 		$this->assertEquals(
 			0777,
 			$mask,
-			'An invalid RU_PROFILE_MASK cannot reach chmod or mkdir as a string'
+			'An invalid RU_PROFILE_MASK cannot reach chmod or mkdir as a string',
 		);
-	}
-
-	/**
-	 * These cases inspect RU_LOCALHOSTS only. Ignore a profile mask from the
-	 * caller's environment; tearDown() restores it after each method.
-	 */
-	private function configuredLocalhosts()
-	{
-		unset($_ENV['RU_PROFILE_MASK']);
-		include(__DIR__ . '/../../conf/config.php');
-		return $localhosts;
 	}
 
 	public function testAnAddressFromTheEnvironmentJoinsTheLocalInterfaces()
@@ -273,7 +246,7 @@ class ConfigTest extends TestCase
 	{
 		unset($_ENV['RU_LOCALHOSTS']);
 		$hosts = $this->configuredLocalhosts();
-		$this->assertEquals(array('::1', '127.0.0.1', 'localhost'), $hosts,
+		$this->assertEquals(['::1', '127.0.0.1', 'localhost'], $hosts,
 			'an unset RU_LOCALHOSTS leaves the list as it ships');
 	}
 
@@ -281,7 +254,7 @@ class ConfigTest extends TestCase
 	{
 		$_ENV['RU_LOCALHOSTS'] = '';
 		$hosts = $this->configuredLocalhosts();
-		$this->assertEquals(array('::1', '127.0.0.1', 'localhost'), $hosts,
+		$this->assertEquals(['::1', '127.0.0.1', 'localhost'], $hosts,
 			'an empty RU_LOCALHOSTS adds no entry');
 	}
 
@@ -316,22 +289,22 @@ class ConfigTest extends TestCase
 			'building the list raises no diagnostic: ' . var_export($raised, true));
 		$this->assertTrue(!in_array(null, $hosts, true),
 			'and the list carries no null entry');
-		$this->assertEquals(array('::1', '127.0.0.1', 'localhost', '10.9.9.9'), $hosts,
+		$this->assertEquals(['::1', '127.0.0.1', 'localhost', '10.9.9.9'], $hosts,
 			'the process setting is honored even when variables_order omits E');
 	}
     public function testProcessEnvironmentWorksWithoutEnvSuperglobal()
     {
         $code = '$_ENV = array(); require '.var_export(__DIR__.'/../../conf/config.php', true).'; '
             .'echo json_encode(array($log_file, $profilePath, $profileMask, $tempDirectory));';
-        $environment = array('RU_LOG_FILE' => '/var/log/custom-app.log',
+        $environment = ['RU_LOG_FILE' => '/var/log/custom-app.log',
             'RU_PROFILE_PATH' => '/srv/profile', 'RU_PROFILE_MASK' => '0750',
-            'RU_TEMP_DIRECTORY' => '/srv/tmp');
-        $process = proc_open(array(PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code),
-            array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null, $environment);
+            'RU_TEMP_DIRECTORY' => '/srv/tmp'];
+        $process = proc_open([PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
         $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
         $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
         $this->assertEquals(0, proc_close($process), 'environment config child: '.$err);
-        $this->assertEquals(array('/var/log/custom-app.log', '/srv/profile', 0750, '/srv/tmp'),
+        $this->assertEquals(['/var/log/custom-app.log', '/srv/profile', 0750, '/srv/tmp'],
             json_decode($out, true), 'all documented process values reach direct config consumers');
     }
 
@@ -343,17 +316,44 @@ class ConfigTest extends TestCase
         copy(__DIR__.'/../../conf/config.php', $config);
         try {
             $code = 'putenv("RU_LOG_FILE="); require '.var_export($config, true).'; echo json_encode(array($log_file, $profileMask));';
-            $environment = array('RU_LOG_FILE' => '', 'RU_PROFILE_MASK' => '0750');
-            $process = proc_open(array(PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code),
-                array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null, $environment);
+            $environment = ['RU_LOG_FILE' => '', 'RU_PROFILE_MASK' => '0750'];
+            $process = proc_open([PHP_BINARY, '-d', 'variables_order=GPCS', '-r', $code],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
             $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
             $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
             $this->assertEquals(0, proc_close($process), 'operator config outside the app loads: '.$err);
-            $this->assertEquals(array('', 0750), json_decode($out, true),
+            $this->assertEquals(['', 0750], json_decode($out, true),
                 'relocated config keeps empty log override and octal mask');
         } finally {
             unlink($config); rmdir($root);
         }
     }
+
+	private function configuredProfileMask($value, &$diagnostic = null)
+	{
+		$_ENV['RU_PROFILE_MASK'] = $value;
+		$errorLog = tempnam(sys_get_temp_dir(), 'rut-mask-log-');
+		$oldErrorLog = ini_get('error_log');
+		ini_set('error_log', $errorLog);
+		try {
+			include(__DIR__ . '/../../conf/config.php');
+		} finally {
+			$diagnostic = is_file($errorLog) ? file_get_contents($errorLog) : '';
+			ini_set('error_log', $oldErrorLog);
+			unlink($errorLog);
+		}
+		return $profileMask;
+	}
+
+	/**
+	 * These cases inspect RU_LOCALHOSTS only. Ignore a profile mask from the
+	 * caller's environment; tearDown() restores it after each method.
+	 */
+	private function configuredLocalhosts()
+	{
+		unset($_ENV['RU_PROFILE_MASK']);
+		include(__DIR__ . '/../../conf/config.php');
+		return $localhosts;
+	}
 
 }

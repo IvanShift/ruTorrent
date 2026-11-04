@@ -34,7 +34,7 @@ require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
  */
 class SetDirTopDirectoryTest extends TestCase
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	private $base;
 	private $top;
@@ -45,43 +45,6 @@ class SetDirTopDirectoryTest extends TestCase
 		$this->reset();
 	}
 
-	private function reset()
-	{
-		if ($this->daemon !== null)
-		{
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-		if ($this->base !== null)
-			PluginEntryDriver::removeTree($this->base);
-	}
-
-	private function makeTree()
-	{
-		$this->reset();
-		$this->base = sys_get_temp_dir() . '/rutorrent-setdir-top-' . uniqid('', true);
-		@mkdir($this->base . '/top/src/mytorrent', 0777, true);
-		@mkdir($this->base . '/top/plain', 0777, true);
-		@mkdir($this->base . '/outside', 0777, true);
-		$this->base = realpath($this->base);
-		$this->top = $this->base . '/top';
-		foreach (array('1.bin', '2.bin') as $n)
-			file_put_contents($this->top . '/src/mytorrent/' . $n, 'download ' . $n);
-		symlink($this->base . '/outside', $this->top . '/out');
-		symlink($this->top . '/plain', $this->top . '/in');
-		symlink($this->base . '/nowhere', $this->top . '/dangle');
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies(array()),
-			$this->base . '/calls.log');
-	}
-
-	/** Runs a datadir script with this daemon and $topDirectory; $code runs just before it. */
-	private function runScript($script, $code, array $options = array())
-	{
-		$options['before'] = '$topDirectory = ' . var_export($this->top . '/', true) . '; ' . $code;
-		list($exit, $out, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
-		return $out . $err;
-	}
-
 	/**
 	 * Every "set data directory" with the files moved that leaves the top
 	 * directory through a link is refused at action.php, by its classified
@@ -89,18 +52,18 @@ class SetDirTopDirectoryTest extends TestCase
 	 */
 	public function testDirectoriesThroughALinkOutAreRefused()
 	{
-		$cases = array(
-			'a link out of the top directory' => array('/out', 'destination-invalid'),
-			'a directory that does not exist yet, under a link out' => array('/out/new', 'destination-invalid'),
-			'a link that does not resolve' => array('/dangle/new', 'destination-root-unavailable'),
-		);
+		$cases = [
+			'a link out of the top directory' => ['/out', 'destination-invalid'],
+			'a directory that does not exist yet, under a link out' => ['/out/new', 'destination-invalid'],
+			'a link that does not resolve' => ['/dangle/new', 'destination-root-unavailable'],
+		];
 		foreach ($cases as $what => list($datadir, $reason)) {
 			$this->makeTree();
 			$printed = $this->runScript('plugins/datadir/action.php', '$HTTP_RAW_POST_DATA = '
 				. var_export('hash=' . self::HASH . '&datadir=' . rawurlencode($this->top . $datadir)
 					. '&move_addpath=1&move_datafiles=1&move_fastresume=0', true) . ';',
-				array('post' => array()));
-			$this->assertEquals(array('errors' => array(array('desc' => 'theUILang.datadirSetDirFail', 'prm' => $reason))),
+				['post' => []]);
+			$this->assertEquals(['errors' => [['desc' => 'theUILang.datadirSetDirFail', 'prm' => $reason]]],
 				json_decode($printed, true), $what . ' is refused as ' . $reason . ': ' . $printed);
 			$this->assertTrue(!in_array('execute', $this->daemon->calls(), true),
 				'and the move is not started: ' . json_encode($this->daemon->calls()));
@@ -116,21 +79,21 @@ class SetDirTopDirectoryTest extends TestCase
 	 */
 	public function testDirectoriesInsideGetPastTheTopDirectoryCheck()
 	{
-		$cases = array(
+		$cases = [
 			'a link that resolves inside the top directory' => '/in/new',
 			'a new directory inside the top directory' => '/plain/new',
-		);
+		];
 		foreach ($cases as $what => $datadir) {
 			$this->makeTree();
 			// The payload trust rule refuses a destination whose directories
 			// others can write to (destination-root-untrusted).
-			foreach (array($this->base, $this->top, $this->top . '/plain') as $dir)
-				chmod($dir, 0755);
+			foreach ([$this->base, $this->top, $this->top . '/plain'] as $dir) {
+				chmod($dir, 0755); }
 			$printed = $this->runScript('plugins/datadir/action.php', '$HTTP_RAW_POST_DATA = '
 				. var_export('hash=' . self::HASH . '&datadir=' . rawurlencode($this->top . $datadir)
 					. '&move_addpath=1&move_datafiles=1&move_fastresume=0', true) . ';',
-				array('post' => array()));
-			$this->assertEquals(array('errors' => array(array('desc' => 'theUILang.datadirSetDirFail', 'prm' => 'daemon-claim-unconfirmed'))),
+				['post' => []]);
+			$this->assertEquals(['errors' => [['desc' => 'theUILang.datadirSetDirFail', 'prm' => 'daemon-claim-unconfirmed']]],
 				json_decode($printed, true), $what . ' gets past the top-directory check: ' . $printed);
 			$this->assertTrue(!in_array('execute', $this->daemon->calls(), true),
 				'and, unconfirmed, the move is not started: ' . json_encode($this->daemon->calls()));
@@ -149,16 +112,53 @@ class SetDirTopDirectoryTest extends TestCase
 	{
 		$this->makeTree();
 		$printed = $this->runScript('plugins/datadir/setdir.php', '$argv = '
-			. var_export(array('setdir.php', self::HASH, $this->top . '/out/new', '1', '1', '0'), true)
+			. var_export(['setdir.php', self::HASH, $this->top . '/out/new', '1', '1', '0'], true)
 			. '; $argc = count($argv);');
 		$this->assertTrue(!file_exists($this->base . '/outside/new'),
 			'no directory is made outside the top directory: ' . $printed);
-		$this->assertEquals(array('1.bin', '2.bin'), array_values(array_diff(scandir($this->top . '/src/mytorrent'), array('.', '..'))),
+		$this->assertEquals(['1.bin', '2.bin'], array_values(array_diff(scandir($this->top . '/src/mytorrent'), ['.', '..'])),
 			'the data stays where it was');
-		$this->assertEquals(array('.', '..'), scandir($this->base . '/outside'),
+		$this->assertEquals(['.', '..'], scandir($this->base . '/outside'),
 			'nothing is made or moved outside the top directory: ' . $printed);
 		$log = (string)@file_get_contents($this->base . '/application.log');
 		$this->assertTrue(strpos($log, 'datadir: worker refused hash=' . self::HASH . ' reason=destination-invalid') !== false,
 			'because the destination is outside the top directory: ' . $log);
+	}
+
+	private function reset()
+	{
+		if ($this->daemon !== null)
+		{
+			$this->daemon->stop();
+			$this->daemon = null;
+		}
+		if ($this->base !== null) {
+			PluginEntryDriver::removeTree($this->base); }
+	}
+
+	private function makeTree()
+	{
+		$this->reset();
+		$this->base = sys_get_temp_dir() . '/rutorrent-setdir-top-' . uniqid('', true);
+		@mkdir($this->base . '/top/src/mytorrent', 0777, true);
+		@mkdir($this->base . '/top/plain', 0777, true);
+		@mkdir($this->base . '/outside', 0777, true);
+		$this->base = realpath($this->base);
+		$this->top = $this->base . '/top';
+		foreach (['1.bin', '2.bin'] as $n) {
+			file_put_contents($this->top . '/src/mytorrent/' . $n, 'download ' . $n); }
+		symlink($this->base . '/outside', $this->top . '/out');
+		symlink($this->top . '/plain', $this->top . '/in');
+		symlink($this->base . '/nowhere', $this->top . '/dangle');
+		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies([]),
+			$this->base . '/calls.log');
+	}
+
+	/** Runs a datadir script with this daemon and $topDirectory; $code runs just before it. */
+	private function runScript($script, $code, array $options = [])
+	{
+		$options['before'] = '$topDirectory = ' . var_export($this->top . '/', true) . '; ' . $code;
+		list($exit, $out, $err) = PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
+		return $out . $err;
 	}
 }

@@ -4,19 +4,19 @@
 // No tracker, DNS lookup, account or scripted curl response is involved.
 if (($argv[1] ?? '') === '--peer') {
     $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-    if ($server === false) exit(2);
+    if ($server === false) { exit(2); }
     fwrite(STDOUT, stream_socket_get_name($server, false) . "\n");
     fflush(STDOUT);
     $socket = @stream_socket_accept($server, 5);
-    if ($socket === false) exit(3);
+    if ($socket === false) { exit(3); }
     stream_set_timeout($socket, 5);
     $headers = '';
-    while (($line = fgets($socket)) !== false && $line !== "\r\n") $headers .= $line;
+    while (($line = fgets($socket)) !== false && $line !== "\r\n") { $headers .= $line; }
     $length = preg_match('/^Content-Length: *([0-9]+)\r?$/mi', $headers, $match) ? (int)$match[1] : 0;
     $body = '';
     while (strlen($body) < $length) {
         $part = fread($socket, $length - strlen($body));
-        if ($part === false || $part === '') exit(4);
+        if ($part === false || $part === '') { exit(4); }
         $body .= $part;
     }
     $answer = $argv[2] === 'zero' ? '0' : 'ok';
@@ -24,7 +24,7 @@ if (($argv[1] ?? '') === '--peer') {
         . "\r\nConnection: close\r\n\r\n" . $answer);
     fclose($socket);
     fclose($server);
-    echo json_encode(array('headers' => $headers, 'body' => base64_encode($body)));
+    echo json_encode(['headers' => $headers, 'body' => base64_encode($body)]);
     exit(0);
 }
 
@@ -34,8 +34,8 @@ require_once(__DIR__ . '/../../php/Snoopy.class.inc');
 
 function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
 {
-    $process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', __FILE__, '--peer', $response),
-        array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+    $process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', __FILE__, '--peer', $response],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
     testAssertTrue(is_resource($process), 'The isolated HTTP peer starts');
     try {
         stream_set_timeout($pipes[1], 5);
@@ -43,10 +43,10 @@ function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
         testAssertSame(1, preg_match('/^127\.0\.0\.1:[0-9]+$/D', $address), 'The peer owns a loopback listener');
         $client = new Snoopy();
         $client->block_private = true;
-        $client->private_allowlist = array('127.0.0.1');
+        $client->private_allowlist = ['127.0.0.1'];
         $client->proxy_host = $client->proxy_port = '';
         $client->read_timeout = 3;
-        if ($curl) $client->setRequestDeadline(3);
+        if ($curl) { $client->setRequestDeadline(3); }
         $ok = $client->fetch('http://' . $address . '/body', $method, 'text/plain', $body);
         $capture = stream_get_contents($pipes[1]);
         fclose($pipes[1]);
@@ -61,9 +61,9 @@ function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
         $request = json_decode($capture, true);
         testAssertTrue(is_array($request) && isset($request['headers'], $request['body']), 'The peer captured the request');
         $request['body'] = base64_decode($request['body'], true);
-        return array($ok, $client, $request);
+        return [$ok, $client, $request];
     } finally {
-        foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
+        foreach ($pipes as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
         if (is_resource($process)) {
             proc_terminate($process);
             proc_close($process);
@@ -71,14 +71,14 @@ function integrityRequest($curl, $method = 'GET', $body = '', $response = 'ok')
     }
 }
 
-$tests = array(
+$tests = [
     'a literal zero HTTP response is a one-byte body' => function () {
         list($ok, $client) = integrityRequest(false, 'GET', '', 'zero');
         testAssertSame(true, $ok, 'The HTTP request succeeds');
         testAssertSame('0', $client->results, 'A falsey data chunk is retained');
     },
     'both transports send a literal zero request with its content length' => function () {
-        foreach (array(false, true) as $curl) {
+        foreach ([false, true] as $curl) {
             list($ok, $client, $request) = integrityRequest($curl, 'POST', '0');
             testAssertSame(true, $ok, 'The POST succeeds');
             testAssertSame('0', $request['body'], 'The receiver reads the complete one-byte POST body');
@@ -102,21 +102,21 @@ $tests = array(
         }
     },
     'malformed URL encoding leaves invalid input for a fetch refusal without throwing' => function () {
-        foreach (array('http://example.test:99999/path', 'http://:') as $url) {
+        foreach (['http://example.test:99999/path', 'http://:'] as $url) {
             testAssertSame($url, Snoopy::linkencode($url), 'Malformed URLs remain available for a classified fetch refusal');
         }
     },
     'a malformed URL cannot reuse an earlier successful response' => function () {
         list($ok, $client) = integrityRequest(false);
         testAssertSame(true, $ok, 'The reused client first receives a successful answer');
-        foreach (array('http://example.test:99999/path', 'http://:') as $url) {
+        foreach (['http://example.test:99999/path', 'http://:'] as $url) {
             testAssertSame(false, $client->fetch($url), 'The malformed URL is refused');
             testAssertSame(false, Snoopy::isSuccessfulResponse($client), 'An earlier successful response is not reused');
             testAssertSame('invalid-url', $client->error, 'The invalid target has a fixed failure reason');
             testAssertSame('', $client->results, 'The earlier response body is discarded');
         }
     },
-);
+];
 
 try {
     $status = testRunCases($tests);

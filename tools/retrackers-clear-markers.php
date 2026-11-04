@@ -50,15 +50,15 @@ if(is_file($cliGuard)) {
 // than retire it.
 
 $apply = isset($argv[1]) && $argv[1] === 'apply';
-$pairs = array();
+$pairs = [];
 $usable = $apply ? count($argv) >= 4 && count($argv) % 2 === 0 : count($argv) === 1;
 for ($index = 2; $usable && $index < count($argv); $index += 2) {
     $hash = strtoupper($argv[$index]);
     if (preg_match('/^[0-9A-F]{40}$/D', $hash) !== 1 ||
-        preg_match('/^[0-9a-f]{64}$/D', $argv[$index + 1]) !== 1 || isset($pairs[$hash]))
-        $usable = false;
-    else
-        $pairs[$hash] = $argv[$index + 1];
+        preg_match('/^[0-9a-f]{64}$/D', $argv[$index + 1]) !== 1 || isset($pairs[$hash])) {
+        $usable = false; }
+    else {
+        $pairs[$hash] = $argv[$index + 1]; }
 }
 if (!$usable) {
     fwrite(STDERR, "usage: retrackers-clear-markers.php [apply HASH FINGERPRINT [HASH FINGERPRINT ...]]\n"
@@ -72,17 +72,17 @@ $scgi_port = 5000;
 
 // $scgi_host may already carry a scheme ("unix:///run/rtorrent/rtorrent.sock"),
 // may be a bare socket path, or may be a hostname with $scgi_port set.
-if (strpos($scgi_host, '://') !== false) $target = $scgi_host;
-elseif (substr($scgi_host, 0, 1) === '/') $target = 'unix://' . $scgi_host;
-elseif (isset($scgi_port) && $scgi_port > 0) $target = 'tcp://' . $scgi_host . ':' . $scgi_port;
-else $target = 'unix://' . $scgi_host;
+if (strpos($scgi_host, '://') !== false) { $target = $scgi_host; }
+elseif (substr($scgi_host, 0, 1) === '/') { $target = 'unix://' . $scgi_host; }
+elseif (isset($scgi_port) && $scgi_port > 0) { $target = 'tcp://' . $scgi_host . ':' . $scgi_port; }
+else { $target = 'unix://' . $scgi_host; }
 
 // One call, or false with $error saying why; it never exits.
 function rpcTry($target, $method, $arguments, &$error)
 {
 	$body = '<?xml version="1.0"?><methodCall><methodName>' . $method . '</methodName><params>';
-	foreach ($arguments as $argument)
-		$body .= '<param><value><string>' . htmlspecialchars($argument, ENT_XML1) . '</string></value></param>';
+	foreach ($arguments as $argument) {
+		$body .= '<param><value><string>' . htmlspecialchars($argument, ENT_XML1) . '</string></value></param>'; }
 	$body .= '</params></methodCall>';
 	$header = "CONTENT_LENGTH\0" . strlen($body) . "\0SCGI\0" . "1\0";
 	$socket = @stream_socket_client($target, $errno, $errstr, 15);
@@ -126,7 +126,7 @@ function rpc($target, $method, $arguments)
 }
 
 // Pairs cleared in daemon memory, and whether session.save was asked for them.
-$cleared = array();
+$cleared = [];
 $saveRequested = null;
 
 // Once a pair is cleared, every exit first asks rTorrent to save the session:
@@ -135,17 +135,17 @@ $saveRequested = null;
 function saveCleared($target, $beforeExit)
 {
     global $cleared, $saveRequested;
-    if (!$cleared || $saveRequested !== null) return($saveRequested !== false);
+    if (!$cleared || $saveRequested !== null) { return($saveRequested !== false); }
     $error = null;
-    $saveRequested = rpcTry($target, 'session.save', array(), $error) !== false;
-    if (!$saveRequested)
+    $saveRequested = rpcTry($target, 'session.save', [], $error) !== false;
+    if (!$saveRequested) {
         fwrite(STDERR, 'cleared in daemon memory only; session.save unconfirmed: ' . implode(' ', $cleared)
-            . ' (' . $error . "); save the session before restarting rTorrent\n");
-    elseif ($beforeExit)
+            . ' (' . $error . "); save the session before restarting rTorrent\n"); }
+    elseif ($beforeExit) {
         fwrite(STDERR, 'session.save requested for the pairs cleared before this exit: ' . implode(' ', $cleared)
-            . "; verify persistence before daemon restart\n");
-    else
-        echo "session.save requested; verify persistence before daemon restart\n";
+            . "; verify persistence before daemon restart\n"); }
+    else {
+        echo "session.save requested; verify persistence before daemon restart\n"; }
     return($saveRequested);
 }
 
@@ -157,20 +157,20 @@ function stopRun($target, $code)
 
 function markerFingerprint($row)
 {
-    return hash('sha256', implode("\0", array($row[0], $row[4], $row[2], $row[3])));
+    return hash('sha256', implode("\0", [$row[0], $row[4], $row[2], $row[3]]));
 }
 
 // This standalone operator tool is often copied to /tmp, outside the app's
 // autoloader. Quote the same command grammar as rTorrent::quoteCommandArg().
 function quoteCommandArg($value)
 {
-    return '"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"';
+    return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
 }
 
 function scalarString($response)
 {
-    if (preg_match_all('|<value><string>(.*?)</string></value>|s', $response, $matches) !== 1)
-        return false;
+    if (preg_match_all('|<value><string>(.*?)</string></value>|s', $response, $matches) !== 1) {
+        return false; }
     return html_entity_decode($matches[1][0], ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
@@ -179,19 +179,19 @@ echo 'rtorrent: ' . $target . "\n";
 // A fifth column binds the public hash to its current daemon local_id.
 // Values are XML-escaped and the flat list chunks exactly.
 preg_match_all('|<value><string>(.*?)</string></value>|s',
-    rpc($target, 'd.multicall2', array('', 'main', 'd.hash=', 'd.name=',
+    rpc($target, 'd.multicall2', ['', 'main', 'd.hash=', 'd.name=',
         'd.custom=retrackers-recovery', 'd.custom=retrackers-recovery-ack',
-        'd.local_id=')), $cells);
+        'd.local_id=']), $cells);
 $flat = $cells[1];
 if (count($flat) % 5 !== 0) {
     fwrite(STDERR, 'unexpected reply shape: ' . count($flat) . " cells is not a multiple of 5\n");
     exit(2);
 }
-$marked = array();
-for ($index = 0; $index < count($flat); $index += 5)
-    if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '')
-        $marked[] = array($flat[$index], $flat[$index + 1],
-            $flat[$index + 2], $flat[$index + 3], $flat[$index + 4]);
+$marked = [];
+for ($index = 0; $index < count($flat); $index += 5) {
+    if ($flat[$index + 2] !== '' || $flat[$index + 3] !== '') {
+        $marked[] = [$flat[$index], $flat[$index + 1],
+            $flat[$index + 2], $flat[$index + 3], $flat[$index + 4]]; } }
 
 printf("%d torrents, %d carry a recovery marker\n", count($flat) / 5, count($marked));
 foreach ($marked as $row) {
@@ -214,11 +214,11 @@ if (!$apply) {
 }
 
 // Every pair must match this run's inventory before anything is cleared.
-$selected = array();
+$selected = [];
 foreach ($pairs as $wanted => $fingerprint) {
     $match = null;
     foreach ($marked as $row) {
-        if (strtoupper($row[0]) !== $wanted) continue;
+        if (strtoupper($row[0]) !== $wanted) { continue; }
         if ($match !== null) {
             fwrite(STDERR, "duplicate hash in daemon inventory; refusing\n");
             exit(2);
@@ -254,21 +254,21 @@ $refusal = 'branch=' . quoteCommandArg('not=(method.list_keys,rr.receipts.v1)')
 $refused = 0;
 foreach ($selected as $row) {
     list($hash, $name, $marker, $ack, $localId) = $row;
-    $conditions = array(
+    $conditions = [
         'not=(method.list_keys,rr.receipts.v1)',
         $equals('d.local_id=', $localId),
         $equals('d.custom=retrackers-recovery', $marker),
         $equals('d.custom=retrackers-recovery-ack', $ack),
-    );
+    ];
     $condition = array_shift($conditions);
-    foreach ($conditions as $next)
-        $condition = 'and=' . quoteCommandArg($condition) . ',' . quoteCommandArg($next);
+    foreach ($conditions as $next) {
+        $condition = 'and=' . quoteCommandArg($condition) . ',' . quoteCommandArg($next); }
     $clear = 'cat=' . quoteCommandArg('$d.custom.set=retrackers-recovery,') . ','
         . quoteCommandArg('$d.custom.set=retrackers-recovery-ack,') . ',CLEARED';
-    $status = scalarString(rpc($target, 'branch', array($hash, $condition, $clear, $refusal)));
+    $status = scalarString(rpc($target, 'branch', [$hash, $condition, $clear, $refusal]));
     if ($status === 'CLEARED') {
-        foreach (array('retrackers-recovery', 'retrackers-recovery-ack') as $key) {
-            $current = scalarString(rpc($target, 'd.custom', array($hash, $key)));
+        foreach (['retrackers-recovery', 'retrackers-recovery-ack'] as $key) {
+            $current = scalarString(rpc($target, 'd.custom', [$hash, $key]));
             if ($current !== '') {
                 fwrite(STDERR, 'clear reply did not match daemon state for ' . $hash
                     . '; it is not counted as cleared; report again' . "\n");
@@ -292,13 +292,13 @@ foreach ($selected as $row) {
         'conditional clear refused for ' . $hash . ': its marker, ack or local_id changed after the report; nothing was changed; report again' :
         'conditional clear refused or unconfirmed; marker/ledger may have changed') . "\n");
 }
-if (!$cleared) exit(3);
+if (!$cleared) { exit(3); }
 
 // Persist only after each selected generation was confirmed clear.
-if (!saveCleared($target, false)) exit(2);
+if (!saveCleared($target, false)) { exit(2); }
 foreach ($cleared as $hash) {
-    foreach (array('retrackers-recovery', 'retrackers-recovery-ack') as $key) {
-        $current = scalarString(rpc($target, 'd.custom', array($hash, $key)));
+    foreach (['retrackers-recovery', 'retrackers-recovery-ack'] as $key) {
+        $current = scalarString(rpc($target, 'd.custom', [$hash, $key]));
         if ($current !== '') {
             fwrite(STDERR, 'marker changed after save; inspect the daemon again' . "\n");
             exit(3);

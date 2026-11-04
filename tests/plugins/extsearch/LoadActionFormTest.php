@@ -36,9 +36,9 @@ class ExtsearchLoadActionFormTest extends TestCase
 
 	public function tearDown()
 	{
-		foreach(array('args.json','bootstrap.php','log.txt') as $file) @unlink($this->root.'/'.$file);
-		foreach(array('action.php','engines.php') as $file)
-			@unlink($this->root.'/plugins/extsearch/'.$file);
+		foreach(['args.json','bootstrap.php','log.txt'] as $file) { @unlink($this->root.'/'.$file); }
+		foreach(['action.php','engines.php'] as $file) {
+			@unlink($this->root.'/plugins/extsearch/'.$file); }
 		@unlink($this->root.'/php/util.php');
 		@unlink($this->root.'/php/rtorrent.php');
 		@rmdir($this->root.'/plugins/extsearch');
@@ -56,11 +56,11 @@ class ExtsearchLoadActionFormTest extends TestCase
 		file_put_contents($this->root.'/bootstrap.php', '<?php '
 			.'$_SERVER["REQUEST_METHOD"]="POST"; $_REQUEST["mode"]="loadtorrents"; '
 			.'$HTTP_RAW_POST_DATA='.var_export($body,true).';');
-		$process = proc_open(array(PHP_BINARY,
+		$process = proc_open([PHP_BINARY,
 			'-d', 'auto_prepend_file='.$this->root.'/bootstrap.php',
-			'-f', $this->root.'/plugins/extsearch/action.php'),
-			array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),
-				2=>array('pipe','w')), $pipes, $this->root.'/plugins/extsearch');
+			'-f', $this->root.'/plugins/extsearch/action.php'],
+			[0=>['file','/dev/null','r'],1=>['pipe','w'],
+				2=>['pipe','w']], $pipes, $this->root.'/plugins/extsearch');
 		$this->assertTrue(is_resource($process), 'load action child starts');
 		$output = stream_get_contents($pipes[1]);
 		$error = stream_get_contents($pipes[2]);
@@ -69,17 +69,17 @@ class ExtsearchLoadActionFormTest extends TestCase
 		$this->assertSame(0, proc_close($process), 'load action exits cleanly: '.$error);
 		$this->assertSame('', $error, 'missing value segments produce no warnings');
 		$args = json_decode((string)@file_get_contents($this->root.'/args.json'), true);
-		$this->assertSame(array('https://example.invalid/file?a=b c+d',
-			'https://example.invalid/second?x=1=2'), $args['urls'] ?? null,
+		$this->assertSame(['https://example.invalid/file?a=b c+d',
+			'https://example.invalid/second?x=1=2'], $args['urls'] ?? null,
 			'ordered URLs preserve raw equals and decode raw plus only once');
-		$this->assertSame(array('Example','Example'), $args['engs'] ?? null,
+		$this->assertSame(['Example','Example'], $args['engs'] ?? null,
 			'duplicate engine fields stay aligned with URL order');
 		$this->assertSame('A=B', $args['dir'] ?? null,
 			'raw equals in directory survives the first delimiter');
 		$this->assertSame('x y+z', $args['label'] ?? null,
 			'form plus and encoded plus keep distinct meanings');
-		$this->assertSame(array('teg'=>'','data'=>array(
-			array('hash'=>null,'ndx'=>'7'), array('hash'=>null,'ndx'=>'8'))),
+		$this->assertSame(['teg'=>'','data'=>[
+			['hash'=>null,'ndx'=>'7'], ['hash'=>null,'ndx'=>'8']]],
 			json_decode($output,true), 'ordered indices align with both URLs');
 	}
 
@@ -89,11 +89,11 @@ class ExtsearchLoadActionFormTest extends TestCase
 		file_put_contents($this->root.'/bootstrap.php', '<?php '
 			.'$_SERVER["REQUEST_METHOD"]="POST"; $_REQUEST["mode"]="loadtorrents"; '
 			.'$HTTP_RAW_POST_DATA='.var_export($body,true).';');
-		$process = proc_open(array(PHP_BINARY,
+		$process = proc_open([PHP_BINARY,
 			'-d', 'auto_prepend_file='.$this->root.'/bootstrap.php',
-			'-f', $this->root.'/plugins/extsearch/action.php'),
-			array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),
-				2=>array('pipe','w')), $pipes, $this->root.'/plugins/extsearch');
+			'-f', $this->root.'/plugins/extsearch/action.php'],
+			[0=>['file','/dev/null','r'],1=>['pipe','w'],
+				2=>['pipe','w']], $pipes, $this->root.'/plugins/extsearch');
 		$this->assertTrue(is_resource($process), 'malformed load child starts');
 		$output = stream_get_contents($pipes[1]);
 		$error = stream_get_contents($pipes[2]);
@@ -101,7 +101,7 @@ class ExtsearchLoadActionFormTest extends TestCase
 		fclose($pipes[2]);
 		$this->assertSame(0, proc_close($process), 'malformed load exits cleanly: '.$error);
 		$this->assertSame('', $error, 'malformed parallel fields produce no warnings');
-		$this->assertSame(array('error'=>'invalid request'), json_decode($output, true),
+		$this->assertSame(['error'=>'invalid request'], json_decode($output, true),
 			'missing engine rejects the entire batch before loading');
 		$this->assertTrue(!file_exists($this->root.'/args.json'),
 			'malformed load never calls the torrent manager');

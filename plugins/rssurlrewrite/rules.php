@@ -36,10 +36,10 @@ class rURLRewriteRule
 		$dst = @preg_replace($this->pattern,$this->replacement,$src);
 		if(($dst!==false) && ($dst!=$src))
 		{
-			if($this->hrefAsDest)
-				$href = $dst;
-			else
-				$guid = $dst;
+			if($this->hrefAsDest) {
+				$href = $dst; }
+			else {
+				$guid = $dst; }
 		}
 		return($dst);
 	}
@@ -49,14 +49,14 @@ class rURLRewriteRulesList
 {
 	public $hash = "urlrewriterules.dat";
 	public $modified = false;
-        public $lst = array();
+        public $lst = [];
 
-	static public function cacheClasses()
+	public static function cacheClasses()
 	{
-		return(array('rURLRewriteRule'));
+		return(['rURLRewriteRule']);
 	}
 
-	static public function load( $mngr = null )
+	public static function load( $mngr = null )
 	{
 		$cache = new rCache();
 		$ar = new rURLRewriteRulesList();
@@ -79,8 +79,8 @@ class rURLRewriteRulesList
 					$changed = true;
 				}
 			}
-			if($changed)
-				$ar->store();
+			if($changed) {
+				$ar->store(); }
 		}
 		return($ar);
 	}
@@ -93,70 +93,59 @@ class rURLRewriteRulesList
 	{
 		$this->lst[] = $filter;
 	}
-	protected static function sortByName( $a, $b )
-	{
-		return(strcmp($a->name, $b->name));
-	}
         public function set()
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		$this->lst = array();
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+		$this->lst = [];
 		$rule = null;
 		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA) as $parts)
 		{
 			if($parts[0]=="name")
 			{
-				if($rule)
-					$this->lst[] = $rule;
+				if($rule) {
+					$this->lst[] = $rule; }
 				$rule = new rURLRewriteRule($parts[1]);
 			}
-			else
-			if($parts[0]=="pattern")
+			elseif($parts[0]=="pattern")
 			{
-				if($rule)
-					$rule->pattern = trim($parts[1]);
+				if($rule) {
+					$rule->pattern = trim($parts[1]); }
 			}
-			else
-			if($parts[0]=="replacement")
+			elseif($parts[0]=="replacement")
 			{
-				if($rule)
-					$rule->replacement = trim($parts[1]);
+				if($rule) {
+					$rule->replacement = trim($parts[1]); }
 			}
-			else
-			if($parts[0]=="enabled")
+			elseif($parts[0]=="enabled")
 			{
-				if($rule)
-					$rule->enabled = intval($parts[1]);
+				if($rule) {
+					$rule->enabled = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="no")
+			elseif($parts[0]=="no")
 			{
-				if($rule)
-					$rule->no = intval($parts[1]);
+				if($rule) {
+					$rule->no = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="hash")
+			elseif($parts[0]=="hash")
 			{
-				if($rule)
-					$rule->rssHash = $parts[1];
+				if($rule) {
+					$rule->rssHash = $parts[1]; }
 			}
-			else
-			if($parts[0]=="hrefAsSrc")
+			elseif($parts[0]=="hrefAsSrc")
 			{
-				if($rule)
-					$rule->hrefAsSrc = intval($parts[1]);
+				if($rule) {
+					$rule->hrefAsSrc = intval($parts[1]); }
 			}
-			else
-			if($parts[0]=="hrefAsDest")
+			elseif($parts[0]=="hrefAsDest")
 			{
-				if($rule)
-					$rule->hrefAsDest = intval($parts[1]);
+				if($rule) {
+					$rule->hrefAsDest = intval($parts[1]); }
 			}
   	                }
-		if($rule)
-			$this->lst[] = $rule;
-		usort($this->lst, array(__CLASS__,"sortByName"));
+		if($rule) {
+			$this->lst[] = $rule; }
+		usort($this->lst, [__CLASS__,"sortByName"]);
 		$this->store();
 	}
 	public function getContents()
@@ -167,8 +156,12 @@ class rURLRewriteRulesList
 	{
 		foreach( $this->lst as $item )
 		{
-			if($item->isApplicable( $rss, $groups ))
-				$item->apply( $href, $guid );
+			if($item->isApplicable( $rss, $groups )) {
+				$item->apply( $href, $guid ); }
 		}
+	}
+	protected static function sortByName( $a, $b )
+	{
+		return(strcmp($a->name, $b->name));
 	}
 }

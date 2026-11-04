@@ -23,7 +23,7 @@ require_once(__DIR__ . '/../../env_check.php');
  */
 class EnvCheckPublicSuffixListTest extends TestCase
 {
-	private $trees = array();
+	private $trees = [];
 	private $root;
 
 	public function setUp()
@@ -33,8 +33,8 @@ class EnvCheckPublicSuffixListTest extends TestCase
 
 	public function tearDown()
 	{
-		foreach ($this->trees as $tree) TestTree::remove($tree);
-		$this->trees = array();
+		foreach ($this->trees as $tree) { TestTree::remove($tree); }
+		$this->trees = [];
 	}
 
 	// ---- the age decision, with no environment at all ---------------------
@@ -59,11 +59,11 @@ class EnvCheckPublicSuffixListTest extends TestCase
 
 	public function testAStampTheCheckerCannotReadIsReportedRatherThanGuessed()
 	{
-		$unreadable = array('', "// VERSION:\n", "// VERSION: 2026-09-24\n",
+		$unreadable = ['', "// VERSION:\n", "// VERSION: 2026-09-24\n",
 			"// VERSION: 2026-13-24_13-26-36_UTC\n", "// VERSION: 2026-09-31_13-26-36_UTC\n",
 			"// VERSION: 2026-09-24_25-26-36_UTC\n", "// VERSION: 2026-09-24_13-26-36_CEST\n",
 			"// VERSION 2026-09-24_13-26-36_UTC\n", "x// VERSION: 2026-09-24_13-26-36_UTC\n",
-			"// date : dot Date Limited\n");
+			"// date : dot Date Limited\n"];
 		foreach ($unreadable as $data) {
 			$this->assertTrue(Requirements::publicSuffixListDate($data) === null,
 				'Not a stamp the checker will read: ' . var_export($data, true));
@@ -77,13 +77,13 @@ class EnvCheckPublicSuffixListTest extends TestCase
 	{
 		$stamp = "// VERSION: 2026-09-24_13-26-36_UTC\n";
 		$cut = gmmktime(13, 26, 36, 9, 24, 2026);
-		$cases = array(array(0, true), array(1, true),
-			array(Requirements::MAX_PSL_AGE_DAYS, true),
-			array(Requirements::MAX_PSL_AGE_DAYS + 1, false));
+		$cases = [[0, true], [1, true],
+			[Requirements::MAX_PSL_AGE_DAYS, true],
+			[Requirements::MAX_PSL_AGE_DAYS + 1, false]];
 		foreach ($cases as $case) {
 			list($days, $expected) = $case;
 			// A second short of the next whole day still reads as $days.
-			foreach (array($cut + $days * 86400, $cut + ($days + 1) * 86400 - 1) as $now) {
+			foreach ([$cut + $days * 86400, $cut + ($days + 1) * 86400 - 1] as $now) {
 				list($ok, $detail) = Requirements::publicSuffixListAge($stamp, $now);
 				$this->assertEquals($expected, $ok,
 					'A list ' . $days . ' day(s) old is acceptable: ' . var_export($expected, true));
@@ -101,91 +101,6 @@ class EnvCheckPublicSuffixListTest extends TestCase
 		$this->assertTrue($ok, 'A clock behind the stamp does not make the list stale');
 		$this->assertTrue(strpos($detail, ', 0 day(s) ago') !== false,
 			'and the age reads as none rather than as a negative number');
-	}
-
-	// ---- the checker, run for real ----------------------------------------
-
-	/** The bundled list with its stamp replaced, or with no stamp at all. */
-	private function listStamped($timestamp)
-	{
-		$data = @file_get_contents($this->root . '/php/public_suffix_list.dat');
-		if (!is_string($data)) throw new RuntimeException('Could not read the bundled list');
-		$replacement = $timestamp === null ? '// (this copy carries no stamp)'
-			: '// VERSION: ' . gmdate('Y-m-d_H-i-s', $timestamp) . '_UTC';
-		$count = 0;
-		$data = preg_replace('~^// VERSION:.*$~m', $replacement, $data, 1, $count);
-		if ($count !== 1) throw new RuntimeException('The bundled list has no single VERSION line');
-		return $data;
-	}
-
-	/**
-	 * A tree the checker runs in whose list belongs to the case. env_check.php
-	 * is copied because PHP resolves __DIR__ through a symlink, which would
-	 * send the checker back to the shipped list; everything the checker then
-	 * reads -- the configuration, the transport, the plugins -- is linked, so
-	 * only the dated file differs from the tree as it ships.
-	 */
-	private function treeWithList($contents)
-	{
-		$tree = sys_get_temp_dir() . '/rutorrent-psl-' . uniqid();
-		$this->trees[] = $tree;
-		if (!@mkdir($tree . '/php', 0700, true))
-			throw new RuntimeException('Could not create the checker tree');
-		foreach (array('', 'php') as $relative) {
-			$source = $relative === '' ? $this->root : $this->root . '/' . $relative;
-			$target = $relative === '' ? $tree : $tree . '/' . $relative;
-			foreach (scandir($source) as $entry) {
-				if (($entry === '.') || ($entry === '..')
-					|| ($relative === '' && ($entry === 'php' || $entry === 'env_check.php'))
-					|| ($relative === 'php' && in_array($entry, array('public_suffix_list.dat', 'publicsuffix.php'), true))) continue;
-				if (!@symlink($source . '/' . $entry, $target . '/' . $entry))
-					throw new RuntimeException('Could not link ' . $entry . ' into the checker tree');
-			}
-		}
-		if (!@copy($this->root . '/env_check.php', $tree . '/env_check.php'))
-			throw new RuntimeException('Could not copy the checker into its tree');
-		// A synthetic date needs a matching fixture pin. Keep the real owner's
-		// validation and rule parser; corruption tests alter the data only after
-		// this independently prepared owner has been written.
-		$owner = file_get_contents($this->root . '/php/publicsuffix.php');
-		if ($contents !== null) {
-			$owner = preg_replace("/!== '[a-f0-9]{64}'/", "!== '" . hash('sha256', $contents) . "'", $owner, 1, $pins);
-			if ($pins !== 1) throw new RuntimeException('The PSL owner has no single snapshot pin');
-		}
-		if (file_put_contents($tree . '/php/publicsuffix.php', $owner) !== strlen($owner))
-			throw new RuntimeException('Could not copy the PSL owner into its tree');
-		if ($contents !== null
-			&& @file_put_contents($tree . '/php/public_suffix_list.dat', $contents) !== strlen($contents))
-			throw new RuntimeException('Could not write the checker tree list');
-		return $tree;
-	}
-
-	/**
-	 * The checker's report and exit status. The SCGI address names a socket
-	 * that is never created, so the rtorrent probe fails at once instead of
-	 * waiting on whatever happens to listen on the runner.
-	 */
-	private function report($tree, &$status = null, $disabled = '')
-	{
-		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), array(
-			'-d', 'variables_order=EGPCS', '-d', 'error_reporting=E_ALL',
-			'-d', 'display_errors=1', '-d', 'disable_functions=' . $disabled,
-			$tree . '/env_check.php')), array('env' => array(
-			'RU_SCGI_HOST' => 'unix://' . $tree . '/absent.sock',
-			'RU_LOG_FILE' => $tree . '/errors.log')));
-		$this->assertTrue(!$run['timedOut'], 'The checker finishes within the fixture deadline');
-		$status = $run['code'];
-		return $run['out'] . $run['err'];
-	}
-
-	/** The one rendered line an installer reads about the list. */
-	private function listLine($tree, &$status = null, $disabled = '')
-	{
-		$lines = array();
-		foreach (explode("\n", $this->report($tree, $status, $disabled)) as $line)
-			if (strpos($line, 'Public Suffix List') !== false) $lines[] = trim($line);
-		$this->assertEquals(1, count($lines), 'The checker reports the list exactly once');
-		return isset($lines[0]) ? $lines[0] : '';
 	}
 
 	public function testACurrentListIsReportedWithoutAWarning()
@@ -243,7 +158,7 @@ class EnvCheckPublicSuffixListTest extends TestCase
 
 	public function testDamagedOrPartialListsWarnThatDomainCookiesAreRefused()
 	{
-		foreach (array('damaged', 'partial') as $damage) {
+		foreach (['damaged', 'partial'] as $damage) {
 			$contents = $this->listStamped(time());
 			$tree = $this->treeWithList($contents);
 			$broken = $damage === 'partial' ? substr($contents, 0, 1000) : $contents . "\n// transfer damage\n";
@@ -282,7 +197,7 @@ class EnvCheckPublicSuffixListTest extends TestCase
 	public function testUnavailableDateHelpersWarnWithoutMisreportingCookieAvailability()
 	{
 		$tree = $this->treeWithList($this->listStamped(time()));
-		foreach (array('checkdate', 'gmmktime', 'gmdate', 'intdiv') as $disabled) {
+		foreach (['checkdate', 'gmmktime', 'gmdate', 'intdiv'] as $disabled) {
 			$line = $this->listLine($tree, $status, $disabled);
 			$this->assertTrue(strpos($line, '[WARN] Public Suffix List') === 0
 				&& strpos($line, 'age cannot be read') !== false,
@@ -307,5 +222,90 @@ class EnvCheckPublicSuffixListTest extends TestCase
 			. gmdate('Y-m-d', Requirements::publicSuffixListDate(
 				file_get_contents($this->root . '/php/public_suffix_list.dat')))) !== false,
 			'The checker names the date the shipped list was published: ' . $line);
+	}
+
+	// ---- the checker, run for real ----------------------------------------
+
+	/** The bundled list with its stamp replaced, or with no stamp at all. */
+	private function listStamped($timestamp)
+	{
+		$data = @file_get_contents($this->root . '/php/public_suffix_list.dat');
+		if (!is_string($data)) { throw new RuntimeException('Could not read the bundled list'); }
+		$replacement = $timestamp === null ? '// (this copy carries no stamp)'
+			: '// VERSION: ' . gmdate('Y-m-d_H-i-s', $timestamp) . '_UTC';
+		$count = 0;
+		$data = preg_replace('~^// VERSION:.*$~m', $replacement, $data, 1, $count);
+		if ($count !== 1) { throw new RuntimeException('The bundled list has no single VERSION line'); }
+		return $data;
+	}
+
+	/**
+	 * A tree the checker runs in whose list belongs to the case. env_check.php
+	 * is copied because PHP resolves __DIR__ through a symlink, which would
+	 * send the checker back to the shipped list; everything the checker then
+	 * reads -- the configuration, the transport, the plugins -- is linked, so
+	 * only the dated file differs from the tree as it ships.
+	 */
+	private function treeWithList($contents)
+	{
+		$tree = sys_get_temp_dir() . '/rutorrent-psl-' . uniqid();
+		$this->trees[] = $tree;
+		if (!@mkdir($tree . '/php', 0700, true)) {
+			throw new RuntimeException('Could not create the checker tree'); }
+		foreach (['', 'php'] as $relative) {
+			$source = $relative === '' ? $this->root : $this->root . '/' . $relative;
+			$target = $relative === '' ? $tree : $tree . '/' . $relative;
+			foreach (scandir($source) as $entry) {
+				if (($entry === '.') || ($entry === '..')
+					|| ($relative === '' && ($entry === 'php' || $entry === 'env_check.php'))
+					|| ($relative === 'php' && in_array($entry, ['public_suffix_list.dat', 'publicsuffix.php'], true))) { continue; }
+				if (!@symlink($source . '/' . $entry, $target . '/' . $entry)) {
+					throw new RuntimeException('Could not link ' . $entry . ' into the checker tree'); }
+			}
+		}
+		if (!@copy($this->root . '/env_check.php', $tree . '/env_check.php')) {
+			throw new RuntimeException('Could not copy the checker into its tree'); }
+		// A synthetic date needs a matching fixture pin. Keep the real owner's
+		// validation and rule parser; corruption tests alter the data only after
+		// this independently prepared owner has been written.
+		$owner = file_get_contents($this->root . '/php/publicsuffix.php');
+		if ($contents !== null) {
+			$owner = preg_replace("/!== '[a-f0-9]{64}'/", "!== '" . hash('sha256', $contents) . "'", $owner, 1, $pins);
+			if ($pins !== 1) { throw new RuntimeException('The PSL owner has no single snapshot pin'); }
+		}
+		if (file_put_contents($tree . '/php/publicsuffix.php', $owner) !== strlen($owner)) {
+			throw new RuntimeException('Could not copy the PSL owner into its tree'); }
+		if ($contents !== null
+			&& @file_put_contents($tree . '/php/public_suffix_list.dat', $contents) !== strlen($contents)) {
+			throw new RuntimeException('Could not write the checker tree list'); }
+		return $tree;
+	}
+
+	/**
+	 * The checker's report and exit status. The SCGI address names a socket
+	 * that is never created, so the rtorrent probe fails at once instead of
+	 * waiting on whatever happens to listen on the runner.
+	 */
+	private function report($tree, &$status = null, $disabled = '')
+	{
+		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), [
+			'-d', 'variables_order=EGPCS', '-d', 'error_reporting=E_ALL',
+			'-d', 'display_errors=1', '-d', 'disable_functions=' . $disabled,
+			$tree . '/env_check.php']), ['env' => [
+			'RU_SCGI_HOST' => 'unix://' . $tree . '/absent.sock',
+			'RU_LOG_FILE' => $tree . '/errors.log']]);
+		$this->assertTrue(!$run['timedOut'], 'The checker finishes within the fixture deadline');
+		$status = $run['code'];
+		return $run['out'] . $run['err'];
+	}
+
+	/** The one rendered line an installer reads about the list. */
+	private function listLine($tree, &$status = null, $disabled = '')
+	{
+		$lines = [];
+		foreach (explode("\n", $this->report($tree, $status, $disabled)) as $line) {
+			if (strpos($line, 'Public Suffix List') !== false) { $lines[] = trim($line); } }
+		$this->assertEquals(1, count($lines), 'The checker reports the list exactly once');
+		return isset($lines[0]) ? $lines[0] : '';
 	}
 }

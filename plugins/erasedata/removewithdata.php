@@ -8,18 +8,18 @@
 require_once(dirname(__FILE__)."/presence.php");
 require_once(__DIR__."/../../php/utility/json.php");
 
-if(!defined('ERASEDATA_CLEANUP_NONE'))
-	define('ERASEDATA_CLEANUP_NONE', 'none');
-if(!defined('ERASEDATA_CLEANUP_READY'))
-	define('ERASEDATA_CLEANUP_READY', 'ready');
-if(!defined('ERASEDATA_CLEANUP_RETRY'))
-	define('ERASEDATA_CLEANUP_RETRY', 'retry');
-if(!defined('ERASEDATA_FILE_ALIAS_SAME'))
-	define('ERASEDATA_FILE_ALIAS_SAME', 1);
-if(!defined('ERASEDATA_FILE_ALIAS_DISTINCT'))
-	define('ERASEDATA_FILE_ALIAS_DISTINCT', 0);
-if(!defined('ERASEDATA_FILE_ALIAS_UNKNOWN'))
-	define('ERASEDATA_FILE_ALIAS_UNKNOWN', -1);
+if(!defined('ERASEDATA_CLEANUP_NONE')) {
+	define('ERASEDATA_CLEANUP_NONE', 'none'); }
+if(!defined('ERASEDATA_CLEANUP_READY')) {
+	define('ERASEDATA_CLEANUP_READY', 'ready'); }
+if(!defined('ERASEDATA_CLEANUP_RETRY')) {
+	define('ERASEDATA_CLEANUP_RETRY', 'retry'); }
+if(!defined('ERASEDATA_FILE_ALIAS_SAME')) {
+	define('ERASEDATA_FILE_ALIAS_SAME', 1); }
+if(!defined('ERASEDATA_FILE_ALIAS_DISTINCT')) {
+	define('ERASEDATA_FILE_ALIAS_DISTINCT', 0); }
+if(!defined('ERASEDATA_FILE_ALIAS_UNKNOWN')) {
+	define('ERASEDATA_FILE_ALIAS_UNKNOWN', -1); }
 
 // The shared file mode has exactly one owner, and it is filesystem.php: the
 // durable writer and the obligation store are built out of it and must not have
@@ -39,8 +39,8 @@ if(!function_exists('erasedataAcquireHashLock'))
 	{
 		$lockPath = $listPath.'/'.$hash.'.lock';
 		$lock = @fopen($lockPath, 'c');
-		if($lock === false)
-			return(false);
+		if($lock === false) {
+			return(false); }
 		erasedataRepairFileMode($lockPath);
 		$operation = LOCK_EX | ($nonBlocking ? LOCK_NB : 0);
 		if(!@flock($lock, $operation))
@@ -69,8 +69,8 @@ if(!function_exists('erasedataLoadTorrentSource'))
 	// Keep the metainfo lookup replaceable in the collector regression harness.
 	function erasedataLoadTorrentSource($hash)
 	{
-		if(!class_exists('rTorrent', false))
-			require_once(dirname(__FILE__)."/../../php/rtorrent.php");
+		if(!class_exists('rTorrent', false)) {
+			require_once(dirname(__FILE__)."/../../php/rtorrent.php"); }
 		return(rTorrent::getSource($hash));
 	}
 }
@@ -85,14 +85,14 @@ if(!function_exists('erasedataPhysicalRelativePath'))
 	// as session-copy-unreadable (N1, AUD-ESC S4).
 	function erasedataPhysicalRelativePath($components)
 	{
-		if(!is_array($components) || !count($components))
-			return(false);
-		$ret = array();
+		if(!is_array($components) || !count($components)) {
+			return(false); }
+		$ret = [];
 		foreach($components as $component)
 		{
 			if(!is_string($component) || $component === '' || $component === '.' || $component === '..'
-				|| strpos($component, "\0") !== false || strpos($component, '/') !== false)
-				return(false);
+				|| strpos($component, "\0") !== false || strpos($component, '/') !== false) {
+				return(false); }
 			$ret[] = $component;
 		}
 		return(implode('/', $ret));
@@ -111,42 +111,42 @@ if(!function_exists('erasedataPhysicalMetainfoPlan'))
 	{
 		$failure = 'plan-unavailable';
 		$canonicalHash = erasedataCanonicalHash($hash);
-		if($source === null)
-			$source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash);
+		if($source === null) {
+			$source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash); }
 		if($canonicalHash === false || !is_object($source) || !method_exists($source, 'hash_info')
 			|| !isset($source->info) || !is_array($source->info)
-			|| erasedataCanonicalHash($source->hash_info()) !== $canonicalHash)
-			return(false);
+			|| erasedataCanonicalHash($source->hash_info()) !== $canonicalHash) {
+			return(false); }
 		$failure = 'plan-invalid';
 		$info = $source->info;
 		$single = array_key_exists('length', $info);
 		$multi = array_key_exists('files', $info);
-		if($single === $multi)
-			return(false);
-		$relative = array();
-		$physical = array();
+		if($single === $multi) {
+			return(false); }
+		$relative = [];
+		$physical = [];
 		if($single)
 		{
 			if(!array_key_exists('name', $info)
-				|| ($path = erasedataPhysicalRelativePath(array($info['name']))) === false)
-				return(false);
+				|| ($path = erasedataPhysicalRelativePath([$info['name']])) === false) {
+				return(false); }
 			$relative[] = $path;
 			$physical[] = true;
 		}
 		else
 		{
-			if(!is_array($info['files']) || !count($info['files']))
-				return(false);
+			if(!is_array($info['files']) || !count($info['files'])) {
+				return(false); }
 			foreach($info['files'] as $file)
 			{
 				if(!is_array($file) || !array_key_exists('path', $file)
-					|| ($path = erasedataPhysicalRelativePath($file['path'])) === false)
-					return(false);
+					|| ($path = erasedataPhysicalRelativePath($file['path'])) === false) {
+					return(false); }
 				$padding = false;
 				if(array_key_exists('attr', $file))
 				{
-					if(!is_string($file['attr']))
-						return(false);
+					if(!is_string($file['attr'])) {
+						return(false); }
 					$padding = strpos($file['attr'], 'p') !== false;
 				}
 				$relative[] = $path;
@@ -154,7 +154,7 @@ if(!function_exists('erasedataPhysicalMetainfoPlan'))
 			}
 		}
 		$failure = null;
-		return(array('multi' => $multi ? 1 : 0, 'relative' => $relative, 'physical' => $physical));
+		return(['multi' => $multi ? 1 : 0, 'relative' => $relative, 'physical' => $physical]);
 	}
 }
 
@@ -162,10 +162,10 @@ if(!function_exists('erasedataPhysicalMultiValue'))
 {
 	function erasedataPhysicalMultiValue($value)
 	{
-		if($value === 0 || $value === '0' || $value === false)
-			return(0);
-		if($value === 1 || $value === '1' || $value === true)
-			return(1);
+		if($value === 0 || $value === '0' || $value === false) {
+			return(0); }
+		if($value === 1 || $value === '1' || $value === true) {
+			return(1); }
 		return(false);
 	}
 }
@@ -180,12 +180,12 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 		$types = $request->responseCommandTypes;
 		$rows = $request->stringTable(1, 2);
 		if(!is_array($values) || !is_array($types) || count($values) !== 3 || count($types) !== 3
-			|| !in_array($types[0], array('string', 'base64'), true) || !is_string($values[0])
-			|| !in_array($types[1], array('i4', 'i8', 'int', 'boolean', 'string'), true)
-			|| !is_array($rows) || count($rows) !== $count)
-			return(false);
+			|| !in_array($types[0], ['string', 'base64'], true) || !is_string($values[0])
+			|| !in_array($types[1], ['i4', 'i8', 'int', 'boolean', 'string'], true)
+			|| !is_array($rows) || count($rows) !== $count) {
+			return(false); }
 		$multi = erasedataPhysicalMultiValue($values[1]);
-		return($multi === false ? false : array('base'=>$values[0], 'multi'=>$multi, 'rows'=>$rows));
+		return($multi === false ? false : ['base'=>$values[0], 'multi'=>$multi, 'rows'=>$rows]);
 	}
 
 	// $failure says why there is no answer: the plan's own reason
@@ -197,73 +197,73 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 	function erasedataCollectPhysicalPaths($hash, &$failure = null, $source = null)
 	{
 		$plan = erasedataPhysicalMetainfoPlan($hash, $failure, $source);
-		if($plan === false)
-			return(false);
+		if($plan === false) {
+			return(false); }
 		$failure = 'daemon-paths-unconfirmed';
 		$count = count($plan['relative']);
-		$frozen = new rXMLRPCRequest( array(
+		$frozen = new rXMLRPCRequest( [
 			new rXMLRPCCommand( getCmd("d.get_base_path"), $hash ),
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
-			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_frozen_path")."=") )
-		) );
+			new rXMLRPCCommand( getCmd("f.multicall"), [$hash, "", getCmd("f.get_frozen_path")."="] ),
+		] );
 		$frozenOk = $frozen->success();
 		$frozenReply = $frozenOk ? erasedataPhysicalPathReply($frozen, $count) : false;
-		if($frozenOk && ($frozenReply === false || $frozenReply['multi'] !== $plan['multi']))
-			return(false);
+		if($frozenOk && ($frozenReply === false || $frozenReply['multi'] !== $plan['multi'])) {
+			return(false); }
 		$frozenBase = $frozenOk ? $frozenReply['base'] : '';
 
-		$stored = new rXMLRPCRequest( array(
+		$stored = new rXMLRPCRequest( [
 			new rXMLRPCCommand( getCmd("d.get_directory"), $hash ),
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
-			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_path")."=") )
-		) );
-		if(!$stored->success())
-			return(false);
+			new rXMLRPCCommand( getCmd("f.multicall"), [$hash, "", getCmd("f.get_path")."="] ),
+		] );
+		if(!$stored->success()) {
+			return(false); }
 		$storedReply = erasedataPhysicalPathReply($stored, $count);
-		if($storedReply === false || $storedReply['multi'] !== $plan['multi'])
-			return(false);
+		if($storedReply === false || $storedReply['multi'] !== $plan['multi']) {
+			return(false); }
 		$directory = $storedReply['base'];
 		if(!is_string($directory) || $directory === '' || $directory[0] !== '/'
-			|| strpos($directory, "\0") !== false)
-			return(false);
+			|| strpos($directory, "\0") !== false) {
+			return(false); }
 		$directory = $directory === '/' ? '/' : rtrim($directory, '/');
-		if($directory === '')
-			return(false);
-		$storedFiles = array();
+		if($directory === '') {
+			return(false); }
+		$storedFiles = [];
 		for($index = 0; $index < $count; $index++)
 		{
 			$path = $storedReply['rows'][$index][0];
 			// Metadata supplies the layout and padding flags, while the daemon
 			// owns selected aliases and operator-renamed file paths by index.
-			if(!is_string($path) || erasedataPhysicalRelativePath(explode('/', $path)) !== $path)
-				return(false);
+			if(!is_string($path) || erasedataPhysicalRelativePath(explode('/', $path)) !== $path) {
+				return(false); }
 			$storedFiles[] = ($directory === '/' ? '/' : $directory.'/').$path;
 		}
 
-		$frozenFiles = array();
+		$frozenFiles = [];
 		$useFrozen = $frozenOk;
 		if($frozenOk)
 		{
 			$expectedBase = $plan['multi'] ? $directory : $storedFiles[0];
-			if($frozenBase !== '' && $frozenBase !== $expectedBase)
-				return(false);
+			if($frozenBase !== '' && $frozenBase !== $expectedBase) {
+				return(false); }
 			for($index = 0; $index < $count; $index++)
 			{
 				$path = $frozenReply['rows'][$index][0];
 				if(!is_string($path) || strpos($path, "\0") !== false
-					|| ($path !== '' && $path[0] !== '/'))
-					return(false);
+					|| ($path !== '' && $path[0] !== '/')) {
+					return(false); }
 				$expectedPath = $storedFiles[$index];
-				if($path !== '' && ($frozenBase === '' || $path !== $expectedPath))
-					return(false);
+				if($path !== '' && ($frozenBase === '' || $path !== $expectedPath)) {
+					return(false); }
 				$frozenFiles[] = $path;
-				if($plan['physical'][$index] && $path === '')
-					$useFrozen = false;
+				if($plan['physical'][$index] && $path === '') {
+					$useFrozen = false; }
 			}
 		}
-		$files = array();
-		$seen = array();
-		for($index = 0; $index < $count; $index++)
+		$files = [];
+		$seen = [];
+		for($index = 0; $index < $count; $index++) {
 			if($plan['physical'][$index])
 			{
 				$path = $useFrozen ? $frozenFiles[$index] : $storedFiles[$index];
@@ -273,13 +273,13 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 					$seen[$key] = true;
 					$files[] = $path;
 				}
-			}
+			} }
 		$failure = null;
-		return(array(
+		return([
 			'base' => $plan['multi'] ? $directory : $storedFiles[0],
 			'multi' => $plan['multi'] ? '1' : '0',
 			'files' => $files,
-		));
+		]);
 	}
 }
 
@@ -289,15 +289,15 @@ if(!function_exists('erasedataCollectPhysicalPaths'))
 // below its base and a single-file download's one file its base.
 function erasedataResolvedRemovalPaths($base, $multi, array $files)
 {
-	if(!ErasedataManifestCodec::isValidAbsolutePath($base) || rtrim($base, '/') === '' || !count($files))
-		return(false);
+	if(!ErasedataManifestCodec::isValidAbsolutePath($base) || rtrim($base, '/') === '' || !count($files)) {
+		return(false); }
 	$prefix = rtrim($base, '/').'/';
-	foreach($files as $file)
+	foreach($files as $file) {
 		if(!ErasedataManifestCodec::isValidAbsolutePath($file) || ($multi === '1'
 			? strpos($file, $prefix) !== 0 || strlen($file) === strlen($prefix)
-			: $files !== array($base)))
-			return(false);
-	return(array('base' => $base, 'multi' => $multi, 'files' => $files));
+			: $files !== [$base])) {
+			return(false); } }
+	return(['base' => $base, 'multi' => $multi, 'files' => $files]);
 }
 
 if(!function_exists('erasedataCollectPaths'))
@@ -318,44 +318,44 @@ if(!function_exists('erasedataCollectPaths'))
 	// erases a download whose files it cannot name.
 	function erasedataCollectPaths($hash, $physicalOnly = false)
 	{
-		if($physicalOnly)
-			return(erasedataCollectPhysicalPaths($hash));
+		if($physicalOnly) {
+			return(erasedataCollectPhysicalPaths($hash)); }
 		// rXMLRPCRequest flattens every returned value into ->val, so query one
 		// torrent per request, and keep the variable-length f.multicall last:
 		// val[0] = directory, val[1] = is_multi, val[2..] = each file path.
-		$frozen = new rXMLRPCRequest( array(
+		$frozen = new rXMLRPCRequest( [
 			new rXMLRPCCommand( getCmd("d.get_base_path"), $hash ),
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
-			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_frozen_path")."=") )
-		) );
+			new rXMLRPCCommand( getCmd("f.multicall"), [$hash, "", getCmd("f.get_frozen_path")."="] ),
+		] );
 		if($frozen->success() && count($frozen->val) >= 3)
 		{
-			$files = array();
-			foreach(array_slice($frozen->val, 2) as $path)
-				if($path !== '')
-					$files[] = $path;
-			if(count($files))
+			$files = [];
+			foreach(array_slice($frozen->val, 2) as $path) {
+				if($path !== '') {
+					$files[] = $path; } }
+			if(count($files)) {
 				return(erasedataResolvedRemovalPaths($frozen->val[0],
-					$frozen->val[1] ? "1" : "0", $files));
+					$frozen->val[1] ? "1" : "0", $files)); }
 		}
 
-		$stored = new rXMLRPCRequest( array(
+		$stored = new rXMLRPCRequest( [
 			new rXMLRPCCommand( getCmd("d.get_directory"), $hash ),
 			new rXMLRPCCommand( getCmd("d.is_multi_file"), $hash ),
-			new rXMLRPCCommand( getCmd("f.multicall"), array($hash, "", getCmd("f.get_path")."=") )
-		) );
-		if(!$stored->success() || count($stored->val) < 3 || !is_string($stored->val[0]))
-			return(false);
+			new rXMLRPCCommand( getCmd("f.multicall"), [$hash, "", getCmd("f.get_path")."="] ),
+		] );
+		if(!$stored->success() || count($stored->val) < 3 || !is_string($stored->val[0])) {
+			return(false); }
 		$dir = rtrim($stored->val[0], '/');
-		if(!strlen($dir))
-			return(false);
+		if(!strlen($dir)) {
+			return(false); }
 		$isMulti = $stored->val[1] ? "1" : "0";
-		$files = array();
-		foreach(array_slice($stored->val, 2) as $path)
-			if($path !== '')
-				$files[] = is_string($path) ? $dir.'/'.$path : false;
-		if(!count($files))
-			return(false);
+		$files = [];
+		foreach(array_slice($stored->val, 2) as $path) {
+			if($path !== '') {
+				$files[] = is_string($path) ? $dir.'/'.$path : false; } }
+		if(!count($files)) {
+			return(false); }
 		// d.directory is the download's root directory, which for a single-file
 		// torrent is the directory holding the file, not the file itself --
 		// d.base_path returns the file. Mirror that here.
@@ -374,26 +374,26 @@ require_once(dirname(__FILE__)."/native.php");
 function erasedataCleanupMetadataOnly($hash)
 {
 	$hash = erasedataCanonicalHash($hash);
-	if($hash === false) return(false);
+	if($hash === false) { return(false); }
 	$source = erasedataLoadTorrentSource($hash);
-	if(!is_object($source) || !property_exists($source, 'info'))
-		return(false);
+	if(!is_object($source) || !property_exists($source, 'info')) {
+		return(false); }
 	$info = $source->info;
 	// Only the exact captured envelope qualifies; the real loader never
 	// yields a source without info, so a missing dictionary is no stub.
 	if(!is_array($info) || count($info) !== 3
 		|| !isset($info['meta_download'], $info['name'], $info['pieces'])
 		// Torrent decodes bencoded integers as floats; strings remain invalid.
-		|| !in_array($info['meta_download'], array(1, 1.0), true) || !is_string($info['name'])
+		|| !in_array($info['meta_download'], [1, 1.0], true) || !is_string($info['name'])
 		|| !rTorrent::isMetadataStubName($info['name'], $hash)
-		|| !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash)
-		return(false);
-	$probe = new rXMLRPCRequest(array(
+		|| !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash) {
+		return(false); }
+	$probe = new rXMLRPCRequest([
 		new rXMLRPCCommand(getCmd('d.is_meta'), $hash),
-		new rXMLRPCCommand(getCmd('d.hash'), $hash)));
+		new rXMLRPCCommand(getCmd('d.hash'), $hash)]);
 	$probe->important = false;
 	return($probe->success() && count($probe->val) === 2
-		&& in_array($probe->val[0], array(1, '1', true), true)
+		&& in_array($probe->val[0], [1, '1', true], true)
 		&& is_string($probe->val[1]) && strtoupper($probe->val[1]) === $hash);
 }
 
@@ -406,31 +406,31 @@ function erasedataCleanupMetadataOnly($hash)
 // owner's file went unclaimed (AUD-ESC-09 F2b, F3).
 function erasedataCleanupDaemonClaims($hash)
 {
-	$request = new rXMLRPCRequest(array(
+	$request = new rXMLRPCRequest([
 		new rXMLRPCCommand(getCmd('d.get_directory'), $hash),
-		new rXMLRPCCommand(getCmd('f.multicall'), array($hash, '',
-			getCmd('f.get_path').'=', getCmd('f.get_frozen_path').'='))));
+		new rXMLRPCCommand(getCmd('f.multicall'), [$hash, '',
+			getCmd('f.get_path').'=', getCmd('f.get_frozen_path').'='])]);
 	$request->important = false;
-	if(!$request->success() || !is_array($request->val) || count($request->val) % 2 !== 1)
-		return(false);
+	if(!$request->success() || !is_array($request->val) || count($request->val) % 2 !== 1) {
+		return(false); }
 	$directory = $request->val[0];
 	if(!is_string($directory) || $directory === '' || $directory[0] !== '/'
-		|| strpos($directory, "\0") !== false)
-		return(false);
+		|| strpos($directory, "\0") !== false) {
+		return(false); }
 	$directory = $directory === '/' ? '' : rtrim($directory, '/');
-	$files = array();
+	$files = [];
 	for($index = 1; $index < count($request->val); $index += 2)
 	{
 		$stored = $request->val[$index];
 		$frozen = $request->val[$index + 1];
 		if(!is_string($stored) || $stored === '' || $stored[0] === '/' || strpos($stored, "\0") !== false
-			|| !is_string($frozen) || strpos($frozen, "\0") !== false || ($frozen !== '' && $frozen[0] !== '/'))
-			return(false);
+			|| !is_string($frozen) || strpos($frozen, "\0") !== false || ($frozen !== '' && $frozen[0] !== '/')) {
+			return(false); }
 		$files[$directory.'/'.$stored] = true;
-		if($frozen !== '')
-			$files[$frozen] = true;
+		if($frozen !== '') {
+			$files[$frozen] = true; }
 	}
-	return(array('files' => array_keys($files)));
+	return(['files' => array_keys($files)]);
 }
 
 // A download without an exact payload plan -- its session copy is missing or
@@ -441,9 +441,9 @@ function erasedataCleanupDaemonClaims($hash)
 // Each is logged with the download's hash and its own reason (ACC-OWNB-04).
 function erasedataCleanupClaimWithoutPlan($hash, $failure, &$refusal = null)
 {
-	static $reported = array();
-	$reasons = array('plan-unavailable' => 'session-copy-unreadable',
-		'plan-invalid' => 'metainfo-paths-unusable');
+	static $reported = [];
+	$reasons = ['plan-unavailable' => 'session-copy-unreadable',
+		'plan-invalid' => 'metainfo-paths-unusable'];
 	$reason = isset($reasons[$failure]) ? $reasons[$failure] : 'daemon-paths-unconfirmed';
 	$owned = erasedataCleanupDaemonClaims($hash);
 	if($owned === false)
@@ -477,22 +477,22 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 		|| !is_string($marker) || !preg_match('/^[a-fA-F0-9]{32}$/D', $marker)
 		|| !is_string($record)
 		|| !preg_match('/^([a-fA-F0-9]{40})-(started|open|stopped)-([1-9][0-9]*)$/D',
-			$record, $parts) || strtoupper($parts[1]) !== $oldHash)
-		return(false);
+			$record, $parts) || strtoupper($parts[1]) !== $oldHash) {
+		return(false); }
 	$oldMarker = $newHash.'-'.$parts[2].'-'.$parts[3];
-	$scan = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', array('main',
+	$scan = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', ['main',
 		getCmd('d.get_hash='),
 		getCmd('d.get_custom=').'chk-replacement',
 		getCmd('d.get_custom=').'chk-replaces',
 		getCmd('d.get_custom=').'chk-replacing',
-		getCmd('d.get_custom=').'chk-reuse')));
+		getCmd('d.get_custom=').'chk-reuse']));
 	$scan->important = false;
-	if(!$scan->success() || !is_array($scan->val) || count($scan->val) % 5 !== 0)
-		return(false);
-	$seenHashes = array();
-	$paths = array();
-	$inodes = array();
-	$bindings = array();
+	if(!$scan->success() || !is_array($scan->val) || count($scan->val) % 5 !== 0) {
+		return(false); }
+	$seenHashes = [];
+	$paths = [];
+	$inodes = [];
+	$bindings = [];
 	for($index = 0; $index < count($scan->val); $index += 5)
 	{
 		$row = array_slice($scan->val, $index, 5);
@@ -500,45 +500,45 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 		if($hash === false || !is_string($row[0]) || strtoupper($row[0]) !== $hash
 			|| !is_string($row[1]) || !is_string($row[2]) || !is_string($row[3])
 			|| !is_string($row[4])
-			|| isset($seenHashes[$hash]))
-			return(false);
+			|| isset($seenHashes[$hash])) {
+			return(false); }
 		$seenHashes[$hash] = true;
 		if($hash === $oldHash && $row[1] === '' && $row[2] === ''
-			&& $row[3] === $oldMarker && $row[4] === '')
-			continue;
+			&& $row[3] === $oldMarker && $row[4] === '') {
+			continue; }
 		// An independently loaded successor keeps its own path and inode claims.
 		if($hash === $newHash && $row[1] === $marker && $row[2] === $record
-			&& $row[3] === '' && $row[4] === '')
-			continue;
+			&& $row[3] === '' && $row[4] === '') {
+			continue; }
 		$failure = null;
 		$owned = erasedataCollectPhysicalPaths($hash, $failure);
 		if(!is_array($owned) || !isset($owned['files']) || !is_array($owned['files']))
 		{
-			if(erasedataCleanupMetadataOnly($hash)) continue;
+			if(erasedataCleanupMetadataOnly($hash)) { continue; }
 			$owned = erasedataCleanupClaimWithoutPlan($hash, $failure, $refusal);
-			if($owned === false)
-				return(false);
+			if($owned === false) {
+				return(false); }
 		}
 		foreach($owned['files'] as $file)
 		{
 			$identity = erasedataPathIdentity($file);
-			if(!is_array($identity) || !isset($identity['path']))
-				return(false);
+			if(!is_array($identity) || !isset($identity['path'])) {
+				return(false); }
 			$key = "p\0".$identity['path'];
 			$paths[$key] = true;
-			if(!isset($bindings[$key])) $bindings[$key] = array();
+			if(!isset($bindings[$key])) { $bindings[$key] = []; }
 			$bindings[$key]["r\0".$file] = true;
 			if(!empty($identity['exists']))
 			{
-				if(!isset($identity['stat']['dev'], $identity['stat']['ino']))
-					return(false);
+				if(!isset($identity['stat']['dev'], $identity['stat']['ino'])) {
+					return(false); }
 				$inodes['i:'.$identity['stat']['dev'].':'.$identity['stat']['ino']] = true;
 			}
 		}
 	}
 	$refusal = null;
-	return(array('paths' => $paths, 'inodes' => $inodes,
-		'bindings' => $bindings));
+	return(['paths' => $paths, 'inodes' => $inodes,
+		'bindings' => $bindings]);
 }
 
 function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
@@ -546,11 +546,11 @@ function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
 	if(!is_array($snapshot) || !isset($snapshot['paths'], $snapshot['inodes'])
 		|| !is_array($snapshot['paths']) || !is_array($snapshot['inodes'])
 		|| !is_string($path) || !is_array($stat)
-		|| !isset($stat['dev'], $stat['ino']))
-		return('unknown');
+		|| !isset($stat['dev'], $stat['ino'])) {
+		return('unknown'); }
 	$identity = erasedataPathIdentity($path);
-	if(!is_array($identity) || !isset($identity['path']))
-		return('unknown');
+	if(!is_array($identity) || !isset($identity['path'])) {
+		return('unknown'); }
 	return(isset($snapshot['paths']["p\0".$identity['path']])
 		|| isset($snapshot['inodes']['i:'.$stat['dev'].':'.$stat['ino']])
 		? 'claimed' : 'unclaimed');
@@ -569,8 +569,8 @@ if(!function_exists('erasedataCleanupArtifactNameParts'))
 	// Shared filename grammar for collection and drain retirement/rearm.
 	function erasedataCleanupArtifactNameParts($name)
 	{
-		if(!is_string($name))
-			return(false);
+		if(!is_string($name)) {
+			return(false); }
 		return(preg_match('/^([0-9A-Fa-f]{40})\.cleanup\.([0-9]+)\.([A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)\.(list|tmp)$/D',
 			$name, $matches) === 1 ? $matches : false);
 	}
@@ -583,11 +583,11 @@ if(!function_exists('erasedataParseCollectorCandidate'))
 	function erasedataParseCollectorCandidate($listPath, $file, &$malformed = null)
 	{
 		$malformed = null;
-		if(!is_string($listPath) || !is_string($file) || $file === '' || strpos($file, '/') !== false)
-			return(false);
+		if(!is_string($listPath) || !is_string($file) || $file === '' || strpos($file, '/') !== false) {
+			return(false); }
 		$operation = false;
-		if(($matches = erasedataCleanupArtifactNameParts($file)) !== false)
-			$operation = ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE;
+		if(($matches = erasedataCleanupArtifactNameParts($file)) !== false) {
+			$operation = ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE; }
 		// The deployed remove-payload alternative is kept byte-for-byte as the
 		// second branch. The first is purely additive and exists because an
 		// admitted manifest carries its 16-lowercase-hex generation as the
@@ -601,7 +601,7 @@ if(!function_exists('erasedataParseCollectorCandidate'))
 		// would be invisible to the collector and its payload would never be
 		// deleted. Both alternatives are non-capturing, so $matches keeps its
 		// historic shape.
-		else if(preg_match('/^([0-9A-Fa-f]{40})(?:\.[0-9a-f]{16}\.[A-Za-z0-9._-]+|\.[0-9]+\.[A-Za-z0-9._-]+)?\.(list|tmp)$/D', $file, $matches))
+		elseif(preg_match('/^([0-9A-Fa-f]{40})(?:\.[0-9a-f]{16}\.[A-Za-z0-9._-]+|\.[0-9]+\.[A-Za-z0-9._-]+)?\.(list|tmp)$/D', $file, $matches))
 		{
 			// A `.tmp` that carries a 16-lowercase-hex generation right after the
 			// hash is LIVE drain staging: it is bound by a journal record, it is
@@ -622,42 +622,42 @@ if(!function_exists('erasedataParseCollectorCandidate'))
 			// The published form of the same job, `<hash>.<generation>.<token>.list`,
 			// is deliberately still a candidate: that IS the collector's work.
 			if($matches[count($matches) - 1] === 'tmp'
-				&& preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\./D', $file) === 1)
-				return(false);
+				&& preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\./D', $file) === 1) {
+				return(false); }
 			$operation = ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD;
 		}
-		else if(strlen($file) > 49 && substr($file, 40, 9) === '.cleanup.'
+		elseif(strlen($file) > 49 && substr($file, 40, 9) === '.cleanup.'
 			&& ($hash = erasedataCanonicalHash(substr($file, 0, 40))) !== false)
 		{
 			$lastDot = strrpos($file, '.');
-			$malformed = array(
+			$malformed = [
 				'hash' => $hash,
 				// uniqid('', true) contains a dot. Preserve every dotted unique
 				// component and remove only the malformed file's final suffix.
 				'stem' => $lastDot !== false && $lastDot > 48 ? substr($file, 0, $lastDot) : $file,
 				'path' => $listPath.'/'.$file,
 				'file' => $file,
-			);
+			];
 			return(false);
 		}
-		if($operation === false)
-			return(false);
+		if($operation === false) {
+			return(false); }
 		$path = $listPath.'/'.$file;
 		$stat = @lstat($path);
 		$regular = !is_link($path) && is_array($stat) && isset($stat['mode'])
 			&& (($stat['mode'] & 0170000) === 0100000);
-		if($operation === ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD && !$regular)
-			return(false);
-		$ret = array(
+		if($operation === ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD && !$regular) {
+			return(false); }
+		$ret = [
 			'hash' => strtoupper($matches[1]),
 			'operation' => $operation,
 			'path' => $path,
 			'type' => $matches[count($matches) - 1],
 			'stat' => $stat,
 			'regular' => $regular,
-		);
-		if($operation === ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE)
-			$ret['stem'] = strtoupper($matches[1]).'.cleanup.'.$matches[2].'.'.$matches[3];
+		];
+		if($operation === ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE) {
+			$ret['stem'] = strtoupper($matches[1]).'.cleanup.'.$matches[2].'.'.$matches[3]; }
 		return($ret);
 	}
 }
@@ -667,21 +667,21 @@ if(!function_exists('erasedataUnlinkExactStagedFile'))
 	function erasedataUnlinkExactStagedFile($path, $expectedStat, $revalidate = null,
 		?ErasedataFilesystemOps $filesystem = null)
 	{
-		if($filesystem === null)
-			$filesystem = new ErasedataFilesystemOps();
+		if($filesystem === null) {
+			$filesystem = new ErasedataFilesystemOps(); }
 		$identity = $filesystem->entryIdentity($path);
 		$current = $identity === false ? false : $identity['lstat'];
 		if(is_link($path) || !is_array($current) || !is_array($expectedStat)
 			|| !isset($current['dev'], $current['ino'], $current['mode'], $expectedStat['dev'], $expectedStat['ino'])
 			|| $current['dev'] !== $expectedStat['dev'] || $current['ino'] !== $expectedStat['ino']
-			|| (($current['mode'] & 0170000) !== 0100000))
-			return(false);
-		if(is_callable($revalidate) && !call_user_func($revalidate, $path, $expectedStat))
-			return(false);
+			|| (($current['mode'] & 0170000) !== 0100000)) {
+			return(false); }
+		if(is_callable($revalidate) && !call_user_func($revalidate, $path, $expectedStat)) {
+			return(false); }
 		$identity = $filesystem->entryIdentity($path);
 		$current = $identity === false ? false : $identity['lstat'];
-		if(is_link($path) || !is_array($current) || !erasedataSameStatIdentity($current, $expectedStat))
-			return(false);
+		if(is_link($path) || !is_array($current) || !erasedataSameStatIdentity($current, $expectedStat)) {
+			return(false); }
 		return($filesystem->unlink($path));
 	}
 }
@@ -691,21 +691,21 @@ if(!function_exists('erasedataWriteStagedManifest'))
 	function erasedataWriteStagedManifest($listPath, $hash, $contents, $tag = '')
 	{
 		$canonicalHash = erasedataCanonicalHash($hash);
-		if($canonicalHash === false || !is_string($listPath) || !is_dir($listPath) || !is_string($contents))
-			return(false);
+		if($canonicalHash === false || !is_string($listPath) || !is_dir($listPath) || !is_string($contents)) {
+			return(false); }
 		$manifest = ErasedataManifestCodec::decodeBytes($contents, $canonicalHash);
 		$expectedOperation = $tag === '' ? ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD
 			: ($tag === 'cleanup' ? ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE : false);
 		if($manifest === false || $expectedOperation === false || !isset($manifest['operation'])
-			|| $manifest['operation'] !== $expectedOperation)
-			return(false);
+			|| $manifest['operation'] !== $expectedOperation) {
+			return(false); }
 
 		$name = $canonicalHash.($tag === '' ? '.' : '.'.$tag.'.').getmypid().'.'.uniqid('', true).'.tmp';
 		$path = $listPath.'/'.$name;
 		$written = 0;
 		$handle = @fopen($path, 'x');
-		if($handle === false)
-			$written = false;
+		if($handle === false) {
+			$written = false; }
 		else
 		{
 			$length = strlen($contents);
@@ -726,8 +726,8 @@ if(!function_exists('erasedataWriteStagedManifest'))
 		if($written === false || $written !== strlen($contents) || is_link($path) || !is_file($path)
 			|| !is_array($stat) || !isset($stat['mode']) || (($stat['mode'] & 0170000) !== 0100000))
 		{
-			if(is_array($stat))
-				erasedataUnlinkExactStagedFile($path, $stat);
+			if(is_array($stat)) {
+				erasedataUnlinkExactStagedFile($path, $stat); }
 			return(false);
 		}
 		erasedataRepairFileMode($path);
@@ -736,11 +736,11 @@ if(!function_exists('erasedataWriteStagedManifest'))
 		if(is_link($path) || !is_file($path) || !is_array($stat) || !isset($stat['mode'])
 			|| (($stat['mode'] & 0170000) !== 0100000))
 		{
-			if(is_array($stat))
-				erasedataUnlinkExactStagedFile($path, $stat);
+			if(is_array($stat)) {
+				erasedataUnlinkExactStagedFile($path, $stat); }
 			return(false);
 		}
-		return(array('path' => $path, 'stat' => $stat));
+		return(['path' => $path, 'stat' => $stat]);
 	}
 }
 
@@ -750,8 +750,8 @@ if(!function_exists('erasedataPathContains'))
 	{
 		$parent = $parent === '/' ? '/' : rtrim((string)$parent, '/');
 		$path = $path === '/' ? '/' : rtrim((string)$path, '/');
-		if($parent === '' || $path === '')
-			return(false);
+		if($parent === '' || $path === '') {
+			return(false); }
 		return($parent === $path || ($parent !== '/' && strpos($path, $parent.'/') === 0));
 	}
 }
@@ -761,8 +761,8 @@ if(!function_exists('erasedataSameFilesystemEntry'))
 	function erasedataSameFilesystemEntry($expected, $current)
 	{
 		if(!is_array($expected) || !is_array($current)
-			|| empty($expected['exists']) || empty($current['exists']))
-			return(false);
+			|| empty($expected['exists']) || empty($current['exists'])) {
+			return(false); }
 		return($expected['lstat']['dev'] === $current['lstat']['dev']
 			&& $expected['lstat']['ino'] === $current['lstat']['ino']
 			&& $expected['stat']['dev'] === $current['stat']['dev']
@@ -774,8 +774,8 @@ if(!function_exists('erasedataPathsOverlap'))
 {
 	function erasedataPathsOverlap($left, $right)
 	{
-		if(erasedataPathContains($left, $right) || erasedataPathContains($right, $left))
-			return(true);
+		if(erasedataPathContains($left, $right) || erasedataPathContains($right, $left)) {
+			return(true); }
 		// The plugin's OWN identity owner, never the core resolver. This
 		// predicate is the deletion authorisation itself -- false means the
 		// collector may delete -- and the core resolver rebuilds an unresolved
@@ -787,12 +787,12 @@ if(!function_exists('erasedataPathsOverlap'))
 		$rightIdentity = erasedataPathIdentity($right);
 		// An existing name whose physical identity cannot be established is not
 		// safe deletion territory. Treat uncertainty as overlap (fail closed).
-		if($leftIdentity === false || $rightIdentity === false)
-			return(true);
+		if($leftIdentity === false || $rightIdentity === false) {
+			return(true); }
 		if(!empty($leftIdentity['exists']) && !empty($rightIdentity['exists'])
 			&& $leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
-			&& $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino'])
-			return(true);
+			&& $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino']) {
+			return(true); }
 		return(erasedataPathContains($leftIdentity['path'], $rightIdentity['path'])
 			|| erasedataPathContains($rightIdentity['path'], $leftIdentity['path']));
 	}
@@ -804,13 +804,13 @@ if(!function_exists('erasedataExactFileAlias'))
 	// separate directory-safety rule and must not satisfy a file obligation.
 	function erasedataExactFileAlias($leftIdentity, $rightIdentity)
 	{
-		if(!is_array($leftIdentity) || !is_array($rightIdentity))
-			return(ERASEDATA_FILE_ALIAS_UNKNOWN);
-		if(empty($leftIdentity['exists']) || empty($rightIdentity['exists']))
-			return(ERASEDATA_FILE_ALIAS_DISTINCT);
+		if(!is_array($leftIdentity) || !is_array($rightIdentity)) {
+			return(ERASEDATA_FILE_ALIAS_UNKNOWN); }
+		if(empty($leftIdentity['exists']) || empty($rightIdentity['exists'])) {
+			return(ERASEDATA_FILE_ALIAS_DISTINCT); }
 		if(!isset($leftIdentity['stat']['dev'], $leftIdentity['stat']['ino'],
-			$rightIdentity['stat']['dev'], $rightIdentity['stat']['ino']))
-			return(ERASEDATA_FILE_ALIAS_UNKNOWN);
+			$rightIdentity['stat']['dev'], $rightIdentity['stat']['ino'])) {
+			return(ERASEDATA_FILE_ALIAS_UNKNOWN); }
 		return($leftIdentity['stat']['dev'] === $rightIdentity['stat']['dev']
 			&& $leftIdentity['stat']['ino'] === $rightIdentity['stat']['ino']
 			? ERASEDATA_FILE_ALIAS_SAME : ERASEDATA_FILE_ALIAS_DISTINCT);
@@ -832,15 +832,15 @@ if(!function_exists('erasedataReadExactCleanupArtifact'))
 		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'unreadable-manifest';
-		if($filesystem === null)
-			$filesystem = new ErasedataFilesystemOps();
+		if($filesystem === null) {
+			$filesystem = new ErasedataFilesystemOps(); }
 		if(!is_array($candidate) || !isset($candidate['operation'], $candidate['type'], $candidate['path'], $candidate['stat'])
 			|| $candidate['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE
-			|| $candidate['type'] !== $type || empty($candidate['regular']))
-			return(false);
+			|| $candidate['type'] !== $type || empty($candidate['regular'])) {
+			return(false); }
 		$handle = @fopen($candidate['path'], 'rb');
-		if($handle === false)
-			return(false);
+		if($handle === false) {
+			return(false); }
 		$handleStat = @fstat($handle);
 		$pathIdentity = $filesystem->entryIdentity($candidate['path']);
 		$pathStat = $pathIdentity === false ? false : $pathIdentity['lstat'];
@@ -855,25 +855,25 @@ if(!function_exists('erasedataReadExactCleanupArtifact'))
 			|| !erasedataSameStatIdentity($candidate['stat'], $pathStat)
 			|| !erasedataSameStatIdentity($candidate['stat'], $afterHandleStat)
 			|| !erasedataSameStatIdentity($candidate['stat'], $afterPathStat)
-			|| !isset($afterPathStat['mode']) || (($afterPathStat['mode'] & 0170000) !== 0100000))
-			return(false);
+			|| !isset($afterPathStat['mode']) || (($afterPathStat['mode'] & 0170000) !== 0100000)) {
+			return(false); }
 		$candidate['stat'] = $afterPathStat;
 		$reason = null;
-		return(array('candidate' => $candidate, 'bytes' => $bytes));
+		return(['candidate' => $candidate, 'bytes' => $bytes]);
 	}
 
 	function erasedataReadExactCleanupArtifact($candidate, $hash = null, &$reason = null,
 		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'unreadable-manifest';
-		if(!is_string($hash))
-			return(false);
+		if(!is_string($hash)) {
+			return(false); }
 		$read = erasedataReadExactCleanupFile($candidate, 'tmp', $reason, $filesystem);
-		if($read === false)
-			return(false);
+		if($read === false) {
+			return(false); }
 		$manifest = ErasedataManifestCodec::decodeBytes($read['bytes'], $hash);
-		if($manifest === false || !isset($manifest['operation']))
-			return(false);
+		if($manifest === false || !isset($manifest['operation'])) {
+			return(false); }
 		if($manifest['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE)
 		{
 			$reason = 'generation-mismatch';
@@ -893,10 +893,10 @@ if(!function_exists('erasedataReadExactCleanupToken'))
 		$reason = 'unreadable-manifest';
 		$read = erasedataReadExactCleanupFile($candidate, 'list', $reason, $filesystem);
 		if($read === false || $read['bytes'] !== '' || !isset($read['candidate']['stat']['size'])
-			|| $read['candidate']['stat']['size'] != 0)
-			return(false);
+			|| $read['candidate']['stat']['size'] != 0) {
+			return(false); }
 		$reason = null;
-		return(array('candidate' => $read['candidate']));
+		return(['candidate' => $read['candidate']]);
 	}
 }
 
@@ -918,12 +918,12 @@ if(!function_exists('erasedataCleanupArtifactStillMatches'))
 	function erasedataCleanupArtifactStillMatches($artifact, $hash = null,
 		?ErasedataFilesystemOps $filesystem = null)
 	{
-		if(!is_array($artifact) || !isset($artifact['candidate']))
-			return(false);
+		if(!is_array($artifact) || !isset($artifact['candidate'])) {
+			return(false); }
 		$reason = null;
 		$current = erasedataReadExactCleanupArtifact($artifact['candidate'], $hash, $reason, $filesystem);
-		if($current === false)
-			return(false);
+		if($current === false) {
+			return(false); }
 		return(!isset($artifact['manifest']) || (isset($artifact['bytes'])
 			&& $current['manifest'] === $artifact['manifest'] && $current['bytes'] === $artifact['bytes']));
 	}
@@ -933,8 +933,8 @@ if(!function_exists('erasedataCleanupTokenStillMatches'))
 {
 	function erasedataCleanupTokenStillMatches($token, ?ErasedataFilesystemOps $filesystem = null)
 	{
-		if(!is_array($token) || !isset($token['candidate']))
-			return(false);
+		if(!is_array($token) || !isset($token['candidate'])) {
+			return(false); }
 		$reason = null;
 		return(erasedataReadExactCleanupToken($token['candidate'], $reason, $filesystem) !== false);
 	}
@@ -948,8 +948,8 @@ if(!function_exists('erasedataRepairExactCleanupTokenMode'))
 		$current = @lstat($path);
 		if(is_link($path) || !is_array($current) || !isset($current['mode'])
 			|| (($current['mode'] & 0170000) !== 0100000)
-			|| !erasedataSameStatIdentity($current, $expectedStat))
-			return(false);
+			|| !erasedataSameStatIdentity($current, $expectedStat)) {
+			return(false); }
 		erasedataRepairFileMode($path);
 		clearstatcache(true, $path);
 		$current = @lstat($path);
@@ -976,26 +976,26 @@ if(!function_exists('erasedataPublishExactStagedFile'))
 	function erasedataPublishExactStagedFile($tmpPath, $expectedStat, $listPath,
 		$expectedManifest = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
-		if($filesystem === null)
-			$filesystem = new ErasedataFilesystemOps();
+		if($filesystem === null) {
+			$filesystem = new ErasedataFilesystemOps(); }
 		$listDirectory = dirname($tmpPath);
 		$tmpCandidate = erasedataParseCollectorCandidate($listDirectory, basename($tmpPath));
 		if($tmpCandidate === false || $tmpCandidate['type'] !== 'tmp' || $tmpCandidate['path'] !== $tmpPath
-			|| $listPath !== substr($tmpPath, 0, -4).'.list')
-			return(false);
+			|| $listPath !== substr($tmpPath, 0, -4).'.list') {
+			return(false); }
 		$reason = null;
 		$tmp = erasedataReadExactCleanupArtifact($tmpCandidate, $tmpCandidate['hash'], $reason, $filesystem);
 		if($tmp === false || !erasedataSameStatIdentity($tmp['candidate']['stat'], $expectedStat)
-			|| ($expectedManifest !== null && $tmp['manifest'] !== $expectedManifest))
-			return(false);
+			|| ($expectedManifest !== null && $tmp['manifest'] !== $expectedManifest)) {
+			return(false); }
 		$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
 		if($listCandidate !== false && is_array($listCandidate['stat']))
 		{
 			$token = erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
-			if($token === false)
-				return(false);
-			if(!erasedataRepairExactCleanupTokenMode($listPath, $token['candidate']['stat']))
-				return(false);
+			if($token === false) {
+				return(false); }
+			if(!erasedataRepairExactCleanupTokenMode($listPath, $token['candidate']['stat'])) {
+				return(false); }
 			$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
 			$token = $listCandidate === false ? false
 				: erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
@@ -1003,11 +1003,11 @@ if(!function_exists('erasedataPublishExactStagedFile'))
 				$tmp, $token, $tmpCandidate['hash'], $filesystem));
 		}
 		if($filesystem->entryIdentity($listPath) !== false
-			|| !erasedataCleanupArtifactStillMatches($tmp, $tmpCandidate['hash'], $filesystem))
-			return(false);
+			|| !erasedataCleanupArtifactStillMatches($tmp, $tmpCandidate['hash'], $filesystem)) {
+			return(false); }
 		$handle = @fopen($listPath, 'x');
-		if($handle === false)
-			return(false);
+		if($handle === false) {
+			return(false); }
 		$tokenStat = @fstat($handle);
 		$tokenIdentity = $filesystem->entryIdentity($listPath);
 		$tokenPathStat = $tokenIdentity === false ? false : $tokenIdentity['lstat'];
@@ -1015,17 +1015,17 @@ if(!function_exists('erasedataPublishExactStagedFile'))
 		if(is_link($listPath) || !is_array($tokenStat) || !is_array($tokenPathStat)
 			|| !erasedataSameStatIdentity($tokenStat, $tokenPathStat)
 			|| !isset($tokenPathStat['mode'], $tokenPathStat['size'])
-			|| (($tokenPathStat['mode'] & 0170000) !== 0100000) || $tokenPathStat['size'] != 0)
-			return(false);
-		if(!erasedataRepairExactCleanupTokenMode($listPath, $tokenStat))
-			return(false);
+			|| (($tokenPathStat['mode'] & 0170000) !== 0100000) || $tokenPathStat['size'] != 0) {
+			return(false); }
+		if(!erasedataRepairExactCleanupTokenMode($listPath, $tokenStat)) {
+			return(false); }
 		clearstatcache(true, $listPath);
 		$listCandidate = erasedataParseCollectorCandidate($listDirectory, basename($listPath));
 		$token = $listCandidate === false ? false
 			: erasedataReadExactCleanupToken($listCandidate, $reason, $filesystem);
 		if($token === false || !erasedataSameStatIdentity($token['candidate']['stat'], $tokenStat)
-			|| !erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash'], $filesystem))
-			return(false);
+			|| !erasedataCleanupCommittedPairStillMatches($tmp, $token, $tmpCandidate['hash'], $filesystem)) {
+			return(false); }
 		$ret = erasedataCleanupCommittedPairStillMatches(
 			$tmp, $token, $tmpCandidate['hash'], $filesystem);
 		clearstatcache(true, $listPath);
@@ -1038,8 +1038,8 @@ if(!function_exists('erasedataCleanupTmpMatchesJob'))
 	function erasedataCleanupTmpMatchesJob($job)
 	{
 		if(!is_array($job) || !isset($job['tmp_path'], $job['tmp_stat']) || is_link($job['tmp_path'])
-			|| !is_file($job['tmp_path']))
-			return(false);
+			|| !is_file($job['tmp_path'])) {
+			return(false); }
 		clearstatcache(true, $job['tmp_path']);
 		$current = @lstat($job['tmp_path']);
 		return(is_array($current) && isset($current['mode']) && (($current['mode'] & 0170000) === 0100000)
@@ -1051,8 +1051,8 @@ if(!function_exists('erasedataReleaseObsoleteCleanupJob'))
 {
 	function erasedataReleaseObsoleteCleanupJob(&$job)
 	{
-		if(is_array($job) && isset($job['lock']))
-			erasedataReleaseHashLock($job['lock']);
+		if(is_array($job) && isset($job['lock'])) {
+			erasedataReleaseHashLock($job['lock']); }
 		$job = null;
 	}
 }
@@ -1065,8 +1065,8 @@ if(!function_exists('erasedataReadExactCleanupJob'))
 			$job['replacement_record'], $job['base'], $job['files'], $job['identities'], $job['tmp_path'],
 			$job['tmp_stat'], $job['list_path'], $job['lock'])
 			|| $job['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE
-			|| !is_resource($job['lock']))
-			return(false);
+			|| !is_resource($job['lock'])) {
+			return(false); }
 		$oldHash = erasedataCanonicalHash($job['old_hash']);
 		$newHash = erasedataCanonicalHash($job['new_hash']);
 		$listPath = erasedataQueuePath();
@@ -1076,21 +1076,21 @@ if(!function_exists('erasedataReadExactCleanupJob'))
 			|| $candidate === false || $candidate['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE
 			|| $candidate['hash'] !== $oldHash || $candidate['type'] !== 'tmp' || $candidate['path'] !== $job['tmp_path']
 			|| !erasedataSameStatIdentity($candidate['stat'], $job['tmp_stat'])
-			|| $job['list_path'] !== substr($job['tmp_path'], 0, -4).'.list')
-			return(false);
+			|| $job['list_path'] !== substr($job['tmp_path'], 0, -4).'.list') {
+			return(false); }
 		$artifact = erasedataReadExactCleanupArtifact($candidate, $oldHash);
 		if($artifact === false || !erasedataSameStatIdentity($artifact['candidate']['stat'], $job['tmp_stat'])
 			|| !erasedataCleanupTmpMatchesJob($job)
-			|| !isset($artifact['manifest']))
-			return(false);
+			|| !isset($artifact['manifest'])) {
+			return(false); }
 		$manifest = $artifact['manifest'];
 		if(!isset($manifest['operation'], $manifest['hash'], $manifest['new_hash'], $manifest['marker'], $manifest['replacement_record'])
 			|| $manifest['operation'] !== ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE
 			|| $manifest['hash'] !== $job['old_hash'] || $manifest['new_hash'] !== $job['new_hash']
 			|| $manifest['marker'] !== $job['marker'] || $manifest['replacement_record'] !== $job['replacement_record']
 			|| $manifest['base'] !== $job['base'] || $manifest['files'] !== $job['files']
-			|| $manifest['identities'] !== $job['identities'])
-			return(false);
+			|| $manifest['identities'] !== $job['identities']) {
+			return(false); }
 		return($manifest);
 	}
 }
@@ -1099,9 +1099,9 @@ if(!function_exists('erasedataReadExactCleanupJob'))
 // Preparation and post-ack arm share HTTP removal's actual-parent probe rule.
 function erasedataCleanupRenameReady($listPath, array $manifest, ErasedataFilesystemOps $filesystem)
 {
-	$probed = array();
-	return(erasedataRemovalRenameReady($listPath, array('base' => $manifest['base'],
-		'multi' => true, 'files' => $manifest['files']), $filesystem, $probed));
+	$probed = [];
+	return(erasedataRemovalRenameReady($listPath, ['base' => $manifest['base'],
+		'multi' => true, 'files' => $manifest['files']], $filesystem, $probed));
 }
 
 if(!function_exists('erasedataPrepareObsoleteCleanup'))
@@ -1111,16 +1111,16 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 	{
 		$canonicalOldHash = erasedataCanonicalHash($oldHash);
 		$canonicalNewHash = erasedataCanonicalHash($newHash);
-		if($canonicalOldHash === false || $canonicalNewHash === false)
-			return(false);
-		if(!count($entries))
-			return(null);
+		if($canonicalOldHash === false || $canonicalNewHash === false) {
+			return(false); }
+		if(!count($entries)) {
+			return(null); }
 		$listPath = erasedataQueuePath();
-		if(!erasedataEnsureQueueDirectory($listPath))
-			return(false);
+		if(!erasedataEnsureQueueDirectory($listPath)) {
+			return(false); }
 		$lock = erasedataAcquireHashLock($listPath, $canonicalOldHash);
-		if($lock === false)
-			return(false);
+		if($lock === false) {
+			return(false); }
 		$contents = ErasedataManifestCodec::encodeCleanupObsolete($canonicalOldHash, $canonicalNewHash, $marker,
 			$replacementRecord, $base, $entries);
 		if($contents === false)
@@ -1134,7 +1134,7 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 			erasedataReleaseHashLock($lock);
 			return(false);
 		}
-		if($filesystem === null) $filesystem = new ErasedataFilesystemOps();
+		if($filesystem === null) { $filesystem = new ErasedataFilesystemOps(); }
 		if(!erasedataCleanupRenameReady($listPath, $transaction, $filesystem))
 		{
 			erasedataReleaseHashLock($lock);
@@ -1149,7 +1149,7 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 			erasedataReleaseHashLock($lock);
 			return(false);
 		}
-		return(array(
+		return([
 			'operation' => ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE,
 			'old_hash' => $canonicalOldHash,
 			'new_hash' => $canonicalNewHash,
@@ -1162,7 +1162,7 @@ if(!function_exists('erasedataPrepareObsoleteCleanup'))
 			'tmp_stat' => $staged['stat'],
 			'list_path' => substr($staged['path'], 0, -4).'.list',
 			'lock' => $lock,
-		));
+		]);
 	}
 }
 
@@ -1268,9 +1268,9 @@ if(!function_exists('erasedataArmObsoleteCleanupRun'))
 			ErasedataFilesystemOps::reportRenameRefusal();
 			// A failed process/descriptor or generic errno does not prove a
 			// lasting capability refusal; retry those on the next normal tick.
-			$reason = in_array(ErasedataFilesystemOps::lastRenameRefusal(), array(
+			$reason = in_array(ErasedataFilesystemOps::lastRenameRefusal(), [
 				'rename-noreplace-unsupported', 'rename-noreplace-manifest-unavailable',
-				'rename-noreplace-manifest-invalid', 'rename-noreplace-helper-unavailable'), true)
+				'rename-noreplace-manifest-invalid', 'rename-noreplace-helper-unavailable'], true)
 				? 'cleanup-rename-capability' : 'cleanup-rename-unconfirmed';
 			erasedataDrainDiagnostic($log, $reason, $generation, 1,
 				'old-torrent-retained-replacement-retryable');
@@ -1284,13 +1284,13 @@ if(!function_exists('erasedataArmObsoleteCleanup'))
 {
 	function erasedataArmObsoleteCleanup($job, &$reason = null)
 	{
-		return(erasedataArmObsoleteCleanupRun(array(
+		return(erasedataArmObsoleteCleanupRun([
 			'listPath' => erasedataQueuePath(),
 			'user' => User::getUser(),
-			'log' => array('FileUtil', 'toLog'),
+			'log' => ['FileUtil', 'toLog'],
 			'ackTimeout' => ERASEDATA_DRAIN_ACK_TIMEOUT,
 			'ackPoll' => ERASEDATA_DRAIN_ACK_POLL,
-		), $job, $reason));
+		], $job, $reason));
 	}
 }
 
@@ -1300,19 +1300,19 @@ if(!function_exists('erasedataPublishObsoleteCleanup'))
 	{
 		try {
 			$manifest = erasedataReadExactCleanupJob($job);
-			if($manifest === false)
-				return(false);
+			if($manifest === false) {
+				return(false); }
 			$index = erasedataBuildCollectorIndex(erasedataQueuePath(),
 				$job['old_hash'], $filesystem);
 			$reason = null;
 			$artifacts = erasedataCleanupGenerationArtifacts($index, $job['old_hash'], $job['new_hash'], $job['marker'],
 				$job['replacement_record'], $reason, $filesystem);
 			if($artifacts === false || $artifacts === null || $artifacts['tmp']['candidate']['path'] !== $job['tmp_path']
-				|| !erasedataSameStatIdentity($artifacts['tmp']['candidate']['stat'], $job['tmp_stat']))
-				return(false);
-			if($artifacts['token'] !== null)
+				|| !erasedataSameStatIdentity($artifacts['tmp']['candidate']['stat'], $job['tmp_stat'])) {
+				return(false); }
+			if($artifacts['token'] !== null) {
 				return(erasedataCleanupCommittedPairStillMatches($artifacts['tmp'], $artifacts['token'],
-					$job['old_hash'], $filesystem));
+					$job['old_hash'], $filesystem)); }
 			return(erasedataPublishExactStagedFile($job['tmp_path'], $job['tmp_stat'],
 				$job['list_path'], $manifest, $filesystem));
 		} finally {
@@ -1326,8 +1326,8 @@ if(!function_exists('erasedataCancelObsoleteCleanup'))
 	function erasedataCancelObsoleteCleanup(&$job, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		try {
-			if(erasedataReadExactCleanupJob($job) === false)
-				return(false);
+			if(erasedataReadExactCleanupJob($job) === false) {
+				return(false); }
 			$index = erasedataBuildCollectorIndex(erasedataQueuePath(),
 				$job['old_hash'], $filesystem);
 			return(erasedataCancelObsoleteCleanupGenerationLocked(erasedataQueuePath(),
@@ -1354,21 +1354,21 @@ if(!function_exists('erasedataAnalyzeCleanupIndex'))
 	// Later operations re-read only their selected stem immediately before use.
 	function erasedataAnalyzeCleanupIndex($index, ?ErasedataFilesystemOps $filesystem = null)
 	{
-		if(!is_array($index))
-			return(false);
+		if(!is_array($index)) {
+			return(false); }
 		foreach($index as $hash => &$hashIndex)
 		{
-			if(!isset($hashIndex['cleanup']) || !is_array($hashIndex['cleanup']))
-				continue;
-			$transactions = array();
+			if(!isset($hashIndex['cleanup']) || !is_array($hashIndex['cleanup'])) {
+				continue; }
+			$transactions = [];
 			foreach($hashIndex['cleanup'] as $stem => &$items)
 			{
-				$tmpItems = isset($items['tmp']) && is_array($items['tmp']) ? $items['tmp'] : array();
-				$analysis = array(
+				$tmpItems = isset($items['tmp']) && is_array($items['tmp']) ? $items['tmp'] : [];
+				$analysis = [
 					'malformed' => !empty($items['malformed']),
 					'transaction_key' => null,
 					'duplicate' => false,
-				);
+				];
 				if(count($tmpItems) === 1)
 				{
 					$artifactReason = null;
@@ -1377,18 +1377,18 @@ if(!function_exists('erasedataAnalyzeCleanupIndex'))
 					if($artifact !== false && ($key = erasedataCleanupTransactionKey($artifact['manifest'])) !== false)
 					{
 						$analysis['transaction_key'] = $key;
-						if(!isset($transactions[$key]))
-							$transactions[$key] = array();
+						if(!isset($transactions[$key])) {
+							$transactions[$key] = []; }
 						$transactions[$key][] = $stem;
 					}
 				}
 				$items['analysis'] = $analysis;
 			}
 			unset($items);
-			foreach($transactions as $key => $stems)
-				if(count($stems) > 1)
-					foreach($stems as $stem)
-						$hashIndex['cleanup'][$stem]['analysis']['duplicate'] = true;
+			foreach($transactions as $key => $stems) {
+				if(count($stems) > 1) {
+					foreach($stems as $stem) {
+						$hashIndex['cleanup'][$stem]['analysis']['duplicate'] = true; } } }
 			$hashIndex['cleanup_transactions'] = $transactions;
 		}
 		unset($hashIndex);
@@ -1401,17 +1401,17 @@ if(!function_exists('erasedataBuildCollectorIndex'))
 	function erasedataBuildCollectorIndex($listPath, $onlyHash = null,
 		?ErasedataFilesystemOps $filesystem = null)
 	{
-		if($filesystem === null)
-			$filesystem = new ErasedataFilesystemOps();
-		$ret = array();
-		if(!is_string($listPath) || !is_dir($listPath))
-			return(false);
+		if($filesystem === null) {
+			$filesystem = new ErasedataFilesystemOps(); }
+		$ret = [];
+		if(!is_string($listPath) || !is_dir($listPath)) {
+			return(false); }
 		// Exactly one enumeration of the queue directory per index build, and it
 		// goes through the operations seam so a test can observe and script it
 		// without production carrying a probe of its own.
 		$files = $filesystem->scanDirectory($listPath);
-		if(!is_array($files))
-			return(false);
+		if(!is_array($files)) {
+			return(false); }
 		foreach($files as $file)
 		{
 			$malformed = null;
@@ -1421,25 +1421,25 @@ if(!function_exists('erasedataBuildCollectorIndex'))
 				if(is_array($malformed) && (is_null($onlyHash) || $malformed['hash'] === $onlyHash))
 				{
 					$hash = $malformed['hash'];
-					if(!isset($ret[$hash]))
-						$ret[$hash] = array('legacy' => array(), 'cleanup' => array());
+					if(!isset($ret[$hash])) {
+						$ret[$hash] = ['legacy' => [], 'cleanup' => []]; }
 					$stem = $malformed['stem'];
-					if(!isset($ret[$hash]['cleanup'][$stem]))
-						$ret[$hash]['cleanup'][$stem] = array('tmp' => array(), 'list' => array(), 'malformed' => array());
+					if(!isset($ret[$hash]['cleanup'][$stem])) {
+						$ret[$hash]['cleanup'][$stem] = ['tmp' => [], 'list' => [], 'malformed' => []]; }
 					$ret[$hash]['cleanup'][$stem]['malformed'][] = $malformed;
 				}
 				continue;
 			}
 			$hash = $candidate['hash'];
-			if(!is_null($onlyHash) && $hash !== $onlyHash)
-				continue;
-			if(!isset($ret[$hash]))
-				$ret[$hash] = array('legacy' => array(), 'cleanup' => array());
+			if(!is_null($onlyHash) && $hash !== $onlyHash) {
+				continue; }
+			if(!isset($ret[$hash])) {
+				$ret[$hash] = ['legacy' => [], 'cleanup' => []]; }
 			if($candidate['operation'] === ErasedataManifestCodec::OPERATION_CLEANUP_OBSOLETE)
 			{
 				$stem = $candidate['stem'];
-				if(!isset($ret[$hash]['cleanup'][$stem]))
-					$ret[$hash]['cleanup'][$stem] = array('tmp' => array(), 'list' => array(), 'malformed' => array());
+				if(!isset($ret[$hash]['cleanup'][$stem])) {
+					$ret[$hash]['cleanup'][$stem] = ['tmp' => [], 'list' => [], 'malformed' => []]; }
 				$ret[$hash]['cleanup'][$stem][$candidate['type']][] = $candidate;
 				continue;
 			}
@@ -1460,18 +1460,18 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 			$reason = 'unreadable-manifest';
 			return(false);
 		}
-		if(!isset($index[$oldHash]['cleanup']) || !is_array($index[$oldHash]['cleanup']))
-			return(null);
-		if(!isset($index[$oldHash]['cleanup_transactions']) || !is_array($index[$oldHash]['cleanup_transactions']))
-			$index = erasedataAnalyzeCleanupIndex($index, $filesystem);
+		if(!isset($index[$oldHash]['cleanup']) || !is_array($index[$oldHash]['cleanup'])) {
+			return(null); }
+		if(!isset($index[$oldHash]['cleanup_transactions']) || !is_array($index[$oldHash]['cleanup_transactions'])) {
+			$index = erasedataAnalyzeCleanupIndex($index, $filesystem); }
 		if($index === false || !isset($index[$oldHash]['cleanup_transactions']))
 		{
 			$reason = 'unreadable-manifest';
 			return(false);
 		}
 		$key = $newHash.'|'.$marker.'|'.$replacementRecord;
-		if(!isset($index[$oldHash]['cleanup_transactions'][$key]))
-			return(null);
+		if(!isset($index[$oldHash]['cleanup_transactions'][$key])) {
+			return(null); }
 		$stems = $index[$oldHash]['cleanup_transactions'][$key];
 		if(count($stems) !== 1 || !isset($index[$oldHash]['cleanup'][$stems[0]]))
 		{
@@ -1480,9 +1480,9 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 		}
 		$stem = $stems[0];
 		$items = $index[$oldHash]['cleanup'][$stem];
-		$analysis = isset($items['analysis']) && is_array($items['analysis']) ? $items['analysis'] : array();
-		$tmpItems = isset($items['tmp']) && is_array($items['tmp']) ? $items['tmp'] : array();
-		$tokenItems = isset($items['list']) && is_array($items['list']) ? $items['list'] : array();
+		$analysis = isset($items['analysis']) && is_array($items['analysis']) ? $items['analysis'] : [];
+		$tmpItems = isset($items['tmp']) && is_array($items['tmp']) ? $items['tmp'] : [];
+		$tokenItems = isset($items['list']) && is_array($items['list']) ? $items['list'] : [];
 		if(!empty($analysis['duplicate']) || !empty($analysis['malformed'])
 			|| count($tmpItems) !== 1 || count($tokenItems) > 1)
 		{
@@ -1512,7 +1512,7 @@ if(!function_exists('erasedataCleanupGenerationArtifacts'))
 				return(false);
 			}
 		}
-		return(array('tmp' => $tmp, 'token' => $token, 'stem' => $stem));
+		return(['tmp' => $tmp, 'token' => $token, 'stem' => $stem]);
 	}
 }
 
@@ -1521,11 +1521,11 @@ if(!function_exists('erasedataCleanupSuccessorMatches'))
 	function erasedataCleanupSuccessorMatches($newHash, $marker, $replacementRecord, &$reason = null)
 	{
 		$reason = 'generation-mismatch';
-		$probe = new rXMLRPCRequest(array(
+		$probe = new rXMLRPCRequest([
 			new rXMLRPCCommand(getCmd('d.hash'), $newHash),
-			new rXMLRPCCommand(getCmd('d.get_custom'), array($newHash, 'chk-replacement')),
-			new rXMLRPCCommand(getCmd('d.get_custom'), array($newHash, 'chk-replaces')),
-		));
+			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-replacement']),
+			new rXMLRPCCommand(getCmd('d.get_custom'), [$newHash, 'chk-replaces']),
+		]);
 		$probe->important = false;
 		if(!$probe->success() || $probe->fault || !is_array($probe->val) || count($probe->val) !== 3)
 		{
@@ -1533,8 +1533,8 @@ if(!function_exists('erasedataCleanupSuccessorMatches'))
 			return(false);
 		}
 		if(!is_string($probe->val[0]) || strcasecmp($probe->val[0], $newHash) !== 0
-			|| (string)$probe->val[1] !== $marker || (string)$probe->val[2] !== $replacementRecord)
-			return(false);
+			|| (string)$probe->val[1] !== $marker || (string)$probe->val[2] !== $replacementRecord) {
+			return(false); }
 		$reason = null;
 		return(true);
 	}
@@ -1546,8 +1546,8 @@ if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 		&$reason = null, $index = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		$reason = 'generation-mismatch';
-		if($index === null)
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
+		if($index === null) {
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem); }
 		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker,
 			$replacementRecord, $reason, $filesystem);
 		if($artifacts === false)
@@ -1578,8 +1578,8 @@ if(!function_exists('erasedataRecoverObsoleteCleanupLocked'))
 			$reason = 'rpc-unknown';
 			return(ERASEDATA_CLEANUP_RETRY);
 		}
-		if($oldPresence !== ERASEDATA_TORRENT_ABSENT)
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($oldPresence !== ERASEDATA_TORRENT_ABSENT) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		$successorReason = null;
 		if(!erasedataCleanupSuccessorMatches($newHash, $marker, $replacementRecord, $successorReason))
 		{
@@ -1603,17 +1603,17 @@ if(!function_exists('erasedataCancelObsoleteCleanupGenerationLocked'))
 	function erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash,
 		$marker, $replacementRecord, $index = null, ?ErasedataFilesystemOps $filesystem = null)
 	{
-		if($index === null)
-			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
+		if($index === null) {
+			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem); }
 		$reason = null;
 		$artifacts = erasedataCleanupGenerationArtifacts($index, $oldHash, $newHash, $marker,
 			$replacementRecord, $reason, $filesystem);
-		if($artifacts === false)
-			return(ERASEDATA_CLEANUP_RETRY);
-		if($artifacts === null)
-			return(ERASEDATA_CLEANUP_NONE);
-		if($artifacts['token'] !== null)
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($artifacts === false) {
+			return(ERASEDATA_CLEANUP_RETRY); }
+		if($artifacts === null) {
+			return(ERASEDATA_CLEANUP_NONE); }
+		if($artifacts['token'] !== null) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		$tmp = $artifacts['tmp'];
 		return(erasedataUnlinkExactStagedFile($tmp['candidate']['path'], $tmp['candidate']['stat'],
 			function() use ($tmp, $oldHash, $filesystem) {
@@ -1633,13 +1633,13 @@ if(!function_exists('erasedataRecoverObsoleteCleanup'))
 		$oldHash = erasedataCanonicalHash($oldHash);
 		$newHash = erasedataCanonicalHash($newHash);
 		$listPath = erasedataQueuePath();
-		if($oldHash === false || $newHash === false)
-			return(ERASEDATA_CLEANUP_RETRY);
-		if(!erasedataEnsureQueueDirectory($listPath))
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($oldHash === false || $newHash === false) {
+			return(ERASEDATA_CLEANUP_RETRY); }
+		if(!erasedataEnsureQueueDirectory($listPath)) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		$lock = erasedataAcquireHashLock($listPath, $oldHash);
-		if($lock === false)
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($lock === false) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		try {
 			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
 			return(erasedataRecoverObsoleteCleanupLocked($listPath, $oldHash, $newHash, $marker,
@@ -1657,13 +1657,13 @@ if(!function_exists('erasedataCancelObsoleteCleanupGeneration'))
 		$oldHash = erasedataCanonicalHash($oldHash);
 		$newHash = erasedataCanonicalHash($newHash);
 		$listPath = erasedataQueuePath();
-		if($oldHash === false || $newHash === false)
-			return(ERASEDATA_CLEANUP_RETRY);
-		if(!erasedataEnsureQueueDirectory($listPath))
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($oldHash === false || $newHash === false) {
+			return(ERASEDATA_CLEANUP_RETRY); }
+		if(!erasedataEnsureQueueDirectory($listPath)) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		$lock = erasedataAcquireHashLock($listPath, $oldHash);
-		if($lock === false)
-			return(ERASEDATA_CLEANUP_RETRY);
+		if($lock === false) {
+			return(ERASEDATA_CLEANUP_RETRY); }
 		try {
 			$index = erasedataBuildCollectorIndex($listPath, $oldHash, $filesystem);
 			return(erasedataCancelObsoleteCleanupGenerationLocked($listPath, $oldHash, $newHash, $marker,
@@ -1677,12 +1677,12 @@ if(!function_exists('erasedataCollectorCommand'))
 {
 	function erasedataCollectorCommand($user = null, $onlyHash = null)
 	{
-		if($user === null)
-			$user = User::getUser();
-		if(!is_string($user))
-			return(false);
-		if($onlyHash !== null && ($onlyHash = erasedataCanonicalHash($onlyHash)) === false)
-			return(false);
+		if($user === null) {
+			$user = User::getUser(); }
+		if(!is_string($user)) {
+			return(false); }
+		if($onlyHash !== null && ($onlyHash = erasedataCanonicalHash($onlyHash)) === false) {
+			return(false); }
 		$command = Utility::escapeShellArg(Utility::getPHP()).' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php').' '.Utility::escapeShellArg($user);
 		return($onlyHash === null ? $command : $command.' '.Utility::escapeShellArg($onlyHash));
 	}
@@ -1693,8 +1693,8 @@ if(!function_exists('erasedataCollectorScheduleCommand'))
 	function erasedataCollectorScheduleCommand($theSettings, $interval, $user = null)
 	{
 		$command = erasedataCollectorCommand($user);
-		if($command === false)
-			return(false);
+		if($command === false) {
+			return(false); }
 		return($theSettings->getAlignedScheduleCommand('erasedata', $interval,
 			getCmd('execute').'={sh,-c,'.$command.' &}'));
 	}
@@ -1731,10 +1731,10 @@ if(!function_exists('erasedataKickCollector'))
 	function erasedataKickCollector($oldHash)
 	{
 		$command = erasedataCollectorCommand(null, $oldHash);
-		if($command === false)
-			return(false);
-		$request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('execute.nothrow'), array('', 'sh', '-c',
-			$command.' </dev/null >/dev/null 2>&1 &')));
+		if($command === false) {
+			return(false); }
+		$request = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('execute.nothrow'), ['', 'sh', '-c',
+			$command.' </dev/null >/dev/null 2>&1 &']));
 		$request->important = false;
 		return($request->success() && !$request->fault);
 	}
@@ -1785,29 +1785,29 @@ if(!function_exists('erasedataKickCollector'))
 // (once it was). Nothing anywhere gives up on an obligation after N attempts.
 // ---------------------------------------------------------------------------
 
-if(!defined('ERASEDATA_DRAIN_STATE_VERSION'))
-	define('ERASEDATA_DRAIN_STATE_VERSION', 1);
+if(!defined('ERASEDATA_DRAIN_STATE_VERSION')) {
+	define('ERASEDATA_DRAIN_STATE_VERSION', 1); }
 // Dot-prefixed on purpose: the manifest grammar erasedataParseCollectorCandidate()
 // scans for never matches a leading dot, so the plugin's own control files can
 // never be mistaken for somebody's staged manifest.
-if(!defined('ERASEDATA_DRAIN_STATE_NAME'))
-	define('ERASEDATA_DRAIN_STATE_NAME', '.drain-state');
-if(!defined('ERASEDATA_DRAIN_STATE_LOCK_NAME'))
-	define('ERASEDATA_DRAIN_STATE_LOCK_NAME', '.drain-state.lock');
+if(!defined('ERASEDATA_DRAIN_STATE_NAME')) {
+	define('ERASEDATA_DRAIN_STATE_NAME', '.drain-state'); }
+if(!defined('ERASEDATA_DRAIN_STATE_LOCK_NAME')) {
+	define('ERASEDATA_DRAIN_STATE_LOCK_NAME', '.drain-state.lock'); }
 // A full journal of ERASEDATA_DRAIN_MAX_JOURNAL single-hash records is over a
 // megabyte, and grows with the queue path because every record spells its
 // member's staging path in full: measured at 1.15 MiB with a two-character
 // $listPath and 1.37 MiB with a full settings path. The ceiling keeps several
 // times that headroom and is still small enough that the state can never
 // become a memory ceiling of its own.
-if(!defined('ERASEDATA_DRAIN_STATE_MAX_BYTES'))
-	define('ERASEDATA_DRAIN_STATE_MAX_BYTES', 8388608);
+if(!defined('ERASEDATA_DRAIN_STATE_MAX_BYTES')) {
+	define('ERASEDATA_DRAIN_STATE_MAX_BYTES', 8388608); }
 // Cardinality caps. Exceeding one is a refusal, never an eviction: dropping an
 // active journal record to fit a bound would erase a download whose obligation
 // nothing was left to describe. Deliberately at or below the queue's own
 // ERASEDATA_PENDING_MAX_GENERATIONS, so the queue refuses first.
-if(!defined('ERASEDATA_DRAIN_MAX_JOURNAL'))
-	define('ERASEDATA_DRAIN_MAX_JOURNAL', 4095);
+if(!defined('ERASEDATA_DRAIN_MAX_JOURNAL')) {
+	define('ERASEDATA_DRAIN_MAX_JOURNAL', 4095); }
 // The diagnostic memory has to cover what the QUEUE can legally hold, not a
 // number chosen independently of it. It is what keeps an unchanged condition
 // from being reported again on the next tick, and the drain fires every
@@ -1836,42 +1836,42 @@ if(!defined('ERASEDATA_DRAIN_MAX_JOURNAL'))
 //
 // ERASEDATA_PENDING_MAX_GENERATIONS is in scope here: filesystem.php, required
 // above, requires pending.php.
-if(!defined('ERASEDATA_DRAIN_MAX_DIAGNOSTICS'))
+if(!defined('ERASEDATA_DRAIN_MAX_DIAGNOSTICS')) {
 	define('ERASEDATA_DRAIN_MAX_DIAGNOSTICS',
-		ERASEDATA_PENDING_MAX_GENERATIONS + ERASEDATA_DRAIN_MAX_JOURNAL + 8);
-if(!defined('ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES'))
-	define('ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES', 512);
-if(!defined('ERASEDATA_DRAIN_MAX_USER_BYTES'))
-	define('ERASEDATA_DRAIN_MAX_USER_BYTES', 255);
-if(!defined('ERASEDATA_DRAIN_ZERO_GENERATION'))
-	define('ERASEDATA_DRAIN_ZERO_GENERATION', '0000000000000000');
+		ERASEDATA_PENDING_MAX_GENERATIONS + ERASEDATA_DRAIN_MAX_JOURNAL + 8); }
+if(!defined('ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES')) {
+	define('ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES', 512); }
+if(!defined('ERASEDATA_DRAIN_MAX_USER_BYTES')) {
+	define('ERASEDATA_DRAIN_MAX_USER_BYTES', 255); }
+if(!defined('ERASEDATA_DRAIN_ZERO_GENERATION')) {
+	define('ERASEDATA_DRAIN_ZERO_GENERATION', '0000000000000000'); }
 // Never 'erasedata' alone: done.php removes the periodic erasedata<User> key
 // when the plugin is switched off, and the drain key must survive that.
-if(!defined('ERASEDATA_DRAIN_KEY_PREFIX'))
-	define('ERASEDATA_DRAIN_KEY_PREFIX', 'erasedata-drain');
+if(!defined('ERASEDATA_DRAIN_KEY_PREFIX')) {
+	define('ERASEDATA_DRAIN_KEY_PREFIX', 'erasedata-drain'); }
 // The drain tick is short because a public door waits for it: rTorrent starts
 // the guarded child on the next tick, and the producer that armed the schedule
 // cannot erase until that child has acknowledged the generation. Five seconds
 // gives the acknowledgement two chances inside a wait that still fits a default
 // max_execution_time, and the schedule is retired again as soon as the queue is
 // provably empty, so the tick is not a standing cost.
-if(!defined('ERASEDATA_DRAIN_INTERVAL'))
-	define('ERASEDATA_DRAIN_INTERVAL', 5);
-if(!defined('ERASEDATA_DRAIN_ACK_TIMEOUT'))
-	define('ERASEDATA_DRAIN_ACK_TIMEOUT', 11.0);
-if(!defined('ERASEDATA_DRAIN_ACK_POLL'))
-	define('ERASEDATA_DRAIN_ACK_POLL', 0.05);
+if(!defined('ERASEDATA_DRAIN_INTERVAL')) {
+	define('ERASEDATA_DRAIN_INTERVAL', 5); }
+if(!defined('ERASEDATA_DRAIN_ACK_TIMEOUT')) {
+	define('ERASEDATA_DRAIN_ACK_TIMEOUT', 11.0); }
+if(!defined('ERASEDATA_DRAIN_ACK_POLL')) {
+	define('ERASEDATA_DRAIN_ACK_POLL', 0.05); }
 
 // The worker admission lock. It is taken NONBLOCKING and it is taken AFTER the
 // acknowledgement: a tick that cannot get in has still told the producer that
 // the schedule really fires, which is the whole point of the acknowledgement.
-if(!defined('ERASEDATA_DRAIN_WORKER_LOCK_NAME'))
-	define('ERASEDATA_DRAIN_WORKER_LOCK_NAME', '.drain-worker.lock');
+if(!defined('ERASEDATA_DRAIN_WORKER_LOCK_NAME')) {
+	define('ERASEDATA_DRAIN_WORKER_LOCK_NAME', '.drain-worker.lock'); }
 // The pass lock the periodic collector already uses. The drain worker shares
 // it so a drain tick and a periodic sweep can never walk the same queue at
 // once; the drain worker takes it BLOCKING, the periodic pass keeps LOCK_NB.
-if(!defined('ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME'))
-	define('ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME', 'scheduler.lock');
+if(!defined('ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME')) {
+	define('ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME', 'scheduler.lock'); }
 // How many times ONE admission may re-enter the arm compare-and-swap before it
 // gives up.
 //
@@ -1889,15 +1889,15 @@ if(!defined('ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME'))
 // in one pass: the winner's arm is durable `armed` by then, and re-reading it
 // under the state lock is exactly the already-armed path a second removal on a
 // live queue has always taken.
-if(!defined('ERASEDATA_ADMISSION_ARM_ATTEMPTS'))
-	define('ERASEDATA_ADMISSION_ARM_ATTEMPTS', 3);
+if(!defined('ERASEDATA_ADMISSION_ARM_ATTEMPTS')) {
+	define('ERASEDATA_ADMISSION_ARM_ATTEMPTS', 3); }
 // One erase costs exactly three commands -- d.set_custom5, d.delete_tied,
 // d.erase -- for every member of the batch, in that order. The length of the
 // reply list is therefore the only thing that makes a member's outcome
 // INDIVIDUALLY known, so this constant is the whole arithmetic of invariant 2
 // and it must stay in step with every builder of that request.
-if(!defined('ERASEDATA_ERASE_COMMANDS_PER_HASH'))
-	define('ERASEDATA_ERASE_COMMANDS_PER_HASH', 3);
+if(!defined('ERASEDATA_ERASE_COMMANDS_PER_HASH')) {
+	define('ERASEDATA_ERASE_COMMANDS_PER_HASH', 3); }
 
 if(!function_exists('erasedataDrainScheduleKey'))
 {
@@ -1925,8 +1925,8 @@ if(!function_exists('erasedataDrainScheduleKey'))
 	{
 		if(!is_string($user)
 			|| strlen($user) > ERASEDATA_DRAIN_MAX_USER_BYTES
-			|| strpos($user, "\0") !== false)
-			return(false);
+			|| strpos($user, "\0") !== false) {
+			return(false); }
 		return(ERASEDATA_DRAIN_KEY_PREFIX.$user);
 	}
 }
@@ -1954,10 +1954,10 @@ if(!function_exists('erasedataDrainStateBelongsTo'))
 	// multi-user install once '' became a legitimate value.
 	function erasedataDrainStateBelongsTo($state, $user)
 	{
-		if(!is_array($state) || !isset($state['user']) || !is_string($user))
-			return(false);
-		if($state['user'] === $user)
-			return(true);
+		if(!is_array($state) || !isset($state['user']) || !is_string($user)) {
+			return(false); }
+		if($state['user'] === $user) {
+			return(true); }
 		return(isset($state['generation'], $state['acknowledged'], $state['phase'],
 				$state['journal'])
 			&& $state['user'] === ''
@@ -1972,8 +1972,8 @@ if(!function_exists('erasedataDrainStatePath'))
 {
 	function erasedataDrainStatePath($listPath)
 	{
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return(false);
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return(false); }
 		return($listPath.'/'.ERASEDATA_DRAIN_STATE_NAME);
 	}
 }
@@ -1990,15 +1990,15 @@ if(!function_exists('erasedataDefaultDrainState'))
 	// admits anything, so the two are never confused.
 	function erasedataDefaultDrainState()
 	{
-		return(array(
+		return([
 			'version' => ERASEDATA_DRAIN_STATE_VERSION,
 			'user' => '',
 			'generation' => ERASEDATA_DRAIN_ZERO_GENERATION,
 			'acknowledged' => ERASEDATA_DRAIN_ZERO_GENERATION,
 			'phase' => 'disarmed',
-			'journal' => array(),
-			'diagnostics' => array(),
-		));
+			'journal' => [],
+			'diagnostics' => [],
+		]);
 	}
 }
 
@@ -2006,7 +2006,7 @@ if(!function_exists('erasedataDrainStatePhases'))
 {
 	function erasedataDrainStatePhases()
 	{
-		return(array('disarmed', 'arming', 'armed', 'settled'));
+		return(['disarmed', 'arming', 'armed', 'settled']);
 	}
 }
 
@@ -2019,7 +2019,7 @@ if(!function_exists('erasedataDrainJournalPhases'))
 	// retained      -- admitted but unresolved, to be retried with no cap.
 	function erasedataDrainJournalPhases()
 	{
-		return(array('prepared', 'erase-started', 'published', 'retained'));
+		return(['prepared', 'erase-started', 'published', 'retained']);
 	}
 }
 
@@ -2031,28 +2031,28 @@ if(!function_exists('erasedataValidateDrainStaging'))
 	// a file belonging to another hash or another generation of the same hash.
 	function erasedataValidateDrainStaging($staging, $listPath, $hash, $generation)
 	{
-		$keys = array('path', 'dev', 'ino');
-		if(!is_array($staging) || count($staging) !== count($keys))
-			return(false);
-		foreach($keys as $key)
-			if(!array_key_exists($key, $staging))
-				return(false);
+		$keys = ['path', 'dev', 'ino'];
+		if(!is_array($staging) || count($staging) !== count($keys)) {
+			return(false); }
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $staging)) {
+				return(false); } }
 		$path = $staging['path'];
 		if(!is_string($path) || $path === ''
 			|| strlen($path) > ErasedataManifestCodec::MAX_PATH_BYTES
 			|| strpos($path, "\0") !== false
-			|| strpos($path, $listPath.'/') !== 0)
-			return(false);
+			|| strpos($path, $listPath.'/') !== 0) {
+			return(false); }
 		$name = substr($path, strlen($listPath) + 1);
 		// $hash and $generation are already proven to be [0-9A-F]{40} and
 		// [0-9a-f]{16}, so neither can carry a metacharacter into the pattern.
 		if(strpos($name, '/') !== false
-			|| preg_match('/^'.$hash.'\.'.$generation.'\.[A-Za-z0-9._-]+\.tmp$/D', $name) !== 1)
-			return(false);
-		foreach(array('dev', 'ino') as $key)
+			|| preg_match('/^'.$hash.'\.'.$generation.'\.[A-Za-z0-9._-]+\.tmp$/D', $name) !== 1) {
+			return(false); }
+		foreach(['dev', 'ino'] as $key) {
 			if(!is_int($staging[$key]) && !(is_string($staging[$key])
-				&& preg_match('/^-?[0-9]{1,20}$/D', $staging[$key]) === 1))
-				return(false);
+				&& preg_match('/^-?[0-9]{1,20}$/D', $staging[$key]) === 1)) {
+				return(false); } }
 		return(true);
 	}
 }
@@ -2065,24 +2065,24 @@ if(!function_exists('erasedataValidateDrainJournalEntry'))
 	// no unknown key, fail closed.
 	function erasedataValidateDrainJournalEntry($entry, $listPath, $generation)
 	{
-		$keys = array('phase', 'force', 'hashes', 'staging');
-		if(!is_array($entry) || count($entry) !== count($keys))
-			return(false);
-		foreach($keys as $key)
-			if(!array_key_exists($key, $entry))
-				return(false);
+		$keys = ['phase', 'force', 'hashes', 'staging'];
+		if(!is_array($entry) || count($entry) !== count($keys)) {
+			return(false); }
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $entry)) {
+				return(false); } }
 		if(!is_string($entry['phase'])
-			|| !in_array($entry['phase'], erasedataDrainJournalPhases(), true))
-			return(false);
+			|| !in_array($entry['phase'], erasedataDrainJournalPhases(), true)) {
+			return(false); }
 		// Refused, not coerced: an unreadable force is not "delete the
 		// download's own files".
-		if($entry['force'] !== 1 && $entry['force'] !== 2)
-			return(false);
-		if(!is_array($entry['hashes']))
-			return(false);
+		if($entry['force'] !== 1 && $entry['force'] !== 2) {
+			return(false); }
+		if(!is_array($entry['hashes'])) {
+			return(false); }
 		$members = count($entry['hashes']);
-		if($members < 1 || $members > ERASEDATA_PENDING_MAX_MARKERS)
-			return(false);
+		if($members < 1 || $members > ERASEDATA_PENDING_MAX_MARKERS) {
+			return(false); }
 		$index = 0;
 		$previous = null;
 		foreach($entry['hashes'] as $key => $hash)
@@ -2091,17 +2091,17 @@ if(!function_exists('erasedataValidateDrainJournalEntry'))
 			// non-sequential key means the list was rewritten by something that
 			// did not understand it.
 			if($key !== $index++ || !erasedataIsCanonicalPendingHash($hash)
-				|| ($previous !== null && strcmp($hash, $previous) <= 0))
-				return(false);
+				|| ($previous !== null && strcmp($hash, $previous) <= 0)) {
+				return(false); }
 			$previous = $hash;
 		}
-		if(!is_array($entry['staging']) || count($entry['staging']) !== $members)
-			return(false);
-		foreach($entry['hashes'] as $hash)
+		if(!is_array($entry['staging']) || count($entry['staging']) !== $members) {
+			return(false); }
+		foreach($entry['hashes'] as $hash) {
 			if(!array_key_exists($hash, $entry['staging'])
 				|| !erasedataValidateDrainStaging($entry['staging'][$hash],
-					$listPath, $hash, $generation))
-				return(false);
+					$listPath, $hash, $generation)) {
+				return(false); } }
 		return(true);
 	}
 }
@@ -2113,53 +2113,53 @@ if(!function_exists('erasedataValidateDrainState'))
 	// must not be the basis of a decision to delete somebody's data.
 	function erasedataValidateDrainState($state, $listPath)
 	{
-		if(!is_array($state) || !is_string($listPath) || $listPath === '')
-			return(false);
-		$keys = array('version', 'user', 'generation', 'acknowledged', 'phase',
-			'journal', 'diagnostics');
+		if(!is_array($state) || !is_string($listPath) || $listPath === '') {
+			return(false); }
+		$keys = ['version', 'user', 'generation', 'acknowledged', 'phase',
+			'journal', 'diagnostics'];
 		// Older states have seven fields. The optional flags record a verified
 		// legacy marker and a rescue registration that may need retirement.
 		$optional = 0;
-		foreach(array('legacy_marker', 'legacy_rescue') as $flag)
+		foreach(['legacy_marker', 'legacy_rescue'] as $flag) {
 			if(array_key_exists($flag, $state))
 			{
-				if($state[$flag] !== true)
-					return(false);
+				if($state[$flag] !== true) {
+					return(false); }
 				$optional++;
-			}
+			} }
 		if(array_key_exists('native_retry',$state))
 		{
-			if(!erasedataNativeRetryValid($state['native_retry'])) return(false);
+			if(!erasedataNativeRetryValid($state['native_retry'])) { return(false); }
 			$optional++;
 		}
-		if(count($state) !== count($keys) + $optional)
-			return(false);
-		foreach($keys as $key)
-			if(!array_key_exists($key, $state))
-				return(false);
-		if($state['version'] !== ERASEDATA_DRAIN_STATE_VERSION)
-			return(false);
+		if(count($state) !== count($keys) + $optional) {
+			return(false); }
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $state)) {
+				return(false); } }
+		if($state['version'] !== ERASEDATA_DRAIN_STATE_VERSION) {
+			return(false); }
 		// '' is a legitimate user (see erasedataDrainScheduleKey): a queue whose
 		// owner is the single-user install's empty user must be writable and
 		// readable exactly like anybody else's.
 		if(!is_string($state['user'])
 			|| strlen($state['user']) > ERASEDATA_DRAIN_MAX_USER_BYTES
-			|| strpos($state['user'], "\0") !== false)
-			return(false);
+			|| strpos($state['user'], "\0") !== false) {
+			return(false); }
 		if(!erasedataGenerationIsValid($state['generation'])
-			|| !erasedataGenerationIsValid($state['acknowledged']))
-			return(false);
+			|| !erasedataGenerationIsValid($state['acknowledged'])) {
+			return(false); }
 		// An acknowledgement ahead of the generation it acknowledges is not a
 		// state this producer could have written.
 		if(erasedataGenerationCompare($state['acknowledged'], $state['generation']) !== -1
-			&& erasedataGenerationCompare($state['acknowledged'], $state['generation']) !== 0)
-			return(false);
+			&& erasedataGenerationCompare($state['acknowledged'], $state['generation']) !== 0) {
+			return(false); }
 		if(!is_string($state['phase'])
-			|| !in_array($state['phase'], erasedataDrainStatePhases(), true))
-			return(false);
+			|| !in_array($state['phase'], erasedataDrainStatePhases(), true)) {
+			return(false); }
 		if(!is_array($state['journal'])
-			|| count($state['journal']) > ERASEDATA_DRAIN_MAX_JOURNAL)
-			return(false);
+			|| count($state['journal']) > ERASEDATA_DRAIN_MAX_JOURNAL) {
+			return(false); }
 		foreach($state['journal'] as $generation => $entry)
 		{
 			// json_decode() hands back an int key for a generation that happens
@@ -2168,17 +2168,17 @@ if(!function_exists('erasedataValidateDrainState'))
 			if(!erasedataGenerationIsValid($generation)
 				|| erasedataGenerationCompare($generation, $state['generation']) === 1
 				|| erasedataGenerationCompare($generation, $state['generation']) === false
-				|| !erasedataValidateDrainJournalEntry($entry, $listPath, $generation))
-				return(false);
+				|| !erasedataValidateDrainJournalEntry($entry, $listPath, $generation)) {
+				return(false); }
 		}
 		if(!is_array($state['diagnostics'])
-			|| count($state['diagnostics']) > ERASEDATA_DRAIN_MAX_DIAGNOSTICS)
-			return(false);
+			|| count($state['diagnostics']) > ERASEDATA_DRAIN_MAX_DIAGNOSTICS) {
+			return(false); }
 		$index = 0;
-		foreach($state['diagnostics'] as $key => $line)
+		foreach($state['diagnostics'] as $key => $line) {
 			if($key !== $index++ || !is_string($line) || $line === ''
-				|| strlen($line) > ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES)
-				return(false);
+				|| strlen($line) > ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES) {
+				return(false); } }
 		return(true);
 	}
 }
@@ -2206,8 +2206,8 @@ if(!function_exists('erasedataDirectoryLookupsAnswer'))
 	// here repairs, grants or reports a mode.
 	function erasedataDirectoryLookupsAnswer($directory)
 	{
-		if(!is_string($directory) || $directory === '' || strpos($directory, "\0") !== false)
-			return(false);
+		if(!is_string($directory) || $directory === '' || strpos($directory, "\0") !== false) {
+			return(false); }
 		clearstatcache(true, $directory);
 		return(is_dir($directory) && is_executable($directory));
 	}
@@ -2216,8 +2216,8 @@ if(!function_exists('erasedataDirectoryLookupsAnswer'))
 	// has to permit the lookup before "$path is not there" may be believed.
 	function erasedataPathLookupAnswers($path)
 	{
-		if(!is_string($path) || $path === '' || strpos($path, "\0") !== false)
-			return(false);
+		if(!is_string($path) || $path === '' || strpos($path, "\0") !== false) {
+			return(false); }
 		$directory = dirname($path);
 		return($directory !== $path && erasedataDirectoryLookupsAnswer($directory));
 	}
@@ -2244,35 +2244,35 @@ if(!function_exists('erasedataReadDrainState'))
 	function erasedataReadDrainState($listPath)
 	{
 		$path = erasedataDrainStatePath($listPath);
-		if($path === false)
-			return(false);
+		if($path === false) {
+			return(false); }
 		clearstatcache(true, $path);
 		$bytes = ErasedataManifestCodec::readBoundedFile($path, ERASEDATA_DRAIN_STATE_MAX_BYTES);
 		if($bytes === false || $bytes === '')
 		{
 			clearstatcache(true, $path);
-			if($bytes === '' || file_exists($path) || is_link($path))
-				return(false);
+			if($bytes === '' || file_exists($path) || is_link($path)) {
+				return(false); }
 			// Nothing was found -- but only a lookup that could answer is allowed
 			// to turn that into "this queue has never been armed".
-			if(!erasedataPathLookupAnswers($path))
-				return(false);
+			if(!erasedataPathLookupAnswers($path)) {
+				return(false); }
 			return(erasedataDefaultDrainState());
 		}
-		if(strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES)
-			return(false);
+		if(strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES) {
+			return(false); }
 		$decoded = JSON::decodeBytes($bytes);
-		if(!is_array($decoded))
-			return(false);
+		if(!is_array($decoded)) {
+			return(false); }
 		if(!erasedataValidateDrainState($decoded, $listPath))
 		{
 			if(!array_key_exists('native_retry', $decoded)
-				|| erasedataNativeRetryValid($decoded['native_retry']))
-				return(false);
+				|| erasedataNativeRetryValid($decoded['native_retry'])) {
+				return(false); }
 			unset($decoded['native_retry']);
-			if(!erasedataValidateDrainState($decoded, $listPath))
-				return(false);
-			static $reported = array();
+			if(!erasedataValidateDrainState($decoded, $listPath)) {
+				return(false); }
+			static $reported = [];
 			if(!isset($reported[$path]))
 			{
 				$reported[$path] = true;
@@ -2292,12 +2292,12 @@ if(!function_exists('erasedataWriteDrainState'))
 	function erasedataWriteDrainState($listPath, array $state)
 	{
 		$path = erasedataDrainStatePath($listPath);
-		if($path === false || !erasedataValidateDrainState($state, $listPath))
-			return(false);
+		if($path === false || !erasedataValidateDrainState($state, $listPath)) {
+			return(false); }
 		$bytes = JSON::encodeBytes($state);
 		if(!is_string($bytes) || $bytes === ''
-			|| strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES)
-			return(false);
+			|| strlen($bytes) > ERASEDATA_DRAIN_STATE_MAX_BYTES) {
+			return(false); }
 		return(erasedataWriteDurableFile($path, $bytes) === true);
 	}
 }
@@ -2307,12 +2307,12 @@ if(!function_exists('erasedataAcquireDrainNamedLock'))
 	function erasedataAcquireDrainNamedLock($listPath, $name, $nonBlocking)
 	{
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
-			|| !is_string($name) || $name === '')
-			return(false);
+			|| !is_string($name) || $name === '') {
+			return(false); }
 		$path = $listPath.'/'.$name;
 		$handle = @fopen($path, 'c');
-		if($handle === false)
-			return(false);
+		if($handle === false) {
+			return(false); }
 		// Shared between the web user and whoever rTorrent runs the child as.
 		@chmod($path, erasedataSharedFileMode());
 		if(!@flock($handle, LOCK_EX | ($nonBlocking ? LOCK_NB : 0)))
@@ -2328,8 +2328,8 @@ if(!function_exists('erasedataReleaseDrainNamedLock'))
 {
 	function erasedataReleaseDrainNamedLock($handle)
 	{
-		if(!is_resource($handle))
-			return(false);
+		if(!is_resource($handle)) {
+			return(false); }
 		$released = @flock($handle, LOCK_UN);
 		return(@fclose($handle) === true && $released);
 	}
@@ -2360,11 +2360,11 @@ if(!function_exists('erasedataReleaseAdmissionLocks'))
 	// acquisition order is never inverted on the way out either.
 	function erasedataReleaseAdmissionLocks(&$stateLock, &$locks)
 	{
-		if(is_resource($stateLock))
-			erasedataReleaseDrainStateLock($stateLock);
+		if(is_resource($stateLock)) {
+			erasedataReleaseDrainStateLock($stateLock); }
 		$stateLock = null;
-		if(is_array($locks))
-			erasedataUnlockObligations($locks);
+		if(is_array($locks)) {
+			erasedataUnlockObligations($locks); }
 		$locks = null;
 	}
 }
@@ -2392,10 +2392,10 @@ if(!function_exists('erasedataAdmissionRefusalReason'))
 	function erasedataAdmissionRefusalReason($reason = null)
 	{
 		static $last = 'admission-refused';
-		if($reason !== null)
+		if($reason !== null) {
 			$last = is_string($reason)
 				&& preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $reason)
-				? $reason : 'admission-refused';
+				? $reason : 'admission-refused'; }
 		return($last);
 	}
 }
@@ -2424,23 +2424,23 @@ if(!function_exists('erasedataReportPartialRemovalRefusal'))
 	function erasedataReportPartialRemovalRefusal($result)
 	{
 		if(!is_array($result) || !isset($result['refused'])
-			|| !is_array($result['refused']))
-			return;
-		$counts = array('invalid-hash' => 0, 'descriptor-unavailable' => 0,
-			'unknown' => 0);
+			|| !is_array($result['refused'])) {
+			return; }
+		$counts = ['invalid-hash' => 0, 'descriptor-unavailable' => 0,
+			'unknown' => 0];
 		foreach($result['refused'] as $member)
 		{
-			if(is_string($member) && strpos($member, 'invalid-hash:') === 0)
-				$counts['invalid-hash']++;
-			else if(erasedataIsCanonicalPendingHash($member))
-				$counts['descriptor-unavailable']++;
-			else
-				$counts['unknown']++;
+			if(is_string($member) && strpos($member, 'invalid-hash:') === 0) {
+				$counts['invalid-hash']++; }
+			elseif(erasedataIsCanonicalPendingHash($member)) {
+				$counts['descriptor-unavailable']++; }
+			else {
+				$counts['unknown']++; }
 		}
-		foreach($counts as $reason => $members)
-			if($members)
+		foreach($counts as $reason => $members) {
+			if($members) {
 				FileUtil::toLog('erasedata: removewithdata partially refused: reason='
-					.$reason.' members='.$members);
+					.$reason.' members='.$members); } }
 	}
 }
 
@@ -2467,10 +2467,10 @@ if(!function_exists('erasedataDrainDiagnostic'))
 			.(erasedataIsCanonicalPendingHash($hash) ? ' hash='.$hash : '')
 			.(erasedataIsStagingObjectName($object) ? ' file='.$object : '')
 			.' consequence='.$consequence;
-		if(is_callable($log))
-			call_user_func($log, $message);
-		else
-			FileUtil::toLog($message);
+		if(is_callable($log)) {
+			call_user_func($log, $message); }
+		else {
+			FileUtil::toLog($message); }
 		return($message);
 	}
 }
@@ -2492,13 +2492,13 @@ if(!function_exists('erasedataAdmissionPartition'))
 	// footer-injection string reach a decision about which root to delete.
 	function erasedataAdmissionPartition($hashes, $force)
 	{
-		if($force !== 1 && $force !== 2)
-			return(false);
-		if(!is_array($hashes))
-			return(false);
-		$accepted = array();
-		$refused = array();
-		$seen = array();
+		if($force !== 1 && $force !== 2) {
+			return(false); }
+		if(!is_array($hashes)) {
+			return(false); }
+		$accepted = [];
+		$refused = [];
+		$seen = [];
 		foreach($hashes as $hash)
 		{
 			$canonical = erasedataCanonicalHash($hash);
@@ -2507,17 +2507,17 @@ if(!function_exists('erasedataAdmissionPartition'))
 				$refused[] = 'invalid-hash:'.gettype($hash);
 				continue;
 			}
-			if(isset($seen[$canonical]))
-				continue;
+			if(isset($seen[$canonical])) {
+				continue; }
 			$seen[$canonical] = true;
 			$accepted[] = $canonical;
 		}
 		sort($accepted, SORT_STRING);
-		return(array(
+		return([
 			'force' => $force,
 			'accepted' => $accepted,
 			'refused' => $refused,
-		));
+		]);
 	}
 }
 
@@ -2529,8 +2529,8 @@ if(!function_exists('erasedataDrainWorkerCommand'))
 	// quoted as a shell argument, because rTorrent hands this to sh.
 	function erasedataDrainWorkerCommand($user)
 	{
-		if(erasedataDrainScheduleKey($user) === false)
-			return(false);
+		if(erasedataDrainScheduleKey($user) === false) {
+			return(false); }
 		return(Utility::escapeShellArg(Utility::getPHP())
 			.' '.Utility::escapeShellArg(dirname(__FILE__).'/update.php')
 			.' '.Utility::escapeShellArg($user)
@@ -2580,12 +2580,12 @@ if(!function_exists('erasedataDrainScheduleCommand'))
 			: erasedataDrainScheduleKey($user);
 		$command = erasedataDrainWorkerCommand($user);
 		$interval = (int)$interval;
-		if($key === false || $command === false || $interval < 1)
-			return(false);
+		if($key === false || $command === false || $interval < 1) {
+			return(false); }
 		$start = rTorrentSettings::getAlignedStart($key, $interval);
-		return(new rXMLRPCCommand('schedule', array($key, (string)$start,
+		return(new rXMLRPCCommand('schedule', [$key, (string)$start,
 			(string)$interval,
-			getCmd('execute').'={sh,-c,'.$command.' </dev/null >/dev/null 2>&1 &}')));
+			getCmd('execute').'={sh,-c,'.$command.' </dev/null >/dev/null 2>&1 &}']));
 	}
 }
 
@@ -2613,8 +2613,8 @@ if(!function_exists('erasedataLegacyDrainVersion'))
 		$request->important = false;
 		if(!$request->success() || !is_array($request->val)
 			|| count($request->val) !== 1 || !is_string($request->val[0])
-			|| preg_match('/^[0-9]+(?:\.[0-9]+){2}$/D', $request->val[0]) !== 1)
-			return(null);
+			|| preg_match('/^[0-9]+(?:\.[0-9]+){2}$/D', $request->val[0]) !== 1) {
+			return(null); }
 		$version = $request->val[0];
 		return($version === '0.9.8'
 			|| (version_compare($version, '0.16.0', '>=')
@@ -2629,16 +2629,16 @@ if(!function_exists('erasedataLegacyDrainMarkerStatus'))
 	function erasedataLegacyDrainMarkerStatus($user)
 	{
 		$name = erasedataLegacyDrainMarkerName($user);
-		if($name === false)
-			return(null);
+		if($name === false) {
+			return(null); }
 		$request = new rXMLRPCRequest(new rXMLRPCCommand($name));
 		$request->important = false;
 		if($request->success() && is_array($request->val)
-			&& count($request->val) === 1 && (string)$request->val[0] === '1')
-			return(true);
+			&& count($request->val) === 1 && (string)$request->val[0] === '1') {
+			return(true); }
 		if($request->fault && isset($request->rawFaultString)
-			&& $request->rawFaultString === "Method '".$name."' not defined")
-			return(false);
+			&& $request->rawFaultString === "Method '".$name."' not defined") {
+			return(false); }
 		return(null);
 	}
 }
@@ -2648,13 +2648,13 @@ if(!function_exists('erasedataLegacyDrainMarkerEnsure'))
 	function erasedataLegacyDrainMarkerEnsure($user)
 	{
 		$status = erasedataLegacyDrainMarkerStatus($user);
-		if($status === true)
-			return(true);
-		if($status !== false)
-			return(false);
+		if($status === true) {
+			return(true); }
+		if($status !== false) {
+			return(false); }
 		$name = erasedataLegacyDrainMarkerName($user);
 		$request = new rXMLRPCRequest(new rXMLRPCCommand('system.method.insert',
-			array($name, 'value|const', '1')));
+			[$name, 'value|const', '1']));
 		$request->important = false;
 		return($request->success()
 			&& erasedataLegacyDrainMarkerStatus($user) === true);
@@ -2673,31 +2673,31 @@ if(!function_exists('erasedataStageAdmittedManifest'))
 	{
 		$canonical = erasedataCanonicalHash($hash);
 		if($canonical === false || !is_string($listPath) || !is_dir($listPath)
-			|| !is_string($contents) || !erasedataGenerationIsValid($generation))
-			return(false);
+			|| !is_string($contents) || !erasedataGenerationIsValid($generation)) {
+			return(false); }
 		$manifest = ErasedataManifestCodec::decodeBytes($contents, $canonical);
 		if($manifest === false || !isset($manifest['operation'])
-			|| $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD)
-			return(false);
+			|| $manifest['operation'] !== ErasedataManifestCodec::OPERATION_REMOVE_PAYLOAD) {
+			return(false); }
 		$pid = getmypid();
 		$path = $listPath.'/'.$canonical.'.'.$generation.'.'
 			.($pid === false ? '0' : (string)$pid).'.'.uniqid('', true).'.tmp';
 		clearstatcache(true, $path);
-		if(file_exists($path) || is_link($path))
-			return(false);
-		if(erasedataWriteDurableFile($path, $contents) !== true)
-			return(false);
+		if(file_exists($path) || is_link($path)) {
+			return(false); }
+		if(erasedataWriteDurableFile($path, $contents) !== true) {
+			return(false); }
 		clearstatcache(true, $path);
 		$stat = @lstat($path);
 		if(is_link($path) || !is_file($path) || !is_array($stat)
 			|| !isset($stat['mode'], $stat['dev'], $stat['ino'])
 			|| (($stat['mode'] & 0170000) !== 0100000))
 		{
-			if(is_array($stat))
-				erasedataUnlinkExactStagedFile($path, $stat);
+			if(is_array($stat)) {
+				erasedataUnlinkExactStagedFile($path, $stat); }
 			return(false);
 		}
-		return(array('path' => $path, 'stat' => $stat));
+		return(['path' => $path, 'stat' => $stat]);
 	}
 }
 
@@ -2711,18 +2711,18 @@ if(!function_exists('erasedataUnlinkAdmittedStaging'))
 	function erasedataUnlinkAdmittedStaging($record, ?ErasedataFilesystemOps $filesystem = null)
 	{
 		if(!is_array($record) || !isset($record['path'], $record['dev'], $record['ino'])
-			|| !is_string($record['path']))
-			return(false);
+			|| !is_string($record['path'])) {
+			return(false); }
 		$path = $record['path'];
 		clearstatcache(true, $path);
-		if(is_link($path) || !is_file($path))
-			return(false);
+		if(is_link($path) || !is_file($path)) {
+			return(false); }
 		$stat = @lstat($path);
 		if(!is_array($stat) || !isset($stat['dev'], $stat['ino'], $stat['mode'])
 			|| (($stat['mode'] & 0170000) !== 0100000)
 			|| (string)$stat['dev'] !== (string)$record['dev']
-			|| (string)$stat['ino'] !== (string)$record['ino'])
-			return(false);
+			|| (string)$stat['ino'] !== (string)$record['ino']) {
+			return(false); }
 		return(erasedataUnlinkExactStagedFile($path, $stat, null, $filesystem));
 	}
 }
@@ -2733,9 +2733,9 @@ if(!function_exists('erasedataRollbackAdmittedStaging'))
 		?ErasedataFilesystemOps $filesystem = null)
 	{
 		$rolled = true;
-		foreach($staging as $record)
-			if(!erasedataUnlinkAdmittedStaging($record, $filesystem))
-				$rolled = false;
+		foreach($staging as $record) {
+			if(!erasedataUnlinkAdmittedStaging($record, $filesystem)) {
+				$rolled = false; } }
 		return($rolled);
 	}
 }
@@ -2767,8 +2767,8 @@ if(!function_exists('erasedataPreparedBindingStillMatches'))
 			|| erasedataDrainScheduleKey($state['user']) !== erasedataDrainScheduleKey($user)
 			|| $state['phase'] !== 'armed'
 			|| !is_array($state['journal'])
-			|| !isset($state['journal'][$generation]))
-			return(false);
+			|| !isset($state['journal'][$generation])) {
+			return(false); }
 		$entry = $state['journal'][$generation];
 		if(!is_array($entry) || !isset($entry['phase'], $entry['force'],
 				$entry['hashes'], $entry['staging'])
@@ -2778,18 +2778,18 @@ if(!function_exists('erasedataPreparedBindingStillMatches'))
 			|| $entry['hashes'] !== $accepted
 			|| count($entry['hashes']) !== count($accepted)
 			|| !is_array($entry['staging'])
-			|| count($entry['staging']) !== count($accepted))
-			return(false);
+			|| count($entry['staging']) !== count($accepted)) {
+			return(false); }
 		foreach($accepted as $hash)
 		{
-			if(!isset($entry['staging'][$hash]['path']))
-				return(false);
+			if(!isset($entry['staging'][$hash]['path'])) {
+				return(false); }
 			$path = $entry['staging'][$hash]['path'];
-			if(!is_string($path) || strpos($path, $listPath.'/') !== 0)
-				return(false);
+			if(!is_string($path) || strpos($path, $listPath.'/') !== 0) {
+				return(false); }
 			// Admission and recovery must grant erase authority from the same bytes.
-			if(!erasedataStagingManifestStillMatches($entry['staging'][$hash], $hash, $force))
-				return(false);
+			if(!erasedataStagingManifestStillMatches($entry['staging'][$hash], $hash, $force)) {
+				return(false); }
 		}
 		return(true);
 	}
@@ -2830,29 +2830,29 @@ if(!function_exists('erasedataWaitForDrainAcknowledgement'))
 	function erasedataWaitForDrainAcknowledgement($listPath, $generation, $timeout, $poll,
 		$clock = null)
 	{
-		if($clock === null)
-			$clock = function() { return(array(microtime(true), hrtime(true) / 1000000000)); };
+		if($clock === null) {
+			$clock = function() { return([microtime(true), hrtime(true) / 1000000000]); }; }
 		$start = $clock();
 		$duration = $timeout > 0 ? (float)$timeout : 0.0;
 		$wallDeadline = $start[0] + $duration;
 		$monotonicDeadline = $start[1] + $duration;
 		$sleep = (int)($poll * 1000000);
-		if($sleep < 1000)
-			$sleep = 1000;
+		if($sleep < 1000) {
+			$sleep = 1000; }
 		while(true)
 		{
 			$state = erasedataReadDrainState($listPath);
 			$reached = is_array($state) && isset($state['acknowledged'])
 				? erasedataGenerationCompare($state['acknowledged'], $generation)
 				: false;
-			if($reached === 0 || $reached === 1)
-				return(true);
+			if($reached === 0 || $reached === 1) {
+				return(true); }
 			// rTorrent's scheduler uses wall time: a backward step can delay its
 			// tick. Require that clock AND elapsed monotonic time to expire, so
 			// a forward step cannot shorten the producer's acknowledgement window.
 			$now = $clock();
-			if($now[0] >= $wallDeadline && $now[1] >= $monotonicDeadline)
-				return(false);
+			if($now[0] >= $wallDeadline && $now[1] >= $monotonicDeadline) {
+				return(false); }
 			usleep($sleep);
 		}
 	}
@@ -2892,27 +2892,27 @@ if(!function_exists('erasedataPruneResolvedJournalRecords'))
 	function erasedataPruneResolvedJournalRecords($listPath, array $state,
 		&$abandoned = null)
 	{
-		$abandoned = array();
-		if(!isset($state['journal']) || !is_array($state['journal']))
-			return($state);
+		$abandoned = [];
+		if(!isset($state['journal']) || !is_array($state['journal'])) {
+			return($state); }
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return($state);
+		if(!is_array($entries)) {
+			return($state); }
 		$published = erasedataPublishedGenerations($entries);
-		$markers = array();
+		$markers = [];
 		foreach($entries as $entry)
 		{
 			$parts = explode('.', $entry);
 			if(count($parts) === 3 && $parts[2] === 'pending'
-				&& erasedataIsPendingHash($parts[0]))
-				$markers[strtoupper($parts[0]).'.'.$parts[1]] = true;
+				&& erasedataIsPendingHash($parts[0])) {
+				$markers[strtoupper($parts[0]).'.'.$parts[1]] = true; }
 		}
 		foreach($state['journal'] as $generation => $entry)
 		{
 			$generation = (string)$generation;
 			if(!is_array($entry) || !isset($entry['phase'], $entry['hashes'])
-				|| !is_array($entry['hashes']))
-				continue;
+				|| !is_array($entry['hashes'])) {
+				continue; }
 			$finished = true;
 			foreach($entry['hashes'] as $hash)
 			{
@@ -2921,21 +2921,21 @@ if(!function_exists('erasedataPruneResolvedJournalRecords'))
 				clearstatcache(true, is_string($path) ? $path : $listPath);
 				if((is_string($path) && (is_file($path) || is_link($path)))
 					|| isset($published[$hash][$generation])
-					|| isset($markers[$hash.'.'.$generation]))
-					$finished = false;
+					|| isset($markers[$hash.'.'.$generation])) {
+					$finished = false; }
 				// The published manifests and the markers above are read off the
 				// NAMES scandir() returned, so they are as complete as the listing
 				// is. The staging object is the one thing here decided by a stat of
 				// a child, and a stat that was refused says nothing about whether
 				// the object is still there. Dropping a record on that answer would
 				// forget a binding that still exists.
-				else if(is_string($path) && !erasedataPathLookupAnswers($path))
-					$finished = false;
+				elseif(is_string($path) && !erasedataPathLookupAnswers($path)) {
+					$finished = false; }
 			}
-			if(!$finished)
-				continue;
-			if($entry['phase'] !== 'published')
-				$abandoned[$generation] = $entry['phase'];
+			if(!$finished) {
+				continue; }
+			if($entry['phase'] !== 'published') {
+				$abandoned[$generation] = $entry['phase']; }
 			unset($state['journal'][$generation]);
 		}
 		return($state);
@@ -2967,11 +2967,11 @@ if(!function_exists('erasedataEraseRequest'))
 	// order the classifier counts positions in.
 	function erasedataEraseCommandsForHash($hash)
 	{
-		return(array(
-			new rXMLRPCCommand(getCmd('d.set_custom5'), array($hash, '')),
+		return([
+			new rXMLRPCCommand(getCmd('d.set_custom5'), [$hash, '']),
 			new rXMLRPCCommand(getCmd('d.delete_tied'), $hash),
 			new rXMLRPCCommand(getCmd('d.erase'), $hash),
-		));
+		]);
 	}
 
 	function erasedataEraseRequest(array $hashes)
@@ -2981,14 +2981,14 @@ if(!function_exists('erasedataEraseRequest'))
 		foreach($hashes as $hash)
 		{
 			$commands = erasedataEraseCommandsForHash($hash);
-			if(count($commands) !== ERASEDATA_ERASE_COMMANDS_PER_HASH)
-				return(false);
-			foreach($commands as $command)
-				$request->addCommand($command);
+			if(count($commands) !== ERASEDATA_ERASE_COMMANDS_PER_HASH) {
+				return(false); }
+			foreach($commands as $command) {
+				$request->addCommand($command); }
 			$sent += count($commands);
 		}
-		if($sent !== count($hashes) * ERASEDATA_ERASE_COMMANDS_PER_HASH)
-			return(false);
+		if($sent !== count($hashes) * ERASEDATA_ERASE_COMMANDS_PER_HASH) {
+			return(false); }
 		return($request);
 	}
 }
@@ -3033,12 +3033,12 @@ if(!function_exists('erasedataClassifyEraseOutcomes'))
 	// collapse to one outcome, so |outcome| is the canonical unique cardinality.
 	function erasedataClassifyEraseOutcomes(array $hashes, $request)
 	{
-		$order = array();
+		$order = [];
 		foreach($hashes as $hash)
 		{
 			$canonical = erasedataCanonicalHash($hash);
-			if($canonical !== false)
-				$order[$canonical] = true;
+			if($canonical !== false) {
+				$order[$canonical] = true; }
 		}
 		$replies = 0;
 		$faulted = true;
@@ -3048,7 +3048,7 @@ if(!function_exists('erasedataClassifyEraseOutcomes'))
 			$replies = isset($request->val) && is_array($request->val)
 				? count($request->val) : 0;
 		}
-		$outcome = array();
+		$outcome = [];
 		$position = 0;
 		foreach(array_keys($order) as $hash)
 		{
@@ -3072,12 +3072,12 @@ if(!function_exists('erasedataStagingIdentityStillMatches'))
 	function erasedataStagingIdentityStillMatches($record)
 	{
 		if(!is_array($record) || !isset($record['path'], $record['dev'], $record['ino'])
-			|| !is_string($record['path']) || $record['path'] === '')
-			return(false);
+			|| !is_string($record['path']) || $record['path'] === '') {
+			return(false); }
 		$path = $record['path'];
 		clearstatcache(true, $path);
-		if(is_link($path) || !is_file($path))
-			return(false);
+		if(is_link($path) || !is_file($path)) {
+			return(false); }
 		$stat = @lstat($path);
 		return(is_array($stat) && isset($stat['dev'], $stat['ino'], $stat['mode'])
 			&& (($stat['mode'] & 0170000) === 0100000)
@@ -3099,21 +3099,21 @@ if(!function_exists('erasedataStagingObjectIsGone'))
 	// "not there" for every one of them.
 	function erasedataStagingObjectIsGone($listPath, array $staging, $hash)
 	{
-		if(!erasedataDirectoryLookupsAnswer($listPath) || !is_readable($listPath))
-			return(false);
+		if(!erasedataDirectoryLookupsAnswer($listPath) || !is_readable($listPath)) {
+			return(false); }
 		if(isset($staging[$hash]))
 		{
 			$path = isset($staging[$hash]['path']) ? $staging[$hash]['path'] : null;
 			if(is_string($path) && $path !== '')
 			{
 				clearstatcache(true, $path);
-				if(file_exists($path) || is_link($path))
-					return(false);
+				if(file_exists($path) || is_link($path)) {
+					return(false); }
 				// A staging path of its own -- validation keeps these inside the
 				// queue, but the gate belongs to the path that was actually looked
 				// for, not to the directory it was assumed to be in.
-				if(!erasedataPathLookupAnswers($path))
-					return(false);
+				if(!erasedataPathLookupAnswers($path)) {
+					return(false); }
 			}
 		}
 		return(true);
@@ -3133,13 +3133,13 @@ if(!function_exists('erasedataStagingManifestStillMatches'))
 	// would leave its payload with nothing left to describe it.
 	function erasedataStagingManifestStillMatches($record, $hash, $force)
 	{
-		if(!erasedataStagingIdentityStillMatches($record))
-			return(false);
+		if(!erasedataStagingIdentityStillMatches($record)) {
+			return(false); }
 		$bytes = @file_get_contents($record['path'], false, null, 0,
 			ErasedataManifestCodec::MAX_MANIFEST_BYTES + 1);
 		if(!is_string($bytes)
-			|| strlen($bytes) > ErasedataManifestCodec::MAX_MANIFEST_BYTES)
-			return(false);
+			|| strlen($bytes) > ErasedataManifestCodec::MAX_MANIFEST_BYTES) {
+			return(false); }
 		$manifest = ErasedataManifestCodec::decodeBytes($bytes, $hash);
 		return(is_array($manifest) && isset($manifest['operation'], $manifest['force'])
 			&& empty($manifest['paths_ambiguous'])
@@ -3165,8 +3165,8 @@ if(!function_exists('erasedataPendingMarkerStands'))
 	function erasedataPendingMarkerStands($listPath, $hash, $generation)
 	{
 		$marker = erasedataPendingMarkerPath($listPath, $hash, $generation);
-		if(!is_string($marker))
-			return(true);
+		if(!is_string($marker)) {
+			return(true); }
 		clearstatcache(true, $marker);
 		return(file_exists($marker) || is_link($marker));
 	}
@@ -3185,11 +3185,11 @@ if(!function_exists('erasedataDischargePendingMarker'))
 	function erasedataDischargePendingMarker($listPath, $hash, $generation)
 	{
 		$marker = erasedataPendingMarkerPath($listPath, $hash, $generation);
-		if(!is_string($marker))
-			return(false);
+		if(!is_string($marker)) {
+			return(false); }
 		clearstatcache(true, $marker);
-		if(is_file($marker) || is_link($marker))
-			@unlink($marker);
+		if(is_file($marker) || is_link($marker)) {
+			@unlink($marker); }
 		clearstatcache(true, $marker);
 		return(!file_exists($marker) && !is_link($marker));
 	}
@@ -3203,18 +3203,18 @@ if(!function_exists('erasedataAcquireRemovalCapability'))
 	// dropping the download that could supply its file list again.
 	function erasedataAcquireRemovalCapability(array $paths, ErasedataFilesystemOps $filesystem)
 	{
-		if(empty($paths['multi']))
-			return(null);
+		if(empty($paths['multi'])) {
+			return(null); }
 		$base = isset($paths['base']) ? $paths['base'] : null;
-		if(!ErasedataManifestCodec::isValidAbsolutePath($base) || $base === '/')
-			return(false);
+		if(!ErasedataManifestCodec::isValidAbsolutePath($base) || $base === '/') {
+			return(false); }
 		$identity = $filesystem->targetIdentity($base);
-		if(!is_array($identity) || empty($identity['is_dir']))
-			return(false);
+		if(!is_array($identity) || empty($identity['is_dir'])) {
+			return(false); }
 		$reference = $filesystem->openDirectoryReference($base, $identity);
-		if(!is_array($reference))
-			return(false);
-		$capability = array('base' => $base, 'reference' => $reference);
+		if(!is_array($reference)) {
+			return(false); }
+		$capability = ['base' => $base, 'reference' => $reference];
 		if(!erasedataRemovalCapabilityStillMatches($paths, $capability, $filesystem))
 		{
 			$filesystem->closeDirectoryReference($reference);
@@ -3226,15 +3226,15 @@ if(!function_exists('erasedataAcquireRemovalCapability'))
 	function erasedataRemovalCapabilityStillMatches(array $paths, $capability,
 		ErasedataFilesystemOps $filesystem)
 	{
-		if($capability === null)
-			return(empty($paths['multi']));
+		if($capability === null) {
+			return(empty($paths['multi'])); }
 		if(!is_array($capability) || empty($paths['multi'])
 			|| !isset($paths['base'], $capability['base'], $capability['reference'])
-			|| $paths['base'] !== $capability['base'])
-			return(false);
+			|| $paths['base'] !== $capability['base']) {
+			return(false); }
 		$reference = $capability['reference'];
-		if(!isset($reference['handle'], $reference['path']) || !is_resource($reference['handle']))
-			return(false);
+		if(!isset($reference['handle'], $reference['path']) || !is_resource($reference['handle'])) {
+			return(false); }
 		$expected = erasedataIdentityDeviceAndInode($reference);
 		return($expected !== false
 			&& erasedataIdentityDeviceAndInode(@fstat($reference['handle'])) === $expected
@@ -3244,9 +3244,9 @@ if(!function_exists('erasedataAcquireRemovalCapability'))
 
 	function erasedataReleaseRemovalCapabilities(array $capabilities, ErasedataFilesystemOps $filesystem)
 	{
-		foreach($capabilities as $capability)
-			if(is_array($capability) && isset($capability['reference']))
-				$filesystem->closeDirectoryReference($capability['reference']);
+		foreach($capabilities as $capability) {
+			if(is_array($capability) && isset($capability['reference'])) {
+				$filesystem->closeDirectoryReference($capability['reference']); } }
 	}
 }
 
@@ -3258,21 +3258,21 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		ErasedataFilesystemOps $filesystem, array &$probed)
 	{
 		ErasedataFilesystemOps::clearRenameRefusal();
-		$names = array($listPath.'/manifest');
-		if(!isset($paths['base'], $paths['files']) || !is_array($paths['files']))
-			return(false);
+		$names = [$listPath.'/manifest'];
+		if(!isset($paths['base'], $paths['files']) || !is_array($paths['files'])) {
+			return(false); }
 		$names[] = $paths['base'];
-		if(!empty($paths['multi'])) $names[] = rtrim($paths['base'], '/').'/entry';
+		if(!empty($paths['multi'])) { $names[] = rtrim($paths['base'], '/').'/entry'; }
 		$names = array_merge($names, $paths['files']);
-		$parents = array();
+		$parents = [];
 		foreach($names as $path)
 		{
 			// An invalid entry name is refused with the shared classified reason.
-			if(!ErasedataManifestCodec::isValidAbsolutePath($path))
-				return($filesystem->preflightParents(array($path), $probed));
+			if(!ErasedataManifestCodec::isValidAbsolutePath($path)) {
+				return($filesystem->preflightParents([$path], $probed)); }
 			// No entry or existing parent can be captured here. This also keeps
 			// empty downloads from requiring write access to unrelated ancestors.
-			if(!erasedataPathExists($path) && !is_dir(dirname($path))) continue;
+			if(!erasedataPathExists($path) && !is_dir(dirname($path))) { continue; }
 			$parents[] = dirname($path);
 		}
 		return($filesystem->preflightParents($parents, $probed));
@@ -3299,8 +3299,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		$ackPoll = isset($dependencies['ackPoll']) && is_numeric($dependencies['ackPoll'])
 			&& (float)$dependencies['ackPoll'] > 0
 			? (float)$dependencies['ackPoll'] : ERASEDATA_DRAIN_ACK_POLL;
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return(false);
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return(false); }
 		if(erasedataDrainScheduleKey($user) === false)
 		{
 			erasedataDrainDiagnostic($log, 'invalid-user', null, 0, 'admission-refused');
@@ -3308,13 +3308,13 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 		}
 
 		$nativeCapability = erasedataNativeCapability();
-		if(!in_array($nativeCapability, array('available', 'legacy'), true))
+		if(!in_array($nativeCapability, ['available', 'legacy'], true))
 		{
 			erasedataDrainDiagnostic($log, 'native-authority-unavailable', null, 0,
 				'admission-refused-torrents-and-payload-retained');
 			return(false);
 		}
-		$nativeIntents = array();
+		$nativeIntents = [];
 
 		// (1) The complete partition, before any side effect at all. Members of
 		// F stop here: no marker, no journal record, no staging, no RPC and no
@@ -3348,13 +3348,13 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				'admission-refused');
 			return(false);
 		}
-		$capabilities = array();
+		$capabilities = [];
 		try
 		{
 			// Capability failure is an admission refusal, never a deferred
 			// discovery after d.erase. Probe queue and payload mounts before
 			// arming, staging or making any destructive request.
-			$probed = array();
+			$probed = [];
 			foreach($accepted as $hash)
 			{
 				// An answer that resolves to no file list (erasedataCollectPaths())
@@ -3365,8 +3365,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					$paths, $filesystem, $probed))
 				{
 					erasedataUnlockObligations($locks);
-					if(is_array($paths))
-						ErasedataFilesystemOps::reportRenameRefusal();
+					if(is_array($paths)) {
+						ErasedataFilesystemOps::reportRenameRefusal(); }
 					erasedataDrainDiagnostic($log, is_array($paths) ? 'rename-capability' : 'paths',
 						null, $members, 'admission-refused-torrents-retained', $hash);
 					return(false);
@@ -3377,7 +3377,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			// erase; finally closes it on every refusal and exception as well.
 			if($force === 2)
 			{
-				$ready = array();
+				$ready = [];
 				foreach($accepted as $hash)
 				{
 					$paths = erasedataCollectPaths($hash);
@@ -3439,11 +3439,11 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						$state['generation'], $members, 'admission-refused-nothing-staged');
 					return(false);
 				}
-				$abandoned = array();
+				$abandoned = [];
 				$state = erasedataPruneResolvedJournalRecords($listPath, $state, $abandoned);
-				foreach($abandoned as $dropped => $phase)
+				foreach($abandoned as $dropped => $phase) {
 					erasedataDrainDiagnostic($log, 'journal-abandoned', (string)$dropped, 0,
-						'record-bound-nothing-left-dropped-from-'.$phase);
+						'record-bound-nothing-left-dropped-from-'.$phase); }
 				$generation = erasedataGenerationIncrement($state['generation']);
 				if($generation === false || isset($state['journal'][$generation]))
 				{
@@ -3481,8 +3481,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				$state['user'] = $user;
 				$state['generation'] = $generation;
 				$state['phase'] = $live ? 'armed' : 'arming';
-				if(!$live)
-					unset($state['legacy_marker']);
+				if(!$live) {
+					unset($state['legacy_marker']); }
 				if(!erasedataWriteDrainState($listPath, $state))
 				{
 					erasedataReleaseAdmissionLocks($stateLock, $locks);
@@ -3602,8 +3602,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						continue;
 					}
 					$state['phase'] = 'armed';
-					if($legacyArm)
-						$state['legacy_marker'] = true;
+					if($legacyArm) {
+						$state['legacy_marker'] = true; }
 					if(!erasedataWriteDrainState($listPath, $state))
 					{
 						erasedataReleaseAdmissionLocks($stateLock, $locks);
@@ -3626,8 +3626,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					'admission-refused-obligations-retained', $failedHash);
 				return(false);
 			}
-			$staging = array();
-			$rollback = array();
+			$staging = [];
+			$rollback = [];
 			$failure = false;
 			foreach($accepted as $hash)
 			{
@@ -3638,55 +3638,55 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				{
 					// Erasing now would drop the download and leave its data behind
 					// with nothing left to identify it.
-					$failure = array('paths', $hash);
+					$failure = ['paths', $hash];
 					break;
 				}
 				// Path answers can change while the schedule is being armed.
 				if(!erasedataRemovalRenameReady($listPath, $paths, $filesystem, $probed))
 				{
-					$failure = array('rename-capability', $hash);
+					$failure = ['rename-capability', $hash];
 					break;
 				}
 				if($nativeCapability === 'available')
 				{
 					$intent = erasedataNativeBuildIntent($hash, $paths, $force, $generation, $user, $incarnation);
 					$content = is_array($intent) ? ErasedataManifestCodec::encodeBound($hash, $paths, $force, $intent) : false;
-					if(is_array($intent)) $nativeIntents[$hash] = $intent;
+					if(is_array($intent)) { $nativeIntents[$hash] = $intent; }
 				}
-				else $content = ErasedataManifestCodec::encode($hash, $paths, $force);
+				else { $content = ErasedataManifestCodec::encode($hash, $paths, $force); }
 				if($content === false)
 				{
-					$failure = array('manifest-encode', $hash);
+					$failure = ['manifest-encode', $hash];
 					break;
 				}
 				$staged = erasedataStageAdmittedManifest($listPath, $hash, $generation, $content);
 				if($staged === false)
 				{
-					$failure = array('staging-write', $hash);
+					$failure = ['staging-write', $hash];
 					break;
 				}
-				$staging[$hash] = array(
+				$staging[$hash] = [
 					'path' => $staged['path'],
 					'dev' => (string)$staged['stat']['dev'],
 					'ino' => (string)$staged['stat']['ino'],
-				);
+				];
 				$rollback[$hash] = $staging[$hash];
 			}
 			if($failure !== false)
 			{
-				if($failure[0] === 'rename-capability') ErasedataFilesystemOps::reportRenameRefusal();
+				if($failure[0] === 'rename-capability') { ErasedataFilesystemOps::reportRenameRefusal(); }
 				erasedataRollbackAdmittedStaging($rollback, $filesystem);
 				erasedataReleaseAdmissionLocks($stateLock, $locks);
 				erasedataDrainDiagnostic($log, $failure[0], $generation, $members,
 					'admission-refused-obligations-retained', $failure[1]);
 				return(false);
 			}
-			$state['journal'][$generation] = array(
+			$state['journal'][$generation] = [
 				'phase' => 'prepared',
 				'force' => $force,
 				'hashes' => $accepted,
 				'staging' => $staging,
-			);
+			];
 			if(!erasedataWriteDrainState($listPath, $state))
 			{
 				erasedataRollbackAdmittedStaging($rollback, $filesystem);
@@ -3727,11 +3727,11 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			}
 			$state = erasedataReadDrainState($listPath);
 			$capabilitiesMatch = true;
-			foreach($capabilities as $hash => $capability)
+			foreach($capabilities as $hash => $capability) {
 				if(is_array($capability)
-					&& !erasedataRemovalCapabilityStillMatches(array('multi' => 1,
-						'base' => $capability['base']), $capability, $filesystem))
-					$capabilitiesMatch = false;
+					&& !erasedataRemovalCapabilityStillMatches(['multi' => 1,
+						'base' => $capability['base']], $capability, $filesystem)) {
+					$capabilitiesMatch = false; } }
 			if(!$acknowledged || !erasedataPreparedBindingStillMatches($state, $listPath,
 				$user, $generation, $accepted, $force) || !$capabilitiesMatch)
 			{
@@ -3746,9 +3746,9 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				// phase remains armed. Once every admission lock is released, let the
 				// existing conservative recovery scan re-arm owed work. No-ack alone
 				// is not authority to rewrite the phase or erase this torrent.
-				if(!$acknowledged && $live)
-					erasedataRearmDrainScheduleRun(array('listPath' => $listPath,
-						'user' => $user, 'log' => $log, 'context' => 'headless'));
+				if(!$acknowledged && $live) {
+					erasedataRearmDrainScheduleRun(['listPath' => $listPath,
+						'user' => $user, 'log' => $log, 'context' => 'headless']); }
 				return(false);
 			}
 			if($nativeCapability === 'available')
@@ -3762,7 +3762,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 						'torrents-retained-exact-prepared-journal-retained');
 					return(false);
 				}
-				$attempted = array();
+				$attempted = [];
 				foreach($accepted as $hash)
 				{
 					$attempted[$hash] = $nativeIntents[$hash];
@@ -3771,8 +3771,8 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 					{
 						// An unknown reply may have created P. Exact P-only cancellation
 						// is safe for every attempted tuple and never authorizes erase.
-						foreach($attempted as $cancelHash => $cancelIntent)
-							erasedataNativeCancelIntent($cancelHash, $cancelIntent);
+						foreach($attempted as $cancelHash => $cancelIntent) {
+							erasedataNativeCancelIntent($cancelHash, $cancelIntent); }
 						erasedataReleaseAdmissionLocks($stateLock, $locks);
 						erasedataDrainDiagnostic($log, 'native-prepare-'.$prepareReason, $generation, $members,
 							'torrents-retained-exact-prepared-journal-retained', $hash);
@@ -3783,7 +3783,7 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 				$state = erasedataReadDrainState($listPath);
 				if(!erasedataNativePreparedBindingsMatch($state, $listPath, $user, $generation, $accepted, $force, $nativeIntents))
 				{
-					foreach($nativeIntents as $hash => $intent) erasedataNativeCancelIntent($hash, $intent);
+					foreach($nativeIntents as $hash => $intent) { erasedataNativeCancelIntent($hash, $intent); }
 					erasedataReleaseAdmissionLocks($stateLock, $locks);
 					erasedataDrainDiagnostic($log, 'binding-mismatch', $generation, $members,
 						'torrents-retained-prepared-cancellation-required');
@@ -3802,20 +3802,20 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			// Only now, with erase-started durable, does anything destructive run.
 			// The request comes from the one shared builder, so its length is the
 			// length erasedataClassifyEraseOutcomes() partitions by, by construction.
-			$classified = array();
+			$classified = [];
 			if($nativeCapability === 'available')
 			{
-				foreach($accepted as $hash)
-					if(erasedataNativeEraseIntent($hash, $nativeIntents[$hash])) $classified[$hash] = 'accepted';
+				foreach($accepted as $hash) {
+					if(erasedataNativeEraseIntent($hash, $nativeIntents[$hash])) { $classified[$hash] = 'accepted'; } }
 			}
 			else
 			{
 				$request = erasedataEraseRequest($accepted);
 				$classified = ($request !== false && $request->success())
-					? erasedataClassifyEraseOutcomes($accepted, $request) : array();
+					? erasedataClassifyEraseOutcomes($accepted, $request) : [];
 			}
-			$published = array();
-			$retained = array();
+			$published = [];
+			$retained = [];
 			// Invariant 15: an I/O failure in this producer's OWN bookkeeping --
 			// a staging object that is no longer the file the journal captured, a
 			// publication that could not land, a marker it could not discharge --
@@ -3888,17 +3888,17 @@ if(!function_exists('erasedataRemovalAdmissionRun'))
 			{
 				erasedataDrainDiagnostic($log, 'erase-unresolved', $generation, $members,
 					'published-'.count($published).'-retained-'.count($retained));
-				if($terminal)
-					return(false);
+				if($terminal) {
+					return(false); }
 			}
-			return(array(
+			return([
 				'generation' => $generation,
 				'force' => $force,
 				'accepted' => $accepted,
 				'refused' => $partition['refused'],
 				'published' => $published,
 				'retained' => $retained,
-			));
+			]);
 		}
 		finally
 		{
@@ -3927,8 +3927,8 @@ if(!function_exists('erasedataRetainAdmittedGeneration'))
 		// empty for retirement.
 		if(!is_array($state) || !isset($state['journal'][$generation]['phase'])
 			|| $state['journal'][$generation]['phase'] === 'erase-started'
-			|| $state['journal'][$generation]['phase'] === 'published')
-			return(false);
+			|| $state['journal'][$generation]['phase'] === 'published') {
+			return(false); }
 		$state['journal'][$generation]['phase'] = 'retained';
 		return(erasedataWriteDrainState($listPath, $state));
 	}
@@ -4039,7 +4039,7 @@ if(!function_exists('erasedataAcknowledgeDrainGeneration'))
 			return(false);
 		}
 		erasedataReleaseDrainStateLock($stateLock);
-		return(array('generation' => $generation, 'state' => $state));
+		return(['generation' => $generation, 'state' => $state]);
 	}
 }
 
@@ -4059,33 +4059,33 @@ if(!function_exists('erasedataDrainWorkerJobs'))
 	// longer exists, not a count of previous attempts.
 	function erasedataDrainWorkerJobs($listPath, array $state, array $obligations)
 	{
-		$jobs = array();
-		$seen = array();
+		$jobs = [];
+		$seen = [];
 		foreach($obligations as $generation => $group)
 		{
 			$generation = (string)$generation;
-			$jobs[$generation] = array(
+			$jobs[$generation] = [
 				'hashes' => $group['hashes'],
 				'force' => $group['force'],
-			);
-			$seen[$generation] = array();
-			foreach($group['hashes'] as $hash)
-				$seen[$generation][$hash] = true;
+			];
+			$seen[$generation] = [];
+			foreach($group['hashes'] as $hash) {
+				$seen[$generation][$hash] = true; }
 		}
-		$carried = array('prepared', 'erase-started', 'retained');
-		if(isset($state['journal']) && is_array($state['journal']))
+		$carried = ['prepared', 'erase-started', 'retained'];
+		if(isset($state['journal']) && is_array($state['journal'])) {
 			foreach($state['journal'] as $generation => $entry)
 			{
 				$generation = (string)$generation;
 				if(!is_array($entry) || !isset($entry['phase'], $entry['hashes'], $entry['force'])
 					|| !is_array($entry['hashes'])
-					|| !in_array($entry['phase'], $carried, true))
-					continue;
+					|| !in_array($entry['phase'], $carried, true)) {
+					continue; }
 				if(!isset($jobs[$generation]))
 				{
-					$jobs[$generation] = array('hashes' => array(),
-						'force' => $entry['force']);
-					$seen[$generation] = array();
+					$jobs[$generation] = ['hashes' => [],
+						'force' => $entry['force']];
+					$seen[$generation] = [];
 				}
 				foreach($entry['hashes'] as $hash)
 				{
@@ -4099,12 +4099,12 @@ if(!function_exists('erasedataDrainWorkerJobs'))
 					// staging file able to hide a whole obligation from both
 					// obligation readers at once.
 					if(!erasedataIsCanonicalPendingHash($hash)
-						|| isset($seen[$generation][$hash]))
-						continue;
+						|| isset($seen[$generation][$hash])) {
+						continue; }
 					$seen[$generation][$hash] = true;
 					$jobs[$generation]['hashes'][] = $hash;
 				}
-			}
+			} }
 		foreach(array_keys($jobs) as $generation)
 		{
 			if(!count($jobs[$generation]['hashes']))
@@ -4128,19 +4128,19 @@ if(!function_exists('erasedataDrainJournalRecord'))
 	// its self-describing obligation.
 	function erasedataDrainJournalRecord(array $staging, $force, $phase)
 	{
-		if($force !== 1 && $force !== 2)
-			return(false);
+		if($force !== 1 && $force !== 2) {
+			return(false); }
 		ksort($staging, SORT_STRING);
 		$hashes = array_keys($staging);
-		if(!count($hashes))
-			return(false);
+		if(!count($hashes)) {
+			return(false); }
 		sort($hashes, SORT_STRING);
-		return(array(
+		return([
 			'phase' => $phase,
 			'force' => $force,
 			'hashes' => $hashes,
 			'staging' => $staging,
-		));
+		]);
 	}
 }
 
@@ -4160,17 +4160,17 @@ if(!function_exists('erasedataDrainReportMemory'))
 	// digest and is reported again on the same tick it appears.
 	function erasedataDrainReportMemory($state)
 	{
-		$memory = array();
+		$memory = [];
 		if(!is_array($state) || !isset($state['diagnostics'])
-			|| !is_array($state['diagnostics']))
-			return($memory);
+			|| !is_array($state['diagnostics'])) {
+			return($memory); }
 		foreach($state['diagnostics'] as $line)
 		{
-			if(!is_string($line))
-				continue;
+			if(!is_string($line)) {
+				continue; }
 			$split = strpos($line, ' ');
-			if($split === false || $split === 0 || $split + 1 >= strlen($line))
-				continue;
+			if($split === false || $split === 0 || $split + 1 >= strlen($line)) {
+				continue; }
 			$memory[substr($line, 0, $split)] = substr($line, $split + 1);
 		}
 		return($memory);
@@ -4195,26 +4195,26 @@ if(!function_exists('erasedataDrainReportLines'))
 		// a truncation dropped -- the groups that describe the tick as a whole
 		// evicted by the ones that describe single jobs. Whatever else is lost,
 		// these are kept.
-		$ordered = array();
-		foreach($memory as $key => $digest)
-			if(preg_match('/^[0-9a-f]{16}$/D', (string)$key) !== 1)
-				$ordered[$key] = $digest;
-		foreach($memory as $key => $digest)
-			if(!isset($ordered[$key]))
-				$ordered[$key] = $digest;
+		$ordered = [];
+		foreach($memory as $key => $digest) {
+			if(preg_match('/^[0-9a-f]{16}$/D', (string)$key) !== 1) {
+				$ordered[$key] = $digest; } }
+		foreach($memory as $key => $digest) {
+			if(!isset($ordered[$key])) {
+				$ordered[$key] = $digest; } }
 		$memory = $ordered;
-		$lines = array();
+		$lines = [];
 		foreach($memory as $key => $digest)
 		{
-			if(count($lines) >= ERASEDATA_DRAIN_MAX_DIAGNOSTICS)
-				break;
+			if(count($lines) >= ERASEDATA_DRAIN_MAX_DIAGNOSTICS) {
+				break; }
 			$key = (string)$key;
 			if($key === '' || strpos($key, ' ') !== false
-				|| !is_string($digest) || $digest === '')
-				continue;
+				|| !is_string($digest) || $digest === '') {
+				continue; }
 			$line = $key.' '.$digest;
-			if(strlen($line) <= ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES)
-				$lines[] = $line;
+			if(strlen($line) <= ERASEDATA_DRAIN_MAX_DIAGNOSTIC_BYTES) {
+				$lines[] = $line; }
 		}
 		return($lines);
 	}
@@ -4234,9 +4234,9 @@ if(!function_exists('erasedataDrainReportGroup'))
 	function erasedataDrainReportGroup($log, $key, array $notes, array $memory,
 		array &$fresh)
 	{
-		if(!count($notes))
-			return(0);
-		$parts = array();
+		if(!count($notes)) {
+			return(0); }
+		$parts = [];
 		// The named object is part of the classification, not decoration: two
 		// ticks that strand two different files are two different states, and
 		// suppressing the second would print a name that is no longer there.
@@ -4256,22 +4256,22 @@ if(!function_exists('erasedataDrainReportGroup'))
 		// change, not a no-op, and it costs one extra line per group per
 		// generation. 'cleanup' is unaffected: its notes carry no generation by
 		// construction, because a cleanup job's name has no generation in it.
-		foreach($notes as $note)
+		foreach($notes as $note) {
 			$parts[] = $note[0].'|'
 				.(erasedataGenerationIsValid($note[1]) ? $note[1] : '')
 				.'|'.($note[2] === null ? 'unknown' : (int)$note[2]).'|'
 				.(erasedataIsCanonicalPendingHash($note[4]) ? $note[4] : '')
 				.'|'.(isset($note[5]) && erasedataIsStagingObjectName($note[5])
 					? $note[5] : '')
-				.'|'.$note[3];
+				.'|'.$note[3]; }
 		sort($parts, SORT_STRING);
 		$digest = sha1(implode("\n", $parts));
 		$fresh[$key] = $digest;
-		if(isset($memory[$key]) && $memory[$key] === $digest)
-			return(0);
-		foreach($notes as $note)
+		if(isset($memory[$key]) && $memory[$key] === $digest) {
+			return(0); }
+		foreach($notes as $note) {
 			erasedataDrainDiagnostic($log, $note[0], $note[1], $note[2], $note[3],
-				$note[4], isset($note[5]) ? $note[5] : null);
+				$note[4], isset($note[5]) ? $note[5] : null); }
 		return(count($notes));
 	}
 }
@@ -4291,8 +4291,8 @@ if(!function_exists('erasedataPersistDrainReport'))
 		$nonBlocking = false)
 	{
 		$stateLock = erasedataAcquireDrainStateLock($listPath, $nonBlocking);
-		if(!is_resource($stateLock))
-			return(false);
+		if(!is_resource($stateLock)) {
+			return(false); }
 		$state = erasedataReadDrainState($listPath);
 		$lines = erasedataDrainReportLines($memory);
 		if(!is_array($state) || $state['user'] !== $user
@@ -4321,8 +4321,8 @@ if(!function_exists('erasedataCancelPreparedStaging'))
 	function erasedataCancelPreparedStaging($record,
 		?ErasedataFilesystemOps $filesystem = null)
 	{
-		if(!erasedataStagingIdentityStillMatches($record))
-			return(true);
+		if(!erasedataStagingIdentityStillMatches($record)) {
+			return(true); }
 		return(erasedataUnlinkAdmittedStaging($record, $filesystem));
 	}
 }
@@ -4337,18 +4337,18 @@ if(!function_exists('erasedataUnboundStagingCandidates'))
 		array $hashes, array $staging, $listPath)
 	{
 		$wanted = array_fill_keys($hashes, true);
-		$unbound = array();
-		foreach($entries as $name)
+		$unbound = [];
+		foreach($entries as $name) {
 			if(preg_match('/^([0-9A-Fa-f]{40})\\.([0-9a-f]{16})\\..+\\.tmp$/D', $name, $match) === 1
 				&& $match[2] === $generation)
 			{
 				$hash = strtoupper($match[1]);
-				if(!isset($wanted[$hash]) || isset($unbound[$hash]))
-					continue;
+				if(!isset($wanted[$hash]) || isset($unbound[$hash])) {
+					continue; }
 				if(!isset($staging[$hash]['path'])
-					|| $staging[$hash]['path'] !== $listPath.'/'.$name)
-					$unbound[$hash] = $name;
-			}
+					|| $staging[$hash]['path'] !== $listPath.'/'.$name) {
+					$unbound[$hash] = $name; }
+			} }
 		return($unbound);
 	}
 }
@@ -4378,16 +4378,16 @@ if(!function_exists('erasedataDrainGenerationPass'))
 	// nothing under it. `erase-started` is the opposite case and stays
 	// conservative: presence and publication recovery only, rebinding nothing.
 	function erasedataDrainGenerationPass($listPath, $user, $generation, array $job,
-		ErasedataFilesystemOps $filesystem, array &$notes, array $stateSnapshot = array())
+		ErasedataFilesystemOps $filesystem, array &$notes, array $stateSnapshot = [])
 	{
-		if(erasedataNativeCapability() !== 'legacy')
-			return(erasedataNativeDrainGenerationPass($listPath, $user, $generation, $job, $filesystem, $notes));
+		if(erasedataNativeCapability() !== 'legacy') {
+			return(erasedataNativeDrainGenerationPass($listPath, $user, $generation, $job, $filesystem, $notes)); }
 
 
 		$hashes = $job['hashes'];
 		$members = count($hashes);
-		$result = array('published' => 0, 'retained' => $members,
-			'cancelled' => 0, 'unrecoverable' => 0);
+		$result = ['published' => 0, 'retained' => $members,
+			'cancelled' => 0, 'unrecoverable' => 0];
 		// A restart can lower soft nofile below an already durable batch.
 		// The hard limit still bounds recovery; lock acquisition remains atomic.
 		erasedataTryRaiseRecoveryHashLockLimit($members);
@@ -4396,8 +4396,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		$locks = erasedataLockObligations($listPath, $hashes);
 		if(!is_array($locks))
 		{
-			$notes[] = array('hash-lock', $generation, $members,
-				'obligations-retained', null);
+			$notes[] = ['hash-lock', $generation, $members,
+				'obligations-retained', null];
 			return($result);
 		}
 
@@ -4412,22 +4412,22 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		// scales linearly with stranded members. The acknowledged state is only a
 		// preview: if the object or journal changes before the locked read below,
 		// an omitted answer remains UNKNOWN for this tick and is probed next time.
-		$unboundBeforeProbe = array();
+		$unboundBeforeProbe = [];
 		if(isset($stateSnapshot['journal']) && is_array($stateSnapshot['journal']))
 		{
 			$preview = isset($stateSnapshot['journal'][$generation]['staging'])
 				&& is_array($stateSnapshot['journal'][$generation]['staging'])
-				? $stateSnapshot['journal'][$generation]['staging'] : array();
+				? $stateSnapshot['journal'][$generation]['staging'] : [];
 			$previewEntries = $filesystem->scanDirectory($listPath);
-			if(is_array($previewEntries))
+			if(is_array($previewEntries)) {
 				$unboundBeforeProbe = erasedataUnboundStagingCandidates($previewEntries,
-					$generation, $hashes, $preview, $listPath);
+					$generation, $hashes, $preview, $listPath); }
 		}
 		// (1) The live-hash probe, one per member whose physical staging does
 		// not already force retention, with NO state lock held. Transport, fault
 		// or parse uncertainty is UNKNOWN: it publishes nothing, unlinks nothing
 		// and resolves nothing.
-		$presence = array();
+		$presence = [];
 		foreach($hashes as $hash)
 		{
 			if(isset($unboundBeforeProbe[$hash]))
@@ -4440,25 +4440,25 @@ if(!function_exists('erasedataDrainGenerationPass'))
 			// and not at the end of the pass: every later refusal is reached
 			// through a decision this answer already made, so a member whose
 			// probe was uncertain must say so whatever the pass does next.
-			if($presence[$hash] === ERASEDATA_TORRENT_UNKNOWN)
-				$notes[] = array('probe-unknown', $generation, $members,
-					'obligation-retained-nothing-erased', $hash);
+			if($presence[$hash] === ERASEDATA_TORRENT_UNKNOWN) {
+				$notes[] = ['probe-unknown', $generation, $members,
+					'obligation-retained-nothing-erased', $hash]; }
 		}
 
 		$stateLock = erasedataAcquireDrainStateLock($listPath);
 		if(!is_resource($stateLock))
 		{
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			$notes[] = array('state-lock', $generation, $members,
-				'obligations-retained', null);
+			$notes[] = ['state-lock', $generation, $members,
+				'obligations-retained', null];
 			return($result);
 		}
 		$state = erasedataReadDrainState($listPath);
 		if(!is_array($state) || $state['user'] !== $user)
 		{
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			$notes[] = array(is_array($state) ? 'worker-user-mismatch' : 'state-unreadable',
-				$generation, $members, 'obligations-retained', null);
+			$notes[] = [is_array($state) ? 'worker-user-mismatch' : 'state-unreadable',
+				$generation, $members, 'obligations-retained', null];
 			return($result);
 		}
 		// A generation ahead of the one the durable state carries was never
@@ -4469,8 +4469,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		if($armed !== 0 && $armed !== -1)
 		{
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			$notes[] = array('generation-unarmed', $generation, $members,
-				'obligations-retained-nothing-erased', null);
+			$notes[] = ['generation-unarmed', $generation, $members,
+				'obligations-retained-nothing-erased', null];
 			return($result);
 		}
 		$entry = isset($state['journal'][$generation])
@@ -4493,8 +4493,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 			|| (is_array($entry) && $entry['force'] !== $job['force']))
 		{
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			$notes[] = array('force-disagreement', $generation, $members,
-				'obligations-retained-nothing-erased', null);
+			$notes[] = ['force-disagreement', $generation, $members,
+				'obligations-retained-nothing-erased', null];
 			return($result);
 		}
 		// What is already final for this exact generation, read once under the
@@ -4506,12 +4506,12 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		if(!is_array($entries))
 		{
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			$notes[] = array('queue-unreadable', $generation, $members,
-				'obligations-retained-nothing-erased', null);
+			$notes[] = ['queue-unreadable', $generation, $members,
+				'obligations-retained-nothing-erased', null];
 			return($result);
 		}
 		$final = erasedataPublishedGenerations($entries);
-		$staging = is_array($entry) ? $entry['staging'] : array();
+		$staging = is_array($entry) ? $entry['staging'] : [];
 		// A producer can die after a complete staging write but before the
 		// journal binds its identity. Neither a replacement staging nor a
 		// missing-hash reply proves that physical candidate was discharged.
@@ -4537,14 +4537,14 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		// deterministically and the next tick after it is removed names the next.
 		$unbound = erasedataUnboundStagingCandidates($entries, $generation,
 			$hashes, $staging, $listPath);
-		foreach($unboundBeforeProbe as $hash => $name)
-			if(!isset($unbound[$hash]))
-				$notes[] = array('probe-deferred', $generation, $members,
-					'staging-changed-presence-rechecked-next-tick', $hash);
-		foreach($unbound as $hash => $name)
-			$notes[] = array('staging-unbound', $generation, $members,
+		foreach($unboundBeforeProbe as $hash => $name) {
+			if(!isset($unbound[$hash])) {
+				$notes[] = ['probe-deferred', $generation, $members,
+					'staging-changed-presence-rechecked-next-tick', $hash]; } }
+		foreach($unbound as $hash => $name) {
+			$notes[] = ['staging-unbound', $generation, $members,
 				'physical-staging-retained-journal-binding-recovery-required',
-				$hash, $name);
+				$hash, $name]; }
 
 		if(is_array($entry) && $entry['phase'] === 'prepared')
 		{
@@ -4570,8 +4570,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				if(isset($final[$hash][$generation]))
 				{
 					$blocked++;
-					$notes[] = array('publication-unaccounted', $generation, $members,
-						'obligation-retained-nothing-erased', $hash);
+					$notes[] = ['publication-unaccounted', $generation, $members,
+						'obligation-retained-nothing-erased', $hash];
 					continue;
 				}
 				$released = !isset($staging[$hash])
@@ -4580,13 +4580,13 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					&& erasedataDischargePendingMarker($listPath, $hash, $generation))
 				{
 					$cancelled++;
-					$notes[] = array('prepared-cancelled', $generation, $members,
-						'nothing-erased-obligation-cancelled', $hash);
+					$notes[] = ['prepared-cancelled', $generation, $members,
+						'nothing-erased-obligation-cancelled', $hash];
 					continue;
 				}
 				$blocked++;
-				$notes[] = array('cancel-refused', $generation, $members,
-					'obligation-retained-nothing-erased', $hash);
+				$notes[] = ['cancel-refused', $generation, $members,
+					'obligation-retained-nothing-erased', $hash];
 			}
 			// The record goes only when every one of its bindings really did,
 			// so a partial cancellation is retried on the next tick with no cap
@@ -4598,18 +4598,18 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				if(!erasedataWriteDrainState($listPath, $state))
 				{
 					erasedataReleaseAdmissionLocks($stateLock, $locks);
-					$notes[] = array('journal-write', $generation, $members,
-						'cancelled-'.$cancelled.'-retained-0', null);
-					return(array('published' => 0, 'retained' => 0,
-						'cancelled' => $cancelled, 'unrecoverable' => 0));
+					$notes[] = ['journal-write', $generation, $members,
+						'cancelled-'.$cancelled.'-retained-0', null];
+					return(['published' => 0, 'retained' => 0,
+						'cancelled' => $cancelled, 'unrecoverable' => 0]);
 				}
 			}
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			if($blocked)
-				$notes[] = array('drain-unresolved', $generation, $members,
-					'cancelled-'.$cancelled.'-retained-'.$blocked, null);
-			return(array('published' => 0, 'retained' => $blocked,
-				'cancelled' => $cancelled, 'unrecoverable' => 0));
+			if($blocked) {
+				$notes[] = ['drain-unresolved', $generation, $members,
+					'cancelled-'.$cancelled.'-retained-'.$blocked, null]; }
+			return(['published' => 0, 'retained' => $blocked,
+				'cancelled' => $cancelled, 'unrecoverable' => 0]);
 		}
 		// `erase-started` means d.erase is or was in flight for this record, so
 		// recovery stays conservative: it rebinds no staging and re-encodes no
@@ -4631,30 +4631,30 @@ if(!function_exists('erasedataDrainGenerationPass'))
 		// The paths each preflight collected are kept and reused by step (2), so
 		// proving the capability does not ask the daemon for the same file list
 		// twice.
-		$capabilities = array();
-		$collected = array();
-		$refusedCapability = array();
+		$capabilities = [];
+		$collected = [];
+		$refusedCapability = [];
 		try
 		{
 			// Recovery is a new producer: the admission's probe and descriptors
 			// died with it. Prove the current queue/payload parents before any
 			// staging or erase, including force-1 and already-staged jobs.
-			$probed = array();
+			$probed = [];
 			foreach($hashes as $hash)
 			{
-				if($presence[$hash] !== ERASEDATA_TORRENT_PRESENT || isset($unbound[$hash]))
-					continue;
+				if($presence[$hash] !== ERASEDATA_TORRENT_PRESENT || isset($unbound[$hash])) {
+					continue; }
 				$collected[$hash] = erasedataCollectPaths($hash);
 				if(!is_array($collected[$hash]) || !erasedataRemovalRenameReady($listPath,
 					$collected[$hash], $filesystem, $probed))
 				{
 					$refusedCapability[$hash] = true;
-					$notes[] = array(is_array($collected[$hash]) ? 'rename-capability' : 'paths-unknown',
+					$notes[] = [is_array($collected[$hash]) ? 'rename-capability' : 'paths-unknown',
 						$generation, $members, is_array($collected[$hash]) || $force === 2
-							? 'obligation-retained-nothing-erased' : 'obligation-retained', $hash);
+							? 'obligation-retained-nothing-erased' : 'obligation-retained', $hash];
 				}
 			}
-			if($force === 2)
+			if($force === 2) {
 				foreach($hashes as $hash)
 				{
 					// The $unbound half of this test changes no outcome and no test
@@ -4664,8 +4664,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					// for it until the finally, which is work and an fd spent on a
 					// hash this pass has already decided not to touch.
 					if($presence[$hash] !== ERASEDATA_TORRENT_PRESENT
-						|| isset($unbound[$hash]) || isset($refusedCapability[$hash]))
-						continue;
+						|| isset($unbound[$hash]) || isset($refusedCapability[$hash])) {
+						continue; }
 					$capability = is_array($collected[$hash])
 						? erasedataAcquireRemovalCapability($collected[$hash], $filesystem)
 						: false;
@@ -4675,24 +4675,24 @@ if(!function_exists('erasedataDrainGenerationPass'))
 						// Two different refusals, kept apart: the daemon could not
 						// say what the download owns, or it could and the base path
 						// would not yield a descriptor.
-						$notes[] = array(is_array($collected[$hash])
+						$notes[] = [is_array($collected[$hash])
 							? 'descriptor-unavailable' : 'paths-unknown',
 							$generation, $members,
-							'obligation-retained-nothing-erased', $hash);
+							'obligation-retained-nothing-erased', $hash];
 						continue;
 					}
 					$capabilities[$hash] = $capability;
-				}
+				} }
 
 			// (2) Prepare. Every member rTorrent gave a definite answer for gets a
 			// staging object of its own if it has none that is still exactly the
 			// file the journal captured.
-			$bound = array();
-			$rollback = array();
+			$bound = [];
+			$rollback = [];
 			foreach($hashes as $hash)
 			{
-				if($presence[$hash] === ERASEDATA_TORRENT_UNKNOWN)
-					continue;
+				if($presence[$hash] === ERASEDATA_TORRENT_UNKNOWN) {
+					continue; }
 				// A refused force-2 capability was reported above. Its member binds
 				// nothing here, so this pass writes no staging under a mechanism it
 				// could not prove and the obligation is left exactly as it was found.
@@ -4701,16 +4701,16 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				// the same reason and one more: writing a second staging identity
 				// beside it would let this pass erase under a manifest while the
 				// crashed producer's own candidate still stands unaccounted for.
-				if(isset($refusedCapability[$hash]) || isset($unbound[$hash]))
-					continue;
+				if(isset($refusedCapability[$hash]) || isset($unbound[$hash])) {
+					continue; }
 				if(isset($staging[$hash])
 					&& erasedataStagingIdentityStillMatches($staging[$hash]))
 				{
 					$bound[$hash] = true;
 					continue;
 				}
-				if($started || isset($final[$hash][$generation]))
-					continue;
+				if($started || isset($final[$hash][$generation])) {
+					continue; }
 				// The path collection is still attempted for a member rTorrent says
 				// is GONE, and deliberately so: a daemon that can still answer for
 				// it lets this tick stage a manifest and finish the payload
@@ -4726,30 +4726,30 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					// A present download cannot be erased without a file list.
 					// For a gone one, step (4) decides whether its marker is
 					// discharged; do not pre-report its obligation as retained.
-					if($presence[$hash] === ERASEDATA_TORRENT_PRESENT)
-						$notes[] = array('paths-unknown', $generation, $members,
-							'obligation-retained', $hash);
+					if($presence[$hash] === ERASEDATA_TORRENT_PRESENT) {
+						$notes[] = ['paths-unknown', $generation, $members,
+							'obligation-retained', $hash]; }
 					continue;
 				}
 				$content = ErasedataManifestCodec::encode($hash, $paths, $force);
 				if($content === false)
 				{
-					$notes[] = array('manifest-encode', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['manifest-encode', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
 				$staged = erasedataStageAdmittedManifest($listPath, $hash, $generation, $content);
 				if($staged === false)
 				{
-					$notes[] = array('staging-write', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['staging-write', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
-				$staging[$hash] = array(
+				$staging[$hash] = [
 					'path' => $staged['path'],
 					'dev' => (string)$staged['stat']['dev'],
 					'ino' => (string)$staged['stat']['ino'],
-				);
+				];
 				$rollback[$hash] = $staging[$hash];
 				$bound[$hash] = true;
 			}
@@ -4758,11 +4758,11 @@ if(!function_exists('erasedataDrainGenerationPass'))
 			// whose complete binding -- identity AND the manifest bytes, decoded
 			// against this exact hash and this exact force -- still stands. It runs
 			// only after a durable `erase-started` record.
-			$erasable = array();
-			foreach($hashes as $hash)
+			$erasable = [];
+			foreach($hashes as $hash) {
 				if($presence[$hash] === ERASEDATA_TORRENT_PRESENT && isset($bound[$hash])
-					&& erasedataStagingManifestStillMatches($staging[$hash], $hash, $force))
-					$erasable[] = $hash;
+					&& erasedataStagingManifestStillMatches($staging[$hash], $hash, $force)) {
+					$erasable[] = $hash; } }
 			// The producer re-checks its held descriptor immediately before its own
 			// d.erase; recovery owes the identical re-check. A descriptor that no
 			// longer names the base path it was opened on proves nothing any more, so
@@ -4772,22 +4772,22 @@ if(!function_exists('erasedataDrainGenerationPass'))
 			// tested with array_key_exists() rather than isset().
 			if($force === 2)
 			{
-				$ready = array();
-				foreach($erasable as $hash)
+				$ready = [];
+				foreach($erasable as $hash) {
 					if(array_key_exists($hash, $capabilities) && isset($collected[$hash])
 						&& is_array($collected[$hash])
 						&& erasedataRemovalCapabilityStillMatches($collected[$hash],
-							$capabilities[$hash], $filesystem))
-						$ready[] = $hash;
+							$capabilities[$hash], $filesystem)) {
+						$ready[] = $hash; }
 					else
 					{
 						$refusedCapability[$hash] = true;
-						$notes[] = array('descriptor-unavailable', $generation, $members,
-							'obligation-retained-nothing-erased', $hash);
-					}
+						$notes[] = ['descriptor-unavailable', $generation, $members,
+							'obligation-retained-nothing-erased', $hash];
+					} }
 				$erasable = $ready;
 			}
-			$classified = array();
+			$classified = [];
 			// Whether any JOURNAL record written by THIS pass became durable. It
 			// decides, at step (5), whether the staging step (2) wrote is bound by
 			// anything at all -- and it can only ever be raised here, because the
@@ -4805,8 +4805,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				{
 					erasedataRollbackAdmittedStaging($rollback, $filesystem);
 					erasedataReleaseAdmissionLocks($stateLock, $locks);
-					$notes[] = array('erase-started-write', $generation, $members,
-						'nothing-erased-obligations-retained', null);
+					$notes[] = ['erase-started-write', $generation, $members,
+						'nothing-erased-obligations-retained', null];
 					return($result);
 				}
 				$durable = true;
@@ -4814,16 +4814,16 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				// Invariant 2's `E`: individual replies only. A request whose own
 				// success() is false carries no per-command position at all, and a
 				// request the shared builder refused to build was never sent.
-				if($request !== false && $request->success())
-					$classified = erasedataClassifyEraseOutcomes($erasable, $request);
+				if($request !== false && $request->success()) {
+					$classified = erasedataClassifyEraseOutcomes($erasable, $request); }
 			}
 
 			// (4) Settle. A member is published only when it is individually known
 			// gone AND the staging file still is the exact object the journal
 			// captured; its marker is then discharged, which is part of the
 			// obligation and not an afterthought. Everything else is retained.
-			$published = array();
-			$retained = array();
+			$published = [];
+			$retained = [];
 			$unrecoverable = 0;
 			$completed = 0;
 			foreach($hashes as $hash)
@@ -4853,8 +4853,8 @@ if(!function_exists('erasedataDrainGenerationPass'))
 						continue;
 					}
 					$retained[] = $hash;
-					$notes[] = array('marker-retained', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['marker-retained', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
 				// THREE entirely different members arrive here, and calling all of
@@ -4911,23 +4911,23 @@ if(!function_exists('erasedataDrainGenerationPass'))
 						unset($staging[$hash]);
 						$completed++;
 						$published[] = $hash;
-						$notes[] = array('obligation-complete', $generation,
+						$notes[] = ['obligation-complete', $generation,
 							$members, 'download-gone-obligation-already-discharged',
-							$hash);
+							$hash];
 						continue;
 					}
 					if(erasedataDischargePendingMarker($listPath, $hash, $generation))
 					{
 						unset($staging[$hash]);
 						$unrecoverable++;
-						$notes[] = array('obligation-unrecoverable', $generation,
+						$notes[] = ['obligation-unrecoverable', $generation,
 							$members, 'download-gone-no-manifest-marker-discharged',
-							$hash);
+							$hash];
 						continue;
 					}
 					$retained[] = $hash;
-					$notes[] = array('marker-retained', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['marker-retained', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
 				if(!$gone || !isset($bound[$hash]))
@@ -4943,10 +4943,10 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					// shape would not have been matched either. Its record binds
 					// nothing, which is what is reported.
 					if($presence[$hash] !== ERASEDATA_TORRENT_UNKNOWN
-						&& !isset($refusedCapability[$hash]))
-						$notes[] = array(isset($bound[$hash])
+						&& !isset($refusedCapability[$hash])) {
+						$notes[] = [isset($bound[$hash])
 							? 'erase-unresolved' : 'staging-unbound',
-							$generation, $members, 'obligation-retained', $hash);
+							$generation, $members, 'obligation-retained', $hash]; }
 					continue;
 				}
 				// false: the note below classifies this refusal and goes through
@@ -4958,15 +4958,15 @@ if(!function_exists('erasedataDrainGenerationPass'))
 						$hash, $filesystem, false))
 				{
 					$retained[] = $hash;
-					$notes[] = array('publish-refused', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['publish-refused', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
 				if(!erasedataDischargePendingMarker($listPath, $hash, $generation))
 				{
 					$retained[] = $hash;
-					$notes[] = array('marker-retained', $generation, $members,
-						'obligation-retained', $hash);
+					$notes[] = ['marker-retained', $generation, $members,
+						'obligation-retained', $hash];
 					continue;
 				}
 				$published[] = $hash;
@@ -4994,13 +4994,13 @@ if(!function_exists('erasedataDrainGenerationPass'))
 					// false only when nothing was erasable, so nothing was erased
 					// under any of these objects, and an already published one is a
 					// path that no longer exists and is left alone by identity.
-					if(!$durable)
-						erasedataRollbackAdmittedStaging($rollback, $filesystem);
-					$notes[] = array('journal-write', $generation, $members,
-						'published-'.count($published).'-retained-'.count($retained), null);
+					if(!$durable) {
+						erasedataRollbackAdmittedStaging($rollback, $filesystem); }
+					$notes[] = ['journal-write', $generation, $members,
+						'published-'.count($published).'-retained-'.count($retained), null];
 				}
 			}
-			else if(($unrecoverable || $completed) && !count($retained)
+			elseif(($unrecoverable || $completed) && !count($retained)
 				&& !count($staging) && isset($state['journal'][$generation]))
 			{
 				// Every binding this record ever had is discharged -- whether it
@@ -5009,22 +5009,22 @@ if(!function_exists('erasedataDrainGenerationPass'))
 				// keeping the queue un-retirable. Dropping it here rather than
 				// leaving it for the next prune costs nothing and closes the tick.
 				unset($state['journal'][$generation]);
-				if(!erasedataWriteDrainState($listPath, $state))
-					$notes[] = array('journal-write', $generation, $members,
-						'unrecoverable-'.$unrecoverable.'-complete-'.$completed, null);
+				if(!erasedataWriteDrainState($listPath, $state)) {
+					$notes[] = ['journal-write', $generation, $members,
+						'unrecoverable-'.$unrecoverable.'-complete-'.$completed, null]; }
 			}
 			erasedataReleaseAdmissionLocks($stateLock, $locks);
-			if(count($retained))
-				$notes[] = array('drain-unresolved', $generation, $members,
-					'published-'.count($published).'-retained-'.count($retained), null);
+			if(count($retained)) {
+				$notes[] = ['drain-unresolved', $generation, $members,
+					'published-'.count($published).'-retained-'.count($retained), null]; }
 			// `cancelled` and `unrecoverable` are NOT the same outcome and are not
 			// summed into one field. A cancelled member is a `prepared` staging
 			// released with nothing erased and its obligation intact to re-admit;
 			// an unrecoverable one is an obligation that ended undischargeable.
 			// Reporting them in one number made a loss read as a tidy rollback.
-			return(array('published' => count($published),
+			return(['published' => count($published),
 				'retained' => count($retained), 'cancelled' => 0,
-				'unrecoverable' => $unrecoverable));
+				'unrecoverable' => $unrecoverable]);
 		}
 		finally
 		{
@@ -5070,8 +5070,8 @@ if(!function_exists('erasedataClassifyRetirementCandidate'))
 	// like emptiness -- the one mistake this function exists to prevent.
 	function erasedataClassifyRetirementCandidate($name)
 	{
-		if(!is_string($name) || $name === '' || $name === '.' || $name === '..')
-			return(false);
+		if(!is_string($name) || $name === '' || $name === '.' || $name === '..') {
+			return(false); }
 		// The plugin's own control files. Every one of them is either
 		// dot-prefixed or ends in .lock, so none can collide with a manifest,
 		// a marker or a staging object.
@@ -5079,35 +5079,35 @@ if(!function_exists('erasedataClassifyRetirementCandidate'))
 			|| $name === ERASEDATA_DRAIN_STATE_NAME
 			|| $name === ERASEDATA_DRAIN_STATE_LOCK_NAME
 			|| $name === ERASEDATA_DRAIN_WORKER_LOCK_NAME
-			|| $name === ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME)
-			return(false);
+			|| $name === ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME) {
+			return(false); }
 		// Queue admission attests this finite native infrastructure before any
 		// retirement scan; a dead probe is not a deletion obligation.
-		if(erasedataRenameProbeName($name)) return(false);
-		if(preg_match('/^[0-9A-Fa-f]{40}\.lock$/D', $name) === 1)
-			return(false);
+		if(erasedataRenameProbeName($name)) { return(false); }
+		if(preg_match('/^[0-9A-Fa-f]{40}\.lock$/D', $name) === 1) {
+			return(false); }
 		// Residue of an interrupted durable write: erasedataWriteDurableFile()
 		// stages at .<final name>.<token>.tmp, deliberately outside the
 		// manifest grammar. The writer removes its own staging on every failure
 		// it survives, so one that is still here outlived a process -- which is
 		// uncertainty, not emptiness.
-		if(substr($name, 0, 1) === '.')
-			return('residue');
-		if(erasedataCleanupArtifactNameParts($name) !== false)
-			return('cleanup');
-		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\.pending$/D', $name) === 1)
-			return('pending');
-		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\..+\.tmp$/D', $name) === 1)
-			return('staging');
-		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\..+\.list$/D', $name) === 1)
-			return('final');
+		if(substr($name, 0, 1) === '.') {
+			return('residue'); }
+		if(erasedataCleanupArtifactNameParts($name) !== false) {
+			return('cleanup'); }
+		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\.pending$/D', $name) === 1) {
+			return('pending'); }
+		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\..+\.tmp$/D', $name) === 1) {
+			return('staging'); }
+		if(preg_match('/^[0-9A-Fa-f]{40}\.[0-9a-f]{16}\..+\.list$/D', $name) === 1) {
+			return('final'); }
 		// A bare <hash>.list carries no generation, so it acknowledges nothing
 		// -- but it is still a published manifest the collector owes a payload
 		// deletion for, and the queue is not empty while one stands.
-		if(preg_match('/^[0-9A-Fa-f]{40}\.list$/D', $name) === 1)
-			return('final');
-		if(preg_match('/^[0-9A-Fa-f]{40}\./D', $name) === 1)
-			return('malformed');
+		if(preg_match('/^[0-9A-Fa-f]{40}\.list$/D', $name) === 1) {
+			return('final'); }
+		if(preg_match('/^[0-9A-Fa-f]{40}\./D', $name) === 1) {
+			return('malformed'); }
 		return('unknown');
 	}
 }
@@ -5128,28 +5128,28 @@ if(!function_exists('erasedataRetirementScan'))
 	function erasedataRetirementScan(array $dependencies)
 	{
 		$listPath = isset($dependencies['listPath']) ? $dependencies['listPath'] : null;
-		$scan = array(
+		$scan = [
 			'empty' => false,
 			'candidates' => 0,
 			'unreadable' => true,
-			'classes' => array('pending' => 0, 'staging' => 0, 'final' => 0,
-				'cleanup' => 0, 'journal' => 0, 'residue' => 0, 'malformed' => 0, 'unknown' => 0),
-		);
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return($scan);
+			'classes' => ['pending' => 0, 'staging' => 0, 'final' => 0,
+				'cleanup' => 0, 'journal' => 0, 'residue' => 0, 'malformed' => 0, 'unknown' => 0],
+		];
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return($scan); }
 		clearstatcache();
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return($scan);
+		if(!is_array($entries)) {
+			return($scan); }
 		$scan['unreadable'] = false;
 		foreach($entries as $entry)
 		{
 			$class = erasedataClassifyRetirementCandidate($entry);
 			if(erasedataRenameProbeName($entry)
-				&& !erasedataRenameProbeWorkspaceValid($listPath.'/'.$entry, erasedataEffectiveUid()))
-				$class = 'residue';
-			if($class === false)
-				continue;
+				&& !erasedataRenameProbeWorkspaceValid($listPath.'/'.$entry, erasedataEffectiveUid())) {
+				$class = 'residue'; }
+			if($class === false) {
+				continue; }
 			$scan['classes'][$class]++;
 			$scan['candidates']++;
 			// Hash locks persist after collection to preserve flock identity.
@@ -5212,25 +5212,25 @@ if(!function_exists('erasedataRetirementRun'))
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
 			|| $key === false)
 		{
-			$notes[] = array('retire-user', null, null, 'schedule-retained', null);
+			$notes[] = ['retire-user', null, null, 'schedule-retained', null];
 			return(false);
 		}
 		// A queue directory that does not exist was never armed by anybody, so
 		// there is nothing here to retire and nothing to report.
-		if(!is_dir($listPath))
-			return(false);
+		if(!is_dir($listPath)) {
+			return(false); }
 		$stateLock = erasedataAcquireDrainStateLock($listPath);
 		if(!is_resource($stateLock))
 		{
-			$notes[] = array('retire-state-lock', null, null, 'schedule-retained', null);
+			$notes[] = ['retire-state-lock', null, null, 'schedule-retained', null];
 			return(false);
 		}
 		$state = erasedataReadDrainState($listPath);
 		if(!is_array($state))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-state-unreadable', null, null,
-				'schedule-retained', null);
+			$notes[] = ['retire-state-unreadable', null, null,
+				'schedule-retained', null];
 			return(false);
 		}
 		// This user's own queue, or one nobody has ever claimed. '' is a real
@@ -5238,8 +5238,8 @@ if(!function_exists('erasedataRetirementRun'))
 		if(!erasedataDrainStateBelongsTo($state, $user))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-user-mismatch', $state['generation'], null,
-				'schedule-retained', null);
+			$notes[] = ['retire-user-mismatch', $state['generation'], null,
+				'schedule-retained', null];
 			return(false);
 		}
 		// Nothing was ever admitted on this queue, so this user owns no drain
@@ -5256,8 +5256,8 @@ if(!function_exists('erasedataRetirementRun'))
 		if($state['generation'] === ERASEDATA_DRAIN_ZERO_GENERATION)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-unarmed', $state['generation'], null,
-				'no-generation-was-ever-admitted-nothing-to-retire', null);
+			$notes[] = ['retire-unarmed', $state['generation'], null,
+				'no-generation-was-ever-admitted-nothing-to-retire', null];
 			return(false);
 		}
 		// A STABLE generation: the arm completed, and a really started guarded
@@ -5269,8 +5269,8 @@ if(!function_exists('erasedataRetirementRun'))
 			|| $state['acknowledged'] !== $state['generation'])
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array('retire-unstable', $state['generation'], null,
-				'schedule-retained-admission-in-flight', null);
+			$notes[] = ['retire-unstable', $state['generation'], null,
+				'schedule-retained-admission-in-flight', null];
 			return(false);
 		}
 		// Resolved journal records go FIRST, durably, under this same lock.
@@ -5284,21 +5284,21 @@ if(!function_exists('erasedataRetirementRun'))
 		// observe the emptiness it exists to act on. It drops only records that
 		// bind nothing at all (see erasedataPruneResolvedJournalRecords) and it
 		// runs before the scan because the scan re-reads the durable state.
-		$abandoned = array();
+		$abandoned = [];
 		$pruned = erasedataPruneResolvedJournalRecords($listPath, $state, $abandoned);
 		if($pruned['journal'] !== $state['journal'])
 		{
 			if(!erasedataWriteDrainState($listPath, $pruned))
 			{
 				erasedataReleaseDrainStateLock($stateLock);
-				$notes[] = array('retire-prune-write', $state['generation'],
-					count($state['journal']), 'schedule-retained', null);
+				$notes[] = ['retire-prune-write', $state['generation'],
+					count($state['journal']), 'schedule-retained', null];
 				return(false);
 			}
 			$state = $pruned;
-			foreach($abandoned as $dropped => $phase)
-				$notes[] = array('journal-abandoned', (string)$dropped, 0,
-					'record-bound-nothing-left-dropped-from-'.$phase, null);
+			foreach($abandoned as $dropped => $phase) {
+				$notes[] = ['journal-abandoned', (string)$dropped, 0,
+					'record-bound-nothing-left-dropped-from-'.$phase, null]; }
 		}
 		// FRESH, and taken after the lock: a scan from before it describes a
 		// queue a producer may already have added to.
@@ -5306,9 +5306,9 @@ if(!function_exists('erasedataRetirementRun'))
 		if($scan['empty'] !== true)
 		{
 			erasedataReleaseDrainStateLock($stateLock);
-			$notes[] = array($scan['unreadable'] ? 'retire-scan-uncertain'
+			$notes[] = [$scan['unreadable'] ? 'retire-scan-uncertain'
 				: 'retire-refused', $state['generation'], $scan['candidates'],
-				'schedule-retained-obligations-outstanding', null);
+				'schedule-retained-obligations-outstanding', null];
 			return(false);
 		}
 		// Durable first, in this exact order, and only then the RPC.
@@ -5318,8 +5318,8 @@ if(!function_exists('erasedataRetirementRun'))
 			if(!erasedataWriteDrainState($listPath, $state))
 			{
 				erasedataReleaseDrainStateLock($stateLock);
-				$notes[] = array('retire-settle-write', $state['generation'], 0,
-					'schedule-retained', null);
+				$notes[] = ['retire-settle-write', $state['generation'], 0,
+					'schedule-retained', null];
 				return(false);
 			}
 		}
@@ -5329,8 +5329,8 @@ if(!function_exists('erasedataRetirementRun'))
 			if(!erasedataWriteDrainState($listPath, $state))
 			{
 				erasedataReleaseDrainStateLock($stateLock);
-				$notes[] = array('retire-disarm-write', $state['generation'], 0,
-					'schedule-retained', null);
+				$notes[] = ['retire-disarm-write', $state['generation'], 0,
+					'schedule-retained', null];
 				return(false);
 			}
 		}
@@ -5345,8 +5345,8 @@ if(!function_exists('erasedataRetirementRun'))
 		{
 			erasedataReleaseDrainStateLock($stateLock);
 			// The durable settled/disarmed writes stand for a later retry.
-			$notes[] = array('retire-remove-refused', $state['generation'], 0,
-				'durable-disarm-stands-removal-retried', null);
+			$notes[] = ['retire-remove-refused', $state['generation'], 0,
+				'durable-disarm-stands-removal-retried', null];
 			return(false);
 		}
 		if(isset($state['legacy_rescue']))
@@ -5356,9 +5356,9 @@ if(!function_exists('erasedataRetirementRun'))
 			if(!$request->success() || $request->fault)
 			{
 				erasedataReleaseDrainStateLock($stateLock);
-				$notes[] = array('retire-rescue-remove-refused',
+				$notes[] = ['retire-rescue-remove-refused',
 					$state['generation'], 0,
-					'durable-disarm-stands-removal-retried', null);
+					'durable-disarm-stands-removal-retried', null];
 				return(false);
 			}
 		}
@@ -5368,9 +5368,9 @@ if(!function_exists('erasedataRetirementRun'))
 			if(!erasedataWriteDrainState($listPath, $state))
 			{
 				erasedataReleaseDrainStateLock($stateLock);
-				$notes[] = array('retire-rescue-state-write',
+				$notes[] = ['retire-rescue-state-write',
 					$state['generation'], 0,
-					'keys-removed-rescue-intent-retained');
+					'keys-removed-rescue-intent-retained'];
 				return(false);
 			}
 		}
@@ -5404,27 +5404,27 @@ if(!function_exists('erasedataNoAdmissionHoldsThisQueue'))
 	function erasedataNoAdmissionHoldsThisQueue($listPath)
 	{
 		if(!is_string($listPath) || $listPath === ''
-			|| strpos($listPath, "\0") !== false)
-			return(false);
+			|| strpos($listPath, "\0") !== false) {
+			return(false); }
 		clearstatcache(true, $listPath);
-		if(!is_dir($listPath) || !is_readable($listPath))
-			return(false);
+		if(!is_dir($listPath) || !is_readable($listPath)) {
+			return(false); }
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return(false);
+		if(!is_array($entries)) {
+			return(false); }
 		foreach($entries as $entry)
 		{
-			if(preg_match('/^[0-9A-Fa-f]{40}\.lock$/D', $entry) !== 1)
-				continue;
+			if(preg_match('/^[0-9A-Fa-f]{40}\.lock$/D', $entry) !== 1) {
+				continue; }
 			$handle = @fopen($listPath.'/'.$entry, 'c');
-			if($handle === false)
-				return(false);
+			if($handle === false) {
+				return(false); }
 			$free = @flock($handle, LOCK_EX | LOCK_NB);
-			if($free)
-				@flock($handle, LOCK_UN);
+			if($free) {
+				@flock($handle, LOCK_UN); }
 			@fclose($handle);
-			if(!$free)
-				return(false);
+			if(!$free) {
+				return(false); }
 		}
 		return(true);
 	}
@@ -5494,8 +5494,8 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		$log = isset($dependencies['log']) ? $dependencies['log'] : null;
 		$context = isset($dependencies['context']) && $dependencies['context'] === 'headless'
 			? 'headless-recovery' : 'startup-recovery';
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return(false);
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return(false); }
 		if(erasedataDrainScheduleKey($user) === false)
 		{
 			erasedataDrainDiagnostic($log, 'rearm-user', null, null,
@@ -5596,10 +5596,10 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 			// function makes that a reader would otherwise have no record of:
 			// an admission really did die between its registration and its
 			// compare-and-swap.
-			if($abandonedArm)
+			if($abandonedArm) {
 				erasedataDrainDiagnostic($log, 'rearm-arming-abandoned',
 					$state['generation'], 0,
-					'nothing-owed-no-producer-holds-the-queue-disarmed');
+					'nothing-owed-no-producer-holds-the-queue-disarmed'); }
 			return(true);
 		}
 		// Guard (2): something is owed, but no generation was ever admitted on
@@ -5651,8 +5651,8 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 						'headless-recovery-refused-daemon-identity-unknown');
 					return(false);
 				}
-				if($marker === true && !isset($state['legacy_marker']))
-					$rescue = true;
+				if($marker === true && !isset($state['legacy_marker'])) {
+					$rescue = true; }
 				if($marker === true && !$rescue && $state['phase'] === 'armed')
 				{
 					erasedataReleaseDrainStateLock($stateLock);
@@ -5660,9 +5660,9 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 				}
 			}
 		}
-		if($rescue)
+		if($rescue) {
 			$command = erasedataDrainScheduleCommand($user,
-				ERASEDATA_DRAIN_INTERVAL, true);
+				ERASEDATA_DRAIN_INTERVAL, true); }
 		if(!$legacy && $command !== false && $context === 'headless-recovery')
 		{
 			// Reuse the already encoded arguments, including the target.
@@ -5734,8 +5734,8 @@ if(!function_exists('erasedataRearmDrainScheduleRun'))
 		// for it would orphan every marker and journal record bound to the old.
 		$state['user'] = $user;
 		$state['phase'] = 'armed';
-		if($legacy)
-			$state['legacy_marker'] = true;
+		if($legacy) {
+			$state['legacy_marker'] = true; }
 		$written = erasedataWriteDrainState($listPath, $state);
 		erasedataReleaseDrainStateLock($stateLock);
 		if(!$written)
@@ -5762,11 +5762,11 @@ if(!function_exists('erasedataRearmDrainSchedule'))
 		// 'filesystem' key here would be built on every full web-interface load
 		// and thrown away unread -- the same shape as the 'forceEnabled' key
 		// that was already removed from the admission dependencies.
-		return(erasedataRearmDrainScheduleRun(array(
+		return(erasedataRearmDrainScheduleRun([
 			'listPath' => $listPath,
 			'user' => User::getUser(),
-			'log' => array('FileUtil', 'toLog'),
-		)));
+			'log' => ['FileUtil', 'toLog'],
+		]));
 	}
 }
 
@@ -5785,8 +5785,8 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		$filesystem = isset($dependencies['filesystem'])
 			&& $dependencies['filesystem'] instanceof ErasedataFilesystemOps
 			? $dependencies['filesystem'] : new ErasedataFilesystemOps();
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return(false);
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return(false); }
 		// A non-string, oversized or NUL-carrying user has no schedule key, so
 		// the child cannot tell whose queue it was started for. It admits no
 		// worker work at all. '' is NOT one of those: it is the ordinary user of
@@ -5811,11 +5811,11 @@ if(!function_exists('erasedataDrainWorkerRun'))
 		// durable state to carry a memory in, so there is nothing to compare
 		// against and a broken queue must not be able to go quiet.
 		$acknowledgement = erasedataAcknowledgeDrainGeneration($listPath, $user, $log);
-		if(!is_array($acknowledgement))
-			return(false);
+		if(!is_array($acknowledgement)) {
+			return(false); }
 		$generation = $acknowledgement['generation'];
 		$memory = erasedataDrainReportMemory($acknowledgement['state']);
-		$fresh = array();
+		$fresh = [];
 
 		// (2) Worker admission, NONBLOCKING. Contention is a bounded classified
 		// consequence; it says nothing about the current owner's age or health.
@@ -5825,9 +5825,9 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			ERASEDATA_DRAIN_WORKER_LOCK_NAME, true);
 		if(!is_resource($workerLock))
 		{
-			erasedataDrainReportGroup($log, 'tick', array(array('worker-busy',
+			erasedataDrainReportGroup($log, 'tick', [['worker-busy',
 				$generation, null, 'worker-lock-unavailable-nothing-consumed',
-				null)), $memory, $fresh);
+				null]], $memory, $fresh);
 			// A tick that got no further re-evaluated nothing but itself, so it
 			// KEEPS what the last complete tick remembered and only adds its
 			// own; replacing the memory here would make the owner's own
@@ -5837,9 +5837,9 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			// A tick that was refused worker admission retires nothing: the
 			// owner it just declined to displace is the actor whose evidence
 			// the decision would have to be made on.
-			return(array('acknowledged' => $generation, 'admitted' => false,
+			return(['acknowledged' => $generation, 'admitted' => false,
 				'generations' => 0, 'published' => 0, 'retained' => 0,
-				'cancelled' => 0, 'unrecoverable' => 0, 'retired' => false));
+				'cancelled' => 0, 'unrecoverable' => 0, 'retired' => false]);
 		}
 
 		// (3) The scheduler lock, BLOCKING: the drain tick waits for the
@@ -5848,8 +5848,8 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			ERASEDATA_DRAIN_SCHEDULER_LOCK_NAME, false);
 		if(!is_resource($schedulerLock))
 		{
-			erasedataDrainReportGroup($log, 'tick', array(array('scheduler-lock',
-				$generation, null, 'nothing-consumed', null)), $memory, $fresh);
+			erasedataDrainReportGroup($log, 'tick', [['scheduler-lock',
+				$generation, null, 'nothing-consumed', null]], $memory, $fresh);
 			erasedataPersistDrainReport($listPath, $user, array_merge($memory, $fresh));
 			erasedataReleaseDrainPassLock($workerLock);
 			return(false);
@@ -5861,8 +5861,8 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			$obligations = erasedataPendingObligations($listPath);
 			if(!is_array($obligations))
 			{
-				erasedataDrainReportGroup($log, 'tick', array(array('queue-unreadable',
-					$generation, null, 'nothing-consumed', null)), $memory, $fresh);
+				erasedataDrainReportGroup($log, 'tick', [['queue-unreadable',
+					$generation, null, 'nothing-consumed', null]], $memory, $fresh);
 				erasedataPersistDrainReport($listPath, $user, array_merge($memory, $fresh));
 				return(false);
 			}
@@ -5873,7 +5873,7 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			$unrecoverable = 0;
 			foreach($jobs as $jobGeneration => $job)
 			{
-				$notes = array();
+				$notes = [];
 				$outcome = erasedataDrainGenerationPass($listPath, $user,
 					(string)$jobGeneration, $job, $filesystem, $notes,
 					$acknowledgement['state']);
@@ -5908,24 +5908,24 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			//
 			// The memory covers the pending/journal union, and serialization keeps
 			// named groups before generation keys if truncation is ever needed.
-			$retainNotes = array('manifest' => array(), 'cleanup' => array());
+			$retainNotes = ['manifest' => [], 'cleanup' => []];
 			$collector->reportRetentionsTo(
 				function($kind, $hash, $generation, $reason) use (&$retainNotes) {
-					if(!isset($retainNotes[$kind]))
-						return;
-					$retainNotes[$kind][] = array($kind.'-retained', $generation, 0,
-						$reason, $hash, null);
+					if(!isset($retainNotes[$kind])) {
+						return; }
+					$retainNotes[$kind][] = [$kind.'-retained', $generation, 0,
+						$reason, $hash, null];
 				});
 			$collector->run($listPath);
-			foreach($retainNotes as $kind => $notes)
-				erasedataDrainReportGroup($log, $kind, $notes, $memory, $fresh);
+			foreach($retainNotes as $kind => $notes) {
+				erasedataDrainReportGroup($log, $kind, $notes, $memory, $fresh); }
 
 			// (6) Retirement, on this tick's own evidence and nobody else's. It is
 			// wired HERE, in the one production tick, because a retirement nothing
 			// calls is a schedule that fires for ever over an empty queue; and it
 			// is given this tick's report memory so a refusal that has not changed
 			// says nothing on the thousandth tick either.
-			$retireNotes = array();
+			$retireNotes = [];
 			$retired = erasedataRetirementRun($dependencies, $retireNotes);
 			erasedataDrainReportGroup($log, 'retire', $retireNotes, $memory, $fresh);
 			// A complete tick re-evaluated every physical job the queue owes, so
@@ -5933,10 +5933,10 @@ if(!function_exists('erasedataDrainWorkerRun'))
 			// gone away is forgotten, and if it ever comes back it is reported
 			// again at once rather than staying suppressed for ever.
 			erasedataPersistDrainReport($listPath, $user, $fresh);
-			return(array('acknowledged' => $generation, 'admitted' => true,
+			return(['acknowledged' => $generation, 'admitted' => true,
 				'generations' => count($jobs), 'published' => $published,
 				'retained' => $retained, 'cancelled' => $cancelled,
-				'unrecoverable' => $unrecoverable, 'retired' => $retired));
+				'unrecoverable' => $unrecoverable, 'retired' => $retired]);
 		}
 		finally
 		{
@@ -5957,12 +5957,12 @@ if(!function_exists('erasedataDrainWorkerMain'))
 	function erasedataDrainWorkerMain($user)
 	{
 		$listPath = erasedataQueuePath();
-		return(erasedataDrainWorkerRun(array(
+		return(erasedataDrainWorkerRun([
 			'listPath' => $listPath,
 			'user' => $user,
 			'filesystem' => new ErasedataFilesystemOps(),
-			'log' => array('FileUtil', 'toLog'),
-		)) !== false);
+			'log' => ['FileUtil', 'toLog'],
+		]) !== false);
 	}
 }
 
@@ -6022,13 +6022,13 @@ if(!function_exists('erasedataAdmitRemoval'))
 			return(false);
 		}
 		$listPath = erasedataQueuePath();
-		return(erasedataRemovalAdmissionRun(array(
+		return(erasedataRemovalAdmissionRun([
 			'listPath' => $listPath,
 			'user' => User::getUser(),
 			'filesystem' => new ErasedataFilesystemOps(),
-			'log' => array('FileUtil', 'toLog'),
+			'log' => ['FileUtil', 'toLog'],
 			'ackTimeout' => ERASEDATA_DRAIN_ACK_TIMEOUT,
 			'ackPoll' => ERASEDATA_DRAIN_ACK_POLL,
-		), $hashes, $normalizedForce));
+		], $hashes, $normalizedForce));
 	}
 }

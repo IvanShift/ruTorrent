@@ -5,7 +5,7 @@ require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 require_once( 'ffmpeg.php' );
 eval( FileUtil::getPluginConf( 'screenshots' ) );
 
-$ret = array();
+$ret = [];
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 if(isset($input['cmd']))
 {
@@ -21,7 +21,7 @@ if(isset($input['cmd']))
 				$filename = rTorrent::getFilePath($input['hash'], $input['no']);
 				if($filename !== false)
 				{
-					$commands = array();
+					$commands = [];
 					$offs = $st->data['exfrmoffs'];
 					$useWidth = $st->data['exusewidth'];
 					for($i=0; $i<$st->data['exfrmcount']; $i++)
@@ -42,14 +42,14 @@ if(isset($input['cmd']))
 						$offs += $st->data['exfrminterval'];
 					}
 					$commands[] = 'chmod a+r "${dir}"/frame*.*';
-					$task = new rTask( array
-					(
+					$task = new rTask( 
+					[
 						'arg' => FileUtil::getFileName($filename),
 						'requester'=>'screenshots',
 						'name'=>'ffmpeg',
 						'hash'=>$input['hash'],
-						'no'=>$input['no']
-					));
+						'no'=>$input['no'],
+					]);
 					$ret = $task->start($commands, rTask::FLG_NO_ERR);
 				}
 			}

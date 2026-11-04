@@ -6,10 +6,10 @@ ignore_user_abort(true);
 set_time_limit(0);
 $val = null;
 $cmd = "get";
-if(isset($_REQUEST['mode']))
-	$cmd = $_REQUEST['mode'];
-if(!in_array($cmd, array('getsettings', 'getfilters', 'getdesc', 'checkfilter'), true))
-	Requests::requirePost();
+if(isset($_REQUEST['mode'])) {
+	$cmd = $_REQUEST['mode']; }
+if(!in_array($cmd, ['getsettings', 'getfilters', 'getdesc', 'checkfilter'], true)) {
+	Requests::requirePost(); }
 $errorsReported = false;
 $mngr = new rRSSManager();
 switch($cmd)
@@ -26,38 +26,38 @@ switch($cmd)
 	case "add":
 	{
 		$lbl = null;
-		if(isset($_REQUEST['label']))
-			$lbl = $_REQUEST['label'];
-		if(isset($_REQUEST['url']))
-			$mngr->add($_REQUEST['url'],$lbl);
+		if(isset($_REQUEST['label'])) {
+			$lbl = $_REQUEST['label']; }
+		if(isset($_REQUEST['url'])) {
+			$mngr->add($_REQUEST['url'],$lbl); }
 		break;
 	}
 	case "addgroup":
 	{
 		$lbl = "RSS Group";
-		if(isset($_REQUEST['label']) && ($_REQUEST['label']!=""))
-			$lbl = $_REQUEST['label'];
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
-		$rssList = array();
+		if(isset($_REQUEST['label']) && ($_REQUEST['label']!="")) {
+			$lbl = $_REQUEST['label']; }
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
+		$rssList = [];
 		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 		{
-			if($parts[0]=="rss")
-				$rssList[] = $parts[1] ?? null;
+			if($parts[0]=="rss") {
+				$rssList[] = $parts[1] ?? null; }
 		}
-		if(isset($_REQUEST['hash']) && ($_REQUEST['hash']!=""))
-			$mngr->changeGroup($_REQUEST['hash'],$lbl,$rssList);
-		else
-			$mngr->addGroup($lbl,$rssList);
+		if(isset($_REQUEST['hash']) && ($_REQUEST['hash']!="")) {
+			$mngr->changeGroup($_REQUEST['hash'],$lbl,$rssList); }
+		else {
+			$mngr->addGroup($lbl,$rssList); }
 		break;
 	}
 	case "edit":
 	{
 		$lbl = "RSS Group";
-		if(isset($_REQUEST['label']) && ($_REQUEST['label']!=""))
-			$lbl = $_REQUEST['label'];
-		if(isset($_REQUEST['rss']) && isset($_REQUEST['url']))
-			$mngr->change($_REQUEST['rss'],$_REQUEST['url'],$lbl);
+		if(isset($_REQUEST['label']) && ($_REQUEST['label']!="")) {
+			$lbl = $_REQUEST['label']; }
+		if(isset($_REQUEST['rss']) && isset($_REQUEST['url'])) {
+			$mngr->change($_REQUEST['rss'],$_REQUEST['url'],$lbl); }
 		break;
 	}
 	case "clearhistory":
@@ -67,10 +67,10 @@ switch($cmd)
 	}
 	case "refresh":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->updateRSS($_REQUEST['rss']);
-		else
-			$mngr->update(true);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->updateRSS($_REQUEST['rss']); }
+		else {
+			$mngr->update(true); }
 		break;
 	}
 	case "get":
@@ -80,38 +80,38 @@ switch($cmd)
 	}
 	case "refreshgroup":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->updateRSSGroup($_REQUEST['rss']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->updateRSSGroup($_REQUEST['rss']); }
 		break;
 	}
 	case "toggle":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->toggleStatus($_REQUEST['rss']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->toggleStatus($_REQUEST['rss']); }
 		break;
 	}
 	case "setgroupstate":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->setStatusGroup($_REQUEST['rss'],$_REQUEST['state']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->setStatusGroup($_REQUEST['rss'],$_REQUEST['state']); }
 		break;
 	}
 	case "remove":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->remove($_REQUEST['rss']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->remove($_REQUEST['rss']); }
 		break;
 	}
 	case "removegroup":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->removeGroup($_REQUEST['rss']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->removeGroup($_REQUEST['rss']); }
 		break;
 	}
 	case "removegroupcontents":
 	{
-		if(isset($_REQUEST['rss']))
-			$mngr->removeGroupContents($_REQUEST['rss']);
+		if(isset($_REQUEST['rss'])) {
+			$mngr->removeGroupContents($_REQUEST['rss']); }
 		break;
 	}
 	case "getfilters":
@@ -130,22 +130,22 @@ switch($cmd)
 		$label = '';
 		$dir = null;
 
-		if(isset($_REQUEST['rss']))
-			$hash = $_REQUEST['rss'];
-		if(isset($_REQUEST['pattern']))
-			$pattern = trim($_REQUEST['pattern']);
-		if(isset($_REQUEST['exclude']))
-			$exclude = trim($_REQUEST['exclude']);
-		if(isset($_REQUEST['chktitle']))
-			$checkTitle = $_REQUEST['chktitle'];
-		if(isset($_REQUEST['chkdesc']))
-			$checkDesc = $_REQUEST['chkdesc'];
-		if(isset($_REQUEST['chklink']))
-			$checkLink = $_REQUEST['chklink'];
-		if(isset($_REQUEST['directory']))
-			$dir = $_REQUEST['directory'];
-		if(isset($_REQUEST['label']))
-			$label = $_REQUEST['label'];
+		if(isset($_REQUEST['rss'])) {
+			$hash = $_REQUEST['rss']; }
+		if(isset($_REQUEST['pattern'])) {
+			$pattern = trim($_REQUEST['pattern']); }
+		if(isset($_REQUEST['exclude'])) {
+			$exclude = trim($_REQUEST['exclude']); }
+		if(isset($_REQUEST['chktitle'])) {
+			$checkTitle = $_REQUEST['chktitle']; }
+		if(isset($_REQUEST['chkdesc'])) {
+			$checkDesc = $_REQUEST['chkdesc']; }
+		if(isset($_REQUEST['chklink'])) {
+			$checkLink = $_REQUEST['chklink']; }
+		if(isset($_REQUEST['directory'])) {
+			$dir = $_REQUEST['directory']; }
+		if(isset($_REQUEST['label'])) {
+			$label = $_REQUEST['label']; }
 		$filter = new rRSSFilter( '', $pattern, $exclude, 1, '', 0, 1, $dir, $label, $checkTitle, $checkDesc, $checkLink );
         	$val = $mngr->testFilter($filter,$hash);
         	$errorsReported = true;
@@ -153,8 +153,8 @@ switch($cmd)
 	}
 	case "setfilters":
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 		$flts = new rRSSFilterList();
 		$flt = null;
 		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
@@ -162,134 +162,119 @@ switch($cmd)
 			$value = $parts[1] ?? null;
 			if($parts[0]=="name")
 			{
-				if($flt)
-					$flts->add($flt);
+				if($flt) {
+					$flts->add($flt); }
 				$flt = new rRSSFilter(rawurldecode($value ?? ''));
 			}
-			else
-			if($parts[0]=="pattern")
+			elseif($parts[0]=="pattern")
 			{
-				if($flt)
-					$flt->pattern = trim(rawurldecode($value ?? ''));
+				if($flt) {
+					$flt->pattern = trim(rawurldecode($value ?? '')); }
 			}
-			else
-			if($parts[0]=="exclude")
+			elseif($parts[0]=="exclude")
 			{
-				if($flt)
-					$flt->exclude = trim(rawurldecode($value ?? ''));
+				if($flt) {
+					$flt->exclude = trim(rawurldecode($value ?? '')); }
 			}
-			else
-			if($parts[0]=="enabled")
+			elseif($parts[0]=="enabled")
 			{
-				if($flt)
-					$flt->enabled = $value;
+				if($flt) {
+					$flt->enabled = $value; }
 			}
-			else
-			if($parts[0]=="no")
+			elseif($parts[0]=="no")
 			{
-				if($flt)
-					$flt->no = $value;
+				if($flt) {
+					$flt->no = $value; }
 			}
-			else
-			if($parts[0]=="interval")
+			elseif($parts[0]=="interval")
 			{
-				if($flt)
-					$flt->interval = $value;
+				if($flt) {
+					$flt->interval = $value; }
 			}
-			else
-			if($parts[0]=="hash")
+			elseif($parts[0]=="hash")
 			{
-				if($flt)
-					$flt->rssHash = $value;
+				if($flt) {
+					$flt->rssHash = $value; }
 			}
-			else
-			if($parts[0]=="throttle")
+			elseif($parts[0]=="throttle")
 			{
-				if($flt)
-					$flt->throttle = $value;
+				if($flt) {
+					$flt->throttle = $value; }
 			}
-			else
-			if($parts[0]=="ratio")
+			elseif($parts[0]=="ratio")
 			{
-				if($flt)
-					$flt->ratio = $value;
+				if($flt) {
+					$flt->ratio = $value; }
 			}
-			else
-			if($parts[0]=="start")
+			elseif($parts[0]=="start")
 			{
-				if($flt)
-					$flt->start = $value;
+				if($flt) {
+					$flt->start = $value; }
 			}
 			if($parts[0]=="addPath")
 			{
-				if($flt)
-					$flt->addPath = $value;
+				if($flt) {
+					$flt->addPath = $value; }
 			}
-			else
-			if($parts[0]=="dir")
+			elseif($parts[0]=="dir")
 			{
-				if($flt)
-					$flt->directory = rawurldecode($value ?? '');
+				if($flt) {
+					$flt->directory = rawurldecode($value ?? ''); }
 			}
-			else
-			if($parts[0]=="label")
+			elseif($parts[0]=="label")
 			{
-				if($flt)
-					$flt->label = rawurldecode($value ?? '');
+				if($flt) {
+					$flt->label = rawurldecode($value ?? ''); }
 			}
-			else
-			if($parts[0]=="chktitle")
+			elseif($parts[0]=="chktitle")
 			{
-				if($flt)
-					$flt->titleCheck = $value;
+				if($flt) {
+					$flt->titleCheck = $value; }
 			}
-			else
-			if($parts[0]=="chkdesc")
+			elseif($parts[0]=="chkdesc")
 			{
-				if($flt)
-					$flt->descCheck = $value;
+				if($flt) {
+					$flt->descCheck = $value; }
 			}
-			else
-			if($parts[0]=="chklink")
+			elseif($parts[0]=="chklink")
 			{
-				if($flt)
-					$flt->linkCheck = $value;
+				if($flt) {
+					$flt->linkCheck = $value; }
 			}
 		}
-		if($flt)
-			$flts->add($flt);
+		if($flt) {
+			$flts->add($flt); }
 		$mngr->setFilters($flts);
 		break;
 	}
 	case "clearfiltertime":
 	{
-	        if(isset($_REQUEST['no']))
-			$mngr->clearFilterTime( $_REQUEST['no'] );
-		$val = array();
+	        if(isset($_REQUEST['no'])) {
+			$mngr->clearFilterTime( $_REQUEST['no'] ); }
+		$val = [];
 		break;
 	}
 	case "getdesc":
 	{
 		$val = '';
-		if(isset($_REQUEST['rss']) && isset($_REQUEST['href']))
-			$val = $mngr->getDescription($_REQUEST['rss'],$_REQUEST['href']);
+		if(isset($_REQUEST['rss']) && isset($_REQUEST['href'])) {
+			$val = $mngr->getDescription($_REQUEST['rss'],$_REQUEST['href']); }
 		break;
 	}
 	case "mark":
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 		if(isset($_REQUEST['state']))
 		{
-			$urls = array();
-			$times = array();
+			$urls = [];
+			$times = [];
 			foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 			{
-				if($parts[0]=="url")
-					$urls[] = rawurldecode($parts[1] ?? '');
-				else
-				if($parts[0]=="time")
-					$times[] = $parts[1] ?? null;
+				if($parts[0]=="url") {
+					$urls[] = rawurldecode($parts[1] ?? ''); }
+				elseif($parts[0]=="time") {
+					$times[] = $parts[1] ?? null; }
 			}
 			$mngr->setHistoryState( $urls, $times, $_REQUEST['state'] );
 		}
@@ -297,38 +282,33 @@ switch($cmd)
 	}
 	case "loadtorrents":
 	{
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 		set_time_limit(0);
 		$lbl = null;
 		$dir = null;
 		$isStart = true;
 		$isAddPath = true;
 		$curRSS = null;
-		$rssArray = array();
+		$rssArray = [];
 		foreach(Utility::legacyOrderedFormPairs($HTTP_RAW_POST_DATA, false) as $parts)
 		{
-			if($parts[0]=="torrents_start_stopped")
-				$isStart = false;
-			else
-			if($parts[0]=="not_add_path")
-				$isAddPath = false;
-			else
-			if($parts[0]=="dir_edit")
-				$dir = rawurldecode($parts[1] ?? '');
-			else
-			if($parts[0]=="label")
-				$lbl = rawurldecode($parts[1] ?? '');
-			else
-			if($parts[0]=="rss")
+			if($parts[0]=="torrents_start_stopped") {
+				$isStart = false; }
+			elseif($parts[0]=="not_add_path") {
+				$isAddPath = false; }
+			elseif($parts[0]=="dir_edit") {
+				$dir = rawurldecode($parts[1] ?? ''); }
+			elseif($parts[0]=="label") {
+				$lbl = rawurldecode($parts[1] ?? ''); }
+			elseif($parts[0]=="rss") {
 				// A request may only select an existing feed, not an arbitrary cache key.
 				$curRSS = (isset($parts[1]) && $mngr->rssList->isExist($parts[1]))
-					? $parts[1] : null;
-			else
-			if(($parts[0]=="url") && $curRSS)
+					? $parts[1] : null; }
+			elseif(($parts[0]=="url") && $curRSS)
 			{
-				if(!array_key_exists($curRSS,$rssArray) || !is_array($rssArray[$curRSS]))
-					$rssArray[$curRSS] = array();
+				if(!array_key_exists($curRSS,$rssArray) || !is_array($rssArray[$curRSS])) {
+					$rssArray[$curRSS] = []; }
 				$rssArray[$curRSS][] = rawurldecode($parts[1] ?? '');
 			}
 		}
@@ -341,8 +321,8 @@ switch($cmd)
 				foreach($urls as $url)
 				{
 					$mngr->getTorrents( $rss, $url, $isStart, $isAddPath, $dir, $lbl, null, null, false );
-					if(WAIT_AFTER_LOADING)
-						sleep(WAIT_AFTER_LOADING);
+					if(WAIT_AFTER_LOADING) {
+						sleep(WAIT_AFTER_LOADING); }
 				}
 			}
 		}
@@ -362,8 +342,8 @@ flush();
 
 if(connection_aborted())
 {
-	if($mngr->isErrorsOccured())
-		$mngr->saveState(false);
+	if($mngr->isErrorsOccured()) {
+		$mngr->saveState(false); }
 }
 else
 {

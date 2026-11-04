@@ -1,8 +1,8 @@
 <?php
 	// Persisted config directories may live outside the application tree.
 	$readEnvironment = static function($name, $fallback = null) {
-		if(array_key_exists($name, $_ENV))
-			return $_ENV[$name];
+		if(array_key_exists($name, $_ENV)) {
+			return $_ENV[$name]; }
 		$value = getenv($name);
 		return $value === false ? $fallback : $value;
 	};
@@ -21,13 +21,13 @@
 	// is held in memory and so has to fit within PHP's memory_limit.
 	$httpMaxResponseLength = 4194304;	// 4 MiB
 	$httpIP = null;				// IP string. Or null for any.
-	$httpProxy = array
-	(
+	$httpProxy = 
+	[
 		'use'	=> false,
 		'proto'	=> 'http',		// 'http' or 'https'
 		'host'	=> 'PROXY_HOST_HERE',
-		'port'	=> 3128
-	);
+		'port'	=> 3128,
+	];
 	// Refuse to fetch URLs that resolve to a private or otherwise non-public
 	// address. Off by default: feeds and torrent links commonly point at an
 	// indexer on localhost or the LAN. Turn it on where the URLs come from
@@ -35,7 +35,7 @@
 	$httpBlockPrivateNetworks = false;
 	// Hosts exempt from the check above, matched against the URL host verbatim,
 	// e.g. array( '127.0.0.1', 'jackett.lan' ).
-	$httpPrivateNetworkAllowlist = array();
+	$httpPrivateNetworkAllowlist = [];
 	// Check the certificate an HTTPS server presents. Earlier releases passed
 	// curl -k on every HTTPS fetch and could not be told not to, so an
 	// indexer with a self-signed or expired certificate worked without anyone
@@ -96,13 +96,13 @@
 	$throttleMaxSpeed = 327625*1024;	// DO NOT EDIT THIS LINE!!! DO NOT COMMENT THIS LINE!!!
 	// Can't be greater then 327625*1024 due to limitation in libtorrent ResourceManager::set_max_upload_unchoked function.
 
-	$pathToExternals = array(
+	$pathToExternals = [
 		"php"	=> '',			// Something like /usr/bin/php. If empty, will be found in PATH.
 		"curl"	=> '',			// Something like /usr/bin/curl. If empty, will be found in PATH.
 		"gzip"	=> '',			// Something like /usr/bin/gzip. If empty, will be found in PATH.
 		"id"	=> '',			// Something like /usr/bin/id. If empty, will be found in PATH.
 		"stat"	=> '',			// Something like /usr/bin/stat. If empty, will be found in PATH.
-	);
+	];
 
 	$localHostedMode = false;		// Set to true if rTorrent is hosted on the SAME machine as ruTorrent
 
@@ -112,15 +112,15 @@
 	$pluginMinification = true; 	// Stable change to reduce loading times by minimizing JavaScript networked
 									// Only recommended to disable when required for debuging purposes
 
-	$localhosts = array(			// list of local interfaces
+	$localhosts = [			// list of local interfaces
 		"::1",
 		"127.0.0.1",
 		"localhost",
-	);
+	];
 
 	$environmentLocalhost = $readEnvironment('RU_LOCALHOSTS', '');
-	if($environmentLocalhost !== '')
-		$localhosts[] = $environmentLocalhost;
+	if($environmentLocalhost !== '') {
+		$localhosts[] = $environmentLocalhost; }
 
 	$profilePath = $readEnvironment('RU_PROFILE_PATH', '../../share');		// Path to user profiles
 	// Environment values are strings; parse the documented octal notation before using it as a file mode.
@@ -131,9 +131,9 @@
 	// stays one entry and trailing whitespace is visible; a mask is four characters, so 32 bounds what
 	// a wrong setting writes to the error log on every request that loads this file.
 	$profileMask = $readEnvironment('RU_PROFILE_MASK', '');
-	if(($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask))
+	if(($profileMask !== '') && !preg_match('/^0?[0-7]{3}$/D', $profileMask)) {
 		error_log('RU_PROFILE_MASK is not three or four octal digits: '
-			.json_encode(substr($profileMask, 0, 32), JSON_INVALID_UTF8_SUBSTITUTE).'; using the 0777 default.');
+			.json_encode(substr($profileMask, 0, 32), JSON_INVALID_UTF8_SUBSTITUTE).'; using the 0777 default.'); }
 	$profileMask = preg_match('/^0?[0-7]{3}$/D', $profileMask) ? intval($profileMask, 8) : 0777;
 						// Both Webserver and rtorrent users must have read-write access to it.
 						// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.
@@ -145,7 +145,7 @@
 	$locale = "UTF8";
 
 	$enableCSRFCheck = false;		// If true then Origin and Referer will be checked
-	$enabledOrigins = array();		// List of enabled domains for CSRF check (only hostnames, without protocols, port etc.).
+	$enabledOrigins = [];		// List of enabled domains for CSRF check (only hostnames, without protocols, port etc.).
 						// Legacy host-only POST exceptions; untrusted forwarded hosts are ignored.
 	// Exact public origins for a proxy that changes Host/scheme, and optional browser extensions.
 	$trustedOrigins = preg_split('/\s*,\s*/', (string) $readEnvironment('RU_TRUSTED_ORIGINS', ''),
@@ -156,5 +156,5 @@
 
 	// Load local deployment overrides if present
 	$configLocalPath = dirname(__FILE__)."/config.local.php";
-	if(is_file($configLocalPath) && is_readable($configLocalPath))
-		require($configLocalPath);
+	if(is_file($configLocalPath) && is_readable($configLocalPath)) {
+		require($configLocalPath); }

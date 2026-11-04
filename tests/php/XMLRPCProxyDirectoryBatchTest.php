@@ -11,17 +11,17 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 function xmlrpcProxyDirectoryBatchResolve($path)
 {
 	$real = @realpath($path);
-	if($real !== false)
-		return $real;
+	if($real !== false) {
+		return $real; }
 	$parts = explode('/', trim($path, '/'));
-	$tail = array();
+	$tail = [];
 	while(count($parts) > 0)
 	{
 		array_unshift($tail, array_pop($parts));
 		$base = '/' . implode('/', $parts);
 		$real = @realpath(($base === '') ? '/' : $base);
-		if($real !== false)
-			return rtrim($real, '/') . '/' . implode('/', $tail);
+		if($real !== false) {
+			return rtrim($real, '/') . '/' . implode('/', $tail); }
 	}
 	return '';
 }
@@ -52,61 +52,6 @@ class XMLRPCProxyDirectoryBatchTest extends TestCase
 		@rmdir($this->root);
 	}
 
-	/**
-	 * The commands the class itself says it confines.
-	 */
-	private function confinedCommands()
-	{
-		$property = new ReflectionProperty('XMLRPCProxy', 'directoryCommands');
-		self::makeAccessible($property);
-		return $property->getValue();
-	}
-
-	private function decide($xml, $withBoundary = true)
-	{
-		$options = $withBoundary
-			? array('directory' => array(
-				'root'    => $this->root,
-				'resolve' => 'xmlrpcProxyDirectoryBatchResolve'))
-			: array();
-		$options['rtorrentVersion'] = 0x1018;
-		return XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $options);
-	}
-
-	private function value($s)
-	{
-		return '<value><string>' . htmlspecialchars($s, ENT_NOQUOTES, 'UTF-8')
-			. '</string></value>';
-	}
-
-	private function multicall($command)
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall</methodName><params>';
-		foreach(array('', 'main', $command) as $p)
-			$xml .= '<param>' . $this->value($p) . '</param>';
-		return $xml . '</params></methodCall>';
-	}
-
-	private function systemMulticall($command)
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
-			. '<params><param><value><array><data><value><struct>'
-			. '<member><name>methodName</name><value><string>load.start</string></value></member>'
-			. '<member><name>params</name><value><array><data>';
-		foreach(array('', 'http://example.invalid/a.torrent', $command) as $p)
-			$xml .= $this->value($p);
-		return $xml . '</data></array></value></member></struct></value></data></array>'
-			. '</value></param></params></methodCall>';
-	}
-
-	private function load($command)
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>';
-		foreach(array('', 'http://example.invalid/a.torrent', $command) as $param)
-			$xml .= '<param>' . $this->value($param) . '</param>';
-		return $xml . '</params></methodCall>';
-	}
-
 	public function testTheConfinedListIsReadable()
 	{
 		$commands = $this->confinedCommands();
@@ -119,13 +64,13 @@ class XMLRPCProxyDirectoryBatchTest extends TestCase
 	 */
 	public function testAMulticallCannotCarryADirectoryOutsideTheBoundary()
 	{
-		$leaked = array();
+		$leaked = [];
 		foreach($this->confinedCommands() as $command)
 		{
 			$decision = $this->decide($this->multicall($command . '=' . $this->outside));
 			if(($decision['action'] !== 'reject') &&
-				(strpos($decision['payload'], $this->outside) !== false))
-				$leaked[] = $command;
+				(strpos($decision['payload'], $this->outside) !== false)) {
+				$leaked[] = $command; }
 		}
 		$this->assertTrue(count($leaked) === 0,
 			'a d.multicall naming a directory outside the boundary is refused'
@@ -138,13 +83,13 @@ class XMLRPCProxyDirectoryBatchTest extends TestCase
 	 */
 	public function testASystemMulticallCannotCarryADirectoryOutsideTheBoundary()
 	{
-		$leaked = array();
+		$leaked = [];
 		foreach($this->confinedCommands() as $command)
 		{
 			$decision = $this->decide($this->systemMulticall($command . '=' . $this->outside));
 			if(($decision['action'] !== 'reject') &&
-				(strpos($decision['payload'], $this->outside) !== false))
-				$leaked[] = $command;
+				(strpos($decision['payload'], $this->outside) !== false)) {
+				$leaked[] = $command; }
 		}
 		$this->assertTrue(count($leaked) === 0,
 			'a system.multicall member naming a directory outside the boundary is refused'
@@ -186,5 +131,60 @@ class XMLRPCProxyDirectoryBatchTest extends TestCase
 			$this->assertTrue($decision['action'] === 'send' && $decision['trusted'],
 				$command . ' is rebuilt when no optional boundary is supplied');
 		}
+	}
+
+	/**
+	 * The commands the class itself says it confines.
+	 */
+	private function confinedCommands()
+	{
+		$property = new ReflectionProperty('XMLRPCProxy', 'directoryCommands');
+		self::makeAccessible($property);
+		return $property->getValue();
+	}
+
+	private function decide($xml, $withBoundary = true)
+	{
+		$options = $withBoundary
+			? ['directory' => [
+				'root'    => $this->root,
+				'resolve' => 'xmlrpcProxyDirectoryBatchResolve']]
+			: [];
+		$options['rtorrentVersion'] = 0x1018;
+		return XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $options);
+	}
+
+	private function value($s)
+	{
+		return '<value><string>' . htmlspecialchars($s, ENT_NOQUOTES, 'UTF-8')
+			. '</string></value>';
+	}
+
+	private function multicall($command)
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall</methodName><params>';
+		foreach(['', 'main', $command] as $p) {
+			$xml .= '<param>' . $this->value($p) . '</param>'; }
+		return $xml . '</params></methodCall>';
+	}
+
+	private function systemMulticall($command)
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+			. '<params><param><value><array><data><value><struct>'
+			. '<member><name>methodName</name><value><string>load.start</string></value></member>'
+			. '<member><name>params</name><value><array><data>';
+		foreach(['', 'http://example.invalid/a.torrent', $command] as $p) {
+			$xml .= $this->value($p); }
+		return $xml . '</data></array></value></member></struct></value></data></array>'
+			. '</value></param></params></methodCall>';
+	}
+
+	private function load($command)
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>';
+		foreach(['', 'http://example.invalid/a.torrent', $command] as $param) {
+			$xml .= '<param>' . $this->value($param) . '</param>'; }
+		return $xml . '</params></methodCall>';
 	}
 }

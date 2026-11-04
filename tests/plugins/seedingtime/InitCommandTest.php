@@ -23,7 +23,7 @@ class rXMLRPCCommand
 // Records every request in order: the handlers first, then the backfill pass.
 class rXMLRPCRequest
 {
-    public static $requests = array();
+    public static $requests = [];
     public function __construct($commands) { self::$requests[] = $commands; }
     public function success() { return true; }
     public function run() { return true; }
@@ -36,14 +36,14 @@ class SeedingtimeInitCommandTest extends TestCase
     public function testBothTimestampHooksStoreEpochWithoutLineEnding()
     {
         $theSettings = new SeedingtimeSettingsFixture();
-        $plugin = array('name' => 'seedingtime');
-        $pInfo = array('perms' => array());
+        $plugin = ['name' => 'seedingtime'];
+        $pInfo = ['perms' => []];
         $jResult = '';
         require __DIR__ . '/../../../plugins/seedingtime/init.php';
 
         $handlers = rXMLRPCRequest::$requests[0];
         $this->assertEquals(3, count($handlers), 'both timestamp hooks and the fallback hook register');
-        foreach (array(0 => 'seedingtime', 1 => 'addtime') as $index => $field) {
+        foreach ([0 => 'seedingtime', 1 => 'addtime'] as $index => $field) {
             $expected = 'd.set_custom='.$field.',"$execute_capture={sh,-c,printf %s $(date +%s)}"';
             $this->assertEquals($expected, $handlers[$index][1],
                 $field.' captures an epoch without date\'s trailing newline');

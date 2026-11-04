@@ -31,8 +31,8 @@ class CreateTopDirectoryTest extends TestCase
 		$this->root = realpath(__DIR__ . '/../../..');
 		$this->base = sys_get_temp_dir() . '/rutorrent-create-top-' . uniqid('', true);
 		@mkdir($this->base . '/profile/settings', 0700, true);
-		foreach (array('pack', 'other', 'clean', 'deep/a/b', 'hub', 'beyond', 'dangling', 'sub/locked',
-			'chain', 'odd', 'later') as $dir) {
+		foreach (['pack', 'other', 'clean', 'deep/a/b', 'hub', 'beyond', 'dangling', 'sub/locked',
+			'chain', 'odd', 'later'] as $dir) {
 			@mkdir($this->base . '/top/' . $dir, 0777, true);
 		}
 		for ($k = 1; $k <= 45; $k++) {
@@ -76,123 +76,6 @@ class CreateTopDirectoryTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
-	private function removeTree($path)
-	{
-		if (is_link($path) || !is_dir($path)) {
-			@unlink($path);
-			return;
-		}
-		foreach (glob($path . '/{,.}[!.]*', GLOB_BRACE) as $entry) {
-			$this->removeTree($entry);
-		}
-		@rmdir($path);
-	}
-
-	private function copyTree($from, $to)
-	{
-		@mkdir($to, 0700, true);
-		foreach (scandir($from) as $entry) {
-			if ($entry === '.' || $entry === '..' || $entry === 'config.local.php' || $entry === 'conf.local.php') {
-				continue;
-			}
-			if (is_dir($from . '/' . $entry)) {
-				$this->copyTree($from . '/' . $entry, $to . '/' . $entry);
-			} else {
-				copy($from . '/' . $entry, $to . '/' . $entry);
-			}
-		}
-	}
-
-	/** Runs $body in a child PHP with the configuration loaded and returns its run. */
-	private function child($root, $body, $options = array())
-	{
-		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
-		$driver = $this->base . '/drive-create.php';
-		file_put_contents($driver, "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
-			. 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
-			. '$topDirectory = ' . var_export(isset($options['top']) ? $options['top'] : $this->top . '/', true) . ";\n"
-			. '$tempDirectory = ' . var_export($this->base . '/', true) . ";\n"
-			. '$log_file = ' . var_export($this->base . '/errors.log', true) . ";\n"
-			// Not one of $localhosts, so User::isLocalMode() answers false.
-			. (empty($options['remote']) ? '' : '$scgi_host = "127.0.0.2";' . "\n")
-			. $body);
-		// A walk that loops is stopped, not waited for.
-		$arguments = array_merge(PhpProcess::sameIni(), array('-d', 'error_reporting=0', '-d', 'max_execution_time=30'));
-		if (isset($options['disable'])) {
-			$arguments = array_merge($arguments, array('-d', 'disable_functions=' . $options['disable']));
-		}
-		return PhpProcess::run(array_merge($arguments, array($driver)));
-	}
-
-	/** The lines the plugin logged, without their time stamps. */
-	private function logged()
-	{
-		return is_file($this->base . '/errors.log') ?
-			preg_replace('/^\[[^\]]*\] /m', '', trim(file_get_contents($this->base . '/errors.log'))) : '';
-	}
-
-	/**
-	 * Posts "create" to action.php for $path and returns its answer, with the
-	 * creator tasks prepared and the log. Options: 'top', the top directory;
-	 * 'creator', an external creator set in a copy of the plugin's
-	 * conf.local.php; 'disable', functions the child lacks; 'remote', for
-	 * an rtorrent that is not local; 'mayFail', to answer null errors instead
-	 * of throwing when nothing is printed.
-	 */
-	private function create($path, $options = array())
-	{
-		$root = $this->root;
-		if (isset($options['creator'])) {
-			$root = $this->base . '/tree';
-			foreach (array('php', 'conf', 'plugins/_task', 'plugins/create', 'tools') as $dir) {
-				$this->copyTree($this->root . '/' . $dir, $root . '/' . $dir);
-			}
-			file_put_contents($root . '/plugins/create/conf.local.php', "<?php\n"
-				. '$useExternal = ' . var_export($options['creator'], true) . ";\n"
-				. '$pathToCreatetorrent = ' . var_export($this->base . '/bin/' . $options['creator'], true) . ";\n");
-		}
-		$run = $this->child($root, '$_POST = array("cmd" => "create", "path_edit" => ' . var_export($path, true)
-				. ', "piece_size" => "16", "start_seeding" => "0", "private" => "0", "hybrid" => "0",'
-				. ' "trackers" => "", "comment" => "", "source" => "");' . "\n"
-			. '$_REQUEST = $_POST;' . "\n"
-			. '$_SERVER[\'REQUEST_METHOD\'] = \'POST\';' . "\n"
-			. 'chdir(' . var_export($root . '/plugins/create', true) . ");\n"
-			. 'require(' . var_export($root . '/plugins/create/action.php', true) . ");\n", $options);
-		$answer = json_decode($run['out'], true);
-		if (!is_array($answer) || !array_key_exists('errors', $answer)) {
-			if (empty($options['mayFail'])) {
-				throw new Exception('action.php printed: ' . $run['out'] . ' / ' . $run['err']);
-			}
-			$answer = array('errors' => null);
-		}
-		$answer['tasks'] = array();
-		foreach (glob($this->base . '/profile/settings/tasks/*/start.sh') ?: array() as $script) {
-			$answer['tasks'][] = file_get_contents($script);
-		}
-		$answer['logged'] = $this->logged();
-		return $answer;
-	}
-
-	private function refused($answer)
-	{
-		return is_array($answer['errors']) && count($answer['errors']) > 0
-			&& strpos($answer['errors'][0], 'Incorrect directory') === 0;
-	}
-
-	/**
-	 * Asserts $answer is the plugin's refusal naming $entry under the top
-	 * directory, logged as $reason with that entry, and that no task was
-	 * prepared.
-	 */
-	private function assertRefusedAs($reason, $entry, $answer, $what)
-	{
-		$this->assertEquals(array('Incorrect directory (' . $entry . ')'), $answer['errors'], $what);
-		$this->assertEquals('create: refused reason=' . $reason . ' entry='
-			. json_encode($entry, JSON_INVALID_UTF8_SUBSTITUTE), $answer['logged'], $what . ', and the log says why');
-		$this->assertEquals(array(), $answer['tasks'], $what . ', before any creator task is prepared');
-	}
-
 	public function testAPathThroughALinkOutIsRefused()
 	{
 		$this->assertRefusedAs('outside-top-directory', '/out/secret.bin', $this->create($this->top . '/out/secret.bin'),
@@ -211,7 +94,7 @@ class CreateTopDirectoryTest extends TestCase
 		$this->assertTrue($this->refused($a), 'a path outside the top directory as written is refused as before');
 		$this->assertTrue(strpos($a['logged'], 'create: refused reason=outside-top-directory entry=') === 0,
 			'and logged: ' . $a['logged']);
-		$this->assertEquals(array(), $a['tasks'], 'before any creator task is prepared');
+		$this->assertEquals([], $a['tasks'], 'before any creator task is prepared');
 	}
 
 	public function testAPathInsideIsAccepted()
@@ -272,14 +155,14 @@ class CreateTopDirectoryTest extends TestCase
 
 	public function testMktorrentIsNotStartedOnAFolderHoldingALinkOut()
 	{
-		$a = $this->create($this->top . '/pack', array('creator' => 'mktorrent'));
+		$a = $this->create($this->top . '/pack', ['creator' => 'mktorrent']);
 		$this->assertRefusedAs('link-outside-top-directory', '/pack/leak.bin', $a,
 			'mktorrent follows links, so it is not started on a folder holding a link out');
 	}
 
 	public function testMktorrentStillStartsOnAFolderWhoseLinksStayInside()
 	{
-		$a = $this->create($this->top . '/clean', array('creator' => 'mktorrent'));
+		$a = $this->create($this->top . '/clean', ['creator' => 'mktorrent']);
 		$this->assertTrue(!$this->refused($a), 'mktorrent is chosen and accepted: ' . json_encode($a['errors']));
 		$this->assertEquals(1, count($a['tasks']), 'one creator task is prepared');
 		$this->assertTrue(isset($a['tasks'][0]) && strpos($a['tasks'][0], '/plugins/create/mktorrent.sh') !== false,
@@ -288,19 +171,19 @@ class CreateTopDirectoryTest extends TestCase
 
 	public function testAFolderThatCannotBeWalkedIsRefused()
 	{
-		$this->assertRefusedAs('walk-unavailable', '/clean', $this->create($this->top . '/clean', array('disable' => 'scandir')),
+		$this->assertRefusedAs('walk-unavailable', '/clean', $this->create($this->top . '/clean', ['disable' => 'scandir']),
 			'a folder is not hashed when its links cannot be checked');
 	}
 
 	/** The path check needs these too, so it refuses before the walk would. */
 	public function testAFolderIsRefusedWithoutWhatThePathCheckNeeds()
 	{
-		$this->assertRefusedAs('outside-top-directory', '/clean', $this->create($this->top . '/clean', array('disable' => 'is_link')),
+		$this->assertRefusedAs('outside-top-directory', '/clean', $this->create($this->top . '/clean', ['disable' => 'is_link']),
 			'a folder is not hashed without is_link()');
 		// util.php needs realpath() for $rootPath: PHP 8 stops there, and on
 		// 7.4 the log's place is lost with it, so only the answer is checked.
-		$a = $this->create($this->top . '/clean', array('disable' => 'realpath', 'mayFail' => true));
-		$this->assertEquals(array(), $a['tasks'], 'without realpath() no creator task is prepared');
+		$a = $this->create($this->top . '/clean', ['disable' => 'realpath', 'mayFail' => true]);
+		$this->assertEquals([], $a['tasks'], 'without realpath() no creator task is prepared');
 		if ($a['errors'] === null) {
 			echo "NOT CHECKED: the refusal answer without realpath(); PHP 8 stops in util.php\n";
 			return;
@@ -315,15 +198,15 @@ class CreateTopDirectoryTest extends TestCase
 	public function testARemoteFolderIsRefusedWithoutIsLink()
 	{
 		$this->assertRefusedAs('walk-unavailable', '/clean',
-			$this->create($this->top . '/clean', array('remote' => true, 'disable' => 'is_link', 'mayFail' => true)),
+			$this->create($this->top . '/clean', ['remote' => true, 'disable' => 'is_link', 'mayFail' => true]),
 			'a folder is not hashed for a remote rtorrent without is_link()');
 	}
 
 	public function testARemoteFolderIsRefusedWithoutRealpath()
 	{
-		$a = $this->create($this->top . '/clean', array('remote' => true, 'disable' => 'realpath', 'mayFail' => true));
+		$a = $this->create($this->top . '/clean', ['remote' => true, 'disable' => 'realpath', 'mayFail' => true]);
 		if (PHP_MAJOR_VERSION >= 8) {
-			$this->assertEquals(array(), $a['tasks'], 'without realpath() no creator task is prepared for a remote rtorrent');
+			$this->assertEquals([], $a['tasks'], 'without realpath() no creator task is prepared for a remote rtorrent');
 			echo "NOT CHECKED: the remote refusal answer without realpath(); PHP 8 stops in util.php\n";
 			return;
 		}
@@ -332,8 +215,8 @@ class CreateTopDirectoryTest extends TestCase
 
 	public function testNoFolderIsSkippedWhenIsDirIsUnavailable()
 	{
-		$a = $this->create($this->top . '/deep', array('disable' => 'is_dir', 'mayFail' => true));
-		$this->assertEquals(array(), $a['tasks'], 'without is_dir() no creator task is prepared');
+		$a = $this->create($this->top . '/deep', ['disable' => 'is_dir', 'mayFail' => true]);
+		$this->assertEquals([], $a['tasks'], 'without is_dir() no creator task is prepared');
 		if (PHP_MAJOR_VERSION >= 8) {
 			echo "NOT CHECKED: the refusal answer without is_dir(); PHP 8 stops at action.php's own is_dir() call before the walk\n";
 			return;
@@ -341,15 +224,9 @@ class CreateTopDirectoryTest extends TestCase
 		$this->assertRefusedAs('walk-unavailable', '/deep', $a, 'without is_dir() no folder is skipped');
 	}
 
-	/** The mbstring functions, which plugin.info only warns about when they are missing. */
-	private function mbstring()
-	{
-		return implode(',', function_exists('get_extension_funcs') ? (get_extension_funcs('mbstring') ?: array()) : array());
-	}
-
 	public function testAnAcceptedFolderStartsWithoutMbstring()
 	{
-		$a = $this->create($this->top . '/clean', array('disable' => $this->mbstring()));
+		$a = $this->create($this->top . '/clean', ['disable' => $this->mbstring()]);
 		$this->assertTrue(!$this->refused($a), 'without mbstring an accepted folder is still accepted: ' . json_encode($a['errors']));
 		$this->assertEquals(1, count($a['tasks']), 'and its creator task is prepared');
 	}
@@ -357,7 +234,7 @@ class CreateTopDirectoryTest extends TestCase
 	public function testARefusalAnswersWithoutMbstring()
 	{
 		$this->assertRefusedAs('link-outside-top-directory', '/pack/leak.bin',
-			$this->create($this->top . '/pack', array('disable' => $this->mbstring())),
+			$this->create($this->top . '/pack', ['disable' => $this->mbstring()]),
 			'without mbstring a refusal still answers and names the entry');
 	}
 
@@ -373,8 +250,8 @@ class CreateTopDirectoryTest extends TestCase
 
 	public function testATopDirectoryOfRootRefusesNothing()
 	{
-		foreach (array('scandir', 'is_link') as $function) {
-			$a = $this->create($this->top . '/pack', array('top' => '/', 'disable' => $function));
+		foreach (['scandir', 'is_link'] as $function) {
+			$a = $this->create($this->top . '/pack', ['top' => '/', 'disable' => $function]);
 			$this->assertTrue(!$this->refused($a), 'with "/" as the top directory nothing is outside it, '
 				. 'and nothing is walked, without ' . $function . '(): ' . json_encode($a['errors']));
 		}
@@ -386,16 +263,16 @@ class CreateTopDirectoryTest extends TestCase
 		// kernel follows out first and the .. then leads beside its target.
 		$a = $this->create($this->top . '/out/../outside');
 		$this->assertTrue(!$this->refused($a), 'the path is accepted as the folder it reads as: ' . json_encode($a['errors']));
-		$params = glob($this->base . '/profile/settings/tasks/*/params') ?: array();
+		$params = glob($this->base . '/profile/settings/tasks/*/params') ?: [];
 		$this->assertEquals(1, count($params), 'one creator task is prepared');
 		if (count($params) !== 1) {
 			return;
 		}
-		$request = unserialize(file_get_contents($params[0]), array('allowed_classes' => false));
+		$request = unserialize(file_get_contents($params[0]), ['allowed_classes' => false]);
 		$this->assertEquals($this->top . '/outside', $request['path_edit'], 'the task holds the path that was checked');
-		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-d', 'error_reporting=0', '-d', 'max_execution_time=30',
-			$this->root . '/plugins/create/createtorrent.php', basename(dirname($params[0])))),
-			array('env' => array('RU_PROFILE_PATH' => $this->base . '/profile')));
+		$run = PhpProcess::run(array_merge(PhpProcess::sameIni(), ['-d', 'error_reporting=0', '-d', 'max_execution_time=30',
+			$this->root . '/plugins/create/createtorrent.php', basename(dirname($params[0]))]),
+			['env' => ['RU_PROFILE_PATH' => $this->base . '/profile']]);
 		$result = dirname($params[0]) . '/result.torrent';
 		$this->assertTrue(!is_file($result) || (strpos(file_get_contents($result), 'secret.bin') === false),
 			'and the built-in creator does not hash the file outside: ' . $run['out'] . $run['err']);
@@ -420,7 +297,130 @@ class CreateTopDirectoryTest extends TestCase
 			'the task log says on one line that seeding was refused and why: ' . $run['err']);
 		$this->assertEquals('create: seeding refused reason=link-outside-top-directory entry="\/later\/leak\n.bin"',
 			$this->logged(), 'so does errors.log');
-		$this->assertEquals(array(), glob($this->base . '/profile/torrents/*') ?: array(),
+		$this->assertEquals([], glob($this->base . '/profile/torrents/*') ?: [],
 			'and no torrent is handed to rtorrent');
+	}
+
+	private function removeTree($path)
+	{
+		if (is_link($path) || !is_dir($path)) {
+			@unlink($path);
+			return;
+		}
+		foreach (glob($path . '/{,.}[!.]*', GLOB_BRACE) as $entry) {
+			$this->removeTree($entry);
+		}
+		@rmdir($path);
+	}
+
+	private function copyTree($from, $to)
+	{
+		@mkdir($to, 0700, true);
+		foreach (scandir($from) as $entry) {
+			if ($entry === '.' || $entry === '..' || $entry === 'config.local.php' || $entry === 'conf.local.php') {
+				continue;
+			}
+			if (is_dir($from . '/' . $entry)) {
+				$this->copyTree($from . '/' . $entry, $to . '/' . $entry);
+			} else {
+				copy($from . '/' . $entry, $to . '/' . $entry);
+			}
+		}
+	}
+
+	/** Runs $body in a child PHP with the configuration loaded and returns its run. */
+	private function child($root, $body, $options = [])
+	{
+		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
+		$driver = $this->base . '/drive-create.php';
+		file_put_contents($driver, "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
+			. 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
+			. '$topDirectory = ' . var_export(isset($options['top']) ? $options['top'] : $this->top . '/', true) . ";\n"
+			. '$tempDirectory = ' . var_export($this->base . '/', true) . ";\n"
+			. '$log_file = ' . var_export($this->base . '/errors.log', true) . ";\n"
+			// Not one of $localhosts, so User::isLocalMode() answers false.
+			. (empty($options['remote']) ? '' : '$scgi_host = "127.0.0.2";' . "\n")
+			. $body);
+		// A walk that loops is stopped, not waited for.
+		$arguments = array_merge(PhpProcess::sameIni(), ['-d', 'error_reporting=0', '-d', 'max_execution_time=30']);
+		if (isset($options['disable'])) {
+			$arguments = array_merge($arguments, ['-d', 'disable_functions=' . $options['disable']]);
+		}
+		return PhpProcess::run(array_merge($arguments, [$driver]));
+	}
+
+	/** The lines the plugin logged, without their time stamps. */
+	private function logged()
+	{
+		return is_file($this->base . '/errors.log') ?
+			preg_replace('/^\[[^\]]*\] /m', '', trim(file_get_contents($this->base . '/errors.log'))) : '';
+	}
+
+	/**
+	 * Posts "create" to action.php for $path and returns its answer, with the
+	 * creator tasks prepared and the log. Options: 'top', the top directory;
+	 * 'creator', an external creator set in a copy of the plugin's
+	 * conf.local.php; 'disable', functions the child lacks; 'remote', for
+	 * an rtorrent that is not local; 'mayFail', to answer null errors instead
+	 * of throwing when nothing is printed.
+	 */
+	private function create($path, $options = [])
+	{
+		$root = $this->root;
+		if (isset($options['creator'])) {
+			$root = $this->base . '/tree';
+			foreach (['php', 'conf', 'plugins/_task', 'plugins/create', 'tools'] as $dir) {
+				$this->copyTree($this->root . '/' . $dir, $root . '/' . $dir);
+			}
+			file_put_contents($root . '/plugins/create/conf.local.php', "<?php\n"
+				. '$useExternal = ' . var_export($options['creator'], true) . ";\n"
+				. '$pathToCreatetorrent = ' . var_export($this->base . '/bin/' . $options['creator'], true) . ";\n");
+		}
+		$run = $this->child($root, '$_POST = array("cmd" => "create", "path_edit" => ' . var_export($path, true)
+				. ', "piece_size" => "16", "start_seeding" => "0", "private" => "0", "hybrid" => "0",'
+				. ' "trackers" => "", "comment" => "", "source" => "");' . "\n"
+			. '$_REQUEST = $_POST;' . "\n"
+			. '$_SERVER[\'REQUEST_METHOD\'] = \'POST\';' . "\n"
+			. 'chdir(' . var_export($root . '/plugins/create', true) . ");\n"
+			. 'require(' . var_export($root . '/plugins/create/action.php', true) . ");\n", $options);
+		$answer = json_decode($run['out'], true);
+		if (!is_array($answer) || !array_key_exists('errors', $answer)) {
+			if (empty($options['mayFail'])) {
+				throw new Exception('action.php printed: ' . $run['out'] . ' / ' . $run['err']);
+			}
+			$answer = ['errors' => null];
+		}
+		$answer['tasks'] = [];
+		foreach (glob($this->base . '/profile/settings/tasks/*/start.sh') ?: [] as $script) {
+			$answer['tasks'][] = file_get_contents($script);
+		}
+		$answer['logged'] = $this->logged();
+		return $answer;
+	}
+
+	private function refused($answer)
+	{
+		return is_array($answer['errors']) && count($answer['errors']) > 0
+			&& strpos($answer['errors'][0], 'Incorrect directory') === 0;
+	}
+
+	/**
+	 * Asserts $answer is the plugin's refusal naming $entry under the top
+	 * directory, logged as $reason with that entry, and that no task was
+	 * prepared.
+	 */
+	private function assertRefusedAs($reason, $entry, $answer, $what)
+	{
+		$this->assertEquals(['Incorrect directory (' . $entry . ')'], $answer['errors'], $what);
+		$this->assertEquals('create: refused reason=' . $reason . ' entry='
+			. json_encode($entry, JSON_INVALID_UTF8_SUBSTITUTE), $answer['logged'], $what . ', and the log says why');
+		$this->assertEquals([], $answer['tasks'], $what . ', before any creator task is prepared');
+	}
+
+	/** The mbstring functions, which plugin.info only warns about when they are missing. */
+	private function mbstring()
+	{
+		return implode(',', function_exists('get_extension_funcs') ? (get_extension_funcs('mbstring') ?: []) : []);
 	}
 }

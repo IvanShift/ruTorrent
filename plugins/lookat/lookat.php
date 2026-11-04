@@ -6,9 +6,9 @@ class rLook
 {
 	public $hash = "look.dat";
 	public $modified = false;
-	public $list = array();
+	public $list = [];
 
-	static public function load()
+	public static function load()
 	{
 		$cache = new rCache();
 		$rt = new rLook();
@@ -31,14 +31,14 @@ class rLook
 	// $body defaults to the request body; a caller may pass one instead.
 	public function set( $body = null )
 	{
-		if(is_null($body))
-			$body = file_get_contents("php://input");
+		if(is_null($body)) {
+			$body = file_get_contents("php://input"); }
 		$vars = explode('&', $body);
-		$this->list = array();
+		$this->list = [];
 		foreach($vars as $var)
 		{
 			$parts = explode("=",$var,2);
-			if(count($parts)!=2) continue;
+			if(count($parts)!=2) { continue; }
 			if($parts[0]=="look")
 			{
 				$value = trim(rawurldecode($parts[1]));
@@ -53,8 +53,8 @@ class rLook
 					// refuses is deleted rather than rejected.
 					if(count($tmp) > 1 && ExternalURL::isOpenable($tmp[1]))
 					{
-						if(strpos($tmp[1],"{title}")===false)
-							$tmp[1].="{title}";
+						if(strpos($tmp[1],"{title}")===false) {
+							$tmp[1].="{title}"; }
 						$this->list[$tmp[0]] = $tmp[1];
 					}
 				}

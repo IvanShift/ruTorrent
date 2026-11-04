@@ -11,16 +11,16 @@ eval( FileUtil::getPluginConf( 'datadir' ) );
 function Debug( $str )
 {
 	global $datadir_debug_enabled;
-	if( $datadir_debug_enabled ) rtDbg( "DataDir", $str );
+	if( $datadir_debug_enabled ) { rtDbg( "DataDir", $str ); }
 }
 
 ignore_user_abort( true );
 set_time_limit( 0 );
 
-$errors = array();
+$errors = [];
 
-if( !isset( $HTTP_RAW_POST_DATA ) )
-	$HTTP_RAW_POST_DATA = file_get_contents( "php://input" );
+if( !isset( $HTTP_RAW_POST_DATA ) ) {
+	$HTTP_RAW_POST_DATA = file_get_contents( "php://input" ); }
 $vars = explode( '&', $HTTP_RAW_POST_DATA );
 $hash = null;
 $datadir = "";
@@ -30,7 +30,7 @@ $move_fastresume = "0";
 foreach( $vars as $var )
 {
 	$parts = explode( "=", $var, 2 );
-	if( count($parts) != 2 ) continue;
+	if( count($parts) != 2 ) { continue; }
 	if( $parts[0] == "hash" )
 	{
 		$hash = trim( $parts[1] );
@@ -39,19 +39,19 @@ foreach( $vars as $var )
 			$hash = null;
 		}
 	}
-	else if( $parts[0] == "datadir" )
+	elseif( $parts[0] == "datadir" )
 	{
 		$datadir = rawurldecode( $parts[1] );
 	}
-	else if($parts[0]=="move_addpath")
+	elseif($parts[0]=="move_addpath")
 	{
 		$move_addpath = intval( $parts[1] );
 	}
-	else if( $parts[0] == "move_datafiles" )
+	elseif( $parts[0] == "move_datafiles" )
 	{
 		$move_datafiles = intval( $parts[1] );
 	}
-	else if( $parts[0] == "move_fastresume" )
+	elseif( $parts[0] == "move_fastresume" )
 	{
 		$move_fastresume = intval( $parts[1] );
 	}
@@ -60,8 +60,8 @@ foreach( $vars as $var )
 // One validation of the hash, the configured top (physical path) and the
 // destination's existing ancestor; the CLI worker uses the same function.
 $refusal = rtDataDirRequestRefusal( $hash, $datadir );
-if( $refusal === 'destination-invalid' )
-	$datadir = '';
+if( $refusal === 'destination-invalid' ) {
+	$datadir = ''; }
 
 Debug( "" );
 Debug( "--- begin ---" );
@@ -72,7 +72,7 @@ Debug(
 	", \"".($move_fastresume == '0' ? "don't " : "")."fast resume\"" );
 
 $res = false;
-$warnings = array();
+$warnings = [];
 
 if( $refusal === 'invalid-arguments' || $refusal === 'destination-invalid' )
 {
@@ -81,18 +81,18 @@ if( $refusal === 'invalid-arguments' || $refusal === 'destination-invalid' )
 	// with a validated hash, which names the download like every other refusal.
 	FileUtil::toLog( $refusal === 'invalid-arguments' ? 'datadir: setdatadir refused: invalid hash'
 		: 'datadir: setdatadir refused hash='.strtoupper($hash).' reason=destination-invalid' );
-	$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal);
+	$errors[] = ['desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal];
 }
 else
 {
-	if( $refusal === '' )
+	if( $refusal === '' ) {
 		try { $refusal = rtDataDirPendingRefusal($hash); }
-		catch(Exception $e) { $refusal = $e->getMessage(); }
-	if( $refusal === 'prior-job-pending' )
-		rtDataDirWorkerRefusal($hash, $refusal);
+		catch(Exception $e) { $refusal = $e->getMessage(); } }
+	if( $refusal === 'prior-job-pending' ) {
+		rtDataDirWorkerRefusal($hash, $refusal); }
 	// The claim ABI is read once per request.
-	if( $refusal === '' )
-		$refusal = rtDataDirClaimRefusal();
+	if( $refusal === '' ) {
+		$refusal = rtDataDirClaimRefusal(); }
 	$taken = '';
 	if( $refusal === '' && $move_datafiles )
 	{
@@ -103,7 +103,7 @@ else
 	if( $refusal !== '' || $taken !== '' )
 	{
 		FileUtil::toLog('datadir: setdatadir refused hash='.$hash.' reason='.($refusal !== '' ? $refusal : 'occupied-destination'));
-		$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal !== '' ? $refusal : $taken);
+		$errors[] = ['desc'=>"theUILang.datadirSetDirFail", 'prm'=>$refusal !== '' ? $refusal : $taken];
 	}
 	elseif( !$move_datafiles )
 	{
@@ -112,10 +112,10 @@ else
 		// answers datadir-busy, and payload jobs are not replayed in FPM.
 		$res = rtDataDirApplyLocked($hash, $datadir, $move_addpath != 0, false,
 			$move_fastresume != 0, $datadir_debug_enabled, true, $failure, $warning);
-		if( !$res )
-			$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$failure);
-		elseif( $warning !== '' )
-			$warnings[] = array('desc'=>"theUILang.datadirStoppedAfterCheck", 'prm'=>$warning);
+		if( !$res ) {
+			$errors[] = ['desc'=>"theUILang.datadirSetDirFail", 'prm'=>$failure]; }
+		elseif( $warning !== '' ) {
+			$warnings[] = ['desc'=>"theUILang.datadirStoppedAfterCheck", 'prm'=>$warning]; }
 	}
 	else
 	{
@@ -129,30 +129,30 @@ else
 		Debug( "move files  : ".$move_datafiles );
 		Debug( "fast resume : ".$move_fastresume );
 		$res = rtExec( "execute",
-			array( "sh",
+			[ "sh",
 				"-c",
 				rtSetDirCommand($php, $script_dir."setdir.php", $hash, $datadir,
 					$move_addpath, $move_datafiles, $move_fastresume, User::getUser()),
-			),
+			],
 			$datadir_debug_enabled );
-		if( !$res )
-			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash );
+		if( !$res ) {
+			FileUtil::toLog( 'datadir: worker-dispatch-unconfirmed hash='.$hash ); }
 	}
 }
 
 if( !$res && !$errors )
 {
-	$errors[] = array('desc'=>"theUILang.datadirSetDirFail", 'prm'=>$datadir);
+	$errors[] = ['desc'=>"theUILang.datadirSetDirFail", 'prm'=>$datadir];
 }
 
 Debug( "--- end ---" );
 
-$answer = array( "errors"=>$errors );
+$answer = [ "errors"=>$errors ];
 // A warning reports an applied change that did not end as asked.
-if( $warnings )
-	$answer["warnings"] = $warnings;
-foreach($answer as $kind => $messages)
-	foreach($messages as $index => $message)
-		if(isset($message['prm']) && UTF::isString($message['prm']))
-			$answer[$kind][$index]['prm'] = UTF::display($message['prm']);
+if( $warnings ) {
+	$answer["warnings"] = $warnings; }
+foreach($answer as $kind => $messages) {
+	foreach($messages as $index => $message) {
+		if(isset($message['prm']) && UTF::isString($message['prm'])) {
+			$answer[$kind][$index]['prm'] = UTF::display($message['prm']); } } }
 CachedEcho::send(JSON::safeEncode($answer),"application/json");

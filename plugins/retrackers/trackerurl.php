@@ -23,10 +23,10 @@ final class RetrackersTrackerURL
 
 	public static function additionFailure($url)
 	{
-		if (!is_string($url)) return('invalid-tracker-type');
-		if (self::type(self::normalize($url)) === false) return('unsupported-tracker-scheme');
-		if (self::normalize($url) !== $url) return('surrounding-tracker-whitespace');
-		if (!self::representable($url)) return('invalid-tracker-characters');
+		if (!is_string($url)) { return('invalid-tracker-type'); }
+		if (self::type(self::normalize($url)) === false) { return('unsupported-tracker-scheme'); }
+		if (self::normalize($url) !== $url) { return('surrounding-tracker-whitespace'); }
+		if (!self::representable($url)) { return('invalid-tracker-characters'); }
 		return(null);
 	}
 }

@@ -10,28 +10,25 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 
 $minInterval = 2;	// in minutes
 
-$feedsWithIncorrectTimes = array(
+$feedsWithIncorrectTimes = [
 	"iptorrents.",
 	"torrentday.",
-);
+];
 
 $rss_debug_enabled = true;
 require_once(__DIR__ . '/../../../plugins/rss/rss.php');
 
 class SnoopyMock
 {
-	public $status = 200, $results = NULL, $headers = array(), $error = "";
+	public $status = 200;
+	public $results = null;
+	public $headers = [];
+	public $error = "";
 	public function get_filename() { return false; }
 }
 
 final class RSSTest extends TestCase
 {
-	private function assertSameFields(array $expected, array $actual): void
-	{
-		ksort($expected);
-		ksort($actual);
-		$this->assertSame($expected, $actual);
-	}
 	public function testConditionalValidatorsKeepResponseValueCase(): void
 	{
 		$requests = 0;
@@ -41,14 +38,14 @@ final class RSSTest extends TestCase
 				$client = new SnoopyMock();
 				if($requests === 1)
 				{
-					$client->headers = array('ETag: "AbC"',
-						'Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT');
+					$client->headers = ['ETag: "AbC"',
+						'Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT'];
 					$client->results = file_get_contents(__DIR__ . '/atom-sample.xml');
 				}
 				else
 				{
-					$this->assertEquals(array('If-None-Match' => '"AbC"',
-						'If-Modified-Since' => 'Wed, 21 Oct 2015 07:28:00 GMT'), $headers,
+					$this->assertEquals(['If-None-Match' => '"AbC"',
+						'If-Modified-Since' => 'Wed, 21 Oct 2015 07:28:00 GMT'], $headers,
 						'validators sent back with their original value bytes');
 					$client->status = 304;
 				}
@@ -65,7 +62,7 @@ final class RSSTest extends TestCase
 	{
 		$stored = new rRSS(null, 'passthru');
 		$property = new ReflectionProperty(rRSS::class, 'fetchURL');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$this->assertEquals('passthru', $property->getValue($stored),
 			'the constructor still accepts the caller-provided fetcher');
 
@@ -80,7 +77,7 @@ final class RSSTest extends TestCase
 		$xml = '<rss><channel><title>Updates</title><item><title>New edition</title>'
 			. '<link>' . $href . '</link><guid>new-guid</guid>'
 			. '<pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item></channel></rss>';
-		$cases = array(
+		$cases = [
 			'https://iptorrents.com/feed' => true,
 			'https://iptorrents.me/feed' => true,
 			'https://tracker.iptorrents.co.uk/feed' => true,
@@ -93,7 +90,7 @@ final class RSSTest extends TestCase
 			'https://iptorrents.ck/feed' => false,
 			'https://xn--bad.iptorrents.com/feed' => false,
 			'https://evil.test/path/iptorrents.me/feed' => false,
-		);
+		];
 		foreach($cases as $url => $isTracker)
 		{
 			$history = new rRSSHistory();
@@ -118,20 +115,20 @@ final class RSSTest extends TestCase
 			. '<link>' . $href . '</link><guid>new-guid</guid>'
 			. '<pubDate>Wed, 21 Oct 2015 07:28:00 GMT</pubDate></item></channel></rss>';
 		try {
-			$cases = array(
-				array('customtracker.', 'https://customtracker.com/feed', true),
-				array('customtracker.', 'https://customtracker.me/feed', true),
-				array('customtracker.', 'https://customtracker.com.evil.test/feed', false),
-				array('customtracker.com', 'https://customtracker.com/feed', true),
-				array('customtracker.com', 'https://sub.customtracker.com/feed', true),
-				array('customtracker.com', 'https://customtracker.me/feed', false),
-				array('customtracker.com', 'https://customtracker.com.evil.test/feed', false),
-				array('iptorrents.ck', 'https://iptorrents.ck/feed', false),
-			);
+			$cases = [
+				['customtracker.', 'https://customtracker.com/feed', true],
+				['customtracker.', 'https://customtracker.me/feed', true],
+				['customtracker.', 'https://customtracker.com.evil.test/feed', false],
+				['customtracker.com', 'https://customtracker.com/feed', true],
+				['customtracker.com', 'https://sub.customtracker.com/feed', true],
+				['customtracker.com', 'https://customtracker.me/feed', false],
+				['customtracker.com', 'https://customtracker.com.evil.test/feed', false],
+				['iptorrents.ck', 'https://iptorrents.ck/feed', false],
+			];
 			foreach($cases as $case)
 			{
 				list($pattern, $url, $isTracker) = $case;
-				$feedsWithIncorrectTimes = array($pattern);
+				$feedsWithIncorrectTimes = [$pattern];
 				$history = new rRSSHistory();
 				$history->add($href, 'previous-hash', 100, 'old-guid');
 				$feed = new rRSS($url, function() use($xml) {
@@ -181,7 +178,7 @@ final class RSSTest extends TestCase
 	public function testCookieSuffixUsesSharedParserForValuesContainingEquals(): void
 	{
 		$feed = new rRSS('https://tracker.example/feed:COOKIE:token=abc=def;broken;sid=2');
-		$this->assertEquals(array('token' => 'abc=def', 'sid' => '2'), $feed->cookies,
+		$this->assertEquals(['token' => 'abc=def', 'sid' => '2'], $feed->cookies,
 			'URL cookie values keep equals and malformed pairs are ignored');
 		$this->assertEquals('https://tracker.example/feed', $feed->url,
 			'cookie suffix is removed from request URL');
@@ -195,12 +192,12 @@ final class RSSTest extends TestCase
 			'the fixture represents a hash from before cookie normalization');
 		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
 		$manager->rssList = new rRSSMetaList();
-		$manager->rssList->lst[$legacyHash] = array(
+		$manager->rssList->lst[$legacyHash] = [
 			'label' => 'Old', 'auto' => 1, 'enabled' => 0, 'url' => $source,
-		);
+		];
 		$manager->groups = new rRSSGroupList();
 		$group = new rRSSGroup('Saved group', 'group-1');
-		$group->lst = array($legacyHash);
+		$group->lst = [$legacyHash];
 		$manager->groups->add($group);
 		$manager->cache = new class {
 			public $saved = 0;
@@ -215,24 +212,24 @@ final class RSSTest extends TestCase
 		}
 		$this->assertEquals(true, $changed,
 			'a label edit succeeds without deleting or fetching the feed');
-		$this->assertEquals(array($legacyHash), array_keys($manager->rssList->lst),
+		$this->assertEquals([$legacyHash], array_keys($manager->rssList->lst),
 			'the persisted identity stays stable');
-		if(!array_key_exists($legacyHash, $manager->rssList->lst))
-			return;
+		if(!array_key_exists($legacyHash, $manager->rssList->lst)) {
+			return; }
 		$this->assertEquals('Renamed', $manager->rssList->lst[$legacyHash]['label'],
 			'the label changes under the old hash');
 		$this->assertEquals(1, $manager->rssList->lst[$legacyHash]['auto'],
 			'a label-only edit keeps the automatic download choice');
 		$this->assertEquals(0, $manager->rssList->lst[$legacyHash]['enabled'],
 			'the enabled state survives the edit');
-		$this->assertEquals(array($legacyHash), $manager->groups->get('group-1')->lst,
+		$this->assertEquals([$legacyHash], $manager->groups->get('group-1')->lst,
 			'group membership continues to point at the feed');
 		$this->assertEquals(1, $manager->cache->saved, 'the updated metadata is persisted once');
 		$this->assertEquals($normalizedURL, $manager->rssList->lst[$legacyHash]['url'],
 			'the stored URL follows the current cookie format');
 		$this->assertEquals(true, $manager->change($legacyHash, $normalizedURL, 'Again', 0),
 			'a second edit from the UI still preserves the old hash');
-		$this->assertEquals(array($legacyHash), array_keys($manager->rssList->lst),
+		$this->assertEquals([$legacyHash], array_keys($manager->rssList->lst),
 			'normalizing metadata does not force a later rehash');
 		$this->assertEquals(0, $manager->rssList->lst[$legacyHash]['auto'],
 			'a later automatic-download change stays under the old hash');
@@ -268,7 +265,7 @@ final class RSSTest extends TestCase
 		$manager->rssList = new rRSSMetaList();
 		$manager->history = new rRSSHistory();
 		$method = new ReflectionMethod(rRSSManager::class, 'tryFetch');
-		if(PHP_VERSION_ID < 80100) $method->setAccessible(true);
+		if(PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
 		$this->assertSame(false, $method->invoke($manager, $feed), 'external HTTP failure refuses fetch');
 		$errors = $manager->rssList->formatErrors();
 		$this->assertSame('cantFetchRSS', $errors[0]['key'], 'error uses a language key');
@@ -287,7 +284,7 @@ final class RSSTest extends TestCase
 			return $client;
 		});
 		$this->assertEquals(false, $feed->fetch(new rRSSHistory()), 'a refused redirect is not a feed');
-		$this->assertEquals(array('[RSS-HTTP-Error] Status: 302; credential-redirect-refused'),
+		$this->assertEquals(['[RSS-HTTP-Error] Status: 302; credential-redirect-refused'],
 			$feed->lastErrorMsgs, 'the user can distinguish policy refusal from an HTTP failure');
 	}
 
@@ -302,7 +299,7 @@ final class RSSTest extends TestCase
 		});
 		$this->assertEquals(false, $feed->fetch(new rRSSHistory()),
 			'a 2xx source response with a refused Location is not a feed');
-		$this->assertEquals(array('[RSS-HTTP-Error] Status: 200; credential-redirect-refused'),
+		$this->assertEquals(['[RSS-HTTP-Error] Status: 200; credential-redirect-refused'],
 			$feed->lastErrorMsgs, 'the classified refusal remains visible');
 	}
 
@@ -312,13 +309,13 @@ final class RSSTest extends TestCase
 		$feed = new rRSS('https://tracker.example/rss.php:COOKIE:uid=1',
 			function ($url, $cookies) use ($href) {
 				$this->assertEquals($href, $url);
-				$this->assertEquals(array('uid' => '1'), $cookies);
+				$this->assertEquals(['uid' => '1'], $cookies);
 				$client = new SnoopyMock();
 				$client->status = 302;
 				$client->error = Snoopy::CREDENTIAL_REDIRECT_REFUSED;
 				return $client;
 			});
-		$feed->items[$href] = array('timestamp' => 0, 'guid' => 'item-5');
+		$feed->items[$href] = ['timestamp' => 0, 'guid' => 'item-5'];
 		$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
 		$manager->rssList = new rRSSMetaList();
 		$manager->history = new rRSSHistory();
@@ -361,17 +358,17 @@ final class RSSTest extends TestCase
 		mkdir($root);
 		mkdir($root . '/torrents');
 		$profile = new ReflectionProperty(FileUtil::class, 'profilePathInstance');
-		if(PHP_VERSION_ID < 80100) $profile->setAccessible(true);
+		if(PHP_VERSION_ID < 80100) { $profile->setAccessible(true); }
 		$previous = $profile->getValue();
 		$profile->setValue(null, $root);
 		$body = 'd4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:abcdefghijklmnopqrstee';
 		try
 		{
-			foreach(array(
-				'HTML with HTTP 200' => array('<html>Login required</html>', false),
-				'valid metainfo' => array($body, true),
-				'valid metainfo with a line break' => array($body . "\n", true),
-			) as $label => $case)
+			foreach([
+				'HTML with HTTP 200' => ['<html>Login required</html>', false],
+				'valid metainfo' => [$body, true],
+				'valid metainfo with a line break' => [$body . "\n", true],
+			] as $label => $case)
 			{
 				$feed = new rRSS('https://tracker.example/feed', function () use ($case) {
 					$client = new SnoopyMock();
@@ -389,14 +386,14 @@ final class RSSTest extends TestCase
 				else
 				{
 					$this->assertEquals(false, $result, $label . ' is rejected');
-					$this->assertEquals(array(), $files, $label . ' does not create a file');
+					$this->assertEquals([], $files, $label . ' does not create a file');
 				}
 			}
 		}
 		finally
 		{
 			$profile->setValue(null, $previous);
-			foreach(glob($root . '/torrents/*') as $file) unlink($file);
+			foreach(glob($root . '/torrents/*') as $file) { unlink($file); }
 			rmdir($root . '/torrents');
 			rmdir($root);
 		}
@@ -433,39 +430,39 @@ final class RSSTest extends TestCase
 
 		// check items
 		$this->assertEquals(2, count($rRSS->items));
-		$this->assertSameFields(array(
+		$this->assertSameFields([
 			"timestamp" => strtotime('2003-12-13T18:30:02Z'),
 			"title" => 'Title <1>',
 			"link" => 'https://example.org/2003/12/13/atom03',
 			"guid" => 'https://example.org/2003/12/13/atom03',
 			"description" => 'Some text.',
-		), $rRSS->items['https://example.org/2003/12/13/atom03']);
-		$this->assertSameFields(array(
+		], $rRSS->items['https://example.org/2003/12/13/atom03']);
+		$this->assertSameFields([
 			"timestamp" => strtotime('2003-12-13T19:30:02Z'),
 			"title" => 'Title <2>',
 			"link" => 'https://example.org/2003/12/13/atom04',
 			"guid" => 'https://example.org/2003/12/13/atom04',
 			"description" => 'Some other text.'."\n\n[Content]\n".'Some content',
-		), $rRSS->items['https://example.org/2003/12/13/atom04']);
+		], $rRSS->items['https://example.org/2003/12/13/atom04']);
 
 		// check contents
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('2003-12-13T18:30:02Z'),
 			"title" => 'Title <1>',
 			"href" => 'https://example.org/2003/12/13/atom03',
 			"guid" => 'https://example.org/2003/12/13/atom03',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
-		$this->assertEquals(array(
+			"hash" => "",
+		], $contents['items'][0]);
+		$this->assertEquals([
 			"time" => strtotime('2003-12-13T19:30:02Z'),
 			"title" => 'Title <2>',
 			"href" => 'https://example.org/2003/12/13/atom04',
 			"guid" => 'https://example.org/2003/12/13/atom04',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][1]);
+			"hash" => "",
+		], $contents['items'][1]);
 	}
 
 	public function testRSS(): void
@@ -490,30 +487,30 @@ final class RSSTest extends TestCase
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
 		$this->assertEquals(3, count($contents['items']));
 
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 12:00:00 +0000'),
 			"title" => 'The best title',
 			"href" => 'https://onerous.me/path/to/torrent?guid=ABCD&torr',
 			"guid" => 'https://onerous.me/path/to/torrent?guid=ABCD&perm',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
-		$this->assertEquals(array(
+			"hash" => "",
+		], $contents['items'][0]);
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 13:00:00 +0000'),
 			"title" => '<No Title>',
 			"href" => 'https://onerous.me/no_tags_allowed/path/to/torrent?guid=ABCE',
 			"guid" => 'https://onerous.me/no_tags_allowed/path/to/torrent?guid=ABCE',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][1]);
-		$this->assertEquals(array(
+			"hash" => "",
+		], $contents['items'][1]);
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 14:00:00 +0000'),
 			"title" => 'Wonders of <pubDate>Sat, 1 Jan 2022 14:30:00 +0000</pubDate> wow',
 			"href" => 'https://onerous.me/path/to/torrent?guid=ABCF',
 			"guid" => 'https://onerous.me/path/to/torrent?guid=ABCF',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][2]);
+			"hash" => "",
+		], $contents['items'][2]);
 	}
 	public function testRSS2(): void
 	{
@@ -537,14 +534,14 @@ final class RSSTest extends TestCase
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
 		$this->assertEquals(1, count($contents['items']));
 
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 12:00:00 +0000'),
 			"title" => '完璧な映画',
 			"href" => 'https://example.jp/path/to/torrent?guid=ABCD&torr',
 			"guid" => 'https://example.jp/path/to/torrent?guid=ABCD&perm',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
+			"hash" => "",
+		], $contents['items'][0]);
 	}
 
 	public function testRSSWin1251(): void
@@ -574,14 +571,14 @@ final class RSSTest extends TestCase
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
 		$this->assertEquals(1, count($contents['items']));
 
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 12:00:00 +0000'),
 			"title" => 'Новый фильм — четвёртый сезон',
 			"href" => 'https://example.ru/path/to/torrent?torr=ABCD',
 			"guid" => 'https://example.ru/path/to/torrent?perm=ABCD',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
+			"hash" => "",
+		], $contents['items'][0]);
 	}
 
 	public function testRSSUtf8(): void
@@ -610,14 +607,14 @@ final class RSSTest extends TestCase
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
 		$this->assertEquals(1, count($contents['items']));
 
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 12:00:00 +0000'),
 			"title" => 'Новый фильм — четвёртый сезон',
 			"href" => 'https://example.ru/path/to/torrent?torr=ABCD',
 			"guid" => 'https://example.ru/path/to/torrent?perm=ABCD',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
+			"hash" => "",
+		], $contents['items'][0]);
 	}
 
 	public function testRSSMislabeledWin1251(): void
@@ -649,19 +646,19 @@ final class RSSTest extends TestCase
 		$contents =  $rRSS->getContents("label", "1", "1", $history);
 		$this->assertEquals(1, count($contents['items']));
 
-		$this->assertEquals(array(
+		$this->assertEquals([
 			"time" => strtotime('Sat, 1 Jan 2022 12:00:00 +0000'),
 			"title" => 'Новый фильм — четвёртый сезон',
 			"href" => 'https://example.ru/path/to/torrent?torr=ABCD',
 			"guid" => 'https://example.ru/path/to/torrent?perm=ABCD',
 			"errcount" => 0,
-			"hash" => ""
-		), $contents['items'][0]);
+			"hash" => "",
+		], $contents['items'][0]);
 	}
 	public function testPendingLoadHistoryCanConfirmItsExactReceipt(): void
 	{
 		$url = 'https://tracker.example/download?id=12';
-		$receipt = array('hash' => str_repeat('A', 40), 'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$receipt = ['hash' => str_repeat('A', 40), 'key' => 'ru-load-proof-' . str_repeat('a', 32)];
 		$history = new rRSSHistory();
 		$history->add($url, 'Pending', 100, 'item-12', $receipt);
 		$this->assertTrue($history->wasLoaded($url, 'item-12', function ($given) use ($receipt) {
@@ -675,7 +672,7 @@ final class RSSTest extends TestCase
 	public function testPendingLoadHistoryRetriesOnlyAfterGrace(): void
 	{
 		$url = 'https://tracker.example/download?id=13';
-		$receipt = array('hash' => str_repeat('B', 40), 'key' => 'ru-load-proof-' . str_repeat('b', 32));
+		$receipt = ['hash' => str_repeat('B', 40), 'key' => 'ru-load-proof-' . str_repeat('b', 32)];
 		$history = new rRSSHistory();
 		$history->add($url, 'Pending', 100, 'item-13', $receipt);
 		$this->assertTrue($history->wasLoaded($url, 'item-13', function () { return 'missing'; }),
@@ -692,7 +689,7 @@ final class RSSTest extends TestCase
 		$url = 'https://tracker.example/download?id=15';
 		$history = new rRSSHistory();
 		$history->add($url, 'Pending', 100, 'old-guid',
-			array('hash' => str_repeat('D', 40), 'key' => 'ru-load-proof-' . str_repeat('d', 32)));
+			['hash' => str_repeat('D', 40), 'key' => 'ru-load-proof-' . str_repeat('d', 32)]);
 		$history->correct($url, 101, 'new-guid');
 		$this->assertTrue($history->wasLoaded($url, 'new-guid', function () { return 'missing'; }),
 			'a new GUID cannot dispatch over a pending load of the same URL');
@@ -708,7 +705,7 @@ final class RSSTest extends TestCase
 		$url = 'https://tracker.example/download?id=16';
 		$history = new rRSSHistory();
 		$history->add($url, 'Pending', 100, 'item-16',
-			array('hash' => str_repeat('E', 40), 'key' => 'ru-load-proof-' . str_repeat('e', 32)));
+			['hash' => str_repeat('E', 40), 'key' => 'ru-load-proof-' . str_repeat('e', 32)]);
 		$this->assertTrue($history->wasLoaded($url, 'item-16', function () { return 'foreign'; }),
 			'a newly visible hash still waits for its deferred marker command');
 		$this->assertEquals('Pending', $history->getHash($url),
@@ -724,27 +721,12 @@ final class RSSTest extends TestCase
 		$url = 'https://tracker.example/download?id=14';
 		$history = new rRSSHistory();
 		$history->add($url, 'Pending', 100, 'item-14',
-			array('hash' => str_repeat('C', 40), 'key' => 'ru-load-proof-' . str_repeat('c', 32)));
+			['hash' => str_repeat('C', 40), 'key' => 'ru-load-proof-' . str_repeat('c', 32)]);
 		$history->lst[$url]['submittedAt'] = time() - 11;
 		$this->assertTrue($history->wasLoaded($url, 'item-14', function () { return 'foreign'; }),
 			'an existing hash is not repeatedly reloaded');
 		$this->assertEquals('Conflict', $history->getHash($url),
 			'a foreign torrent is never shown as this RSS load success');
-	}
-
-
-	// An item's link and guid are handed to window.open() by
-	// plugins/rss/init.js, so anything the feed puts there that is not an
-	// http(s) address has to be dropped while the feed is parsed.
-	private function feedItems(string $xml): array
-	{
-		$rRSS = new rRSS('https://example.org/rss', function () use ($xml) {
-			$cliMock = new SnoopyMock();
-			$cliMock->results = $xml;
-			return $cliMock;
-		});
-		$this->assertTrue($rRSS->fetch(new rRSSHistory()), 'fetch success');
-		return $rRSS->items;
 	}
 
 	public function testRSSItemsWithoutAnHttpLinkAreDropped(): void
@@ -759,7 +741,7 @@ final class RSSTest extends TestCase
 			'<item><title>file</title><link>file:///etc/passwd</link></item>'.
 			'<item><title>text</title><link>not a url at all</link></item>'.
 			'</channel></rss>');
-		$this->assertEquals(array('https://example.org/ok'), array_keys($items));
+		$this->assertEquals(['https://example.org/ok'], array_keys($items));
 	}
 
 	public function testRSSItemFallsBackToThePermalinkWhenOnlyItIsALink(): void
@@ -770,7 +752,7 @@ final class RSSTest extends TestCase
 			'<item><title>t</title><link>javascript:window.x=1</link>'.
 				'<guid>https://example.org/perma</guid></item>'.
 			'</channel></rss>');
-		$this->assertEquals(array('https://example.org/perma'), array_keys($items));
+		$this->assertEquals(['https://example.org/perma'], array_keys($items));
 		$this->assertEquals('https://example.org/perma', $items['https://example.org/perma']['guid']);
 	}
 
@@ -786,7 +768,7 @@ final class RSSTest extends TestCase
 			'<entry><title>data</title><link href="data:text/html,x"/>'.
 				'<updated>2003-12-13T18:30:02Z</updated></entry>'.
 			'</feed>');
-		$this->assertEquals(array('https://example.org/ok'), array_keys($items));
+		$this->assertEquals(['https://example.org/ok'], array_keys($items));
 	}
 
 	// An item link is handed to openExternalURL() by plugins/rss/init.js, so
@@ -795,7 +777,7 @@ final class RSSTest extends TestCase
 	// loses the download with nothing shown to say so.
 	public static function openableLinks(): array
 	{
-		return array(
+		return [
 			'magnet' => 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
 			'ftp' => 'ftp://ftp.example.org/pub/a.torrent',
 			'ftps' => 'ftps://ftp.example.org/pub/b.torrent',
@@ -805,47 +787,28 @@ final class RSSTest extends TestCase
 			'ipv6 literal host' => 'http://[2001:db8::1]/dl/f.torrent',
 			'query and no path' => 'https://tracker.example.org?id=8',
 			'trailing dot host' => 'https://tracker.example.org./dl/g.torrent',
-		);
+		];
 	}
 
 	// The other half of the same rule: an address the browser would refuse
 	// must not reach it, whatever else the item holds.
 	public static function refusedLinks(): array
 	{
-		return array(
+		return [
 			'javascript' => 'javascript:window.x=1',
 			'data' => 'data:text/html,<b>x</b>',
 			'file' => 'file:///etc/passwd',
 			'mailto' => 'mailto:someone@example.org',
 			'plain text' => 'not a url at all',
 			'page relative' => '/rtorrent/plugins/rss/rss.php',
-		);
-	}
-
-	private function rssFeed(string $link, string $guid): string
-	{
-		return('<?xml version="1.0"?><rss version="2.0"><channel>'.
-			'<title>C</title><link>https://example.org/</link>'.
-			'<item><title>t</title><link>'.htmlspecialchars($link).'</link>'.
-			'<guid>'.htmlspecialchars($guid).'</guid></item>'.
-			'</channel></rss>');
-	}
-
-	private function atomFeed(string $link): string
-	{
-		return('<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'.
-			'<title>C</title><link href="https://example.org/"/>'.
-			'<updated>2003-12-13T20:30:02Z</updated>'.
-			'<entry><title>t</title><link href="'.htmlspecialchars($link).'"/>'.
-			'<updated>2003-12-13T18:30:02Z</updated></entry>'.
-			'</feed>');
+		];
 	}
 
 	public function testRSSItemsKeepEveryAddressTheBrowserMayOpen(): void
 	{
 		foreach (self::openableLinks() as $what => $link) {
 			$items = $this->feedItems($this->rssFeed($link, $link));
-			$this->assertEquals(array($link), array_keys($items), $what);
+			$this->assertEquals([$link], array_keys($items), $what);
 			$this->assertEquals($link, $items[$link]['guid'], $what);
 		}
 	}
@@ -854,16 +817,16 @@ final class RSSTest extends TestCase
 	{
 		foreach (self::openableLinks() as $what => $link) {
 			$items = $this->feedItems($this->atomFeed($link));
-			$this->assertEquals(array($link), array_keys($items), $what);
+			$this->assertEquals([$link], array_keys($items), $what);
 		}
 	}
 
 	public function testRSSItemsWithAnAddressTheBrowserRefusesAreDropped(): void
 	{
 		foreach (self::refusedLinks() as $what => $link) {
-			$this->assertEquals(array(), array_keys($this->feedItems(
+			$this->assertEquals([], array_keys($this->feedItems(
 				$this->rssFeed($link, $link))), $what);
-			$this->assertEquals(array(), array_keys($this->feedItems(
+			$this->assertEquals([], array_keys($this->feedItems(
 				$this->atomFeed($link))), $what);
 		}
 	}
@@ -874,7 +837,7 @@ final class RSSTest extends TestCase
 	{
 		$link = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567';
 		$items = $this->feedItems($this->rssFeed($link, 'javascript:window.x=1'));
-		$this->assertEquals(array($link), array_keys($items));
+		$this->assertEquals([$link], array_keys($items));
 		$this->assertEquals($link, $items[$link]['guid']);
 	}
 
@@ -884,7 +847,7 @@ final class RSSTest extends TestCase
 	{
 		$xml = '<?xml version="1.0"?><rss version="2.0"><channel>'.
 			'<title>C</title><link>https://example.org/</link>';
-		$expected = array();
+		$expected = [];
 		foreach (array_merge(self::openableLinks(), self::refusedLinks()) as $link) {
 			$xml .= '<item><title>t</title><link>'.htmlspecialchars($link).'</link>'.
 				'<guid>'.htmlspecialchars($link).'</guid></item>';
@@ -907,14 +870,14 @@ final class RSSTest extends TestCase
 			$xml .= '<item><title>t'.$i.'</title>'.
 				'<link>https://example.org/'.$i.'</link></item>';
 		}
-		$raised = array();
+		$raised = [];
 		set_error_handler(function ($no, $str, $file, $line) use (&$raised) {
 			$raised[] = $str.' in '.basename((string)$file).' on line '.$line;
 			return true;
 		});
 		$items = $this->feedItems($xml.'</channel></rss>');
 		restore_error_handler();
-		$this->assertEquals(array(), $raised,
+		$this->assertEquals([], $raised,
 			'no diagnostic raised while parsing a feed without dates: '.
 			implode('; ', array_unique($raised)));
 		$this->assertEquals(5, count($items));
@@ -934,5 +897,45 @@ final class RSSTest extends TestCase
 		$this->assertEquals(1, count($items));
 		$this->assertEquals(strtotime('2024-01-02T03:04:05Z'),
 			$items['https://example.org/a']['timestamp']);
+	}
+	private function assertSameFields(array $expected, array $actual): void
+	{
+		ksort($expected);
+		ksort($actual);
+		$this->assertSame($expected, $actual);
+	}
+
+
+	// An item's link and guid are handed to window.open() by
+	// plugins/rss/init.js, so anything the feed puts there that is not an
+	// http(s) address has to be dropped while the feed is parsed.
+	private function feedItems(string $xml): array
+	{
+		$rRSS = new rRSS('https://example.org/rss', function () use ($xml) {
+			$cliMock = new SnoopyMock();
+			$cliMock->results = $xml;
+			return $cliMock;
+		});
+		$this->assertTrue($rRSS->fetch(new rRSSHistory()), 'fetch success');
+		return $rRSS->items;
+	}
+
+	private function rssFeed(string $link, string $guid): string
+	{
+		return('<?xml version="1.0"?><rss version="2.0"><channel>'.
+			'<title>C</title><link>https://example.org/</link>'.
+			'<item><title>t</title><link>'.htmlspecialchars($link).'</link>'.
+			'<guid>'.htmlspecialchars($guid).'</guid></item>'.
+			'</channel></rss>');
+	}
+
+	private function atomFeed(string $link): string
+	{
+		return('<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'.
+			'<title>C</title><link href="https://example.org/"/>'.
+			'<updated>2003-12-13T20:30:02Z</updated>'.
+			'<entry><title>t</title><link href="'.htmlspecialchars($link).'"/>'.
+			'<updated>2003-12-13T18:30:02Z</updated></entry>'.
+			'</feed>');
 	}
 }

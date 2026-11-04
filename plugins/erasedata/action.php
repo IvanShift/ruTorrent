@@ -16,25 +16,25 @@ require_once( 'removewithdata.php' );
 // The bounds below are deliberately literals rather than constants borrowed
 // from removewithdata.php: this file is the outermost door, and what it refuses
 // must not depend on which helper happened to load first.
-$hash = array();
-$vs = array();
+$hash = [];
+$vs = [];
 $mode = "";
 $malformed = 0;
-if (!isset($HTTP_RAW_POST_DATA))
-	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+if (!isset($HTTP_RAW_POST_DATA)) {
+	$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 if(is_string($HTTP_RAW_POST_DATA) && $HTTP_RAW_POST_DATA !== "")
 {
 	// 64 KiB and 4096 entries: a "remove and delete data" over a thousand
 	// downloads fits comfortably, and a body that does not is refused rather
 	// than parsed into an unbounded array.
-	if(strlen($HTTP_RAW_POST_DATA) > 65536)
-		$malformed++;
+	if(strlen($HTTP_RAW_POST_DATA) > 65536) {
+		$malformed++; }
 	else
 	{
 		$entries = explode('&', $HTTP_RAW_POST_DATA);
-		if(count($entries) > 4096)
-			$malformed++;
-		else
+		if(count($entries) > 4096) {
+			$malformed++; }
+		else {
 			foreach($entries as $entry)
 			{
 				$parts = explode("=", $entry, 2);
@@ -49,7 +49,7 @@ if(is_string($HTTP_RAW_POST_DATA) && $HTTP_RAW_POST_DATA !== "")
 					case "v":    $vs[]   = rawurldecode($parts[1]); break;
 					case "mode": $mode   = $parts[1]; break;
 				}
-			}
+			} }
 	}
 }
 
@@ -85,8 +85,8 @@ else
 
 if($refusal !== null)
 {
-	header(in_array($refusal, array('invalid request', 'invalid-request', 'invalid-hash',
-		'missing or invalid v'), true)
+	header(in_array($refusal, ['invalid request', 'invalid-request', 'invalid-hash',
+		'missing or invalid v'], true)
 		? 'HTTP/1.0 400 Bad Request' : 'HTTP/1.0 409 Conflict');
 	FileUtil::toLog('erasedata: removewithdata refused: '.$refusal);
 	CachedEcho::send($message, 'text/plain');

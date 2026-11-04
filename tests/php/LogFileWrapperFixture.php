@@ -15,38 +15,22 @@
 class LogFileWrapperFixture
 {
 	public $context;
-	public static $calls = array();
-	public static $lockOperations = array();
-	private static $options = array();
+	public static $calls = [];
+	public static $lockOperations = [];
+	private static $options = [];
 	private $path;
 	private $real;
 
 	public static function install($options)
 	{
-		self::$options = $options + array('refuse' => array(), 'fifo' => false, 'lockFails' => false,
-			'beforeWrite' => '', 'throwOnWrite' => false);
+		self::$options = $options + ['refuse' => [], 'fifo' => false, 'lockFails' => false,
+			'beforeWrite' => '', 'throwOnWrite' => false];
 		self::replacePlainFiles();
 	}
 
 	public static function remove()
 	{
 		stream_wrapper_restore('file');
-	}
-
-	private static function replacePlainFiles()
-	{
-		stream_wrapper_unregister('file');
-		stream_wrapper_register('file', __CLASS__);
-	}
-
-	private static function withPlainFiles($call)
-	{
-		self::remove();
-		try {
-			return $call();
-		} finally {
-			self::replacePlainFiles();
-		}
 	}
 
 	public function url_stat($path, $flags)
@@ -114,5 +98,21 @@ class LogFileWrapperFixture
 	{
 		self::$calls[] = 'close';
 		fclose($this->real);
+	}
+
+	private static function replacePlainFiles()
+	{
+		stream_wrapper_unregister('file');
+		stream_wrapper_register('file', __CLASS__);
+	}
+
+	private static function withPlainFiles($call)
+	{
+		self::remove();
+		try {
+			return $call();
+		} finally {
+			self::replacePlainFiles();
+		}
 	}
 }

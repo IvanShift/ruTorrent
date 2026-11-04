@@ -29,7 +29,7 @@ class AddDirectorySymlinkTest extends TestCase
 {
 	use TorrentSequenceFixtures;
 
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	private $previousSettings;
 	private $previousGlobals;
@@ -61,7 +61,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$settings->home = $this->base;
 		$settings->iVersion = 0x904;
 		$settings->apiVersion = 0;
-		$settings->aliases = array();
+		$settings->aliases = [];
 		$this->previousSettings = self::swapSettings($settings);
 
 		$GLOBALS['topDirectory'] = $this->top . '/';
@@ -87,51 +87,18 @@ class AddDirectorySymlinkTest extends TestCase
 		finally
 		{
 			$this->previousGlobals->restore();
-			if($this->hadTopDirectory)
-				$GLOBALS['topDirectory'] = $this->previousTopDirectory;
-			else
-				unset($GLOBALS['topDirectory']);
+			if($this->hadTopDirectory) {
+				$GLOBALS['topDirectory'] = $this->previousTopDirectory; }
+			else {
+				unset($GLOBALS['topDirectory']); }
 		}
-	}
-
-	private static function swapSettings($settings)
-	{
-		return Closure::bind(function ($settings) {
-			$previous = rTorrentSettings::$theSettings;
-			rTorrentSettings::$theSettings = $settings;
-			return $previous;
-		}, null, 'rTorrentSettings')->__invoke($settings);
-	}
-
-	private function stop()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-		if ($this->server !== null) $this->server->close();
-		$this->server = null;
-	}
-
-	private function daemon($replies = null)
-	{
-		$this->stop();
-		$this->daemon = new FakeRtorrentDaemon($replies ?? new FakeRtorrentAddTorrentReplies(array(), array(true), false), $this->base . '/calls.log');
-		$GLOBALS['scgi_port'] = $this->daemon->port();
-	}
-
-	private function loads()
-	{
-		return array_values(array_filter($this->daemon->calls(), function ($call) {
-			return (strpos($call, 'load') === 0) || ($call === 'execute');
-		}));
 	}
 
 	// ---- the check itself --------------------------------------------------
 
 	public function testALinkOutOfTheTopDirectoryIsRefused()
 	{
-		foreach (array('/out', '/out/', '/out/new', '/out/a/b', '/plain/../out/new') as $tail) {
+		foreach (['/out', '/out/', '/out/new', '/out/a/b', '/plain/../out/new'] as $tail) {
 			$dir = $this->top . $tail;
 			$this->assertTrue(rTorrentSettings::get()->correctDirectory($dir),
 				"{$tail} passes the text check");
@@ -148,7 +115,7 @@ class AddDirectorySymlinkTest extends TestCase
 
 	public function testDirectoriesThatDoNotExistYetAreAccepted()
 	{
-		foreach (array('', '/plain', '/plain/new', '/plain/new/deeper', '/new/deeper') as $tail) {
+		foreach (['', '/plain', '/plain/new', '/plain/new/deeper', '/new/deeper'] as $tail) {
 			$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . $tail) === true,
 				"'{$tail}' under the top directory is accepted");
 		}
@@ -162,8 +129,8 @@ class AddDirectorySymlinkTest extends TestCase
 	 */
 	public function testADotOrDotDotAfterADirectoryThatDoesNotExistYetIsRefused()
 	{
-		foreach (array('/plain/zz/../../../outside', '/plain/zz/../../../outside/new/', '/zz/../..',
-				'/plain/zz/./new') as $tail) {
+		foreach (['/plain/zz/../../../outside', '/plain/zz/../../../outside/new/', '/zz/../..',
+				'/plain/zz/./new'] as $tail) {
 			$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . $tail) === false,
 				"'{$tail}' is refused");
 		}
@@ -175,7 +142,7 @@ class AddDirectorySymlinkTest extends TestCase
 	 */
 	public function testOtherNamesAfterADirectoryThatDoesNotExistYetAreAccepted()
 	{
-		foreach (array('/plain/.new/..new/...', '/plain/../plain/new') as $tail) {
+		foreach (['/plain/.new/..new/...', '/plain/../plain/new'] as $tail) {
 			$this->assertTrue(rTorrent::isInsideTopDirectory($this->top . $tail) === true,
 				"'{$tail}' is accepted");
 		}
@@ -244,7 +211,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$torrent = new Torrent($this->announceOnlyTorrent());
 		$result = rTorrent::sendTorrent($torrent, true, false, $this->top . '/out/new', '', false, false);
 		$this->assertTrue($result === false, 'sendTorrent() fails for a directory behind a link out');
-		$this->assertEquals(array(), $this->daemon->calls(),
+		$this->assertEquals([], $this->daemon->calls(),
 			'and rtorrent was sent nothing; it saw ' . json_encode($this->daemon->calls()));
 	}
 
@@ -253,7 +220,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$this->daemon();
 		$result = rTorrent::sendMagnet('magnet:?xt=urn:btih:' . self::HASH, true, false, $this->top . '/out/new', '');
 		$this->assertTrue($result === false, 'sendMagnet() fails for a directory behind a link out');
-		$this->assertEquals(array(), $this->daemon->calls(),
+		$this->assertEquals([], $this->daemon->calls(),
 			'and rtorrent was sent nothing; it saw ' . json_encode($this->daemon->calls()));
 	}
 
@@ -271,7 +238,7 @@ class AddDirectorySymlinkTest extends TestCase
 			. 'ini_set("open_basedir", ' . var_export($root . PATH_SEPARATOR . $missing, true) . ');'
 			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
 			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/new") ? "allowed" : "refused";';
-		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), array('-r', $code)), array('timeout' => 15));
+		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(), ['-r', $code]), ['timeout' => 15]);
 		$this->assertSame(false, $result['timedOut'], 'a root hidden by open_basedir terminates promptly');
 		$this->assertSame(0, $result['code'], 'filesystem refusal is not a PHP error');
 		$this->assertSame('refused', $result['out'], 'no usable ancestor means refusal');
@@ -290,8 +257,8 @@ class AddDirectorySymlinkTest extends TestCase
 		try {
 			$before = rTorrent::isInsideTopDirectory($dir . '/new');
 			$swap = PhpProcess::run(array_merge(PhpProcess::sameIni(),
-				array('-r', 'rename($argv[1], $argv[2]); symlink($argv[3], $argv[1]);',
-				$dir, $this->top . '/aside', $this->base . '/outside')), array('timeout' => 15));
+				['-r', 'rename($argv[1], $argv[2]); symlink($argv[3], $argv[1]);',
+				$dir, $this->top . '/aside', $this->base . '/outside']), ['timeout' => 15]);
 			$after = rTorrent::isInsideTopDirectory($dir . '/new');
 			$swapped = is_link($dir);
 		} finally {
@@ -312,7 +279,7 @@ class AddDirectorySymlinkTest extends TestCase
 			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
 			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/plain/new") ? "allowed" : "refused";';
 		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
-			array('-d', 'disable_functions=clearstatcache', '-r', $code)), array('timeout' => 15));
+			['-d', 'disable_functions=clearstatcache', '-r', $code]), ['timeout' => 15]);
 		$this->assertSame('refused', $result['out'], 'a cache that cannot be cleared is not trusted: ' . $result['err']);
 	}
 
@@ -324,7 +291,7 @@ class AddDirectorySymlinkTest extends TestCase
 			. '$scgi_host = "127.0.0.1"; $scgi_port = 0;'
 			. 'echo rTorrent::isInsideTopDirectory($topDirectory . "/plain/new") ? "allowed" : "refused";';
 		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
-			array('-d', 'disable_functions=basename', '-r', $code)), array('timeout' => 10));
+			['-d', 'disable_functions=basename', '-r', $code]), ['timeout' => 10]);
 		$this->assertSame('allowed', $result['out'], 'a new directory inside is accepted: ' . $result['err']);
 		$this->assertSame('', $result['err'], 'without diagnostics');
 	}
@@ -336,7 +303,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$result = rTorrent::sendTorrent(new Torrent($this->announceOnlyTorrent()), false, false,
 			$this->base . '/outside/existing', '', false, false, true, null, $pending, null, true);
 		$this->assertSame(false, $result, 'new metainfo does not turn a daemon path into typed input');
-		$this->assertSame(array(), $this->daemon->calls(), 'no load or directory is dispatched elsewhere');
+		$this->assertSame([], $this->daemon->calls(), 'no load or directory is dispatched elsewhere');
 	}
 
 	public function testNewMetainfoRetainsAnExistingReportedLinkAtDispatch()
@@ -361,7 +328,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$result = rTorrent::sendMagnet('magnet:?xt=urn:btih:' . self::HASH, false, false,
 			$this->base . '/outside/.chk-meta', '.chk-meta', null, true);
 		$this->assertSame(false, $result, 'a daemon-derived service path outside the top is refused');
-		$this->assertSame(array(), $this->daemon->calls(), 'no directory or load is dispatched elsewhere');
+		$this->assertSame([], $this->daemon->calls(), 'no directory or load is dispatched elsewhere');
 	}
 
 	public function testReportedMagnetDirectoryInsideTheTopKeepsItsExactBytes()
@@ -402,6 +369,59 @@ class AddDirectorySymlinkTest extends TestCase
 			'a reload ($isNew false) goes back where rtorrent had it');
 	}
 
+	public function testAddTorrentAnswersFailedDirectoryForALinkOut()
+	{
+		// The daemon would accept the mkdir and the load, so only the directory check can refuse it.
+		$results = $this->add('dir_edit=' . rawurlencode($this->top . '/out/new'), 2);
+		$this->assertEquals(['FailedDirectory'], $results,
+			'a directory behind a link out is the directory failure: ' . json_encode($results));
+		$this->assertEquals([], $this->loads(),
+			'and nothing was loaded or made: ' . json_encode($this->daemon->calls()));
+	}
+
+	public function testAddTorrentStillAddsThroughALinkThatStaysInside()
+	{
+		$results = $this->add('dir_edit=' . rawurlencode($this->top . '/in/new'), 2);
+		$this->assertEquals(['Success'], $results,
+			'a directory behind a link that stays inside is added: ' . json_encode($results));
+		$loads = $this->loads();
+		$this->assertTrue((count($loads) === 2) && ($loads[0] === 'execute') && (strpos($loads[1], 'load') === 0),
+			'with its directory made and the magnet loaded: ' . json_encode($this->daemon->calls()));
+	}
+
+	private static function swapSettings($settings)
+	{
+		return Closure::bind(function ($settings) {
+			$previous = rTorrentSettings::$theSettings;
+			rTorrentSettings::$theSettings = $settings;
+			return $previous;
+		}, null, 'rTorrentSettings')->__invoke($settings);
+	}
+
+	private function stop()
+	{
+		if ($this->daemon !== null) {
+			$this->daemon->stop();
+			$this->daemon = null;
+		}
+		if ($this->server !== null) { $this->server->close(); }
+		$this->server = null;
+	}
+
+	private function daemon($replies = null)
+	{
+		$this->stop();
+		$this->daemon = new FakeRtorrentDaemon($replies ?? new FakeRtorrentAddTorrentReplies([], [true], false), $this->base . '/calls.log');
+		$GLOBALS['scgi_port'] = $this->daemon->port();
+	}
+
+	private function loads()
+	{
+		return array_values(array_filter($this->daemon->calls(), function ($call) {
+			return (strpos($call, 'load') === 0) || ($call === 'execute');
+		}));
+	}
+
 	// ---- addtorrent.php ----------------------------------------------------
 
 	/**
@@ -415,7 +435,7 @@ class AddDirectorySymlinkTest extends TestCase
 		$root = realpath(__DIR__ . '/../..');
 		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
 		$this->daemon = new FakeRtorrentDaemon(
-			array_merge(array(array()), array_fill(0, $requests, array(0)), array(array(self::HASH))), $this->base . '/calls.log');
+			array_merge([[]], array_fill(0, $requests, [0]), [[self::HASH]]), $this->base . '/calls.log');
 		$router = $this->base . '/router.php';
 		file_put_contents($router, "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
@@ -428,34 +448,14 @@ class AddDirectorySymlinkTest extends TestCase
 			. 'chdir(' . var_export($root . '/php', true) . ");\n"
 			. 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n"
 			. "return true;\n");
-		$this->server = TestHttpServer::start($this->base, array(), PhpProcess::sameIni(), $router);
+		$this->server = TestHttpServer::start($this->base, [], PhpProcess::sameIni(), $router);
 		$response = TestHttpServer::rawPost($this->server->port(), '/php/addtorrent.php?' . $query,
 			'url=' . rawurlencode('magnet:?xt=urn:btih:' . self::HASH), 'application/x-www-form-urlencoded');
 		if (!isset($response['headers']['location'])
 			|| !preg_match('`^[^?]*\?(.*)$`', $response['headers']['location'], $location)) {
-			return array('no redirect: ' . $response['body']);
+			return ['no redirect: ' . $response['body']];
 		}
 		parse_str($location[1], $answer);
-		return isset($answer['result']) ? $answer['result'] : array();
-	}
-
-	public function testAddTorrentAnswersFailedDirectoryForALinkOut()
-	{
-		// The daemon would accept the mkdir and the load, so only the directory check can refuse it.
-		$results = $this->add('dir_edit=' . rawurlencode($this->top . '/out/new'), 2);
-		$this->assertEquals(array('FailedDirectory'), $results,
-			'a directory behind a link out is the directory failure: ' . json_encode($results));
-		$this->assertEquals(array(), $this->loads(),
-			'and nothing was loaded or made: ' . json_encode($this->daemon->calls()));
-	}
-
-	public function testAddTorrentStillAddsThroughALinkThatStaysInside()
-	{
-		$results = $this->add('dir_edit=' . rawurlencode($this->top . '/in/new'), 2);
-		$this->assertEquals(array('Success'), $results,
-			'a directory behind a link that stays inside is added: ' . json_encode($results));
-		$loads = $this->loads();
-		$this->assertTrue((count($loads) === 2) && ($loads[0] === 'execute') && (strpos($loads[1], 'load') === 0),
-			'with its directory made and the magnet loaded: ' . json_encode($this->daemon->calls()));
+		return isset($answer['result']) ? $answer['result'] : [];
 	}
 }

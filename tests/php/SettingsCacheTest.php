@@ -32,56 +32,13 @@ class SettingsCacheTest extends TestCase
 		}
 	}
 
-	private function removeDir($dir)
-	{
-		foreach (array_diff(scandir($dir), ['.', '..']) as $entry) {
-			$path = $dir . '/' . $entry;
-			if (is_dir($path) && !is_link($path)) {
-				$this->removeDir($path);
-			} else {
-				unlink($path);
-			}
-		}
-		rmdir($dir);
-	}
-
-	// The constructor is private and get() is a per-process singleton, so build
-	// instances the way RtorrentCompatibilityTest does.
-	private function makeSettings($linkExist)
-	{
-		$reflection = new ReflectionClass('rTorrentSettings');
-		$settings = $reflection->newInstanceWithoutConstructor();
-		$settings->linkExist = $linkExist;
-		if ($linkExist) {
-			$settings->version = '0.16.20';
-			$settings->iVersion = 0x1014;
-			$settings->aliases = array(
-				'set_download_rate' => array('name' => 'throttle.global_down.max_rate.set', 'prm' => 1),
-			);
-		}
-		return $settings;
-	}
-
-	private function cacheFile()
-	{
-		return FileUtil::getSettingsPath() . '/rtorrent.dat';
-	}
-
-	private function readCached()
-	{
-		$cached = new ReflectionClass('rTorrentSettings');
-		$cached = $cached->newInstanceWithoutConstructor();
-		(new rCache())->get($cached);
-		return $cached;
-	}
-
 	public function testCacheMissProbesDaemonBeforeResolvingAliases()
 	{
 		$fixture = $this->profilePath.'/miss-fixture';
 		if (!mkdir($fixture, 0700, true)) {
 			throw new Exception('Could not create settings cache miss fixture');
 		}
-		foreach (array('settings.php', 'xmlrpc_path.php', 'commandargs.php', 'methods-0.9.4.php') as $name) {
+		foreach (['settings.php', 'xmlrpc_path.php', 'commandargs.php', 'methods-0.9.4.php'] as $name) {
 			if (!copy(__DIR__.'/../../php/'.$name, $fixture.'/'.$name)) {
 				throw new Exception('Could not copy production '.$name);
 			}
@@ -132,8 +89,8 @@ echo json_encode(array(
 ));
 PHP
 );
-		$process = proc_open(array(PHP_BINARY, $fixture.'/run.php'),
-			array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, $fixture);
+		$process = proc_open([PHP_BINARY, $fixture.'/run.php'],
+			[1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $fixture);
 		if (!is_resource($process)) {
 			throw new Exception('Could not start settings cache miss fixture');
 		}
@@ -155,7 +112,7 @@ PHP
 		$this->makeSettings(false)->store();
 		$this->assertTrue(
 			!is_file($this->cacheFile()),
-			'A settings object whose probe failed must not be written to the cache'
+			'A settings object whose probe failed must not be written to the cache',
 		);
 	}
 
@@ -164,7 +121,7 @@ PHP
 		$this->assertEquals(
 			false,
 			$this->makeSettings(false)->store(),
-			'store() reports false when it declines to cache a failed probe'
+			'store() reports false when it declines to cache a failed probe',
 		);
 	}
 
@@ -172,11 +129,11 @@ PHP
 	{
 		$this->assertTrue(
 			$this->makeSettings(true)->store() !== false,
-			'store() reports success for a settings object with a live link'
+			'store() reports success for a settings object with a live link',
 		);
 		$this->assertTrue(
 			is_file($this->cacheFile()),
-			'A settings object with a live link is written to the cache'
+			'A settings object with a live link is written to the cache',
 		);
 		$cached = $this->readCached();
 		$this->assertTrue($cached->linkExist, 'The cached object carries linkExist');
@@ -196,19 +153,19 @@ PHP
 		$this->assertEquals(
 			'throttle.global_down.max_rate.set',
 			$cached->getCommand('set_download_rate'),
-			'The cached alias map survives a failed probe, so renamed commands keep resolving'
+			'The cached alias map survives a failed probe, so renamed commands keep resolving',
 		);
 	}
 
 	public function testUnregisteringStoredHookSubjectsPreservesOtherPluginsAndSparseEntries()
 	{
 		$settings = $this->makeSettings(false);
-		$settings->registerEventHook('rssurlrewrite', array('RSSFetched', 'URLFetched'), 10);
+		$settings->registerEventHook('rssurlrewrite', ['RSSFetched', 'URLFetched'], 10);
 		$settings->registerEventHook('_cloudflare', 'URLFetched', 20);
-		$settings->unregisterEventHook('rssurlrewrite', array('RSSFetched', 'URLFetched'), false);
+		$settings->unregisterEventHook('rssurlrewrite', ['RSSFetched', 'URLFetched'], false);
 		$this->assertTrue(!array_key_exists('RSSFetched', $settings->hooks),
 			'The last subject retires its event key');
-		$this->assertEquals(array(array('name' => '_cloudflare', 'level' => 20)),
+		$this->assertEquals([['name' => '_cloudflare', 'level' => 20]],
 			array_values($settings->hooks['URLFetched']), 'Only the named plugin is removed');
 		$remaining = $settings->hooks;
 		$settings->unregisterEventHook('_cloudflare', 'missing', false);
@@ -216,7 +173,7 @@ PHP
 		$settings->unregisterEventHook('missing-plugin', 'URLFetched', false);
 		$this->assertEquals($remaining, $settings->hooks, 'An absent plugin preserves the remaining subjects');
 		$settings->unregisterEventHook('_cloudflare', 'URLFetched', false);
-		$this->assertEquals(array(), $settings->hooks, 'A remaining sparse subject can also be removed');
+		$this->assertEquals([], $settings->hooks, 'A remaining sparse subject can also be removed');
 	}
 
 	// What the tenant meets when the map is lost: the status bar's rate control
@@ -227,15 +184,8 @@ PHP
 		$this->assertEquals(
 			'set_download_rate',
 			$this->makeSettings(false)->getCommand('set_download_rate'),
-			'With no alias map getCommand() falls back to the legacy spelling'
+			'With no alias map getCommand() falls back to the legacy spelling',
 		);
-	}
-
-	// The entry registerEventHook() stores for a hook, which is what
-	// unregisterEventHookPrim() compares against when removing it.
-	private function hookSubject($plugin, $level = 10)
-	{
-		return array('name' => $plugin, 'level' => $level);
 	}
 
 	/**
@@ -252,9 +202,9 @@ PHP
 
 		$cached = $this->readCached();
 		$this->assertTrue(
-			$cached->hooks === array('LabelChanged' => array($this->hookSubject('extratio'))),
+			$cached->hooks === ['LabelChanged' => [$this->hookSubject('extratio')]],
 			'A hook registered with $save is in the cache a later request reads: '
-			. json_encode($cached->hooks)
+			. json_encode($cached->hooks),
 		);
 	}
 
@@ -263,18 +213,18 @@ PHP
 		$settings = $this->makeSettings(true);
 		$settings->registerEventHook('extratio', 'LabelChanged', 10, true);
 		$this->assertTrue(
-			$this->readCached()->hooks !== array(),
-			'The hook is in the cache before it is removed'
+			$this->readCached()->hooks !== [],
+			'The hook is in the cache before it is removed',
 		);
 
 		$settings->unregisterEventHook('extratio', 'LabelChanged');
 
-		$this->assertTrue($settings->hooks === array(), 'The removal happens in the object');
+		$this->assertTrue($settings->hooks === [], 'The removal happens in the object');
 		$cached = $this->readCached();
 		$this->assertTrue(
-			$cached->hooks === array(),
+			$cached->hooks === [],
 			'and reaches the cache, so a later request no longer runs the hook: '
-			. json_encode($cached->hooks)
+			. json_encode($cached->hooks),
 		);
 	}
 
@@ -292,8 +242,8 @@ PHP
 
 		$cached = $this->readCached();
 		$this->assertTrue(
-			$cached->hooks === array('LabelChanged' => array($this->hookSubject('extratio'))),
-			'An unprobed object does not remove a hook from the cache: ' . json_encode($cached->hooks)
+			$cached->hooks === ['LabelChanged' => [$this->hookSubject('extratio')]],
+			'An unprobed object does not remove a hook from the cache: ' . json_encode($cached->hooks),
 		);
 	}
 	// The format before 63f15c6c stored a bare plugin name where a subject
@@ -302,21 +252,71 @@ PHP
 	public function testUnregisteringReadsAPlainNameSubject()
 	{
 		$settings = $this->makeSettings(false);
-		$settings->hooks = array(
-			"RSSFetched" => array("rssurlrewrite"),
-			"URLFetched" => array("rssurlrewrite", $this->hookSubject("_cloudflare", 20)),
-		);
+		$settings->hooks = [
+			"RSSFetched" => ["rssurlrewrite"],
+			"URLFetched" => ["rssurlrewrite", $this->hookSubject("_cloudflare", 20)],
+		];
 
-		$settings->unregisterEventHook("rssurlrewrite", array("RSSFetched", "URLFetched"), false);
+		$settings->unregisterEventHook("rssurlrewrite", ["RSSFetched", "URLFetched"], false);
 
 		$this->assertTrue(
 			!array_key_exists("RSSFetched", $settings->hooks),
-			"A plain-name subject is removed and retires its event key"
+			"A plain-name subject is removed and retires its event key",
 		);
 		$this->assertEquals(
-			array($this->hookSubject("_cloudflare", 20)),
+			[$this->hookSubject("_cloudflare", 20)],
 			array_values($settings->hooks["URLFetched"]),
-			"A plain-name subject is removed from beside a subject array"
+			"A plain-name subject is removed from beside a subject array",
 		);
+	}
+
+	private function removeDir($dir)
+	{
+		foreach (array_diff(scandir($dir), ['.', '..']) as $entry) {
+			$path = $dir . '/' . $entry;
+			if (is_dir($path) && !is_link($path)) {
+				$this->removeDir($path);
+			} else {
+				unlink($path);
+			}
+		}
+		rmdir($dir);
+	}
+
+	// The constructor is private and get() is a per-process singleton, so build
+	// instances the way RtorrentCompatibilityTest does.
+	private function makeSettings($linkExist)
+	{
+		$reflection = new ReflectionClass('rTorrentSettings');
+		$settings = $reflection->newInstanceWithoutConstructor();
+		$settings->linkExist = $linkExist;
+		if ($linkExist) {
+			$settings->version = '0.16.20';
+			$settings->iVersion = 0x1014;
+			$settings->aliases = [
+				'set_download_rate' => ['name' => 'throttle.global_down.max_rate.set', 'prm' => 1],
+			];
+		}
+		return $settings;
+	}
+
+	private function cacheFile()
+	{
+		return FileUtil::getSettingsPath() . '/rtorrent.dat';
+	}
+
+	private function readCached()
+	{
+		$cached = new ReflectionClass('rTorrentSettings');
+		$cached = $cached->newInstanceWithoutConstructor();
+		(new rCache())->get($cached);
+		return $cached;
+	}
+
+	// The entry registerEventHook() stores for a hook, which is what
+	// unregisterEventHookPrim() compares against when removing it.
+	private function hookSubject($plugin, $level = 10)
+	{
+		return ['name' => $plugin, 'level' => $level];
 	}
 }

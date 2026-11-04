@@ -23,34 +23,6 @@ require_once(__DIR__.'/../../php/utility/utility.php');
  */
 class RuTrackerDetachedPhp
 {
-	/**
-	 * Whether the configured interpreter can actually be run. The PHP binary is
-	 * a configured string, so "php" may be a bare name resolved through PATH or
-	 * an absolute path that no longer exists.
-	 */
-	static private function executableExists($php)
-	{
-		$php = (string) $php;
-		if($php === '')
-			return false;
-		if(strpos($php, DIRECTORY_SEPARATOR) !== false)
-			return @is_file($php) && @is_executable($php);
-
-		$path = getenv('PATH');
-		if(!is_string($path) || $path === '')
-			return false;
-		foreach(explode(PATH_SEPARATOR, $path) as $directory)
-		{
-			if($directory === '')
-				$directory = '.';
-			$candidate = $directory
-				. (substr($directory, -1) === DIRECTORY_SEPARATOR ? '' : DIRECTORY_SEPARATOR)
-				. $php;
-			if(@is_file($candidate) && @is_executable($candidate))
-				return true;
-		}
-		return false;
-	}
 
 	/**
 	 * The command string for a detached run. Every word that came from
@@ -58,44 +30,44 @@ class RuTrackerDetachedPhp
 	 * install whose PHP path contains a space would otherwise be split into two
 	 * words and the child would never start.
 	 */
-	static public function command($php, $script, $arguments = array())
+	public static function command($php, $script, $arguments = [])
 	{
-		$parts = array(
+		$parts = [
 			Utility::escapeShellArg((string) $php),
 			'-f',
 			Utility::escapeShellArg((string) $script),
-		);
-		foreach((array) $arguments as $argument)
-			$parts[] = Utility::escapeShellArg((string) $argument);
+		];
+		foreach((array) $arguments as $argument) {
+			$parts[] = Utility::escapeShellArg((string) $argument); }
 		return implode(' ', $parts) . ' > /dev/null 2>&1 &';
 	}
 
 	/** Build a daemon schedule command without blocking its RPC event loop. */
-	static public function scheduleCommand($php, $script, $arguments, $capability)
+	public static function scheduleCommand($php, $script, $arguments, $capability)
 	{
-		if($capability !== 'available' && $capability !== 'unsupported')
-			return false;
-		$argv = array_merge(array($php, '-f', $script, '--'), $arguments);
-		foreach($argv as $value)
-			if(!RtorrentCommandArguments::isLiteral($value))
-				return false;
-		if($php === '' || $script === '')
-			return false;
-		if($capability === 'available')
-			return 'execute.raw.bg=' . implode(',', array_map(array('rTorrent', 'quoteCommandArg'), $argv));
+		if($capability !== 'available' && $capability !== 'unsupported') {
+			return false; }
+		$argv = array_merge([$php, '-f', $script, '--'], $arguments);
+		foreach($argv as $value) {
+			if(!RtorrentCommandArguments::isLiteral($value)) {
+				return false; } }
+		if($php === '' || $script === '') {
+			return false; }
+		if($capability === 'available') {
+			return 'execute.raw.bg=' . implode(',', array_map(['rTorrent', 'quoteCommandArg'], $argv)); }
 
 		// Older daemons need the existing detached shell launcher. Quote the
 		// entire script for the daemon after that owner quotes each shell argv.
 		return getCmd('execute') . '=' . rTorrent::quoteCommandArg('sh') . ','
 			. rTorrent::quoteCommandArg('-c') . ','
-			. rTorrent::quoteCommandArg(self::command($php, $script, array_merge(array('--'), $arguments)));
+			. rTorrent::quoteCommandArg(self::command($php, $script, array_merge(['--'], $arguments)));
 	}
 
-	static public function execute($command)
+	public static function execute($command)
 	{
-		if(!function_exists('exec'))
-			return false;
-		$output = array();
+		if(!function_exists('exec')) {
+			return false; }
+		$output = [];
 		$status = 1;
 		@exec((string) $command, $output, $status);
 		return $status === 0;
@@ -106,7 +78,7 @@ class RuTrackerDetachedPhp
 	 *                                the command through the shell.
 	 * @return bool Whether the shell accepted the detached command.
 	 */
-	static public function launch($php, $script, $arguments = array(), $launcher = null)
+	public static function launch($php, $script, $arguments = [], $launcher = null)
 	{
 		if($launcher === null)
 		{
@@ -114,90 +86,52 @@ class RuTrackerDetachedPhp
 			// nothing about the child is observable at all. Checking them here is
 			// what turns "we asked" into "the request was refusable".
 			if(!self::executableExists($php)
-				|| !is_string($script) || !@is_file($script) || !@is_readable($script))
-				return false;
-			$launcher = array(__CLASS__, 'execute');
+				|| !is_string($script) || !@is_file($script) || !@is_readable($script)) {
+				return false; }
+			$launcher = [__CLASS__, 'execute'];
 		}
 		return call_user_func($launcher, self::command($php, $script, $arguments));
+	}
+	/**
+	 * Whether the configured interpreter can actually be run. The PHP binary is
+	 * a configured string, so "php" may be a bare name resolved through PATH or
+	 * an absolute path that no longer exists.
+	 */
+	private static function executableExists($php)
+	{
+		$php = (string) $php;
+		if($php === '') {
+			return false; }
+		if(strpos($php, DIRECTORY_SEPARATOR) !== false) {
+			return @is_file($php) && @is_executable($php); }
+
+		$path = getenv('PATH');
+		if(!is_string($path) || $path === '') {
+			return false; }
+		foreach(explode(PATH_SEPARATOR, $path) as $directory)
+		{
+			if($directory === '') {
+				$directory = '.'; }
+			$candidate = $directory
+				. (substr($directory, -1) === DIRECTORY_SEPARATOR ? '' : DIRECTORY_SEPARATOR)
+				. $php;
+			if(@is_file($candidate) && @is_executable($candidate)) {
+				return true; }
+		}
+		return false;
 	}
 }
 
 /** Creates the manual-check handover and owns its failed-dispatch cleanup. */
 class RuTrackerBatchDispatch
 {
-	static private function log($logger, $message)
-	{
-		if($logger === null)
-			return;
-		try
-		{
-			call_user_func($logger, $message);
-		}
-		catch(Throwable $e)
-		{
-			// A diagnostic sink must not turn a handled launch refusal into a
-			// second, unhandled request failure.
-		}
-	}
 
-	/**
-	 * Create the handover file, exclusively.
-	 *
-	 * A name built from the user and the wall clock second is the same name
-	 * twice for two checks started in the same second: the second write lands on
-	 * top of the first, one selection is lost, and whichever child runs first
-	 * deletes the file under the other. An exclusive create cannot collide, and
-	 * unlike tempnam() it never quietly falls back to a different directory when
-	 * the configured one is unusable.
-	 *
-	 * @return array|false array($path, $handle), or false with $error set.
-	 */
-	static private function createHandover($tempDirectory, &$error)
+	public static function removeHandover($path, $deleter = null)
 	{
-		$error = null;
-		$directory = (string) $tempDirectory;
-		if($directory === '' || !@is_dir($directory))
-		{
-			$error = 'the temporary directory is not usable';
-			return false;
-		}
-		if(substr($directory, -1) !== DIRECTORY_SEPARATOR)
-			$directory .= DIRECTORY_SEPARATOR;
-
-		for($attempt = 0; $attempt < 16; $attempt++)
-		{
-			$handle = @fopen($directory . 'rutorrent-prm-' . self::uniqueSuffix(), 'xb');
-			if($handle !== false)
-			{
-				$meta = stream_get_meta_data($handle);
-				return array($meta['uri'], $handle);
-			}
-		}
-		$error = 'could not create a handover file';
-		return false;
-	}
-
-	static private function uniqueSuffix()
-	{
-		try
-		{
-			if(function_exists('random_bytes'))
-				return bin2hex(random_bytes(12));
-		}
-		catch(Throwable $e)
-		{
-			// No usable entropy source. The exclusive create below is what
-			// guarantees uniqueness; this only keeps collisions rare.
-		}
-		return str_replace('.', '', uniqid('', true));
-	}
-
-	static public function removeHandover($path, $deleter = null)
-	{
-		if(!is_string($path) || $path === '' || !file_exists($path))
-			return true;
-		if($deleter === null)
-			return @unlink($path);
+		if(!is_string($path) || $path === '' || !file_exists($path)) {
+			return true; }
+		if($deleter === null) {
+			return @unlink($path); }
 		return call_user_func($deleter, $path) === true;
 	}
 
@@ -210,7 +144,7 @@ class RuTrackerBatchDispatch
 	 * @return bool True only when the handover is fully on disk and the shell
 	 *              accepted the worker.
 	 */
-	static public function dispatch($hashes, $tempDirectory, $php, $script, $user,
+	public static function dispatch($hashes, $tempDirectory, $php, $script, $user,
 		$launcher = null, $logger = null, $deleter = null, $writer = null)
 	{
 		$error = null;
@@ -244,22 +178,88 @@ class RuTrackerBatchDispatch
 		try
 		{
 			$accepted = RuTrackerDetachedPhp::launch(
-				$php, $script, array($handover, $user), $launcher) === true;
+				$php, $script, [$handover, $user], $launcher) === true;
 		}
 		catch(Throwable $e)
 		{
 			$accepted = false;
 		}
-		if($accepted)
-			return true;
+		if($accepted) {
+			return true; }
 
 		self::log($logger, 'rutracker_check: manual batch worker was not accepted by the shell');
 		self::cleanUp($handover, $deleter, $logger);
 		return false;
 	}
+	private static function log($logger, $message)
+	{
+		if($logger === null) {
+			return; }
+		try
+		{
+			call_user_func($logger, $message);
+		}
+		catch(Throwable $e)
+		{
+			// A diagnostic sink must not turn a handled launch refusal into a
+			// second, unhandled request failure.
+		}
+	}
+
+	/**
+	 * Create the handover file, exclusively.
+	 *
+	 * A name built from the user and the wall clock second is the same name
+	 * twice for two checks started in the same second: the second write lands on
+	 * top of the first, one selection is lost, and whichever child runs first
+	 * deletes the file under the other. An exclusive create cannot collide, and
+	 * unlike tempnam() it never quietly falls back to a different directory when
+	 * the configured one is unusable.
+	 *
+	 * @return array|false array($path, $handle), or false with $error set.
+	 */
+	private static function createHandover($tempDirectory, &$error)
+	{
+		$error = null;
+		$directory = (string) $tempDirectory;
+		if($directory === '' || !@is_dir($directory))
+		{
+			$error = 'the temporary directory is not usable';
+			return false;
+		}
+		if(substr($directory, -1) !== DIRECTORY_SEPARATOR) {
+			$directory .= DIRECTORY_SEPARATOR; }
+
+		for($attempt = 0; $attempt < 16; $attempt++)
+		{
+			$handle = @fopen($directory . 'rutorrent-prm-' . self::uniqueSuffix(), 'xb');
+			if($handle !== false)
+			{
+				$meta = stream_get_meta_data($handle);
+				return [$meta['uri'], $handle];
+			}
+		}
+		$error = 'could not create a handover file';
+		return false;
+	}
+
+	private static function uniqueSuffix()
+	{
+		try
+		{
+			if(function_exists('random_bytes')) {
+				return bin2hex(random_bytes(12)); }
+		}
+		catch(Throwable $e)
+		{
+			// No usable entropy source. The exclusive create below is what
+			// guarantees uniqueness; this only keeps collisions rare.
+		}
+		return str_replace('.', '', uniqid('', true));
+	}
 
 	/** Remove a handover no worker will ever read, and say so if it stays. */
-	static private function cleanUp($handover, $deleter, $logger)
+	private static function cleanUp($handover, $deleter, $logger)
 	{
 		$removed = false;
 		try
@@ -270,8 +270,8 @@ class RuTrackerBatchDispatch
 		{
 			$removed = false;
 		}
-		if(!$removed)
-			self::log($logger, 'rutracker_check: undispatched manual batch handover could not be removed');
+		if(!$removed) {
+			self::log($logger, 'rutracker_check: undispatched manual batch handover could not be removed'); }
 	}
 }
 
@@ -281,7 +281,7 @@ class RuTrackerBatchRequest
 	// The browser sends one 45-byte "&hash=<40 hex>" group per selected torrent,
 	// so this holds several thousand torrents while still bounding what an
 	// unauthenticated-by-mistake endpoint can be made to buffer.
-	const MAX_BODY_BYTES = 262144; // 256 KiB
+	public const MAX_BODY_BYTES = 262144; // 256 KiB
 
 	/**
 	 * The unique hashes named by a raw application/x-www-form-urlencoded body.
@@ -295,37 +295,37 @@ class RuTrackerBatchRequest
 	 *                           is refused, and left null otherwise.
 	 * @return array Unique uppercase 40-hex hashes, in the order they appeared.
 	 */
-	static public function parseHashes($body, &$error = null)
+	public static function parseHashes($body, &$error = null)
 	{
 		$error = null;
 		if(!is_string($body))
 		{
 			$error = 'the request body could not be read';
-			return array();
+			return [];
 		}
 		if(strlen($body) > self::MAX_BODY_BYTES)
 		{
 			$error = 'the request body is larger than this endpoint accepts';
-			return array();
+			return [];
 		}
 
-		$hashes = array();
-		$seen = array();
+		$hashes = [];
+		$seen = [];
 		foreach(explode('&', $body) as $segment)
 		{
-			if($segment === '')
-				continue;
+			if($segment === '') {
+				continue; }
 			$parts = explode('=', $segment, 2);
-			if(count($parts) !== 2)
-				continue;
-			if(rawurldecode($parts[0]) !== 'hash')
-				continue;
+			if(count($parts) !== 2) {
+				continue; }
+			if(rawurldecode($parts[0]) !== 'hash') {
+				continue; }
 
 			$hash = strtoupper(rawurldecode($parts[1]));
-			if(strlen($hash) !== 40 || !ctype_xdigit($hash))
-				continue;
-			if(isset($seen[$hash]))
-				continue;
+			if(strlen($hash) !== 40 || !ctype_xdigit($hash)) {
+				continue; }
+			if(isset($seen[$hash])) {
+				continue; }
 
 			$seen[$hash] = true;
 			$hashes[] = $hash;

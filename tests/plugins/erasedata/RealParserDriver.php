@@ -32,17 +32,17 @@ final class ErasedataRealParserDriver
 	public static function physicalPathReply($root, $multi, array $paths)
 	{
 		$string = function ($value) {
-			return '<value><string>' . strtr($value, array('&' => '&amp;', '<' => '&lt;', '>' => '&gt;'))
+			return '<value><string>' . strtr($value, ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;'])
 				. '</string></value>';
 		};
 		$rows = '';
-		foreach ($paths as $path)
-			$rows .= '<value><array><data>' . $string($path) . '</data></array></value>';
-		$results = array($string($root), '<value><i8>' . $multi . '</i8></value>',
-			'<value><array><data>' . $rows . '</data></array></value>');
+		foreach ($paths as $path) {
+			$rows .= '<value><array><data>' . $string($path) . '</data></array></value>'; }
+		$results = [$string($root), '<value><i8>' . $multi . '</i8></value>',
+			'<value><array><data>' . $rows . '</data></array></value>'];
 		$body = '';
-		foreach ($results as $result)
-			$body .= '<value><array><data>' . $result . '</data></array></value>';
+		foreach ($results as $result) {
+			$body .= '<value><array><data>' . $result . '</data></array></value>'; }
 		return new FakeRtorrentRawReply('<methodResponse><params><param><value><array><data>'
 			. $body . '</data></array></value></param></params></methodResponse>');
 	}
@@ -70,12 +70,12 @@ final class ErasedataRealParserDriver
 				. ' $log_file = ' . var_export($this->logFile, true) . ";\n"
 			. 'require_once(' . var_export($root . '/php/xmlrpc.php', true) . ");\n"
 			. $body);
-		$out = array();
+		$out = [];
 		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' . escapeshellarg($driver) . ' 2>&1', $out);
 		$printed = implode("\n", $out);
 		$answer = json_decode($printed, true);
-		if (!is_array($answer))
-			throw new Exception('the driver printed: ' . $printed);
+		if (!is_array($answer)) {
+			throw new Exception('the driver printed: ' . $printed); }
 		return $answer;
 	}
 
@@ -85,18 +85,18 @@ final class ErasedataRealParserDriver
 	{
 		$content = $this->logFile === null || !is_file($this->logFile)
 			? '' : rtrim(file_get_contents($this->logFile), "\n");
-		if ($content === '')
-			return array();
-		$lines = array();
-		foreach (explode("\n", $content) as $line)
-			$lines[] = preg_replace('/^\[[^\]]*\] /', '', $line);
+		if ($content === '') {
+			return []; }
+		$lines = [];
+		foreach (explode("\n", $content) as $line) {
+			$lines[] = preg_replace('/^\[[^\]]*\] /', '', $line); }
 		return $lines;
 	}
 
 	public function stop()
 	{
-		if ($this->daemon !== null)
-			$this->daemon->stop();
+		if ($this->daemon !== null) {
+			$this->daemon->stop(); }
 		$this->daemon = null;
 	}
 }

@@ -10,7 +10,7 @@ if(!class_exists('FileUtil'))
 {
 	class FileUtil
 	{
-		public static $log = array();
+		public static $log = [];
 		public static function toLog($msg) { self::$log[] = $msg; }
 	}
 }
@@ -45,9 +45,9 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
 class XMLRPCProxyContractTest extends TestCase
 {
 	// The fixture describes the modern daemon contract, not an unknown daemon.
-	private const DAEMON_OPTIONS = array('rtorrentVersion' => 0x1018);
+	private const DAEMON_OPTIONS = ['rtorrentVersion' => 0x1018];
 
-	private $cases = array();
+	private $cases = [];
 	private $hadCallTracingFlag;
 	private $previousCallTracingFlag;
 
@@ -62,45 +62,25 @@ class XMLRPCProxyContractTest extends TestCase
 
 	public function tearDown()
 	{
-		if($this->hadCallTracingFlag)
-			$GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag;
-		else
-			unset($GLOBALS['rpcLogCalls']);
-	}
-
-	private function callProcess($case)
-	{
-		FileUtil::$log = array();
-		rXMLRPCRequest::$lastPayload = null;
-		rXMLRPCRequest::$lastTrusted = null;
-		rXMLRPCRequest::$sent = 0;
-
-		$returned = XMLRPCProxy::process($case['request'], $case['mode'],
-			$case['enableLog'], $case['safeParams'], $case['allowLocalPaths'],
-			self::DAEMON_OPTIONS);
-
-		return array(
-			'returned' => $returned,
-			'sends'    => rXMLRPCRequest::$sent,
-			'trusted'  => rXMLRPCRequest::$lastTrusted,
-			'payload'  => rXMLRPCRequest::$lastPayload,
-			'log'      => FileUtil::$log,
-		);
+		if($this->hadCallTracingFlag) {
+			$GLOBALS['rpcLogCalls'] = $this->previousCallTracingFlag; }
+		else {
+			unset($GLOBALS['rpcLogCalls']); }
 	}
 
 	public function testFixtureCoversRejectTrustedAndUntrustedOutcomes()
 	{
 		$this->assertTrue(count($this->cases) > 0, 'the contract fixture loaded');
 
-		$seen = array();
+		$seen = [];
 		foreach($this->cases as $case)
 		{
-			if($case['sends'] === 0)
-				$seen['reject'] = true;
-			else if($case['trusted'] === true)
-				$seen['trusted'] = true;
-			else
-				$seen['untrusted'] = true;
+			if($case['sends'] === 0) {
+				$seen['reject'] = true; }
+			elseif($case['trusted'] === true) {
+				$seen['trusted'] = true; }
+			else {
+				$seen['untrusted'] = true; }
 		}
 		$this->assertTrue(isset($seen['reject']), 'a rejected request is covered');
 		$this->assertTrue(isset($seen['trusted']), 'a trusted forward is covered');
@@ -132,12 +112,12 @@ class XMLRPCProxyContractTest extends TestCase
 			$this->assertTrue(
 				XMLRPCPathResolver::deepestExistingAncestor($normalTail)
 					=== realpath($root) . '/missing/child',
-				'a missing tail stays attached to its deepest existing root ancestor'
+				'a missing tail stays attached to its deepest existing root ancestor',
 			);
 			$this->assertTrue(
 				XMLRPCPathResolver::deepestExistingAncestor($escapedTail)
 					=== realpath($outside) . '/missing/child',
-				'a missing tail below a symlink resolves below the symlink target'
+				'a missing tail below a symlink resolves below the symlink target',
 			);
 
 			$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
@@ -145,12 +125,12 @@ class XMLRPCProxyContractTest extends TestCase
 				. '<param><value><string>http://example.test/x.torrent</string></value></param>'
 				. '<param><value><string>d.directory.set=' . htmlspecialchars($escapedTail, ENT_NOQUOTES, 'UTF-8')
 				. '</string></value></param></params></methodCall>';
-			$decision = XMLRPCProxy::decide($xml, 'sanitize', array('d.directory.set'), false, array(
-				'directory' => array(
+			$decision = XMLRPCProxy::decide($xml, 'sanitize', ['d.directory.set'], false, [
+				'directory' => [
 					'root' => $root,
-					'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
-				),
-			));
+					'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
+				],
+			]);
 			$this->assertTrue(strpos($decision['payload'], 'd.directory.set=') === false,
 				'a symlink escape is removed before the request reaches rTorrent');
 		}
@@ -214,14 +194,14 @@ class XMLRPCProxyContractTest extends TestCase
 		foreach($this->cases as $name => $case)
 		{
 			rXMLRPCRequest::$sent = 0;
-			FileUtil::$log = array();
+			FileUtil::$log = [];
 
 			XMLRPCProxy::decide($case['request'], $case['mode'], $case['safeParams'],
 				$case['allowLocalPaths'], self::DAEMON_OPTIONS);
 
 			$this->assertTrue(rXMLRPCRequest::$sent === 0,
 				$name.' — decide() reaches no socket');
-			$this->assertTrue(FileUtil::$log === array(),
+			$this->assertTrue(FileUtil::$log === [],
 				$name.' — decide() writes no log of its own');
 		}
 	}
@@ -241,9 +221,9 @@ class XMLRPCProxyContractTest extends TestCase
 
 			if($case['enableLog'])
 			{
-				$expected = array();
-				foreach($case['log'] as $line)
-					$expected[] = substr($line, strlen('xmlrpc-proxy: '));
+				$expected = [];
+				foreach($case['log'] as $line) {
+					$expected[] = substr($line, strlen('xmlrpc-proxy: ')); }
 				$this->assertTrue($decision['log'] === $expected,
 					$name.' — reports what process() logged, without the prefix');
 			}
@@ -265,13 +245,33 @@ class XMLRPCProxyContractTest extends TestCase
 			. '$d = XMLRPCProxy::decide("not xml at all", "sanitize", array());'
 			. 'echo $d["action"], "|", $d["trusted"] ? "trusted" : "untrusted", "|", $d["payload"];';
 
-		$result = SCGITransportFixture::runPhpChild(array('-d', 'error_reporting=E_ALL',
-			'-d', 'display_errors=1', '-r', $script));
+		$result = SCGITransportFixture::runPhpChild(['-d', 'error_reporting=E_ALL',
+			'-d', 'display_errors=1', '-r', $script]);
 		$this->assertTrue($result['exitCode'] === 0,
 			'decide() runs with neither FileUtil nor rXMLRPCRequest defined: '
 			. $result['stderr']);
 		$this->assertEquals('', $result['stderr'], 'the dependency check emits no PHP diagnostics');
 		$this->assertTrue($result['stdout'] === 'reject|untrusted|',
 			'and reaches the same decision there');
+	}
+
+	private function callProcess($case)
+	{
+		FileUtil::$log = [];
+		rXMLRPCRequest::$lastPayload = null;
+		rXMLRPCRequest::$lastTrusted = null;
+		rXMLRPCRequest::$sent = 0;
+
+		$returned = XMLRPCProxy::process($case['request'], $case['mode'],
+			$case['enableLog'], $case['safeParams'], $case['allowLocalPaths'],
+			self::DAEMON_OPTIONS);
+
+		return [
+			'returned' => $returned,
+			'sends'    => rXMLRPCRequest::$sent,
+			'trusted'  => rXMLRPCRequest::$lastTrusted,
+			'payload'  => rXMLRPCRequest::$lastPayload,
+			'log'      => FileUtil::$log,
+		];
 	}
 }

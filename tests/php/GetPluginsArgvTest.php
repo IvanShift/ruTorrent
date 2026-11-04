@@ -28,15 +28,24 @@ final class GetPluginsArgvTest extends TestCase
 		$this->wipe();
 	}
 
+	public function testAWebSapiWithoutArgvDoesNotWarnAboutThePluginWorkers()
+	{
+		$js = $this->bootstrap('0');
+		$this->assertTrue((bool)preg_match("/new\\s+rPlugin\\(\\s*'_task'/", $js),
+			'getplugins.php registered _task, which runs the PHP CLI: ' . substr($js, 0, 300));
+		$this->assertTrue(strpos($js, 'phpParameterUnavailable') === false,
+			'the web SAPI register_argc_argv setting is not reported as a plugin problem');
+	}
+
 	private function wipe()
 	{
-		if (!is_dir($this->tree))
-			return;
+		if (!is_dir($this->tree)) {
+			return; }
 		$items = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator($this->tree, FilesystemIterator::SKIP_DOTS),
 			RecursiveIteratorIterator::CHILD_FIRST);
-		foreach ($items as $item)
-			$item->isDir() && !$item->isLink() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+		foreach ($items as $item) {
+			$item->isDir() && !$item->isLink() ? @rmdir($item->getPathname()) : @unlink($item->getPathname()); }
 		@rmdir($this->tree);
 	}
 
@@ -61,18 +70,9 @@ final class GetPluginsArgvTest extends TestCase
 			. '$_ENV["RU_SCGI_HOST"] = ' . var_export('unix://' . $this->tree . '/none.sock', true) . ";\n"
 			. 'chdir(' . var_export(dirname(__DIR__, 2) . '/php', true) . ");\n"
 			. 'require("getplugins.php");' . "\n");
-		$output = array();
+		$output = [];
 		exec(escapeshellarg(PHP_BINARY) . ' -d register_argc_argv=' . escapeshellarg($value)
 			. ' -d error_reporting=0 -d display_errors=0 ' . escapeshellarg($probe) . ' 2>&1', $output);
 		return implode("\n", $output);
-	}
-
-	public function testAWebSapiWithoutArgvDoesNotWarnAboutThePluginWorkers()
-	{
-		$js = $this->bootstrap('0');
-		$this->assertTrue((bool)preg_match("/new\\s+rPlugin\\(\\s*'_task'/", $js),
-			'getplugins.php registered _task, which runs the PHP CLI: ' . substr($js, 0, 300));
-		$this->assertTrue(strpos($js, 'phpParameterUnavailable') === false,
-			'the web SAPI register_argc_argv setting is not reported as a plugin problem');
 	}
 }

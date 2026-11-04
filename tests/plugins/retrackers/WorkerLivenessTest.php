@@ -1,22 +1,22 @@
 <?php
 
 require_once(__DIR__ . '/RetrackersTestStubs.php');
-if (!defined('RETRACKERS_IMPORT_ONLY')) define('RETRACKERS_IMPORT_ONLY', true);
+if (!defined('RETRACKERS_IMPORT_ONLY')) { define('RETRACKERS_IMPORT_ONLY', true); }
 require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 
 // system.pid answered by the test; the request is kept for inspection.
 class WorkerLivenessPidAdapter extends RetrackersLifecycleRpcAdapter
 {
 	public $pid;
-	public $payloads = array();
+	public $payloads = [];
 
 	protected function send($payload, $plan, &$failure = null, $historical = false)
 	{
-		$this->payloads[] = array($payload, $plan);
+		$this->payloads[] = [$payload, $plan];
 		$failure = null;
-		return($this->pid === null ? array('ok' => false, 'family' => 2,
-			'fault' => array('code' => '-506', 'code_type' => 'i8', 'message' => 'no such method')) :
-			array('ok' => true, 'family' => 2, 'value' => $this->pid));
+		return($this->pid === null ? ['ok' => false, 'family' => 2,
+			'fault' => ['code' => '-506', 'code_type' => 'i8', 'message' => 'no such method']] :
+			['ok' => true, 'family' => 2, 'value' => $this->pid]);
 	}
 }
 
@@ -28,11 +28,11 @@ class WorkerLivenessPidAdapter extends RetrackersLifecycleRpcAdapter
  */
 class WorkerLivenessTest extends TestCase
 {
-	const HASH = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-	const TX = '0123456789abcdef0123456789abcdef';
+	public const HASH = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	public const TX = '0123456789abcdef0123456789abcdef';
 
 	private $root;
-	private $children = array();
+	private $children = [];
 
 	public function setUp()
 	{
@@ -43,81 +43,46 @@ class WorkerLivenessTest extends TestCase
 	public function tearDown()
 	{
 		foreach ($this->children as $child) {
-			foreach ($child['pipes'] as $pipe) if (is_resource($pipe)) fclose($pipe);
+			foreach ($child['pipes'] as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
 			proc_close($child['process']);
 		}
-		$this->children = array();
+		$this->children = [];
 		$this->remove($this->root);
-	}
-
-	private function remove($path)
-	{
-		if (is_link($path) || is_file($path)) {
-			unlink($path);
-			return;
-		}
-		foreach (scandir($path) as $entry)
-			if ($entry !== '.' && $entry !== '..') $this->remove($path . '/' . $entry);
-		rmdir($path);
-	}
-
-	private function process($pid, $parent, array $argv, $name = 'php85', $state = 'S')
-	{
-		$dir = $this->root . '/proc/' . $pid;
-		mkdir($dir, 0700, true);
-		file_put_contents($dir . '/stat', $pid . ' (' . $name . ') ' . $state . ' ' . $parent . ' 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 100\n');
-		file_put_contents($dir . '/cmdline', $argv === array() ? '' : implode("\0", $argv) . "\0");
-	}
-
-	private static function handoff($tx)
-	{
-		return('v2:original:1:' . str_repeat('B', 40) . ':' . hash('sha256', 'alice') . ':' . $tx);
-	}
-
-	private static function worker($hash, $tx, $user = 'alice')
-	{
-		return(array('/usr/bin/php85', '/rutorrent/app/plugins/retrackers/update.php', $hash, $user,
-			self::handoff($tx), str_repeat('d', 32)));
-	}
-
-	private static function transactions(array $pairs)
-	{
-		return(array_map(function ($pair) { return(array('hash' => $pair[0], 'tx' => $pair[1])); }, $pairs));
 	}
 
 	public function testOnlyTheDaemonsOwnWorkerKeepsATransactionLive()
 	{
 		$other = str_repeat('C', 40);
 		$otherTx = str_repeat('f', 32);
-		$this->process(7, 1, array('/usr/local/bin/rtorrent', '-n', '-o', 'import=/home/torrent/.rtorrent.rc'), 'rtorrent');
+		$this->process(7, 1, ['/usr/local/bin/rtorrent', '-n', '-o', 'import=/home/torrent/.rtorrent.rc'], 'rtorrent');
 		$this->process(40, 7, self::worker(self::HASH, self::TX));
-		$this->process(41, 7, array('/usr/bin/php85', '/rutorrent/app/plugins/retrackers/dispatch.php', 'alice'));
+		$this->process(41, 7, ['/usr/bin/php85', '/rutorrent/app/plugins/retrackers/dispatch.php', 'alice']);
 		// A command name may hold ") S 7 (": the parent is read after the last ')'.
 		$this->process(42, 1, self::worker($other, $otherTx), 'php) S 7 (x');
 		$probe = new RetrackersWorkerLiveness($this->root . '/proc');
-		$this->assertTrue($probe->probe('7', self::transactions(array(array(self::HASH, self::TX)))) === 'live',
+		$this->assertTrue($probe->probe('7', self::transactions([[self::HASH, self::TX]])) === 'live',
 			'the daemon child running update.php for this hash and transaction keeps it live');
-		$this->assertTrue($probe->probe('7', self::transactions(array(array(self::HASH, $otherTx)))) === 'abandoned' &&
-			$probe->probe('7', self::transactions(array(array($other, self::TX)))) === 'abandoned',
+		$this->assertTrue($probe->probe('7', self::transactions([[self::HASH, $otherTx]])) === 'abandoned' &&
+			$probe->probe('7', self::transactions([[$other, self::TX]])) === 'abandoned',
 			'a worker for another transaction or another hash does not');
-		$this->assertTrue($probe->probe('7', self::transactions(array(array($other, $otherTx)))) === 'abandoned',
+		$this->assertTrue($probe->probe('7', self::transactions([[$other, $otherTx]])) === 'abandoned',
 			'a matching process that the daemon did not launch does not');
-		$this->assertTrue($probe->probe('7', self::transactions(array(array(self::HASH, self::TX),
-			array($other, $otherTx)))) === 'abandoned', 'one transaction without its worker is enough');
+		$this->assertTrue($probe->probe('7', self::transactions([[self::HASH, self::TX],
+			[$other, $otherTx]])) === 'abandoned', 'one transaction without its worker is enough');
 		// The shared profile of the Docker image is the empty argument.
 		$this->process(44, 7, self::worker(str_repeat('F', 40), self::TX, ''));
-		$this->assertTrue($probe->probe('7', self::transactions(array(array(str_repeat('F', 40), self::TX)))) === 'live',
+		$this->assertTrue($probe->probe('7', self::transactions([[str_repeat('F', 40), self::TX]])) === 'live',
 			'a worker of the unnamed profile keeps its empty argument in place');
 		// rTorrent has not reaped this killed worker of E... yet.
-		$this->process(43, 7, array(), 'php85', 'Z');
-		$this->assertTrue($probe->probe('7', self::transactions(array(array(str_repeat('E', 40), self::TX)))) === 'abandoned',
+		$this->process(43, 7, [], 'php85', 'Z');
+		$this->assertTrue($probe->probe('7', self::transactions([[str_repeat('E', 40), self::TX]])) === 'abandoned',
 			'a killed, unreaped worker has no command line and keeps nothing live');
 	}
 
 	public function testADaemonThisPhpCannotSeeLeavesLivenessUnknown()
 	{
-		$transactions = self::transactions(array(array(self::HASH, self::TX)));
-		$this->process(7, 1, array('php-fpm: pool www'), 'php-fpm85');
+		$transactions = self::transactions([[self::HASH, self::TX]]);
+		$this->process(7, 1, ['php-fpm: pool www'], 'php-fpm85');
 		$this->process(40, 7, self::worker(self::HASH, self::TX));
 		$probe = new RetrackersWorkerLiveness($this->root . '/proc');
 		$this->assertTrue($probe->probe('7', $transactions) === 'unknown',
@@ -126,8 +91,8 @@ class WorkerLivenessTest extends TestCase
 			$probe->probe('', $transactions) === 'unknown' && $probe->probe('07', $transactions) === 'unknown' &&
 			$probe->probe(7, $transactions) === 'unknown',
 			'an invisible or malformed daemon PID proves nothing');
-		$this->process(9, 1, array('/usr/local/bin/rtorrent'), 'rtorrent');
-		$this->assertTrue($probe->probe('9', array()) === 'unknown', 'there is nothing to probe without transactions');
+		$this->process(9, 1, ['/usr/local/bin/rtorrent'], 'rtorrent');
+		$this->assertTrue($probe->probe('9', []) === 'unknown', 'there is nothing to probe without transactions');
 		$this->assertTrue((new RetrackersWorkerLiveness($this->root . '/absent'))->probe('9', $transactions) === 'unknown',
 			'an unreadable /proc proves nothing');
 	}
@@ -165,34 +130,69 @@ proc_close($worker);
 ');
 		$named = $this->root . '/rtorrent-fixture';
 		symlink(PHP_BINARY, $named);
-		$process = proc_open(array($named, $daemon, $worker, self::HASH, self::handoff(self::TX)),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w')), $pipes);
+		$process = proc_open([$named, $daemon, $worker, self::HASH, self::handoff(self::TX)],
+			[0 => ['pipe', 'r'], 1 => ['pipe', 'w']], $pipes);
 		$this->assertTrue(is_resource($process), 'the fixture daemon starts');
-		if (!is_resource($process)) return;
-		$this->children[] = array('process' => $process, 'pipes' => $pipes);
+		if (!is_resource($process)) { return; }
+		$this->children[] = ['process' => $process, 'pipes' => $pipes];
 		$pids = explode(' ', trim((string)fgets($pipes[1])));
 		$this->assertTrue(count($pids) === 2 && ctype_digit($pids[0]) && ctype_digit($pids[1]),
 			'the fixture reports its own PID and its worker PID');
-		if (count($pids) !== 2) return;
+		if (count($pids) !== 2) { return; }
 		$probe = new RetrackersWorkerLiveness();
-		$this->assertTrue($probe->probe($pids[0], self::transactions(array(array(self::HASH, self::TX)))) === 'live',
+		$this->assertTrue($probe->probe($pids[0], self::transactions([[self::HASH, self::TX]])) === 'live',
 			'the kernel shows the worker as a live child of the daemon');
 		$adapter = new WorkerLivenessPidAdapter();
 		$adapter->pid = $pids[0];
-		$this->assertTrue($adapter->transactionWorkers(self::transactions(array(array(self::HASH, self::TX)))) === 'live' &&
-			count($adapter->payloads) === 1 && $adapter->payloads[0][0] === retrackersBuildDirectRequest('system.pid', array('')) &&
+		$this->assertTrue($adapter->transactionWorkers(self::transactions([[self::HASH, self::TX]])) === 'live' &&
+			count($adapter->payloads) === 1 && $adapter->payloads[0][0] === retrackersBuildDirectRequest('system.pid', ['']) &&
 			$adapter->payloads[0][1] === retrackersRestrictedPlanDirectScalar('i8'),
 			'the lifecycle adapter asks rTorrent for its PID once and probes that process');
 		$adapter = new WorkerLivenessPidAdapter();
-		$this->assertTrue($adapter->transactionWorkers(self::transactions(array(array(self::HASH, self::TX)))) === 'unknown',
+		$this->assertTrue($adapter->transactionWorkers(self::transactions([[self::HASH, self::TX]])) === 'unknown',
 			'without the daemon PID nothing is known');
-		$this->assertTrue($probe->probe($pids[0], self::transactions(array(array(self::HASH, str_repeat('e', 32))))) ===
+		$this->assertTrue($probe->probe($pids[0], self::transactions([[self::HASH, str_repeat('e', 32)]])) ===
 			'abandoned', 'it does not stand for another transaction');
-		$this->assertTrue($probe->probe((string)getmypid(), self::transactions(array(array(self::HASH, self::TX)))) ===
+		$this->assertTrue($probe->probe((string)getmypid(), self::transactions([[self::HASH, self::TX]])) ===
 			'unknown', 'this test process is not named like the daemon');
 		fwrite($pipes[0], "kill\n");
 		$this->assertTrue(trim((string)fgets($pipes[1])) === 'zombie' &&
-			$probe->probe($pids[0], self::transactions(array(array(self::HASH, self::TX)))) === 'abandoned',
+			$probe->probe($pids[0], self::transactions([[self::HASH, self::TX]])) === 'abandoned',
 			'a killed worker that its daemon has not reaped yet keeps nothing live');
+	}
+
+	private function remove($path)
+	{
+		if (is_link($path) || is_file($path)) {
+			unlink($path);
+			return;
+		}
+		foreach (scandir($path) as $entry) {
+			if ($entry !== '.' && $entry !== '..') { $this->remove($path . '/' . $entry); } }
+		rmdir($path);
+	}
+
+	private function process($pid, $parent, array $argv, $name = 'php85', $state = 'S')
+	{
+		$dir = $this->root . '/proc/' . $pid;
+		mkdir($dir, 0700, true);
+		file_put_contents($dir . '/stat', $pid . ' (' . $name . ') ' . $state . ' ' . $parent . ' 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 100\n');
+		file_put_contents($dir . '/cmdline', $argv === [] ? '' : implode("\0", $argv) . "\0");
+	}
+
+	private static function handoff($tx)
+	{
+		return('v2:original:1:' . str_repeat('B', 40) . ':' . hash('sha256', 'alice') . ':' . $tx);
+	}
+
+	private static function worker($hash, $tx, $user = 'alice')
+	{
+		return(['/usr/bin/php85', '/rutorrent/app/plugins/retrackers/update.php', $hash, $user,
+			self::handoff($tx), str_repeat('d', 32)]);
+	}
+
+	private static function transactions(array $pairs)
+	{
+		return(array_map(function ($pair) { return(['hash' => $pair[0], 'tx' => $pair[1]]); }, $pairs));
 	}
 }

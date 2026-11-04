@@ -6,13 +6,13 @@ require_once( '../../php/torrenttrackers.php' );
 
 ignore_user_abort(true);
 set_time_limit(0);
-$errors = array();
+$errors = [];
 $pending = false;
-$hashes = array();
-if(!isset($HTTP_RAW_POST_DATA))
-	$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+$hashes = [];
+if(!isset($HTTP_RAW_POST_DATA)) {
+	$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 $vars = explode('&', $HTTP_RAW_POST_DATA);
-$trackerValues = array();
+$trackerValues = [];
 $comment = '';
 $private = 0;
 $setComment = false;
@@ -21,27 +21,21 @@ $setPrivate = false;
 foreach($vars as $var)
 {
 	$parts = explode("=",$var,2);
-	if(count($parts)!=2) continue;
-	if($parts[0]=="hash")
-		$hashes[] = $parts[1];
-	else
-	if($parts[0]=="comment")
-		$comment = trim(rawurldecode($parts[1]));
-	else
-	if($parts[0]=="private")
-		$private = intval($parts[1]);
-	else
-	if($parts[0]=="set_comment")
-		$setComment = intval($parts[1]);
-	else
-	if($parts[0]=="set_trackers")
-		$setTrackers = intval($parts[1]);
-	else
-	if($parts[0]=="set_private")
-		$setPrivate = intval($parts[1]);
-	else
-	if($parts[0]=="tracker")
-		$trackerValues[] = $parts[1];
+	if(count($parts)!=2) { continue; }
+	if($parts[0]=="hash") {
+		$hashes[] = $parts[1]; }
+	elseif($parts[0]=="comment") {
+		$comment = trim(rawurldecode($parts[1])); }
+	elseif($parts[0]=="private") {
+		$private = intval($parts[1]); }
+	elseif($parts[0]=="set_comment") {
+		$setComment = intval($parts[1]); }
+	elseif($parts[0]=="set_trackers") {
+		$setTrackers = intval($parts[1]); }
+	elseif($parts[0]=="set_private") {
+		$setPrivate = intval($parts[1]); }
+	elseif($parts[0]=="tracker") {
+		$trackerValues[] = $parts[1]; }
 }
 $parsedTrackers = TorrentTrackerTiers::fromEditFormValues($trackerValues);
 $announce_list = $parsedTrackers['tiers'];
@@ -51,18 +45,18 @@ if($setComment || $setTrackers || $setPrivate)
 	// The native atomic erase keeps user-owned tied sources out of delete_tied
 	// while preserving every other erase hook. Never emulate it with two RPCs.
 	$guardedErase = rTorrentSettings::get()->iVersion >= 0x1019;
-	$eraseCapability = $guardedErase ? rpcMethodCapability(array(
-		'd.erase_preserving_tied', 'd.stop_generation')) : 'legacy';
+	$eraseCapability = $guardedErase ? rpcMethodCapability([
+		'd.erase_preserving_tied', 'd.stop_generation']) : 'legacy';
 	foreach($hashes as $hash)
 	{
 		if($guardedErase && $eraseCapability !== 'available')
 		{
-			$errors[] = array('desc'=>"theUILang.editPreflightFailed", 'prm'=>$hash);
+			$errors[] = ['desc'=>"theUILang.editPreflightFailed", 'prm'=>$hash];
 			FileUtil::toLog('edit: preserving-erase-'.$eraseCapability.' hash='.$hash
 				.' action=use-reviewed-native-build');
 			continue;
 		}
-		$req = new rXMLRPCRequest( array(
+		$req = new rXMLRPCRequest( [
 			new rXMLRPCCommand("get_session"),
 			new rXMLRPCCommand("d.is_open",$hash),
 			new rXMLRPCCommand("d.is_active",$hash),
@@ -72,22 +66,22 @@ if($setComment || $setTrackers || $setPrivate)
 			new rXMLRPCCommand("d.get_directory_base",$hash),
 			new rXMLRPCCommand("d.get_connection_seed",$hash),
 			new rXMLRPCCommand("d.get_complete",$hash),
-			) );
-		if(rTorrentSettings::get()->isPluginRegistered("throttle"))
-			$req->addCommand(new rXMLRPCCommand("d.get_throttle_name",$hash));
+			] );
+		if(rTorrentSettings::get()->isPluginRegistered("throttle")) {
+			$req->addCommand(new rXMLRPCCommand("d.get_throttle_name",$hash)); }
 		$stopTokenIndex = rTorrentSettings::get()->isPluginRegistered("throttle") ? 10 : 9;
-		if($guardedErase)
-			$req->addCommand(new rXMLRPCCommand("d.stop_generation", $hash));
+		if($guardedErase) {
+			$req->addCommand(new rXMLRPCCommand("d.stop_generation", $hash)); }
 		if($req->run() && !$req->fault)
 		{
 			$isStart = (($req->val[1]!=0) && ($req->val[2]!=0) && ($req->val[3]!=0));
 			$fname = $req->val[0].$hash.".torrent";
 			if(empty($req->val[0]) || !is_readable($fname))
 			{
-				if(strlen($req->val[4]) && is_readable($req->val[4]))
-					$fname = $req->val[4];
-				else
-					$fname = null;
+				if(strlen($req->val[4]) && is_readable($req->val[4])) {
+					$fname = $req->val[4]; }
+				else {
+					$fname = null; }
 			}
 			if($fname)
 			{
@@ -115,10 +109,10 @@ if($setComment || $setTrackers || $setPrivate)
 					// clear_* siblings. Dropping the snapshot would
 					// reinstate the data loss on any install carrying
 					// this plugin without the class fix.
-					$authored = array(
+					$authored = [
 						'created by' => $torrent->meta('created by'),
 						'creation date' => $torrent->meta('creation date'),
-					);
+					];
 					if($setPrivate)
 					{
 						$torrent->is_private($private);
@@ -130,16 +124,16 @@ if($setComment || $setTrackers || $setPrivate)
 						if(count($announce_list)>0)
 						{
 							$torrent->announce($announce_list[0][0]);
-							if($trackersCount>1)
-								$torrent->announce_list($announce_list);
+							if($trackersCount>1) {
+								$torrent->announce_list($announce_list); }
 						}
 					}
 					if($setComment)
 					{
 						$torrent->clear_comment();
 						$comment = trim($comment);
-						if(strlen($comment))
-							$torrent->comment($comment);
+						if(strlen($comment)) {
+							$torrent->comment($comment); }
 					}
 					// Put back what the file said, where absent is
 					// also a value: clearing unconditionally would be the
@@ -147,33 +141,33 @@ if($setComment || $setTrackers || $setPrivate)
 					// field because it assumed one could not be there.
 					foreach($authored as $key => $value)
 					{
-						if(is_null($value))
-							$torrent->clearMeta($key);
-						else
-							$torrent->setMeta($key, $value);
+						if(is_null($value)) {
+							$torrent->clearMeta($key); }
+						else {
+							$torrent->setMeta($key, $value); }
 					}
-					if(isset($torrent->{'rtorrent'}))
-						unset($torrent->{'rtorrent'});
+					if(isset($torrent->{'rtorrent'})) {
+						unset($torrent->{'rtorrent'}); }
 					// Restore custom1 exactly as stored by either ruTorrent or another
 					// client. Its bytes do not attest which encoding convention wrote it.
 					// The shared addition builder quotes raw metadata before preflight.
-					$addition = array(
+					$addition = [
 						getCmd("d.set_custom3")."=1",
 						rTorrent::additionCommand("d.set_connection_seed", $req->val[7]),
 						rTorrent::additionCommand("d.set_custom1", $req->val[5]),
-					);
+					];
 					// d.get_throttle_name is only asked for when the throttle
 					// plugin is registered, so without it there is no throttle
 					// to forward and nothing is appended. An entry that is not
 					// a command would refuse the whole reload.
-					if(rTorrentSettings::get()->isPluginRegistered("throttle"))
-						$addition[] = rTorrent::additionCommand("d.set_throttle_name", $req->val[9]);
+					if(rTorrentSettings::get()->isPluginRegistered("throttle")) {
+						$addition[] = rTorrent::additionCommand("d.set_throttle_name", $req->val[9]); }
 					$directory = $req->val[6];
 					$prepared = rTorrent::preflightTorrentLoad($torrent, false, $directory,
 						($req->val[8]==1), false, $addition, $failure);
-					if($prepared === false)
-						$errors[] = array('desc'=>$failure === 'invalid-directory' ?
-							"theUILang.addTorrentFailedDirectory" : "theUILang.editPreflightFailed", 'prm'=>$fname);
+					if($prepared === false) {
+						$errors[] = ['desc'=>$failure === 'invalid-directory' ?
+							"theUILang.addTorrentFailedDirectory" : "theUILang.editPreflightFailed", 'prm'=>$fname]; }
 					else
 					{
 						// The daemon may remove its session file during erase. Save the
@@ -184,24 +178,24 @@ if($setComment || $setTrackers || $setPrivate)
 						$recovery = $uploads === false ? false :
 							$uploads.'/edited-'.bin2hex(random_bytes(16)).'.torrent';
 						$handle = $recovery === false ? false : @fopen($recovery, 'xb');
-						if($handle === false) $recovery = false;
-						else fclose($handle);
+						if($handle === false) { $recovery = false; }
+						else { fclose($handle); }
 						$torrent = $prepared['torrent'];
 						if($recovery === false || !@chmod($recovery, $profileMask & 0666) ||
 							$torrent->save($recovery) !== strlen($torrent->__toString()))
 						{
-							if($recovery !== false) @unlink($recovery);
-							$errors[] = array('desc'=>"theUILang.errorWriteTorrent",
-								'prm'=>$recovery === false ? $uploadsPath : $recovery);
+							if($recovery !== false) { @unlink($recovery); }
+							$errors[] = ['desc'=>"theUILang.errorWriteTorrent",
+								'prm'=>$recovery === false ? $uploadsPath : $recovery];
 						}
 						else
 						{
-							if($guardedErase)
-								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase_preserving_tied", array(
+							if($guardedErase) {
+								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase_preserving_tied", [
 									$hash, $req->val[4], $req->val[$stopTokenIndex],
-									(int)$req->val[3], (int)$req->val[1], (int)$req->val[2])));
-							else
-								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase", $hash));
+									(int)$req->val[3], (int)$req->val[1], (int)$req->val[2]])); }
+							else {
+								$eReq = new rXMLRPCRequest(new rXMLRPCCommand("d.erase", $hash)); }
 							if($eReq->run() && !$eReq->fault)
 							{
 								// The prepared bytes are already saved. A path handover avoids
@@ -210,13 +204,13 @@ if($setComment || $setTrackers || $setPrivate)
 									$prepared['directory'], null, false, false, false, $addition);
 								if($reloaded === false)
 								{
-									$errors[] = array('desc'=>"theUILang.errorAddTorrent", 'prm'=>$recovery);
+									$errors[] = ['desc'=>"theUILang.errorAddTorrent", 'prm'=>$recovery];
 									FileUtil::toLog('edit: reload-failed hash='.$hash.' recovery='.$recovery);
 								}
 								elseif($reloaded === null)
 								{
 									$pending = true;
-									$errors[] = array('desc'=>"theUILang.editReloadPending", 'prm'=>$recovery);
+									$errors[] = ['desc'=>"theUILang.editReloadPending", 'prm'=>$recovery];
 									FileUtil::toLog('edit: reload-pending hash='.$hash.' recovery='.$recovery);
 								}
 							}
@@ -225,23 +219,23 @@ if($setComment || $setTrackers || $setPrivate)
 								// A lost reply may precede a delayed erase. Even a daemon fault
 								// can follow erase hooks, so neither proves the edit is disposable.
 								$refused = $eReq->fault && $eReq->transportFailure === null;
-								$errors[] = array('desc'=>$refused ? "theUILang.editEraseFailed" :
-									"theUILang.editEraseUnknown", 'prm'=>$recovery);
+								$errors[] = ['desc'=>$refused ? "theUILang.editEraseFailed" :
+									"theUILang.editEraseUnknown", 'prm'=>$recovery];
 								FileUtil::toLog('edit: '.($refused ? 'erase-fault' : 'erase-unknown')
 									.' hash='.$hash.' recovery='.$recovery);
 							}
 						}
 					}
 				}
-				else
-					$errors[] = array('desc'=>"theUILang.errorReadTorrent", 'prm'=>$fname);
+				else {
+					$errors[] = ['desc'=>"theUILang.errorReadTorrent", 'prm'=>$fname]; }
 			}
-			else
-				$errors[] = array('desc'=>"theUILang.cantFindTorrent", 'prm'=>'');
+			else {
+				$errors[] = ['desc'=>"theUILang.cantFindTorrent", 'prm'=>'']; }
                 }
-        	        else
-			$errors[] = array('desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'');
+        	        else {
+			$errors[] = ['desc'=>"theUILang.badLinkTorTorrent", 'prm'=>'']; }
 	}
 }
 
-CachedEcho::send(JSON::safeEncode(array( "errors"=>$errors, "hash"=>$hashes, "pending"=>$pending )),"application/json");
+CachedEcho::send(JSON::safeEncode([ "errors"=>$errors, "hash"=>$hashes, "pending"=>$pending ]),"application/json");

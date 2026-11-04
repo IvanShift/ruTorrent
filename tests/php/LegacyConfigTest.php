@@ -22,48 +22,13 @@ class LegacyConfigTest extends TestCase
         $this->removeTree($this->root);
     }
 
-    private function removeTree($path)
-    {
-        if(!is_dir($path) || is_link($path)) { unlink($path); return; }
-        chmod($path, 0700); // A failing legacy mask may have created a mode-000 directory.
-        foreach(new DirectoryIterator($path) as $entry)
-            if(!$entry->isDot()) $this->removeTree($entry->getPathname());
-        rmdir($path);
-    }
-
-    private function probe($mask = '0770', $environment = array(), $server = array())
-    {
-        $script = 'foreach (json_decode('.var_export(json_encode($environment), true).', true) as $key => $value) putenv($key."=".$value); '
-            .'putenv("RU_LOCALHOSTS=10.9.9.9"); '
-            .'unset($_ENV["RU_LOCALHOSTS"]); '
-            .'$_ENV["RU_PROFILE_MASK"] = '.var_export($mask, true).'; '
-            .'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->root.'/share', true).'; '
-            .'$_SERVER = array_merge($_SERVER, '.var_export($server, true).'); $_SERVER["REMOTE_USER"] = "test"; '
-            .'require '.var_export($this->root.'/php/util.php', true).'; '
-            .'echo json_encode(array("mask" => $profileMask, '
-            .'"mode" => @fileperms('.var_export($this->root.'/share/users/test', true).') & 0777, '
-            .'"hosts" => $localhosts, '
-            .'"local" => User::isLocalMode("10.9.9.9", 5000), '
-            .'"forbid" => $forbidUserSettings, "csrf" => $enableCSRFCheck ?? false, '
-            .'"spoofProfile" => is_dir('.var_export($this->root.'/share/users/test', true).')));';
-        $process = proc_open(array(PHP_BINARY, '-c', __DIR__.'/../php-test.ini',
-            '-d', 'variables_order=GPCS', '-d', 'display_errors=stderr', '-r', $script),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, $this->root.'/php');
-        if(!is_resource($process)) throw new RuntimeException('legacy config probe did not start');
-        fclose($pipes[0]);
-        $output = stream_get_contents($pipes[1]); fclose($pipes[1]);
-        $errors = stream_get_contents($pipes[2]); fclose($pipes[2]);
-        return array(proc_close($process), json_decode($output, true), $errors, $output);
-    }
-
     public function testOldPersistedConfigUsesOctalMaskAndEnvironmentHost()
     {
         list($status, $result, $errors, $output) = $this->probe();
         $this->assertEquals(0, $status, 'old config loads without a PHP error: '.$errors);
         $this->assertEquals('', $errors, 'old getenv/$_ENV mismatch makes no warning');
         $this->assertTrue(is_array($result), 'legacy bootstrap returns its result: '.var_export($output, true));
-        if(!is_array($result)) return;
+        if(!is_array($result)) { return; }
         $this->assertEquals(0770, $result['mask'], 'old config mask is normalized to octal integer');
         $this->assertEquals(0770, $result['mode'], 'profile creation receives the octal file mode');
         $this->assertEquals('10.9.9.9', end($result['hosts']), 'environment host is included once');
@@ -78,7 +43,7 @@ class LegacyConfigTest extends TestCase
         $this->assertTrue(strpos($errors, 'RU_PROFILE_MASK/profileMask is invalid') !== false,
             'the fallback names the configuration key: '.$errors);
         $this->assertTrue(is_array($result), 'malformed mask bootstrap returns its result');
-        if(!is_array($result)) return;
+        if(!is_array($result)) { return; }
         $this->assertEquals(0777, $result['mask'], 'malformed old mask uses the documented default');
         $this->assertEquals(0777, $result['mode'], 'profile creation uses the documented default');
     }
@@ -90,7 +55,7 @@ class LegacyConfigTest extends TestCase
         list($status, $result, $errors) = $this->probe();
         $this->assertEquals(0, $status, 'old config with a string override loads: '.$errors);
         $this->assertTrue(is_array($result), 'string override bootstrap returns its result');
-        if(!is_array($result)) return;
+        if(!is_array($result)) { return; }
         $this->assertEquals('504', $result['mask'], 'operator string override is not parsed as octal');
         $this->assertEquals(0770, $result['mode'], 'operator string retains its existing decimal mode');
     }
@@ -103,10 +68,10 @@ class LegacyConfigTest extends TestCase
         $this->assertEquals(0, $status, 'old config with explicit override loads: '.$errors);
         $this->assertEquals('', $errors, 'explicit override emits no warning');
         $this->assertTrue(is_array($result), 'legacy override bootstrap returns its result: '.var_export($output, true));
-        if(!is_array($result)) return;
+        if(!is_array($result)) { return; }
         $this->assertEquals(0700, $result['mask'], 'explicit integer mask is preserved');
         $this->assertEquals(0700, $result['mode'], 'explicit mask controls profile creation');
-        $this->assertEquals(array('operator.example'), $result['hosts'],
+        $this->assertEquals(['operator.example'], $result['hosts'],
             'explicit host list is preserved');
         $this->assertEquals(false, $result['local'], 'environment host cannot override the explicit list');
     }
@@ -114,7 +79,7 @@ class LegacyConfigTest extends TestCase
     {
         file_put_contents($this->root.'/conf/config.local.php',
             '<?php $forbidUserSettings = false; $enableCSRFCheck = false;');
-        list($status, $result, $errors) = $this->probe('0770', array('RU_HTTP_AUTH' => 'false'));
+        list($status, $result, $errors) = $this->probe('0770', ['RU_HTTP_AUTH' => 'false']);
         $this->assertEquals(0, $status, 'server policy bootstrap succeeds: '.$errors);
         $this->assertTrue($result['forbid'], 'no-auth server refuses caller-selected profiles');
         $this->assertTrue($result['csrf'], 'no-auth server still enables browser origin protection');
@@ -125,8 +90,8 @@ class LegacyConfigTest extends TestCase
     {
         file_put_contents($this->root.'/conf/config.local.php',
             '<?php $forbidUserSettings = false; $enableCSRFCheck = false;');
-        list($status, $result, $errors) = $this->probe('0770', array(
-            'RU_HTTP_AUTH' => 'true', 'RU_FORBID_USER_SETTINGS' => 'true'));
+        list($status, $result, $errors) = $this->probe('0770', [
+            'RU_HTTP_AUTH' => 'true', 'RU_FORBID_USER_SETTINGS' => 'true']);
         $this->assertEquals(0, $status, 'single-profile policy bootstrap succeeds: '.$errors);
         $this->assertTrue($result['forbid'], 'server flag fixes the one-profile contract');
         $this->assertTrue($result['csrf'], 'server auth policy retains origin protection');
@@ -137,9 +102,9 @@ class LegacyConfigTest extends TestCase
     {
         file_put_contents($this->root.'/conf/config.local.php',
             '<?php $trustedOrigins = array("https://local.example"); $enableCSRFCheck = false;');
-        $environment = array('RU_HTTP_AUTH'=>'false', 'RU_TRUSTED_ORIGINS'=>'https://panel.example:8443');
-        $server = array('REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
-            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443');
+        $environment = ['RU_HTTP_AUTH'=>'false', 'RU_TRUSTED_ORIGINS'=>'https://panel.example:8443'];
+        $server = ['REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
+            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443'];
         list($status, $result, $errors) = $this->probe('0770', $environment, $server);
         $this->assertEquals(0, $status, 'old-config POST entrypoint succeeds: '.$errors);
         $this->assertTrue(is_array($result) && $result['csrf'] && $result['forbid'],
@@ -153,12 +118,47 @@ class LegacyConfigTest extends TestCase
     {
         file_put_contents($this->root.'/conf/config.local.php',
             '<?php $trustedOrigins = array("https://panel.example:8443"); $enableCSRFCheck = true;');
-        $server = array('REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
-            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443');
-        list($status, $result, $errors) = $this->probe('0770', array(), $server);
+        $server = ['REQUEST_METHOD'=>'POST', 'HTTP_HOST'=>'backend:8080',
+            'REQUEST_SCHEME'=>'http', 'HTTP_ORIGIN'=>'https://panel.example:8443'];
+        list($status, $result, $errors) = $this->probe('0770', [], $server);
         $this->assertEquals(0, $status, 'operator-config POST entrypoint succeeds: '.$errors);
         $this->assertTrue(is_array($result) && $result['csrf'],
             'local origin configuration loads before the actual POST gate');
+    }
+
+    private function removeTree($path)
+    {
+        if(!is_dir($path) || is_link($path)) { unlink($path); return; }
+        chmod($path, 0700); // A failing legacy mask may have created a mode-000 directory.
+        foreach(new DirectoryIterator($path) as $entry) {
+            if(!$entry->isDot()) { $this->removeTree($entry->getPathname()); } }
+        rmdir($path);
+    }
+
+    private function probe($mask = '0770', $environment = [], $server = [])
+    {
+        $script = 'foreach (json_decode('.var_export(json_encode($environment), true).', true) as $key => $value) putenv($key."=".$value); '
+            .'putenv("RU_LOCALHOSTS=10.9.9.9"); '
+            .'unset($_ENV["RU_LOCALHOSTS"]); '
+            .'$_ENV["RU_PROFILE_MASK"] = '.var_export($mask, true).'; '
+            .'$_ENV["RU_PROFILE_PATH"] = '.var_export($this->root.'/share', true).'; '
+            .'$_SERVER = array_merge($_SERVER, '.var_export($server, true).'); $_SERVER["REMOTE_USER"] = "test"; '
+            .'require '.var_export($this->root.'/php/util.php', true).'; '
+            .'echo json_encode(array("mask" => $profileMask, '
+            .'"mode" => @fileperms('.var_export($this->root.'/share/users/test', true).') & 0777, '
+            .'"hosts" => $localhosts, '
+            .'"local" => User::isLocalMode("10.9.9.9", 5000), '
+            .'"forbid" => $forbidUserSettings, "csrf" => $enableCSRFCheck ?? false, '
+            .'"spoofProfile" => is_dir('.var_export($this->root.'/share/users/test', true).')));';
+        $process = proc_open([PHP_BINARY, '-c', __DIR__.'/../php-test.ini',
+            '-d', 'variables_order=GPCS', '-d', 'display_errors=stderr', '-r', $script],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, $this->root.'/php');
+        if(!is_resource($process)) { throw new RuntimeException('legacy config probe did not start'); }
+        fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $errors = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        return [proc_close($process), json_decode($output, true), $errors, $output];
     }
 
 }

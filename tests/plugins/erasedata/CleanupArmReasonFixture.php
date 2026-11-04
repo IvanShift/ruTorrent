@@ -20,7 +20,7 @@ class Scenario
 		self::$failure = $failure;
 		self::$renameReason = 'rename-noreplace-unsupported';
 		self::$reads = 0;
-		self::$diagnostics = array();
+		self::$diagnostics = [];
 		self::$releases = 0;
 		self::$lock = fopen('php://temp', 'w+');
 	}
@@ -33,12 +33,12 @@ class ErasedataFilesystemOps extends \ErasedataFilesystemOps
 }
 
 function erasedataDrainScheduleKey($user) { return 'fixture-user'; }
-function erasedataReadExactCleanupJob($job) { return Scenario::$failure === 'job' ? false : array(); }
+function erasedataReadExactCleanupJob($job) { return Scenario::$failure === 'job' ? false : []; }
 function erasedataAcquireDrainStateLock($path) { return Scenario::$failure === 'lock' ? false : Scenario::$lock; }
 function erasedataReadDrainState($path)
 {
 	Scenario::$reads++;
-	return Scenario::$failure === 'state' ? false : array('generation' => '0000000000000000', 'acknowledged' => '0000000000000001');
+	return Scenario::$failure === 'state' ? false : ['generation' => '0000000000000000', 'acknowledged' => '0000000000000001'];
 }
 function erasedataDrainStateBelongsTo($state, $user)
 {

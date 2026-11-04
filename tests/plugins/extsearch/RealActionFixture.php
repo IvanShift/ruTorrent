@@ -8,8 +8,8 @@ class ExtsearchRealActionFixture
 	public function __construct()
 	{
 		$this->root = sys_get_temp_dir().'/rutorrent-search-real-'.bin2hex(random_bytes(6));
-		if(!mkdir($this->root, 0700, true))
-			throw new RuntimeException('could not create extsearch action fixture directory');
+		if(!mkdir($this->root, 0700, true)) {
+			throw new RuntimeException('could not create extsearch action fixture directory'); }
 	}
 
 	public function run($config, $peer)
@@ -52,20 +52,20 @@ class ExtsearchRealActionFixture
 			.'json_encode(array("rows"=>$rows,"next"=>$cursor->next))); });';
 		file_put_contents($this->root.'/bootstrap.php', $bootstrap);
 		$action = __DIR__.'/../../../plugins/extsearch/action.php';
-		$process = proc_open(array(PHP_BINARY, '-d',
-			'auto_prepend_file='.$this->root.'/bootstrap.php', '-f', $action),
-			array(0=>array('file','/dev/null','r'),
-				1=>array('pipe','w'),2=>array('pipe','w')),
+		$process = proc_open([PHP_BINARY, '-d',
+			'auto_prepend_file='.$this->root.'/bootstrap.php', '-f', $action],
+			[0=>['file','/dev/null','r'],
+				1=>['pipe','w'],2=>['pipe','w']],
 			$pipes, dirname($action));
-		if(!is_resource($process))
-			throw new RuntimeException('extsearch action child did not start');
+		if(!is_resource($process)) {
+			throw new RuntimeException('extsearch action child did not start'); }
 		$start = microtime(true);
 		$output = stream_get_contents($pipes[1]);
 		$error = stream_get_contents($pipes[2]);
 		fclose($pipes[1]);
 		fclose($pipes[2]);
-		return array('exit'=>proc_close($process), 'output'=>$output,
-			'error'=>$error, 'elapsed'=>microtime(true)-$start);
+		return ['exit'=>proc_close($process), 'output'=>$output,
+			'error'=>$error, 'elapsed'=>microtime(true)-$start];
 	}
 
 	public function snapshot()
@@ -80,13 +80,13 @@ class ExtsearchRealActionFixture
 
 	public function close()
 	{
-		if(!is_dir($this->root)) return;
+		if(!is_dir($this->root)) { return; }
 		$items = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
 			$this->root, FilesystemIterator::SKIP_DOTS),
 			RecursiveIteratorIterator::CHILD_FIRST);
-		foreach($items as $item)
+		foreach($items as $item) {
 			$item->isDir() && !$item->isLink()
-				? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+				? @rmdir($item->getPathname()) : @unlink($item->getPathname()); }
 		@rmdir($this->root);
 	}
 }

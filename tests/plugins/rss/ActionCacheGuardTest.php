@@ -37,7 +37,7 @@ SCRIPT;
 
     public function tearDown()
     {
-        if (!is_dir($this->root)) return;
+        if (!is_dir($this->root)) { return; }
         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->root,
             FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($files as $entry) {
@@ -48,16 +48,16 @@ SCRIPT;
 
     public function testOnlyARegisteredFeedCanSelectACacheEntryForLoad()
     {
-        $env = array(
+        $env = [
             'RU_PROFILE_PATH' => $this->root . '/profile',
             'RU_LOG_FILE' => $this->root . '/rss.log',
             'RSS_PLUGIN_DIR' => realpath(__DIR__ . '/../../../plugins/rss'),
-        );
-        $process = proc_open(array(PHP_BINARY, $this->root . '/request.php'),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        ];
+        $process = proc_open([PHP_BINARY, $this->root . '/request.php'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes, null, $env);
         $this->assertTrue(is_resource($process), 'the local RSS action child starts');
-        if (!is_resource($process)) return;
+        if (!is_resource($process)) { return; }
         fclose($pipes[0]);
         $out = stream_get_contents($pipes[1]);
         $errors = stream_get_contents($pipes[2]);

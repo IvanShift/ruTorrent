@@ -19,10 +19,32 @@ class ExtratioSynchronousHookSettingsTest extends TestCase
             FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
         foreach($entries as $entry)
         {
-            if($entry->isDir() && !$entry->isLink()) rmdir($entry->getPathname());
-            else unlink($entry->getPathname());
+            if($entry->isDir() && !$entry->isLink()) { rmdir($entry->getPathname()); }
+            else { unlink($entry->getPathname()); }
         }
         rmdir($this->base);
+    }
+
+    public function testLegacySettingsCacheIsReadWithoutCallingTheBlockedDaemon()
+    {
+        list($status, $output, $data) = $this->hook(true);
+        $this->assertSame(0, $status, 'the synchronous public-tracker rule succeeds using stale settings');
+        $this->assertSame('rat_1', $output, 'only the selected ratio name reaches execute_capture');
+        $this->assertSame('', $data['rpc'], 'no request is sent back to the waiting daemon');
+        $this->assertTrue($data['before'] !== null && $data['before'] === $data['after'],
+            'the stale cache keeps its old format and bytes until asynchronous refresh');
+    }
+
+    public function testMissingSettingsCacheRefusesWithoutReturningAnErrorAsARatioName()
+    {
+        list($status, $output, $data) = $this->hook(false);
+        $this->assertSame(1, $status, 'a missing cache refuses the synchronous callback');
+        $this->assertSame('', $output, 'execute_capture receives no PHP diagnostic as a ratio name');
+        $this->assertSame(null, $data['after'], 'the hook cannot bootstrap or stamp a settings cache');
+        $this->assertTrue(strpos($data['rpc'], 'settings-cache-unavailable-in-synchronous-hook') !== false,
+            'the shared settings owner logs its classified refusal');
+        $this->assertTrue(strpos($data['rpc'], '<methodCall>') === false,
+            'a missing cache never triggers an RPC to the waiting daemon');
     }
 
     private function hook($withCache)
@@ -64,34 +86,12 @@ register_shutdown_function(function() use ($path, $profile, $before) {
 require $root.'/plugins/extratio/update.php';
 DRIVER;
         file_put_contents($this->base.'/driver.php', $driver);
-        $output = array();
+        $output = [];
         $status = 0;
         exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 '.escapeshellarg($this->base.'/driver.php')
             .' '.escapeshellarg(realpath(__DIR__.'/../../..')).' '.escapeshellarg($this->base)
             .' '.($withCache ? '1' : '0').' 2>&1', $output, $status);
         $data = json_decode(file_get_contents($this->base.'/result'), true);
-        return array($status, implode("\n", $output), $data);
-    }
-
-    public function testLegacySettingsCacheIsReadWithoutCallingTheBlockedDaemon()
-    {
-        list($status, $output, $data) = $this->hook(true);
-        $this->assertSame(0, $status, 'the synchronous public-tracker rule succeeds using stale settings');
-        $this->assertSame('rat_1', $output, 'only the selected ratio name reaches execute_capture');
-        $this->assertSame('', $data['rpc'], 'no request is sent back to the waiting daemon');
-        $this->assertTrue($data['before'] !== null && $data['before'] === $data['after'],
-            'the stale cache keeps its old format and bytes until asynchronous refresh');
-    }
-
-    public function testMissingSettingsCacheRefusesWithoutReturningAnErrorAsARatioName()
-    {
-        list($status, $output, $data) = $this->hook(false);
-        $this->assertSame(1, $status, 'a missing cache refuses the synchronous callback');
-        $this->assertSame('', $output, 'execute_capture receives no PHP diagnostic as a ratio name');
-        $this->assertSame(null, $data['after'], 'the hook cannot bootstrap or stamp a settings cache');
-        $this->assertTrue(strpos($data['rpc'], 'settings-cache-unavailable-in-synchronous-hook') !== false,
-            'the shared settings owner logs its classified refusal');
-        $this->assertTrue(strpos($data['rpc'], '<methodCall>') === false,
-            'a missing cache never triggers an RPC to the waiting daemon');
+        return [$status, implode("\n", $output), $data];
     }
 }

@@ -12,8 +12,8 @@ class mTeamAccount extends commonAccount
 	protected function loadData( $client = null )
 	{
 		$rt = parent::loadData($client);
-		if($client && $rt->loaded)
-			$client->referer = $rt->referer;
+		if($client && $rt->loaded) {
+			$client->referer = $rt->referer; }
 		return($rt);
 	}
 

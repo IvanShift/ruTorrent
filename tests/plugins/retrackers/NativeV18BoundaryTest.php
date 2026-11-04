@@ -18,7 +18,7 @@ $tempDirectory_init_done = true;
 
 class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 {
-	public $ledgerKeys = array();
+	public $ledgerKeys = [];
 	public $lastFailure = null;
 	public $genericReleaseCalls = 0;
 	public $genericCleanupCalls = 0;
@@ -26,7 +26,7 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 	public $nativeFinishCalls = 0;
 	public $nativeCaptureCalls = 0;
 	public $preflightCalls = 0;
-	public $events = array();
+	public $events = [];
 	public $loseFinishReply = false;
 	public $wrongFinalizedReceipt = false;
 	public $nativeMethodsPresent = true;
@@ -37,90 +37,14 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 	public $retireCalls = 0;
 	public $clearWhAfterFirstRetire = false;
 	public $captureRefused = false;
-	public $deferReasons = array();
+	public $deferReasons = [];
 	public $deferOutcome = 'deferred';
-
-	protected function send($payload, $plan, &$failure = null, $historical = false)
-	{
-		if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false) {
-			$this->methodListCalls++;
-			$failure = null;
-			$methods = array('d.incarnation', 'system.retrackers.finalized');
-			if ($this->nativeMethodsPresent) {
-				$methods[] = 'd.retrackers.begin_original';
-				$methods[] = 'd.retrackers.finish_original';
-				if ($this->sameHashMethodsPresent) $methods = array_merge($methods, array(
-					'd.retrackers.capture_erase', 'd.retrackers.apply',
-					'd.retrackers.commit', 'd.retrackers.release_committed',
-					'system.retrackers.receipt', 'system.retrackers.prepared',
-					'load.normal', 'd.retrackers.preflight_stage', 'd.retrackers.defer_original'));
-			}
-			return(array('ok' => true, 'family' => 2, 'value' => $methods));
-		}
-		if (strpos($payload, '<methodName>branch</methodName>') !== false &&
-			strpos($payload, 'system.retrackers.finalized=') !== false) {
-			$this->retireCalls++;
-			$hasWh = count(array_filter($this->ledgerKeys, function ($key) {
-				return(strncmp($key, 'wh:', 3) === 0);
-			})) > 0;
-			if ($hasWh) {
-				if ($this->clearWhAfterFirstRetire) {
-					$this->ledgerKeys = array_values(array_filter($this->ledgerKeys,
-						function ($key) { return(strncmp($key, 'wh:', 3) !== 0); }));
-				}
-				$failure = null;
-				return(array('ok' => true, 'family' => 2, 'value' => 'CHANGED'));
-			}
-			$this->ledgerKeys = array_values(array_filter($this->ledgerKeys,
-				function ($key) { return(strncmp($key, 'wp:', 3) !== 0); }));
-			$failure = null;
-			return(array('ok' => true, 'family' => 2, 'value' => 'ACQUIRED'));
-		}
-		if (strpos($payload, '<methodName>d.incarnation</methodName>') !== false) {
-			$failure = null;
-			return(array('ok' => true, 'family' => 2, 'value' =>
-				$this->currentIncarnation === null ? str_repeat('e', 32) :
-				$this->currentIncarnation));
-		}
-		if (strpos($payload, '<methodName>d.retrackers.finish_original</methodName>') !== false) {
-			$this->nativeFinishCalls++;
-			$this->events[] = 'native-finish';
-			if ($this->loseFinishReply) {
-				$failure = 'rpc-timeout';
-				return(false);
-			}
-			$failure = null;
-			return(array('ok' => true, 'family' => 2, 'value' => 'finalized'));
-		}
-		if (strpos($payload, '<methodName>system.retrackers.finalized</methodName>') !== false) {
-			if (strpos($payload, '<param><value><string></string></value></param>') === false) {
-				throw new RuntimeException('native finalized read requires empty target');
-			}
-			$failure = null;
-			return(array('ok' => true, 'family' => 2, 'value' =>
-				$this->preFinalized || $this->nativeFinishCalls > 0 ?
-				'finalized:' . str_repeat($this->wrongFinalizedReceipt ? 'd' : 'c', 32) .
-				':' . str_repeat('e', 32) : 'none'));
-		}
-		if (strpos($payload, '<methodName>d.retrackers.capture_erase</methodName>') !== false) {
-			$this->nativeCaptureCalls++;
-			$this->events[] = 'native-capture';
-			if ($this->captureRefused) {
-				// Native refused before any destructive step and said so.
-				$failure = null;
-				return(array('ok' => true, 'family' => 2, 'value' => '0'));
-			}
-			throw new RuntimeException('test cut: native destructive capture reached');
-		}
-		$failure = 'unexpected-native-rpc';
-		return(false);
-	}
 
 	public function sourceScalarSnapshot($hash, &$failure = null)
 	{
 		$failure = null;
-		return(array('values' => array('local_id' => str_repeat('B', 40),
-			'recovery_marker' => '', 'recovery_ack' => '')));
+		return(['values' => ['local_id' => str_repeat('B', 40),
+			'recovery_marker' => '', 'recovery_ack' => '']]);
 	}
 
 	public function getLedgerKeys(&$failure = null)
@@ -203,62 +127,86 @@ class RetrackersV18BoundaryAdapter extends RetrackersWorkerRpcAdapter
 		// synthetic case after the classified reason becomes observable.
 		throw new RuntimeException('test cut: ' . $failure);
 	}
+
+	protected function send($payload, $plan, &$failure = null, $historical = false)
+	{
+		if (strpos($payload, '<methodName>system.listMethods</methodName>') !== false) {
+			$this->methodListCalls++;
+			$failure = null;
+			$methods = ['d.incarnation', 'system.retrackers.finalized'];
+			if ($this->nativeMethodsPresent) {
+				$methods[] = 'd.retrackers.begin_original';
+				$methods[] = 'd.retrackers.finish_original';
+				if ($this->sameHashMethodsPresent) { $methods = array_merge($methods, [
+					'd.retrackers.capture_erase', 'd.retrackers.apply',
+					'd.retrackers.commit', 'd.retrackers.release_committed',
+					'system.retrackers.receipt', 'system.retrackers.prepared',
+					'load.normal', 'd.retrackers.preflight_stage', 'd.retrackers.defer_original']); }
+			}
+			return(['ok' => true, 'family' => 2, 'value' => $methods]);
+		}
+		if (strpos($payload, '<methodName>branch</methodName>') !== false &&
+			strpos($payload, 'system.retrackers.finalized=') !== false) {
+			$this->retireCalls++;
+			$hasWh = count(array_filter($this->ledgerKeys, function ($key) {
+				return(strncmp($key, 'wh:', 3) === 0);
+			})) > 0;
+			if ($hasWh) {
+				if ($this->clearWhAfterFirstRetire) {
+					$this->ledgerKeys = array_values(array_filter($this->ledgerKeys,
+						function ($key) { return(strncmp($key, 'wh:', 3) !== 0); }));
+				}
+				$failure = null;
+				return(['ok' => true, 'family' => 2, 'value' => 'CHANGED']);
+			}
+			$this->ledgerKeys = array_values(array_filter($this->ledgerKeys,
+				function ($key) { return(strncmp($key, 'wp:', 3) !== 0); }));
+			$failure = null;
+			return(['ok' => true, 'family' => 2, 'value' => 'ACQUIRED']);
+		}
+		if (strpos($payload, '<methodName>d.incarnation</methodName>') !== false) {
+			$failure = null;
+			return(['ok' => true, 'family' => 2, 'value' =>
+				$this->currentIncarnation === null ? str_repeat('e', 32) :
+				$this->currentIncarnation]);
+		}
+		if (strpos($payload, '<methodName>d.retrackers.finish_original</methodName>') !== false) {
+			$this->nativeFinishCalls++;
+			$this->events[] = 'native-finish';
+			if ($this->loseFinishReply) {
+				$failure = 'rpc-timeout';
+				return(false);
+			}
+			$failure = null;
+			return(['ok' => true, 'family' => 2, 'value' => 'finalized']);
+		}
+		if (strpos($payload, '<methodName>system.retrackers.finalized</methodName>') !== false) {
+			if (strpos($payload, '<param><value><string></string></value></param>') === false) {
+				throw new RuntimeException('native finalized read requires empty target');
+			}
+			$failure = null;
+			return(['ok' => true, 'family' => 2, 'value' =>
+				$this->preFinalized || $this->nativeFinishCalls > 0 ?
+				'finalized:' . str_repeat($this->wrongFinalizedReceipt ? 'd' : 'c', 32) .
+				':' . str_repeat('e', 32) : 'none']);
+		}
+		if (strpos($payload, '<methodName>d.retrackers.capture_erase</methodName>') !== false) {
+			$this->nativeCaptureCalls++;
+			$this->events[] = 'native-capture';
+			if ($this->captureRefused) {
+				// Native refused before any destructive step and said so.
+				$failure = null;
+				return(['ok' => true, 'family' => 2, 'value' => '0']);
+			}
+			throw new RuntimeException('test cut: native destructive capture reached');
+		}
+		$failure = 'unexpected-native-rpc';
+		return(false);
+	}
 }
 
 class RetrackersNativeV18BoundaryTest extends TestCase
 {
-	private function runWithPreparedCandidate($candidate, $loseFinishReply = false,
-		$wrongFinalizedReceipt = false, $ledgerKeys = array(),
-		$clearWhAfterFirstRetire = false, $sameHashMethodsPresent = true, $configure = null)
-	{
-		$hash = str_repeat('A', 40);
-		$localId = str_repeat('B', 40);
-		$tx = str_repeat('c', 32);
-		$handoff = 'v2:original:0:' . $localId . ':' .
-			hash('sha256', 'alice') . ':' . $tx;
-		$snapshot = array('scalar' => array(
-			'is_private' => '0', 'name' => 'test', 'state' => '0',
-			'local_id' => $localId, 'recovery_marker' => $handoff,
-			'recovery_ack' => $handoff, 'directory_base' => '/synthetic',
-			'custom1' => '', 'custom2' => '', 'custom3' => '',
-			'custom4' => '', 'custom5' => '', 'priority' => '1',
-			'throttle_name' => '',
-		), 'generic_map' => array(
-			array('name' => 'retrackers-recovery', 'value' => $handoff),
-			array('name' => 'retrackers-recovery-ack', 'value' => $handoff),
-		), 'source' => array('path' => '/synthetic/source.torrent'));
-		$snapshotService = new class($snapshot) {
-			private $snapshot;
-			public function __construct($snapshot) { $this->snapshot = $snapshot; }
-			public function capture($hash, $handoff) {
-				return(array('ok' => true, 'snapshot' => $this->snapshot));
-			}
-		};
-		$authority = new class($candidate) {
-			private $candidate;
-			public function __construct($candidate) { $this->candidate = $candidate; }
-			public function prepare($path, $hash, $additions, $deletions, $addToBegin) {
-				return($this->candidate);
-			}
-		};
-		$adapter = new RetrackersV18BoundaryAdapter();
-		$adapter->ledgerKeys = $ledgerKeys;
-		$adapter->loseFinishReply = $loseFinishReply;
-		$adapter->wrongFinalizedReceipt = $wrongFinalizedReceipt;
-		$adapter->clearWhAfterFirstRetire = $clearWhAfterFirstRetire;
-		$adapter->sameHashMethodsPresent = $sameHashMethodsPresent;
-		if ($configure !== null) $configure($adapter);
-		$outcome = null;
-		try {
-			$outcome = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff,
-				'0', $localId, $adapter, $authority, $snapshotService, null, '/usr/bin/php');
-		} catch (RuntimeException $error) {
-			if (strpos($error->getMessage(), 'test cut: ') !== 0) {
-				throw $error;
-			}
-		}
-		return(array($adapter, $outcome, $tx));
-	}
 
 	public function testNativeEnqueuePrecedesBothOrdinaryAndDeferredMarks()
 	{
@@ -271,7 +219,7 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 			str_repeat('0', 32), str_repeat('1', 32), 'i', hash('sha256', 'alice'),
 			str_repeat('A', 40), $localId, '0', $handoff,
 			'/plugin/run.sh', '/usr/bin/php', 'alice', true)->params()[2];
-		foreach (array('ordinary' => $ordinary, 'deferred' => $deferred) as $kind => $body) {
+		foreach (['ordinary' => $ordinary, 'deferred' => $deferred] as $kind => $body) {
 			$begin = strpos($body, 'd.retrackers.enqueue_original');
 			$wp = strpos($body, 'wp:');
 			$launch = strpos($body, 'execute.throw.bg');
@@ -297,8 +245,8 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 	public function testNoChangeAndProvenDifferentHashKeepNativeAuthority()
 	{
 		list($unchanged, $unchangedResult, $tx) = $this->runWithPreparedCandidate(
-			array('ok' => true, 'changed' => false, 'candidate' => null,
-				'original' => 'original'));
+			['ok' => true, 'changed' => false, 'candidate' => null,
+				'original' => 'original']);
 		$finishAt = array_search('native-finish', $unchanged->events, true);
 		$cleanupAt = array_search('generic-cleanup', $unchanged->events, true);
 		$this->assertTrue($unchangedResult === true &&
@@ -311,20 +259,20 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		$hash = str_repeat('A', 40);
 		$other = str_repeat('D', 40);
 		list($different, $differentResult) = $this->runWithPreparedCandidate(
-			array('ok' => true, 'changed' => true,
+			['ok' => true, 'changed' => true,
 				'candidate' => 'candidate', 'original' => 'original',
-				'candidate_scan' => array('info_hash' => $other),
-				'projection' => array('ok' => true, 'changed' => true)));
+				'candidate_scan' => ['info_hash' => $other],
+				'projection' => ['ok' => true, 'changed' => true]]);
 		list($lost, $lostResult) = $this->runWithPreparedCandidate(
-			array('ok' => true, 'changed' => false, 'candidate' => null,
-				'original' => 'original'), true);
+			['ok' => true, 'changed' => false, 'candidate' => null,
+				'original' => 'original'], true);
 		$this->assertTrue($lostResult === true && $lost->nativeFinishCalls === 1 &&
 			$lost->genericReleaseCalls === 0 && $lost->genericCleanupCalls === 0 &&
 			$lost->lastFailure === null,
 			'lost finish reply must reconcile exact finalized T/I without resend');
 		list($foreign, $foreignResult) = $this->runWithPreparedCandidate(
-			array('ok' => true, 'changed' => false, 'candidate' => null,
-				'original' => 'original'), false, true);
+			['ok' => true, 'changed' => false, 'candidate' => null,
+				'original' => 'original'], false, true);
 		$this->assertTrue($foreignResult !== true && $foreign->nativeFinishCalls === 1 &&
 			$foreign->lastFailure === 'native-original-finalize-pending' &&
 			$foreign->genericReleaseCalls === 0 && $foreign->genericCleanupCalls === 0,
@@ -340,12 +288,12 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 	public function testSameHashChangedWorkerReachesNativeCaptureBeforeLegacyCommit()
 	{
 		$hash = str_repeat('A', 40);
-		list($adapter, $outcome) = $this->runWithPreparedCandidate(array(
+		list($adapter, $outcome) = $this->runWithPreparedCandidate([
 			'ok' => true, 'changed' => true, 'candidate' => 'candidate',
 			'original' => 'original',
-			'candidate_scan' => array('info_hash' => $hash),
-			'projection' => array('ok' => true, 'changed' => true),
-		));
+			'candidate_scan' => ['info_hash' => $hash],
+			'projection' => ['ok' => true, 'changed' => true],
+		]);
 		$this->assertTrue($outcome === null && $adapter->nativeCaptureCalls === 1 &&
 			$adapter->oldCommitCalls === 0 && $adapter->genericReleaseCalls === 0 &&
 			$adapter->genericCleanupCalls === 0 && $adapter->lastFailure === null,
@@ -355,15 +303,15 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 	public function testRefusedCaptureDefersWithItsOwnCategoryAndNamesExhaustion()
 	{
 		$hash = str_repeat('A', 40);
-		$candidate = array('ok' => true, 'changed' => true, 'candidate' => 'candidate',
-			'original' => 'original', 'candidate_scan' => array('info_hash' => $hash),
-			'projection' => array('ok' => true, 'changed' => true));
-		foreach (array('deferred' => 'native-capture-retry-pending', 'terminal' => 'queue-retry-exhausted') as $outcome => $logged) {
-			list($adapter) = $this->runWithPreparedCandidate($candidate, false, false, array(), false, true,
+		$candidate = ['ok' => true, 'changed' => true, 'candidate' => 'candidate',
+			'original' => 'original', 'candidate_scan' => ['info_hash' => $hash],
+			'projection' => ['ok' => true, 'changed' => true]];
+		foreach (['deferred' => 'native-capture-retry-pending', 'terminal' => 'queue-retry-exhausted'] as $outcome => $logged) {
+			list($adapter) = $this->runWithPreparedCandidate($candidate, false, false, [], false, true,
 				function ($adapter) use ($outcome) { $adapter->captureRefused = true; $adapter->deferOutcome = $outcome; });
 			$this->assertTrue($adapter->nativeCaptureCalls === 1 &&
-				$adapter->deferReasons === array('native-capture-retry-pending') &&
-				array_slice($adapter->events, -2) === array('native-capture', 'native-cancel-pending') &&
+				$adapter->deferReasons === ['native-capture-retry-pending'] &&
+				array_slice($adapter->events, -2) === ['native-capture', 'native-cancel-pending'] &&
 				$adapter->lastFailure === $logged && $adapter->oldCommitCalls === 0,
 				'a refused capture records its own retry category in one defer CAS (' . $outcome . ')');
 		}
@@ -372,12 +320,12 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 	public function testSameHashWorkerRequiresExactNativeMethodsBeforeCapture()
 	{
 		$hash = str_repeat('A', 40);
-		list($adapter, $outcome) = $this->runWithPreparedCandidate(array(
+		list($adapter, $outcome) = $this->runWithPreparedCandidate([
 			'ok' => true, 'changed' => true, 'candidate' => 'candidate',
 			'original' => 'original',
-			'candidate_scan' => array('info_hash' => $hash),
-			'projection' => array('ok' => true, 'changed' => true),
-		), false, false, array(), false, false);
+			'candidate_scan' => ['info_hash' => $hash],
+			'projection' => ['ok' => true, 'changed' => true],
+		], false, false, [], false, false);
 		$this->assertTrue($outcome !== true &&
 			$adapter->lastFailure === 'native-samehash-capability-unconfirmed' &&
 			$adapter->nativeCaptureCalls === 0 && $adapter->oldCommitCalls === 0,
@@ -390,22 +338,22 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		$localId = str_repeat('B', 40);
 		$handoff = 'v2:original:0:' . $localId . ':' .
 			hash('sha256', 'alice') . ':' . str_repeat('c', 32);
-		foreach (array(false, true) as $foreign) {
+		foreach ([false, true] as $foreign) {
 			$adapter = new RetrackersV18BoundaryAdapter();
 			$adapter->preFinalized = true;
-			if ($foreign) $adapter->currentIncarnation = str_repeat('f', 32);
+			if ($foreign) { $adapter->currentIncarnation = str_repeat('f', 32); }
 			$snapshot = new class {
 				public $reads = 0;
 				public function capture($hash, $handoff) {
 					$this->reads++;
-					return(array('ok' => false, 'failure' => 'ownership-mismatch'));
+					return(['ok' => false, 'failure' => 'ownership-mismatch']);
 				}
 			};
 			try {
 				$result = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff,
 					'0', $localId, $adapter, null, $snapshot);
 			} catch (RuntimeException $error) {
-				if (strpos($error->getMessage(), 'test cut: ') !== 0) throw $error;
+				if (strpos($error->getMessage(), 'test cut: ') !== 0) { throw $error; }
 				$result = false;
 			}
 			$this->assertTrue($result === false &&
@@ -422,17 +370,17 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		$localId = str_repeat('B', 40);
 		$wp = 'wp:' . $localId;
 		$wh = 'wh:' . $localId;
-		$candidate = array('ok' => true, 'changed' => false,
-			'candidate' => null, 'original' => 'original');
+		$candidate = ['ok' => true, 'changed' => false,
+			'candidate' => null, 'original' => 'original'];
 		list($cleared, $result) = $this->runWithPreparedCandidate(
-			$candidate, false, false, array($wp, $wh), true);
+			$candidate, false, false, [$wp, $wh], true);
 		$this->assertTrue($result === true && $cleared->nativeFinishCalls === 1 &&
 			$cleared->retireCalls === 2 &&
 			!in_array($wp, $cleared->ledgerKeys, true) &&
 			!in_array($wh, $cleared->ledgerKeys, true),
 			'only terminal wp CAS retries after the hook clears wh');
 		list($held, $heldResult) = $this->runWithPreparedCandidate(
-			$candidate, false, false, array($wp, $wh));
+			$candidate, false, false, [$wp, $wh]);
 		$this->assertTrue($heldResult !== true &&
 			$held->lastFailure === 'native-pending-retire-unconfirmed' &&
 			$held->nativeFinishCalls === 1 && $held->retireCalls === 1 &&
@@ -444,10 +392,10 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 	public function testNativeFinishRetiresWpBeforeDoneCanInspectLedger()
 	{
 		$pending = 'wp:' . str_repeat('B', 40);
-		list($adapter, $result) = $this->runWithPreparedCandidate(array(
+		list($adapter, $result) = $this->runWithPreparedCandidate([
 			'ok' => true, 'changed' => false, 'candidate' => null,
 			'original' => 'original',
-		), false, false, array($pending));
+		], false, false, [$pending]);
 		$this->assertTrue($result === true &&
 			!in_array($pending, $adapter->ledgerKeys, true) &&
 			$adapter->genericReleaseCalls === 0 && $adapter->genericCleanupCalls === 0,
@@ -474,6 +422,58 @@ class RetrackersNativeV18BoundaryTest extends TestCase
 		$this->assertTrue($legacy->nativeOriginalCapability($failure) === false &&
 			$failure === null && $legacy->methodListCalls === 0,
 			'0.9.8 family one does not need a v2 method-list probe');
+	}
+	private function runWithPreparedCandidate($candidate, $loseFinishReply = false,
+		$wrongFinalizedReceipt = false, $ledgerKeys = [],
+		$clearWhAfterFirstRetire = false, $sameHashMethodsPresent = true, $configure = null)
+	{
+		$hash = str_repeat('A', 40);
+		$localId = str_repeat('B', 40);
+		$tx = str_repeat('c', 32);
+		$handoff = 'v2:original:0:' . $localId . ':' .
+			hash('sha256', 'alice') . ':' . $tx;
+		$snapshot = ['scalar' => [
+			'is_private' => '0', 'name' => 'test', 'state' => '0',
+			'local_id' => $localId, 'recovery_marker' => $handoff,
+			'recovery_ack' => $handoff, 'directory_base' => '/synthetic',
+			'custom1' => '', 'custom2' => '', 'custom3' => '',
+			'custom4' => '', 'custom5' => '', 'priority' => '1',
+			'throttle_name' => '',
+		], 'generic_map' => [
+			['name' => 'retrackers-recovery', 'value' => $handoff],
+			['name' => 'retrackers-recovery-ack', 'value' => $handoff],
+		], 'source' => ['path' => '/synthetic/source.torrent']];
+		$snapshotService = new class($snapshot) {
+			private $snapshot;
+			public function __construct($snapshot) { $this->snapshot = $snapshot; }
+			public function capture($hash, $handoff) {
+				return(['ok' => true, 'snapshot' => $this->snapshot]);
+			}
+		};
+		$authority = new class($candidate) {
+			private $candidate;
+			public function __construct($candidate) { $this->candidate = $candidate; }
+			public function prepare($path, $hash, $additions, $deletions, $addToBegin) {
+				return($this->candidate);
+			}
+		};
+		$adapter = new RetrackersV18BoundaryAdapter();
+		$adapter->ledgerKeys = $ledgerKeys;
+		$adapter->loseFinishReply = $loseFinishReply;
+		$adapter->wrongFinalizedReceipt = $wrongFinalizedReceipt;
+		$adapter->clearWhAfterFirstRetire = $clearWhAfterFirstRetire;
+		$adapter->sameHashMethodsPresent = $sameHashMethodsPresent;
+		if ($configure !== null) { $configure($adapter); }
+		$outcome = null;
+		try {
+			$outcome = RetrackersRecoveryCoordinator::run($hash, 'alice', $handoff,
+				'0', $localId, $adapter, $authority, $snapshotService, null, '/usr/bin/php');
+		} catch (RuntimeException $error) {
+			if (strpos($error->getMessage(), 'test cut: ') !== 0) {
+				throw $error;
+			}
+		}
+		return([$adapter, $outcome, $tx]);
 	}
 
 }

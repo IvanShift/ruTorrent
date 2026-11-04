@@ -75,7 +75,7 @@ PHP
         file_put_contents($root . '/curl', "#!/bin/sh\nexec " . escapeshellarg(PHP_BINARY) . ' -c '
             . escapeshellarg(__DIR__ . '/../php-test.ini') . ' ' . escapeshellarg($root . '/curl.php') . ' "$@"' . "\n");
         chmod($root . '/curl', 0700);
-        $this->plan(array());
+        $this->plan([]);
     }
 
     /** Points Snoopy at the stand-in; restore() puts the previous curl back. */
@@ -91,39 +91,39 @@ PHP
     public function restore()
     {
         global $pathToExternals;
-        if ($this->previousCurl === null) unset($pathToExternals['curl']);
-        else $pathToExternals['curl'] = $this->previousCurl;
-        if ($this->previousRoot === false) putenv('SCRIPTED_CURL_ROOT');
-        else putenv('SCRIPTED_CURL_ROOT=' . $this->previousRoot);
+        if ($this->previousCurl === null) { unset($pathToExternals['curl']); }
+        else { $pathToExternals['curl'] = $this->previousCurl; }
+        if ($this->previousRoot === false) { putenv('SCRIPTED_CURL_ROOT'); }
+        else { putenv('SCRIPTED_CURL_ROOT=' . $this->previousRoot); }
     }
 
-    public static function reply($method, $url, $status, $body = '', $headers = array())
+    public static function reply($method, $url, $status, $body = '', $headers = [])
     {
-        return array('method' => $method, 'url' => $url, 'status' => $status, 'body' => $body, 'headers' => $headers);
+        return ['method' => $method, 'url' => $url, 'status' => $status, 'body' => $body, 'headers' => $headers];
     }
 
     /** A request the transport never completes: curl's own exit code. */
     public static function failure($method, $url, $exit)
     {
-        return array('method' => $method, 'url' => $url, 'exit' => $exit);
+        return ['method' => $method, 'url' => $url, 'exit' => $exit];
     }
 
     /** Replaces the plan and clears the record. */
     public function plan($replies)
     {
         file_put_contents($this->root . '/plan', serialize(array_values($replies)));
-        file_put_contents($this->root . '/requests', serialize(array()));
+        file_put_contents($this->root . '/requests', serialize([]));
     }
 
     /** Every request made since plan(), in order: method, url, cookie, body, time. */
     public function requests()
     {
-        return unserialize(file_get_contents($this->root . '/requests'), array('allowed_classes' => false));
+        return unserialize(file_get_contents($this->root . '/requests'), ['allowed_classes' => false]);
     }
 
     /** The replies nobody asked for yet. */
     public function remaining()
     {
-        return unserialize(file_get_contents($this->root . '/plan'), array('allowed_classes' => false));
+        return unserialize(file_get_contents($this->root . '/plan'), ['allowed_classes' => false]);
     }
 }

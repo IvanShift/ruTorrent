@@ -20,7 +20,7 @@ class CacheGhostLoadPayload extends CacheMergePayload
 // instance set() reads a newer copy into is built without an owner.
 class CacheOwnerKeyedPayload extends CacheMergePayload
 {
-	public $mergedFrom = array();
+	public $mergedFrom = [];
 
 	public function __construct($owner = 'ownerless')
 	{
@@ -40,13 +40,13 @@ class CacheEmptiablePayload
 {
 	public $hash = 'emptiable-cache-test.dat';
 	public $modified = false;
-	public $rows = array();
-	protected $added = array();
-	protected $dropped = array();
+	public $rows = [];
+	protected $added = [];
+	protected $dropped = [];
 
 	public function __sleep()
 	{
-		return(array('hash', 'modified', 'rows'));
+		return(['hash', 'modified', 'rows']);
 	}
 
 	public function add($key)
@@ -64,11 +64,11 @@ class CacheEmptiablePayload
 
 	public function merge($newer, $arg)
 	{
-		$rows = is_array($newer->rows) ? $newer->rows : array();
-		foreach($this->dropped as $key)
-			unset($rows[$key]);
-		foreach($this->added as $key)
-			$rows[$key] = $key;
+		$rows = is_array($newer->rows) ? $newer->rows : [];
+		foreach($this->dropped as $key) {
+			unset($rows[$key]); }
+		foreach($this->added as $key) {
+			$rows[$key] = $key; }
 		$this->rows = $rows;
 		return(true);
 	}
@@ -117,11 +117,11 @@ class CacheAllowedItem
 class CacheAllowedList
 {
     public $hash = 'allowed-list-cache-test.dat';
-    public $items = array();
+    public $items = [];
 
     public static function cacheClasses()
     {
-        return array('CacheAllowedItem');
+        return ['CacheAllowedItem'];
     }
 }
 
@@ -178,100 +178,6 @@ class CacheTest extends TestCase
 		if (is_dir($this->profilePath)) {
 			$this->removeDir($this->profilePath);
 		}
-	}
-
-	private function removeDir($dir)
-	{
-		foreach (array_diff(scandir($dir), ['.', '..']) as $entry) {
-			$path = $dir . '/' . $entry;
-			if (is_dir($path) && !is_link($path)) {
-				$this->removeDir($path);
-			} else {
-				unlink($path);
-			}
-		}
-		rmdir($dir);
-	}
-
-	// Writes a helper that does what a second update.php does -- load the
-	// cache, record one row, store it -- as a genuinely separate process,
-	// with statics of its own, the way a second update.php has them.
-	private function makeWriterScript()
-	{
-		$path = FileUtil::getSettingsPath() . '/concurrent-writer.php';
-		$code = "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
-			. "\$payload = new CacheMergePayload();\n"
-			. "(new rCache())->get(\$payload);\n"
-			. "exit(\$payload->addRow(\$argv[1]) ? 0 : 1);\n";
-		file_put_contents($path, $code);
-		return $path;
-	}
-
-	// Writes the helper for the overlap test: load the cache, then rendezvous
-	// with the peer writer -- announce readiness through one file, spin until
-	// the peer's file appears -- so both processes enter set() at the same
-	// moment, then store one row.
-	private function makeBarrierWriterScript()
-	{
-		$path = FileUtil::getSettingsPath() . '/overlapping-writer.php';
-		$code = "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
-			. "list(, \$row, \$readyMine, \$readyOther) = \$argv;\n"
-			. "\$payload = new CacheMergePayload();\n"
-			. "(new rCache())->get(\$payload);\n"
-			. "touch(\$readyMine);\n"
-			. "\$deadline = microtime(true) + 10;\n"
-			. "for (;;) {\n"
-			. "\tclearstatcache(true, \$readyOther);\n"
-			. "\tif (file_exists(\$readyOther)) break;\n"
-			. "\tif (microtime(true) > \$deadline) exit(2);\n"
-			. "\tusleep(200);\n"
-			. "}\n"
-			. "// Both writers saw each other; spinning to the same clock boundary\n"
-			. "// puts their set() calls within microseconds of each other.\n"
-			. "\$go = ceil((microtime(true) + 0.05) * 4) / 4;\n"
-			. "while (microtime(true) < \$go);\n"
-			. "exit(\$payload->addRow(\$row) ? 0 : 1);\n";
-		file_put_contents($path, $code);
-		return $path;
-	}
-
-	// Writes the helper for the repeated-stamp test: another process that
-	// changes one row to a value of the same length, rewrites the file in
-	// place under the key lock and puts the mtime back. The inode, the mtime
-	// and the size are then exactly what this process loaded -- the stat
-	// tuple that two rename-published stores leave behind on an idle ext4,
-	// where the next temporary file is handed the inode the first store
-	// freed -- forced here so the test does not depend on the allocator.
-	private function makeSameStampWriterScript()
-	{
-		$path = FileUtil::getSettingsPath() . '/same-stamp-writer.php';
-		$code = "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
-			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
-			. "\$payload = new CacheMergePayload();\n"
-			. "\$name = FileUtil::getSettingsPath() . '/' . \$payload->hash;\n"
-			. "\$lock = fopen(\$name . '.lock', 'c');\n"
-			. "if (\$lock === false || !flock(\$lock, LOCK_EX)) exit(2);\n"
-			. "\$before = stat(\$name);\n"
-			. "if (!(new rCache())->get(\$payload)) exit(3);\n"
-			. "\$payload->rows['slot'] = \$argv[1];\n"
-			. "\$bytes = serialize(\$payload);\n"
-			. "if (strlen(\$bytes) !== \$before['size']) exit(4);\n"
-			. "if (file_put_contents(\$name, \$bytes) !== strlen(\$bytes)) exit(5);\n"
-			. "if (!touch(\$name, \$before['mtime'])) exit(6);\n"
-			. "clearstatcache(true, \$name);\n"
-			. "\$after = stat(\$name);\n"
-			. "exit(\$after['ino'] === \$before['ino'] && \$after['mtime'] === \$before['mtime']\n"
-			. "\t&& \$after['size'] === \$before['size'] ? 0 : 7);\n";
-		file_put_contents($path, $code);
-		return $path;
 	}
 
 	// The live failure this guards: replacing a torrent fires three update.php
@@ -415,8 +321,8 @@ class CacheTest extends TestCase
 		$this->assertTrue(touch($path, $before['mtime']), 'the previous second-level mtime is restored');
 		clearstatcache(true, $path);
 		$after = stat($path);
-		$this->assertSame(array($before['ino'], $before['mtime'], $before['size']),
-			array($after['ino'], $after['mtime'], $after['size']),
+		$this->assertSame([$before['ino'], $before['mtime'], $before['size']],
+			[$after['ino'], $after['mtime'], $after['size']],
 			'the fast cache stamp cannot distinguish the two contents');
 
 		$this->assertTrue($old->addRow('mine'), 'the stale object stores its own change');
@@ -433,7 +339,7 @@ class CacheTest extends TestCase
 	{
 		$cache = new rCache();
 		$ownerless = new CacheOwnerKeyedPayload();
-		$ownerless->rows = array('ownerless' => 'ownerless');
+		$ownerless->rows = ['ownerless' => 'ownerless'];
 		$this->assertTrue($cache->set($ownerless), 'a document exists under the key of an instance without an owner');
 		$ownerlessFile = FileUtil::getSettingsPath() . '/' . $ownerless->hash;
 		$ownerlessBytes = file_get_contents($ownerlessFile);
@@ -447,12 +353,12 @@ class CacheTest extends TestCase
 		$this->assertTrue($other->addRow('other'), 'the other writer stores its row first');
 		$this->assertTrue($mine->addRow('mine'), 'this writer stores after it');
 
-		$this->assertSame(array('alice-owner-cache-test.dat'), $mine->mergedFrom,
+		$this->assertSame(['alice-owner-cache-test.dat'], $mine->mergedFrom,
 			'the merge was handed the newer copy stored under the owner key');
 		$check = new CacheOwnerKeyedPayload('alice');
 		$this->assertTrue($cache->get($check), 'the merged owner document loads');
 		ksort($check->rows);
-		$this->assertSame(array('mine' => 'mine', 'other' => 'other', 'seed' => 'seed'), $check->rows,
+		$this->assertSame(['mine' => 'mine', 'other' => 'other', 'seed' => 'seed'], $check->rows,
 			'neither writer loses its row');
 		$this->assertSame($ownerlessBytes, file_get_contents($ownerlessFile),
 			'the document under the ownerless key is neither merged in nor rewritten');
@@ -510,7 +416,7 @@ class CacheTest extends TestCase
 
 		$check = new CacheEmptiablePayload();
 		$this->assertTrue($cache->get($check), 'the document is kept');
-		$this->assertSame(array('other' => 'other'), $check->rows,
+		$this->assertSame(['other' => 'other'], $check->rows,
 			'the other writer\'s row is kept and the dropped row stays dropped');
 	}
 
@@ -536,7 +442,7 @@ class CacheTest extends TestCase
 		$this->assertSame(true, $cache->set($mine), 'this writer stores after the removal');
 		$check = new CacheEmptiablePayload();
 		$this->assertTrue($cache->get($check), 'this writer\'s own row is stored');
-		$this->assertSame(array('mine' => 'mine'), $check->rows, 'the row it only read does not come back');
+		$this->assertSame(['mine' => 'mine'], $check->rows, 'the row it only read does not come back');
 
 		$this->assertTrue($cache->remove($check), 'the document is cleared');
 		$again = new CacheEmptiablePayload();
@@ -563,11 +469,11 @@ class CacheTest extends TestCase
 		$this->assertTrue($cache->get($mine), 'this writer loads it');
 		$this->assertTrue($cache->remove(new CacheOwnerKeyedPayload('bob')), 'another writer removes it');
 		$this->assertTrue($mine->addRow('mine'), 'this writer stores after the removal');
-		$this->assertSame(array(), $mine->mergedFrom, 'no merge is asked for an absent document');
+		$this->assertSame([], $mine->mergedFrom, 'no merge is asked for an absent document');
 		$check = new CacheOwnerKeyedPayload('bob');
 		$this->assertTrue($cache->get($check), 'the document is stored');
 		ksort($check->rows);
-		$this->assertSame(array('mine' => 'mine', 'seed' => 'seed'), $check->rows, 'the writer\'s full state is stored');
+		$this->assertSame(['mine' => 'mine', 'seed' => 'seed'], $check->rows, 'the writer\'s full state is stored');
 	}
 
 	// Only absence is an empty newer copy. A newer document that exists but
@@ -599,7 +505,7 @@ class CacheTest extends TestCase
 		$check = new CacheEmptiablePayload();
 		$this->assertTrue($cache->get($check), 'the document is stored');
 		ksort($check->rows);
-		$this->assertSame(array('mine' => 'mine', 'seed' => 'seed'), $check->rows,
+		$this->assertSame(['mine' => 'mine', 'seed' => 'seed'], $check->rows,
 			'the writer\'s full state is stored, not a merge with an empty copy');
 	}
 
@@ -634,7 +540,7 @@ class CacheTest extends TestCase
 
 	public function testAnEmptiedDocumentThatCannotBeUnlinkedIsRefusedVisibly()
 	{
-		if (testSkipUnlessPermissionsBite('an emptied cache document that cannot be unlinked is refused visibly')) return;
+		if (testSkipUnlessPermissionsBite('an emptied cache document that cannot be unlinked is refused visibly')) { return; }
 		global $log_file;
 		$cache = new rCache();
 		$seed = new CacheEmptiablePayload();
@@ -904,7 +810,7 @@ class CacheTest extends TestCase
 
 	public function testRemovingAnEntryFromAnUnwritableDirectoryStillRefuses()
 	{
-		if (testSkipUnlessPermissionsBite('cache remove must report a real unlink refusal')) return;
+		if (testSkipUnlessPermissionsBite('cache remove must report a real unlink refusal')) { return; }
 		global $log_file;
 		$payload = new CacheMergePayload();
 		$payload->hash = 'unwritable-remove-cache-test.dat';
@@ -928,7 +834,7 @@ class CacheTest extends TestCase
 
     public function testUnlinkRefusalDoesNotBecomeAbsenceWhenParentTurnsUnreadable()
     {
-        if (testSkipUnlessPermissionsBite('cache remove must not infer absence from an unreadable parent')) return;
+        if (testSkipUnlessPermissionsBite('cache remove must not infer absence from an unreadable parent')) { return; }
         global $log_file;
         $payload = new CacheMergePayload();
         $payload->hash = 'unreadable-parent-cache-test.dat';
@@ -1093,14 +999,14 @@ class CacheTest extends TestCase
 	{
 		$cache = new rCache();
 		$stored = new CacheAllowedList();
-		$stored->items = array(new CacheAllowedItem());
+		$stored->items = [new CacheAllowedItem()];
 		$this->assertTrue($cache->set($stored), 'a declared nested item is stored');
 		$loaded = new CacheAllowedList();
 		$this->assertTrue($cache->get($loaded), 'a declared nested item loads');
 		$this->assertTrue($loaded->items[0] instanceof CacheAllowedItem,
 			'the declared item keeps its class');
 
-		$stored->items = array(new CacheUnexpectedPayload());
+		$stored->items = [new CacheUnexpectedPayload()];
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $stored->hash, serialize($stored));
 		CacheUnexpectedPayload::$wakeups = 0;
 		$loaded = new CacheAllowedList();
@@ -1128,9 +1034,9 @@ class CacheTest extends TestCase
 	{
 		$key = 'array-object-cache-test.dat';
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $key,
-			serialize(array('__hash__' => $key, 'item' => new CacheUnexpectedPayload())));
+			serialize(['__hash__' => $key, 'item' => new CacheUnexpectedPayload()]));
 		CacheUnexpectedPayload::$wakeups = 0;
-		$target = array('__hash__' => $key);
+		$target = ['__hash__' => $key];
 		$this->assertEquals(false, (new rCache())->get($target),
 			'an array cache containing an object is a miss');
 		$this->assertEquals(0, CacheUnexpectedPayload::$wakeups,
@@ -1141,7 +1047,7 @@ class CacheTest extends TestCase
 	{
 		$outside = dirname(rtrim(FileUtil::getSettingsPath(), '/')) . '/outside-cache-test.dat';
 		$stored = new CacheMergePayload();
-		$stored->rows = array('outside' => 'keep');
+		$stored->rows = ['outside' => 'keep'];
 		file_put_contents($outside, serialize($stored));
 		$before = file_get_contents($outside);
 		$target = new CacheMergePayload();
@@ -1167,7 +1073,7 @@ class CacheTest extends TestCase
 	{
 		$key = 'recursive-array-cache-test.dat';
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, 'a:1:{i:0;R:1;}');
-		$target = array('__hash__' => $key);
+		$target = ['__hash__' => $key];
 		$this->assertEquals(false, (new rCache())->get($target),
 			'a tiny self-referential array is refused instead of being traversed forever');
 	}
@@ -1175,10 +1081,10 @@ class CacheTest extends TestCase
 	public function testArrayCacheBeyondTheDepthBudgetIsARefusedMiss()
 	{
 		$key = 'deep-array-cache-test.dat';
-		$value = array('leaf');
-		for ($depth = 0; $depth < 66; $depth++) $value = array($value);
+		$value = ['leaf'];
+		for ($depth = 0; $depth < 66; $depth++) { $value = [$value]; }
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, serialize($value));
-		$target = array('__hash__' => $key);
+		$target = ['__hash__' => $key];
 		$this->assertEquals(false, (new rCache())->get($target),
 			'a deeply nested cache file is refused within the walk depth budget');
 	}
@@ -1186,14 +1092,14 @@ class CacheTest extends TestCase
 	public function testSharedArrayGraphBeyondTheNodeBudgetIsARefusedMiss()
 	{
 		$key = 'shared-array-cache-test.dat';
-		$nodes = array(array('leaf'));
+		$nodes = [['leaf']];
 		for ($level = 1; $level <= 17; $level++) {
-			$nodes[$level] = array(&$nodes[$level - 1], &$nodes[$level - 1]);
+			$nodes[$level] = [&$nodes[$level - 1], &$nodes[$level - 1]];
 		}
 		$bytes = serialize($nodes[17]);
 		$this->assertTrue(strlen($bytes) < 5000, 'the shared graph fits in a small cache file');
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $key, $bytes);
-		$target = array('__hash__' => $key);
+		$target = ['__hash__' => $key];
 		$this->assertEquals(false, (new rCache())->get($target),
 			'a small file describing too many nodes is refused within the node budget');
 	}
@@ -1202,7 +1108,7 @@ class CacheTest extends TestCase
 	{
 		$target = new CacheWarningPayload();
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $target->hash, serialize($target));
-		$warnings = array();
+		$warnings = [];
 		set_error_handler(function ($errno, $message) use (&$warnings) {
 			$warnings[] = $message;
 			return true;
@@ -1215,7 +1121,7 @@ class CacheTest extends TestCase
 			restore_error_handler();
 		}
 		$this->assertTrue($ok, 'the expected cache class still loads');
-		$this->assertEquals(array('cache-wakeup-warning', 'post-cache-warning'), $warnings,
+		$this->assertEquals(['cache-wakeup-warning', 'post-cache-warning'], $warnings,
 			'only parse diagnostics are suppressed; caller warnings are delivered: ' . json_encode($warnings));
 	}
 
@@ -1223,7 +1129,7 @@ class CacheTest extends TestCase
 	{
 		$target = new CacheNestedWarningPayload();
 		file_put_contents(FileUtil::getSettingsPath() . '/' . $target->hash, serialize($target));
-		$warnings = array();
+		$warnings = [];
 		set_error_handler(function ($errno, $message) use (&$warnings) {
 			$warnings[] = $message;
 			return true;
@@ -1310,14 +1216,14 @@ class CacheTest extends TestCase
 			. 'if ($lock === false || !flock($lock, LOCK_EX)) exit(2);'
 			. 'echo "locked\\n"; fflush(STDOUT);'
 			. 'fgets(STDIN); flock($lock, LOCK_UN); fclose($lock);';
-		$process = proc_open(array(PHP_BINARY, '-r', $worker, $cacheFile . '.lock'),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
-		if(!is_resource($process))
-			throw new RuntimeException('Could not start the competing cache writer');
+		$process = proc_open([PHP_BINARY, '-r', $worker, $cacheFile . '.lock'],
+			[0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+		if(!is_resource($process)) {
+			throw new RuntimeException('Could not start the competing cache writer'); }
 		try {
 			stream_set_timeout($pipes[1], 5);
-			if(fgets($pipes[1]) !== "locked\n")
-				throw new RuntimeException('The competing cache writer did not acquire its lock');
+			if(fgets($pipes[1]) !== "locked\n") {
+				throw new RuntimeException('The competing cache writer did not acquire its lock'); }
 			$this->assertEquals(false, $cache->remove($payload),
 				'Remove refuses while a real competing writer holds the key lock');
 			$this->assertEquals($bytes, @file_get_contents($cacheFile),
@@ -1346,5 +1252,99 @@ class CacheTest extends TestCase
 			'Remove refuses when a directory prevents opening the key lock');
 		$this->assertEquals($bytes, @file_get_contents($cacheFile),
 			'A lock-open refusal leaves the removable cache entry intact');
+	}
+
+	private function removeDir($dir)
+	{
+		foreach (array_diff(scandir($dir), ['.', '..']) as $entry) {
+			$path = $dir . '/' . $entry;
+			if (is_dir($path) && !is_link($path)) {
+				$this->removeDir($path);
+			} else {
+				unlink($path);
+			}
+		}
+		rmdir($dir);
+	}
+
+	// Writes a helper that does what a second update.php does -- load the
+	// cache, record one row, store it -- as a genuinely separate process,
+	// with statics of its own, the way a second update.php has them.
+	private function makeWriterScript()
+	{
+		$path = FileUtil::getSettingsPath() . '/concurrent-writer.php';
+		$code = "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
+			. "\$payload = new CacheMergePayload();\n"
+			. "(new rCache())->get(\$payload);\n"
+			. "exit(\$payload->addRow(\$argv[1]) ? 0 : 1);\n";
+		file_put_contents($path, $code);
+		return $path;
+	}
+
+	// Writes the helper for the overlap test: load the cache, then rendezvous
+	// with the peer writer -- announce readiness through one file, spin until
+	// the peer's file appears -- so both processes enter set() at the same
+	// moment, then store one row.
+	private function makeBarrierWriterScript()
+	{
+		$path = FileUtil::getSettingsPath() . '/overlapping-writer.php';
+		$code = "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
+			. "list(, \$row, \$readyMine, \$readyOther) = \$argv;\n"
+			. "\$payload = new CacheMergePayload();\n"
+			. "(new rCache())->get(\$payload);\n"
+			. "touch(\$readyMine);\n"
+			. "\$deadline = microtime(true) + 10;\n"
+			. "for (;;) {\n"
+			. "\tclearstatcache(true, \$readyOther);\n"
+			. "\tif (file_exists(\$readyOther)) break;\n"
+			. "\tif (microtime(true) > \$deadline) exit(2);\n"
+			. "\tusleep(200);\n"
+			. "}\n"
+			. "// Both writers saw each other; spinning to the same clock boundary\n"
+			. "// puts their set() calls within microseconds of each other.\n"
+			. "\$go = ceil((microtime(true) + 0.05) * 4) / 4;\n"
+			. "while (microtime(true) < \$go);\n"
+			. "exit(\$payload->addRow(\$row) ? 0 : 1);\n";
+		file_put_contents($path, $code);
+		return $path;
+	}
+
+	// Writes the helper for the repeated-stamp test: another process that
+	// changes one row to a value of the same length, rewrites the file in
+	// place under the key lock and puts the mtime back. The inode, the mtime
+	// and the size are then exactly what this process loaded -- the stat
+	// tuple that two rename-published stores leave behind on an idle ext4,
+	// where the next temporary file is handed the inode the first store
+	// freed -- forced here so the test does not depend on the allocator.
+	private function makeSameStampWriterScript()
+	{
+		$path = FileUtil::getSettingsPath() . '/same-stamp-writer.php';
+		$code = "<?php\n"
+			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->profilePath, true) . ";\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/../../php/cache.php'), true) . ");\n"
+			. 'require_once(' . var_export(realpath(__DIR__ . '/CacheMergePayloadFixture.php'), true) . ");\n"
+			. "\$payload = new CacheMergePayload();\n"
+			. "\$name = FileUtil::getSettingsPath() . '/' . \$payload->hash;\n"
+			. "\$lock = fopen(\$name . '.lock', 'c');\n"
+			. "if (\$lock === false || !flock(\$lock, LOCK_EX)) exit(2);\n"
+			. "\$before = stat(\$name);\n"
+			. "if (!(new rCache())->get(\$payload)) exit(3);\n"
+			. "\$payload->rows['slot'] = \$argv[1];\n"
+			. "\$bytes = serialize(\$payload);\n"
+			. "if (strlen(\$bytes) !== \$before['size']) exit(4);\n"
+			. "if (file_put_contents(\$name, \$bytes) !== strlen(\$bytes)) exit(5);\n"
+			. "if (!touch(\$name, \$before['mtime'])) exit(6);\n"
+			. "clearstatcache(true, \$name);\n"
+			. "\$after = stat(\$name);\n"
+			. "exit(\$after['ino'] === \$before['ino'] && \$after['mtime'] === \$before['mtime']\n"
+			. "\t&& \$after['size'] === \$before['size'] ? 0 : 7);\n";
+		file_put_contents($path, $code);
+		return $path;
 	}
 }

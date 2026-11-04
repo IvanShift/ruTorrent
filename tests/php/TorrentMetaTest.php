@@ -24,81 +24,6 @@ class TorrentMetaTest extends TestCase
 		$this->pieces = str_repeat("\x01", 20);
 	}
 
-	/** Bencode a string. Deliberately trivial: the fixture must not be built
-	 * by the class under test. */
-	private function bstr($string)
-	{
-		return strlen($string) . ':' . $string;
-	}
-
-	/** The info dictionary of the fixture, keys in ksort(SORT_STRING) order. */
-	private function infoDictionary()
-	{
-		return 'd'
-			. $this->bstr('length') . 'i1024e'
-			. $this->bstr('name') . $this->bstr('test.data')
-			. $this->bstr('piece length') . 'i16384e'
-			. $this->bstr('pieces') . $this->bstr($this->pieces)
-			. $this->bstr('private') . 'i1e'
-			. 'e';
-	}
-
-	/** The libtorrent_resume dictionary of the fixture. */
-	private function resumeDictionary()
-	{
-		return 'd'
-			. $this->bstr('bitfield') . 'i1e'
-			. $this->bstr('files')
-				. 'l'
-					. 'd' . $this->bstr('mtime') . 'i1234567891e'
-						. $this->bstr('priority') . 'i2e' . 'e'
-				. 'e'
-			. 'e';
-	}
-
-	/**
-	 * A torrent carrying every key the class has an accessor for, the two
-	 * rtorrent adds to a torrent it has loaded, and one it only ever passes
-	 * through. Keys are in ksort(SORT_STRING) order, which is the order
-	 * Torrent::encode_dictionary() emits, so the file is its own expected
-	 * output.
-	 */
-	private function fixture()
-	{
-		return 'd'
-			. $this->bstr('announce') . $this->bstr('http://example.test/announce')
-			. $this->bstr('announce-list')
-				. 'l'
-					. 'l' . $this->bstr('http://example.test/announce') . 'e'
-					. 'l' . $this->bstr('udp://backup.test/announce') . 'e'
-				. 'e'
-			. $this->bstr('comment') . $this->bstr('a comment')
-			. $this->bstr('created by') . $this->bstr('uTorrent/3.5.5')
-			. $this->bstr('creation date') . 'i1234567890e'
-			. $this->bstr('encoding') . $this->bstr('UTF-8')
-			. $this->bstr('httpseeds') . 'l' . $this->bstr('http://seed.example.test/f.dat') . 'e'
-			. $this->bstr('info') . $this->infoDictionary()
-			. $this->bstr('libtorrent_resume') . $this->resumeDictionary()
-			. $this->bstr('rtorrent') . 'd' . $this->bstr('directory') . $this->bstr('/downloads') . 'e'
-			. $this->bstr('url-list') . 'l' . $this->bstr('http://web.example.test/f.dat') . 'e'
-			. 'e';
-	}
-
-	/** Names of properties that were not declared by the class -- i.e. the
-	 * dynamic properties PHP 8.2 deprecated. */
-	private function dynamicProperties($object)
-	{
-		$dynamic = array();
-		$reflection = new ReflectionObject($object);
-		foreach ($reflection->getProperties() as $property) {
-			if (!$property->isDefault()) {
-				$dynamic[] = $property->getName();
-			}
-		}
-		sort($dynamic);
-		return $dynamic;
-	}
-
 	/**
 	 * Parse and re-emit: every key, in order, byte for byte. 'created by' and
 	 * 'creation date' are only touched by touch(), so an untouched torrent
@@ -117,10 +42,10 @@ class TorrentMetaTest extends TestCase
 		$pieces = str_repeat("\0", 20);
 		$raw = 'd4:infod6:lengthi1e4:name8:seed.bin12:piece lengthi16384e6:pieces20:'
 			. $pieces . 'ee';
-		$warnings = array();
+		$warnings = [];
 		set_error_handler(function($severity, $message) use (&$warnings) {
-			if($severity === E_WARNING)
-				$warnings[] = $message;
+			if($severity === E_WARNING) {
+				$warnings[] = $message; }
 			return true;
 		});
 		try
@@ -132,7 +57,7 @@ class TorrentMetaTest extends TestCase
 			restore_error_handler();
 		}
 
-		$this->assertEquals(array(), $warnings,
+		$this->assertEquals([], $warnings,
 			'Binary metainfo bytes are not passed to filesystem path probes');
 		$this->assertTrue($torrent->errors() === false, 'Binary metainfo parses without errors');
 		$this->assertTrue($torrent->info['pieces'] === $pieces,
@@ -145,18 +70,18 @@ class TorrentMetaTest extends TestCase
 		// the metainfo. rTorrent loads such a file (it never reads past the
 		// root dictionary) and production 1fa8defc accepted it, so raw mode
 		// must too. Anything else after the dictionary still refuses the bytes.
-		foreach(array('LF' => "\n", 'CRLF' => "\r\n", 'spaces and tabs' => " \t \r\n\n") as $label => $tail)
+		foreach(['LF' => "\n", 'CRLF' => "\r\n", 'spaces and tabs' => " \t \r\n\n"] as $label => $tail)
 		{
 			$torrent = Torrent::fromRawBytes($this->fixture() . $tail);
 			$this->assertTrue($torrent->errors() === false,
 				'raw metainfo followed by ' . $label . ' parses without errors');
 		}
-		foreach(array('HTML' => "<html>", 'text after a line break' => "\n<html>", 'NUL' => "\0") as $label => $tail)
+		foreach(['HTML' => "<html>", 'text after a line break' => "\n<html>", 'NUL' => "\0"] as $label => $tail)
 		{
 			$torrent = Torrent::fromRawBytes($this->fixture() . $tail);
-			$messages = array();
-			foreach(($torrent->errors() ?: array()) as $error)
-				$messages[] = $error->getMessage();
+			$messages = [];
+			foreach(($torrent->errors() ?: []) as $error) {
+				$messages[] = $error->getMessage(); }
 			$this->assertTrue(in_array('Trailing torrent data', $messages, true),
 				'raw metainfo followed by ' . $label . ' is refused as trailing data');
 		}
@@ -166,18 +91,18 @@ class TorrentMetaTest extends TestCase
 	{
 		$raw = 'd4:infod4:name1:xee'; // valid dictionary, with no NUL byte
 		$before = getcwd();
-		if($before === false)
-			throw new RuntimeException('Could not read the current directory for raw metainfo test');
+		if($before === false) {
+			throw new RuntimeException('Could not read the current directory for raw metainfo test'); }
 		$dir = sys_get_temp_dir() . '/torrent-raw-' . bin2hex(random_bytes(8));
-		if(!@mkdir($dir, 0700))
-			throw new RuntimeException('Could not create a unique raw metainfo test directory');
+		if(!@mkdir($dir, 0700)) {
+			throw new RuntimeException('Could not create a unique raw metainfo test directory'); }
 		try
 		{
-			if(!@chdir($dir))
-				throw new RuntimeException('Could not enter the raw metainfo test directory');
+			if(!@chdir($dir)) {
+				throw new RuntimeException('Could not enter the raw metainfo test directory'); }
 			$contents = 'this local file is not metainfo';
-			if(file_put_contents($raw, $contents) !== strlen($contents))
-				throw new RuntimeException('Could not write the conflicting local file');
+			if(file_put_contents($raw, $contents) !== strlen($contents)) {
+				throw new RuntimeException('Could not write the conflicting local file'); }
 			$fromPath = new Torrent($raw);
 			$this->assertTrue($fromPath->errors() === false && $fromPath->info['name'] === $raw,
 				'the existing constructor still accepts a path by default');
@@ -190,8 +115,8 @@ class TorrentMetaTest extends TestCase
 			$restored = @chdir($before);
 			$removedFile = !is_file($dir . '/' . $raw) || @unlink($dir . '/' . $raw);
 			$removedDir = @rmdir($dir);
-			if(!$restored || !$removedFile || !$removedDir)
-				throw new RuntimeException('Could not clean up the raw metainfo test directory');
+			if(!$restored || !$removedFile || !$removedDir) {
+				throw new RuntimeException('Could not clean up the raw metainfo test directory'); }
 		}
 	}
 
@@ -203,10 +128,10 @@ class TorrentMetaTest extends TestCase
 			. 'public function decode($bytes) { return parent::decode($bytes); } } '
 			. '$torrent = new OneArgumentDecoder("d4:infod4:name1:xee"); '
 			. 'if ($torrent->errors() !== false || $torrent->info["name"] !== "x") exit(1);';
-		$process = proc_open(array(PHP_BINARY, '-r', $script),
-			array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+		$process = proc_open([PHP_BINARY, '-r', $script],
+			[1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
 		$this->assertTrue(is_resource($process), 'A PHP child starts for the override compatibility check');
-		if(!is_resource($process)) return;
+		if(!is_resource($process)) { return; }
 		$output = stream_get_contents($pipes[1]);
 		$error = stream_get_contents($pipes[2]);
 		fclose($pipes[1]);
@@ -221,14 +146,14 @@ class TorrentMetaTest extends TestCase
 		$torrent = new Torrent($this->fixture());
 		$this->assertTrue($torrent->announce() === 'http://example.test/announce',
 			'announce() reads the announce key');
-		$this->assertTrue($torrent->announce_list() === array(
-				array('http://example.test/announce'),
-				array('udp://backup.test/announce')),
+		$this->assertTrue($torrent->announce_list() === [
+				['http://example.test/announce'],
+				['udp://backup.test/announce']],
 			'announce_list() reads the announce-list key');
 		$this->assertTrue($torrent->comment() === 'a comment', 'comment() reads the comment key');
-		$this->assertTrue($torrent->url_list() === array('http://web.example.test/f.dat'),
+		$this->assertTrue($torrent->url_list() === ['http://web.example.test/f.dat'],
 			'url_list() reads the url-list key');
-		$this->assertTrue($torrent->httpseeds() === array('http://seed.example.test/f.dat'),
+		$this->assertTrue($torrent->httpseeds() === ['http://seed.example.test/f.dat'],
 			'httpseeds() reads the httpseeds key');
 		$this->assertTrue($torrent->name() === 'test.data', 'name() reads info/name');
 		$this->assertTrue($torrent->piece_length() == 16384, 'piece_length() reads info/piece length');
@@ -276,8 +201,8 @@ class TorrentMetaTest extends TestCase
 		$torrent->libtorrent_resume['bitfield'] = 7;
 		$this->assertTrue(!isset($torrent->libtorrent_resume['files']),
 			'isset() on an offset of a key answers for the offset');
-		$torrent->libtorrent_resume['files'] = array();
-		$torrent->libtorrent_resume['files'][0] = array('priority' => 2, 'mtime' => 1234567891);
+		$torrent->libtorrent_resume['files'] = [];
+		$torrent->libtorrent_resume['files'][0] = ['priority' => 2, 'mtime' => 1234567891];
 
 		$reread = new Torrent((string)$torrent);
 		$resume = $reread->libtorrent_resume;
@@ -305,7 +230,7 @@ class TorrentMetaTest extends TestCase
 		$this->assertTrue(!isset($torrent->rtorrent), 'An unset key reads as unset');
 		$this->assertTrue(strpos((string)$torrent, $this->bstr('rtorrent')) === false,
 			'An unset key is not written');
-		$torrent->rtorrent = array('directory' => '/downloads');
+		$torrent->rtorrent = ['directory' => '/downloads'];
 		$this->assertTrue((string)$torrent === $this->fixture(),
 			'Setting the key again leaves the torrent as it was');
 	}
@@ -354,12 +279,12 @@ class TorrentMetaTest extends TestCase
 	 */
 	public function testTheKeysThatAreIdentifiersAreDeclaredProperties()
 	{
-		foreach (array('announce', 'comment', 'encoding', 'httpseeds', 'info',
-			'libtorrent_resume', 'rtorrent') as $key) {
+		foreach (['announce', 'comment', 'encoding', 'httpseeds', 'info',
+			'libtorrent_resume', 'rtorrent'] as $key) {
 			$this->assertTrue(property_exists('Torrent', $key),
 				"The {$key} key is a declared property");
 		}
-		foreach (array('__get', '__set', '__isset', '__unset') as $magic) {
+		foreach (['__get', '__set', '__isset', '__unset'] as $magic) {
 			$this->assertTrue(!method_exists('Torrent', $magic),
 				"Torrent has no {$magic}()");
 		}
@@ -369,8 +294,8 @@ class TorrentMetaTest extends TestCase
 	public function testInternalFieldsAreNotWrittenToTheTorrent()
 	{
 		$torrent = new Torrent($this->fixture());
-		foreach (array('errors', 'basedir', 'pointer', 'data', 'log_callback',
-			'err_callback', 'filename', 'built', 'extra') as $field) {
+		foreach (['errors', 'basedir', 'pointer', 'data', 'log_callback',
+			'err_callback', 'filename', 'built', 'extra'] as $field) {
 			$this->assertTrue(strpos((string)$torrent, $this->bstr($field)) === false,
 				"The object field {$field} is not written as a torrent key");
 		}
@@ -386,14 +311,14 @@ class TorrentMetaTest extends TestCase
 			'meta() reads the created by key');
 		$this->assertTrue($torrent->meta('creation date') === 1234567890,
 			'meta() reads the creation date key');
-		$this->assertTrue($torrent->meta('url-list') === array('http://web.example.test/f.dat'),
+		$this->assertTrue($torrent->meta('url-list') === ['http://web.example.test/f.dat'],
 			'meta() reads the url-list key');
 		$this->assertTrue(is_null($torrent->meta('nodes')), 'meta() reads a key the torrent has not got as null');
 
-		$torrent->setMeta('nodes', array(array('router.test', 6881)));
+		$torrent->setMeta('nodes', [['router.test', 6881]]);
 		$torrent->clearMeta('url-list');
 		$reread = new Torrent((string)$torrent);
-		$this->assertTrue($reread->meta('nodes') === array(array('router.test', 6881)),
+		$this->assertTrue($reread->meta('nodes') === [['router.test', 6881]],
 			'setMeta() writes a key the torrent has not got');
 		$this->assertTrue(is_null($reread->meta('url-list')), 'clearMeta() drops a key');
 	}
@@ -470,7 +395,7 @@ class TorrentMetaTest extends TestCase
 	/** Present fields retain their values and types; missing siblings stay missing. */
 	public function testEditsPreservePartialAndAtypicalAuthorshipFields()
 	{
-		$fields = array(
+		$fields = [
 			$this->bstr('created by') . $this->bstr(''),
 			$this->bstr('creation date') . 'i0e',
 			$this->bstr('created by') . 'i7e'
@@ -478,7 +403,7 @@ class TorrentMetaTest extends TestCase
 			$this->bstr('built') . 'i1e'
 				. $this->bstr('created by') . $this->bstr('external')
 				. $this->bstr('creation date') . 'i1234567890e',
-		);
+		];
 		foreach ($fields as $authorship) {
 			$info = $this->bstr('info') . $this->infoDictionary();
 			$torrent = new Torrent('d' . $authorship . $info . 'e');
@@ -538,11 +463,11 @@ class TorrentMetaTest extends TestCase
 			'The announce() setter returns null');
 		$this->assertTrue(is_null($torrent->comment('new comment')), 'The comment() setter returns null');
 		$this->assertTrue(is_null($torrent->name('renamed.data')), 'The name() setter returns null');
-		$this->assertTrue(is_null($torrent->url_list(array('http://new.test/f.dat'))),
+		$this->assertTrue(is_null($torrent->url_list(['http://new.test/f.dat'])),
 			'The url_list() setter returns null');
-		$this->assertTrue(is_null($torrent->announce_list(array(array('http://new.test/announce')))),
+		$this->assertTrue(is_null($torrent->announce_list([['http://new.test/announce']])),
 			'The announce_list() setter returns null');
-		$this->assertTrue(is_null($torrent->httpseeds(array('http://new.test/f.dat'))),
+		$this->assertTrue(is_null($torrent->httpseeds(['http://new.test/f.dat'])),
 			'The httpseeds() setter returns null');
 		$this->assertTrue(is_null($torrent->is_private(false)), 'The is_private() setter returns null');
 		$this->assertTrue(is_null($torrent->source('SRC')), 'The source() setter returns null');
@@ -560,9 +485,9 @@ class TorrentMetaTest extends TestCase
 		$reread = new Torrent($written);
 		$this->assertTrue($reread->meta('creation date') == 1234567890,
 			'which reads back as the file\'s date, not the time of the write');
-		$this->assertTrue($reread->meta('url-list') === array('http://new.test/f.dat'),
+		$this->assertTrue($reread->meta('url-list') === ['http://new.test/f.dat'],
 			'url-list came back through a full write and read');
-		$this->assertTrue($reread->meta('announce-list') === array(array('http://new.test/announce')),
+		$this->assertTrue($reread->meta('announce-list') === [['http://new.test/announce']],
 			'announce-list came back through a full write and read');
 		$this->assertTrue($reread->info['source'] === 'SRC', 'source() wrote info/source');
 	}
@@ -594,13 +519,13 @@ class TorrentMetaTest extends TestCase
 	public function testMetadataIsNotStoredAsDynamicObjectProperties()
 	{
 		$torrent = new Torrent($this->fixture());
-		$this->assertEquals(array(), $this->dynamicProperties($torrent),
+		$this->assertEquals([], $this->dynamicProperties($torrent),
 			'Parsing a torrent creates no dynamic properties');
 
 		$torrent->announce('http://new.test/announce');
 		$torrent->setMeta('x-custom', 'kept');
 		$torrent->libtorrent_resume['bitfield'] = 7;
-		$this->assertEquals(array(), $this->dynamicProperties($torrent),
+		$this->assertEquals([], $this->dynamicProperties($torrent),
 			'Writing keys creates no dynamic properties');
 
 		$reread = new Torrent((string)$torrent);
@@ -623,5 +548,80 @@ class TorrentMetaTest extends TestCase
 		$this->assertTrue($torrent->errors() === false, 'The key did not become the error list');
 		$this->assertTrue($torrent->meta('errors') === 'not an error', 'The key reads back as a key');
 		$this->assertTrue((string)$torrent === $fixture, 'The key is written back out');
+	}
+
+	/** Bencode a string. Deliberately trivial: the fixture must not be built
+	 * by the class under test. */
+	private function bstr($string)
+	{
+		return strlen($string) . ':' . $string;
+	}
+
+	/** The info dictionary of the fixture, keys in ksort(SORT_STRING) order. */
+	private function infoDictionary()
+	{
+		return 'd'
+			. $this->bstr('length') . 'i1024e'
+			. $this->bstr('name') . $this->bstr('test.data')
+			. $this->bstr('piece length') . 'i16384e'
+			. $this->bstr('pieces') . $this->bstr($this->pieces)
+			. $this->bstr('private') . 'i1e'
+			. 'e';
+	}
+
+	/** The libtorrent_resume dictionary of the fixture. */
+	private function resumeDictionary()
+	{
+		return 'd'
+			. $this->bstr('bitfield') . 'i1e'
+			. $this->bstr('files')
+				. 'l'
+					. 'd' . $this->bstr('mtime') . 'i1234567891e'
+						. $this->bstr('priority') . 'i2e' . 'e'
+				. 'e'
+			. 'e';
+	}
+
+	/**
+	 * A torrent carrying every key the class has an accessor for, the two
+	 * rtorrent adds to a torrent it has loaded, and one it only ever passes
+	 * through. Keys are in ksort(SORT_STRING) order, which is the order
+	 * Torrent::encode_dictionary() emits, so the file is its own expected
+	 * output.
+	 */
+	private function fixture()
+	{
+		return 'd'
+			. $this->bstr('announce') . $this->bstr('http://example.test/announce')
+			. $this->bstr('announce-list')
+				. 'l'
+					. 'l' . $this->bstr('http://example.test/announce') . 'e'
+					. 'l' . $this->bstr('udp://backup.test/announce') . 'e'
+				. 'e'
+			. $this->bstr('comment') . $this->bstr('a comment')
+			. $this->bstr('created by') . $this->bstr('uTorrent/3.5.5')
+			. $this->bstr('creation date') . 'i1234567890e'
+			. $this->bstr('encoding') . $this->bstr('UTF-8')
+			. $this->bstr('httpseeds') . 'l' . $this->bstr('http://seed.example.test/f.dat') . 'e'
+			. $this->bstr('info') . $this->infoDictionary()
+			. $this->bstr('libtorrent_resume') . $this->resumeDictionary()
+			. $this->bstr('rtorrent') . 'd' . $this->bstr('directory') . $this->bstr('/downloads') . 'e'
+			. $this->bstr('url-list') . 'l' . $this->bstr('http://web.example.test/f.dat') . 'e'
+			. 'e';
+	}
+
+	/** Names of properties that were not declared by the class -- i.e. the
+	 * dynamic properties PHP 8.2 deprecated. */
+	private function dynamicProperties($object)
+	{
+		$dynamic = [];
+		$reflection = new ReflectionObject($object);
+		foreach ($reflection->getProperties() as $property) {
+			if (!$property->isDefault()) {
+				$dynamic[] = $property->getName();
+			}
+		}
+		sort($dynamic);
+		return $dynamic;
 	}
 }

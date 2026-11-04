@@ -33,12 +33,12 @@ class TorrentAdditionCoverageTest extends TestCase
 	use AdditionCallerFixtures;
 
 	/** Files that pass an addition today. Others are checked, not required. */
-	const KNOWN_ADDITION_CALLERS = array(
+	public const KNOWN_ADDITION_CALLERS = [
 		'plugins/edit/action.php',
 		'plugins/rss/rss.php',
 		'plugins/rutracker_check/check.php',
 		'plugins/rutracker_check/metafetch.php',
-	);
+	];
 
 	private $previousSettings;
 	private $scratch;
@@ -56,44 +56,6 @@ class TorrentAdditionCoverageTest extends TestCase
 		$this->removeTree($this->scratch);
 	}
 
-	private function removeTree($path)
-	{
-		if (!is_dir($path)) {
-			return;
-		}
-		foreach (glob($path . '/*') as $entry) {
-			is_dir($entry) ? $this->removeTree($entry) : @unlink($entry);
-		}
-		@rmdir($path);
-	}
-
-	/** A throwaway tree holding one plugin file, for the scanner's controls. */
-	private function plantedTree($body)
-	{
-		// A directory of its own each time: the scanner caches one tokenizing
-		// pass per tree, so reusing a path would hand back the previous plant.
-		$root = $this->scratch . '/' . (++$this->planted);
-		@mkdir($root . '/plugins/planted', 0700, true);
-		file_put_contents($root . '/plugins/planted/action.php', $body);
-		return $root;
-	}
-
-	/** Every element of every call site, flattened, for one alias table. */
-	private function elementsUnder($iVersion, $root = null)
-	{
-		$this->installSettingsFor($iVersion);
-		$scanner = new TorrentAdditionSourceScanner($root === null ? $this->repoRoot() : $root);
-		$out = array();
-		foreach ($scanner->callSites() as $site) {
-			foreach ($site['elements'] as $element) {
-				$element['where'] = $site['file'] . ':' . $site['line'];
-				$element['name'] = TorrentAdditionSourceScanner::commandName($element);
-				$out[] = $element;
-			}
-		}
-		return $out;
-	}
-
 	// ---- the fixtures are honest -----------------------------------------
 
 	/**
@@ -104,7 +66,7 @@ class TorrentAdditionCoverageTest extends TestCase
 	public function testEveryShippedAliasTableIsCovered()
 	{
 		$missing = $this->versionsCoverEveryMethodFile();
-		$this->assertTrue($missing === array(),
+		$this->assertTrue($missing === [],
 			'every php/methods-*.php is loaded by one of the versions these tests run'
 			. (count($missing) ? '; not covered: ' . implode(', ', $missing) : ''));
 	}
@@ -124,7 +86,7 @@ class TorrentAdditionCoverageTest extends TestCase
 		$this->assertTrue(count($sites) >= 12,
 			'the scan finds the sendTorrent/sendMagnet call sites in the tree; found ' . count($sites));
 
-		$withAddition = array();
+		$withAddition = [];
 		foreach ($sites as $site) {
 			if (count($site['elements'])) {
 				$withAddition[$site['file']] = true;
@@ -215,7 +177,7 @@ class TorrentAdditionCoverageTest extends TestCase
 	public function testNoCallerInTheTreeBuildsAnUnpermittedAddition()
 	{
 		foreach ($this->supportedVersions() as $iVersion => $version) {
-			$offenders = array();
+			$offenders = [];
 			foreach ($this->elementsUnder($iVersion) as $element) {
 				if ($element['name'] === null) {
 					continue;
@@ -225,7 +187,7 @@ class TorrentAdditionCoverageTest extends TestCase
 						. ' (' . $element['expr'] . ')';
 				}
 			}
-			$this->assertTrue($offenders === array(),
+			$this->assertTrue($offenders === [],
 				'on rtorrent ' . $version . ' every addition the tree builds names a command '
 				. 'rTorrent::ADDITION_COMMANDS permits'
 				. (count($offenders) ? '; refused: ' . implode(' | ', $offenders) : ''));
@@ -239,14 +201,14 @@ class TorrentAdditionCoverageTest extends TestCase
 	public function testEveryAdditionInTheTreeNamesAReadableCommand()
 	{
 		foreach ($this->supportedVersions() as $iVersion => $version) {
-			$unreadable = array();
+			$unreadable = [];
 			foreach ($this->elementsUnder($iVersion) as $element) {
 				if ($element['name'] === null) {
 					$unreadable[] = $element['where'] . ': ' . $element['expr']
 						. ' -- ' . $element['reason'];
 				}
 			}
-			$this->assertTrue($unreadable === array(),
+			$this->assertTrue($unreadable === [],
 				'on rtorrent ' . $version . ' every addition element names a command that can be '
 				. 'read out of the source'
 				. (count($unreadable) ? '; unreadable: ' . implode(' | ', $unreadable) : ''));
@@ -262,7 +224,7 @@ class TorrentAdditionCoverageTest extends TestCase
 	public function testTheUnusedCustomFieldsAreNotPermitted()
 	{
 		$this->installSettingsFor(0x1012);
-		foreach (array('d.set_custom2', 'd.set_custom4', 'd.set_custom5') as $alias) {
+		foreach (['d.set_custom2', 'd.set_custom4', 'd.set_custom5'] as $alias) {
 			$this->assertTrue(rTorrent::isValidAddition(getCmd($alias) . '=x') === false,
 				$alias . ' is not permitted as an addition, because nothing builds one');
 		}
@@ -273,12 +235,50 @@ class TorrentAdditionCoverageTest extends TestCase
 	{
 		foreach ($this->supportedVersions() as $iVersion => $version) {
 			$this->installSettingsFor($iVersion);
-			foreach (array('execute=/bin/sh,-c,id', 'execute.throw=/bin/sh,-c,id',
+			foreach (['execute=/bin/sh,-c,id', 'execute.throw=/bin/sh,-c,id',
 				'import=/tmp/rc', 'd.set_directory=/etc',
-				getCmd('d.set_directory=') . '/etc') as $addition) {
+				getCmd('d.set_directory=') . '/etc'] as $addition) {
 				$this->assertTrue(rTorrent::isValidAddition($addition) === false,
 					'on rtorrent ' . $version . ' the guard still refuses ' . $addition);
 			}
 		}
+	}
+
+	private function removeTree($path)
+	{
+		if (!is_dir($path)) {
+			return;
+		}
+		foreach (glob($path . '/*') as $entry) {
+			is_dir($entry) ? $this->removeTree($entry) : @unlink($entry);
+		}
+		@rmdir($path);
+	}
+
+	/** A throwaway tree holding one plugin file, for the scanner's controls. */
+	private function plantedTree($body)
+	{
+		// A directory of its own each time: the scanner caches one tokenizing
+		// pass per tree, so reusing a path would hand back the previous plant.
+		$root = $this->scratch . '/' . (++$this->planted);
+		@mkdir($root . '/plugins/planted', 0700, true);
+		file_put_contents($root . '/plugins/planted/action.php', $body);
+		return $root;
+	}
+
+	/** Every element of every call site, flattened, for one alias table. */
+	private function elementsUnder($iVersion, $root = null)
+	{
+		$this->installSettingsFor($iVersion);
+		$scanner = new TorrentAdditionSourceScanner($root === null ? $this->repoRoot() : $root);
+		$out = [];
+		foreach ($scanner->callSites() as $site) {
+			foreach ($site['elements'] as $element) {
+				$element['where'] = $site['file'] . ':' . $site['line'];
+				$element['name'] = TorrentAdditionSourceScanner::commandName($element);
+				$out[] = $element;
+			}
+		}
+		return $out;
 	}
 }

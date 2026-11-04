@@ -2,11 +2,11 @@
 
 final class ErasedataManifestCodec
 {
-	const VERSION = 2;
-	const CLEANUP_VERSION = 3;
-	const BOUND_PAYLOAD_VERSION = 4;
-	const OPERATION_REMOVE_PAYLOAD = 'remove_payload';
-	const OPERATION_CLEANUP_OBSOLETE = 'cleanup_obsolete';
+	public const VERSION = 2;
+	public const CLEANUP_VERSION = 3;
+	public const BOUND_PAYLOAD_VERSION = 4;
+	public const OPERATION_REMOVE_PAYLOAD = 'remove_payload';
+	public const OPERATION_CLEANUP_OBSOLETE = 'cleanup_obsolete';
 	// A remove-payload manifest whose paths hold a backslash says that they are
 	// the daemon's own bytes (erasedataCollectPaths(), as php/xmlrpc.php hands
 	// them out since AUD-ESC). Every release before this mark wrote the paths
@@ -17,12 +17,12 @@ final class ErasedataManifestCodec
 	// the same bytes, and the layout every collector reads is left as it was.
 	// The mark stays: it is the only thing that tells such a manifest from a
 	// new one.
-	const PATH_BYTES_DAEMON = 'daemon';
-	const MAX_MANIFEST_BYTES = 67108864; // 64 MiB
-	const MAX_FILES = 1000000;
-	const MAX_PATH_BYTES = 1048576; // 1 MiB
-	const READ_CHUNK_BYTES = 65536;
-	const MAX_CAPTURED_NAME_BYTES = 4096;
+	public const PATH_BYTES_DAEMON = 'daemon';
+	public const MAX_MANIFEST_BYTES = 67108864; // 64 MiB
+	public const MAX_FILES = 1000000;
+	public const MAX_PATH_BYTES = 1048576; // 1 MiB
+	public const READ_CHUNK_BYTES = 65536;
+	public const MAX_CAPTURED_NAME_BYTES = 4096;
 
 	// The one canonical force type: the INTEGER 1 or 2, never the string.
 	//
@@ -35,123 +35,97 @@ final class ErasedataManifestCodec
 	// of them means guessing at a deletion.
 	public static function normalizeForce($value)
 	{
-		if($value === 1 || $value === 2)
-			return($value);
-		if($value === "1")
-			return(1);
-		if($value === "2")
-			return(2);
+		if($value === 1 || $value === 2) {
+			return($value); }
+		if($value === "1") {
+			return(1); }
+		if($value === "2") {
+			return(2); }
 		return(null);
 	}
 
 	public static function isValidAbsolutePath($path)
 	{
-		if(!is_string($path) || strlen($path) === 0 || strlen($path) > self::MAX_PATH_BYTES)
-			return(false);
-		if(strpos($path, "\0") !== false)
-			return(false);
-		if($path[0] !== '/')
-			return(false);
+		if(!is_string($path) || strlen($path) === 0 || strlen($path) > self::MAX_PATH_BYTES) {
+			return(false); }
+		if(strpos($path, "\0") !== false) {
+			return(false); }
+		if($path[0] !== '/') {
+			return(false); }
 		$parts = explode('/', $path);
 		for($i = 1; $i < count($parts); $i++)
 		{
 			$p = $parts[$i];
-			if($p === '.' || $p === '..')
-				return(false);
+			if($p === '.' || $p === '..') {
+				return(false); }
 		}
 		return(true);
 	}
 
 	public static function isUnderBase($file, $base)
 	{
-		if(!self::isValidAbsolutePath($file) || !self::isValidAbsolutePath($base))
-			return(false);
+		if(!self::isValidAbsolutePath($file) || !self::isValidAbsolutePath($base)) {
+			return(false); }
 		$cleanBase = rtrim($base, '/');
-		if($cleanBase === '')
-			return(false);
-		if($file === $cleanBase)
-			return(true);
-		if(strpos($file, $cleanBase.'/') !== 0)
-			return(false);
+		if($cleanBase === '') {
+			return(false); }
+		if($file === $cleanBase) {
+			return(true); }
+		if(strpos($file, $cleanBase.'/') !== 0) {
+			return(false); }
 		return(true);
 	}
 
-	private static function base64EncodedLength($rawLength)
-	{
-		if(!is_int($rawLength) || $rawLength < 0)
-			return(false);
-		$groups = intdiv($rawLength, 3);
-		if($groups > intdiv(PHP_INT_MAX, 4))
-			return(false);
-		$encoded = $groups * 4;
-		if(($rawLength % 3) !== 0)
-		{
-			if($encoded > PHP_INT_MAX - 4)
-				return(false);
-			$encoded += 4;
-		}
-		return($encoded);
-	}
-
-	private static function addWithinLimit($total, $increment, $limit)
-	{
-		if(!is_int($total) || !is_int($increment) || !is_int($limit)
-			|| $total < 0 || $increment < 0 || $limit < 0
-			|| $total > $limit || $increment > $limit - $total)
-			return(false);
-		return($total + $increment);
-	}
-
-	public static function encode($hash, array $paths, $force, array $limits = array())
+	public static function encode($hash, array $paths, $force, array $limits = [])
 	{
 		$normalizedForce = is_int($force) ? ($force === 1 || $force === 2 ? $force : null) : self::normalizeForce($force);
-		if(is_null($normalizedForce))
-			return(false);
+		if(is_null($normalizedForce)) {
+			return(false); }
 		$maxFiles = self::MAX_FILES;
 		$maxManifestBytes = self::MAX_MANIFEST_BYTES;
 		foreach($limits as $name => $value)
 		{
-			if(!is_int($value) || $value <= 0)
-				return(false);
-			if($name === 'max_files' && $value <= self::MAX_FILES)
-				$maxFiles = $value;
-			else if($name === 'max_manifest_bytes' && $value <= self::MAX_MANIFEST_BYTES)
-				$maxManifestBytes = $value;
-			else
-				return(false);
+			if(!is_int($value) || $value <= 0) {
+				return(false); }
+			if($name === 'max_files' && $value <= self::MAX_FILES) {
+				$maxFiles = $value; }
+			elseif($name === 'max_manifest_bytes' && $value <= self::MAX_MANIFEST_BYTES) {
+				$maxManifestBytes = $value; }
+			else {
+				return(false); }
 		}
 
-		if(!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/D', $hash))
-			return(false);
+		if(!is_string($hash) || !preg_match('/^[0-9A-Fa-f]{40}$/D', $hash)) {
+			return(false); }
 		$canonicalHash = strtoupper($hash);
 
-		if(!isset($paths['base']) || !isset($paths['multi']) || !isset($paths['files']) || !is_array($paths['files']))
-			return(false);
+		if(!isset($paths['base']) || !isset($paths['multi']) || !isset($paths['files']) || !is_array($paths['files'])) {
+			return(false); }
 
 		$base = $paths['base'];
-		if(!self::isValidAbsolutePath($base) || rtrim($base, '/') === '' || $base === '.' || $base === '..')
-			return(false);
+		if(!self::isValidAbsolutePath($base) || rtrim($base, '/') === '' || $base === '.' || $base === '..') {
+			return(false); }
 
 		$multi = ($paths['multi'] === true || $paths['multi'] === 1 || $paths['multi'] === "1");
 		$files = $paths['files'];
 		$numFiles = count($files);
-		if($numFiles === 0 || $numFiles > $maxFiles)
-			return(false);
+		if($numFiles === 0 || $numFiles > $maxFiles) {
+			return(false); }
 
 		if(!$multi)
 		{
-			if($numFiles !== 1 || $files[0] !== $base)
-				return(false);
+			if($numFiles !== 1 || $files[0] !== $base) {
+				return(false); }
 		}
 
 		$marked = is_string($base) && strpos($base, '\\') !== false;
-		if(!$marked)
-			foreach($files as $f)
+		if(!$marked) {
+			foreach($files as $f) {
 				if(is_string($f) && strpos($f, '\\') !== false)
 				{
 					$marked = true;
 					break;
-				}
+				} } }
 		$prefix = '{"version":2,"hash":"'.$canonicalHash.'","path_encoding":"base64",'
 			.($marked ? '"path_bytes":"'.self::PATH_BYTES_DAEMON.'",' : '').'"files":[';
 		$middle = '],"base":"';
@@ -159,54 +133,54 @@ final class ErasedataManifestCodec
 		$manifestBytes = self::addWithinLimit(
 			strlen($prefix) + strlen($middle) + strlen($suffix),
 			self::base64EncodedLength(strlen($base)), $maxManifestBytes);
-		if($manifestBytes === false)
-			return(false);
+		if($manifestBytes === false) {
+			return(false); }
 
-		$seenFiles = array();
+		$seenFiles = [];
 		foreach($files as $index => $f)
 		{
-			if(!self::isValidAbsolutePath($f))
-				return(false);
-			if($multi && !self::isUnderBase($f, $base))
-				return(false);
-			if(isset($seenFiles[$f]))
-				return(false);
+			if(!self::isValidAbsolutePath($f)) {
+				return(false); }
+			if($multi && !self::isUnderBase($f, $base)) {
+				return(false); }
+			if(isset($seenFiles[$f])) {
+				return(false); }
 			$encodedLength = self::base64EncodedLength(strlen($f));
-			if($encodedLength === false)
-				return(false);
+			if($encodedLength === false) {
+				return(false); }
 			$entryBytes = self::addWithinLimit($encodedLength, 2 + ($index === 0 ? 0 : 1), PHP_INT_MAX);
 			$manifestBytes = $entryBytes === false ? false
 				: self::addWithinLimit($manifestBytes, $entryBytes, $maxManifestBytes);
-			if($manifestBytes === false)
-				return(false);
+			if($manifestBytes === false) {
+				return(false); }
 			$seenFiles[$f] = true;
 		}
 
-		$encodedFiles = array();
-		foreach($files as $f)
-			$encodedFiles[] = base64_encode($f);
+		$encodedFiles = [];
+		foreach($files as $f) {
+			$encodedFiles[] = base64_encode($f); }
 
-		$data = array(
+		$data = [
 			"version" => self::VERSION,
 			"hash" => $canonicalHash,
 			"path_encoding" => "base64",
-		);
-		if($marked)
-			$data["path_bytes"] = self::PATH_BYTES_DAEMON;
-		$data += array(
+		];
+		if($marked) {
+			$data["path_bytes"] = self::PATH_BYTES_DAEMON; }
+		$data += [
 			"files" => $encodedFiles,
 			"base" => base64_encode($base),
 			"multi" => $multi,
 			"force" => $normalizedForce,
-		);
+		];
 
 		$json = json_encode($data, JSON_UNESCAPED_SLASHES);
-		if($json === false)
-			return(false);
+		if($json === false) {
+			return(false); }
 
 		$manifest = $json."\n";
-		if(strlen($manifest) !== $manifestBytes || strlen($manifest) > $maxManifestBytes)
-			return(false);
+		if(strlen($manifest) !== $manifestBytes || strlen($manifest) > $maxManifestBytes) {
+			return(false); }
 
 		return($manifest);
 	}
@@ -218,8 +192,8 @@ final class ErasedataManifestCodec
 	{
 		$payload = self::encode($hash, $paths, $force);
 		if(!is_string($payload) || !self::validNativeIntent($intent)
-			|| $intent['digest'] !== hash('sha256', $payload))
-			return(false);
+			|| $intent['digest'] !== hash('sha256', $payload)) {
+			return(false); }
 		$json = json_decode($payload, true);
 		$json['version'] = self::BOUND_PAYLOAD_VERSION;
 		$json['operation'] = self::OPERATION_REMOVE_PAYLOAD;
@@ -231,64 +205,50 @@ final class ErasedataManifestCodec
 
 	public static function canonicalNativeIntent($intent)
 	{
-		if(!self::validNativeIntent($intent)) return(false);
-		$result = array();
-		foreach(array('incarnation', 'nonce', 'generation', 'user', 'digest') as $key)
-			$result[$key] = $intent[$key];
+		if(!self::validNativeIntent($intent)) { return(false); }
+		$result = [];
+		foreach(['incarnation', 'nonce', 'generation', 'user', 'digest'] as $key) {
+			$result[$key] = $intent[$key]; }
 		return($result);
-	}
-
-	private static function validNativeIntent($intent)
-	{
-		return(is_array($intent) && self::hasExactKeys($intent,
-			array('incarnation', 'nonce', 'generation', 'user', 'digest'))
-			&& is_string($intent['incarnation'])
-			&& preg_match('/^[a-f0-9]{32}$/D', $intent['incarnation'])
-			&& is_string($intent['nonce']) && preg_match('/^[a-f0-9]{32}$/D', $intent['nonce'])
-			&& is_string($intent['generation'])
-			&& preg_match('/^[a-f0-9]{16}$/D', $intent['generation'])
-			&& $intent['generation'] !== '0000000000000000'
-			&& is_string($intent['user']) && preg_match('/^[a-z0-9_-]{0,128}$/D', $intent['user'])
-			&& is_string($intent['digest']) && preg_match('/^[a-f0-9]{64}$/D', $intent['digest']));
 	}
 
 	public static function encodeCleanupObsolete($oldHash, $newHash, $marker, $replacementRecord, $base, array $entries)
 	{
-		if(!self::isValidHash($oldHash) || !self::isValidHash($newHash))
-			return(false);
+		if(!self::isValidHash($oldHash) || !self::isValidHash($newHash)) {
+			return(false); }
 		$canonicalOldHash = strtoupper($oldHash);
 		$canonicalNewHash = strtoupper($newHash);
 		if($canonicalOldHash === $canonicalNewHash || !self::isValidMarker($marker)
-			|| !self::isValidReplacementRecord($replacementRecord, $canonicalOldHash))
-			return(false);
+			|| !self::isValidReplacementRecord($replacementRecord, $canonicalOldHash)) {
+			return(false); }
 
 		if(!self::isValidCleanupBase($base) || count($entries) === 0 || count($entries) > self::MAX_FILES
-			|| array_keys($entries) !== range(0, count($entries) - 1))
-			return(false);
+			|| array_keys($entries) !== range(0, count($entries) - 1)) {
+			return(false); }
 
-		$seen = array();
-		$encodedEntries = array();
+		$seen = [];
+		$encodedEntries = [];
 		foreach($entries as $entry)
 		{
-			if(!is_array($entry) || !self::hasExactKeys($entry, array('path', 'identity'))
+			if(!is_array($entry) || !self::hasExactKeys($entry, ['path', 'identity'])
 				|| !is_string($entry['path']) || !self::isStrictlyUnderBase($entry['path'], $base)
-				|| isset($seen[$entry['path']]))
-				return(false);
+				|| isset($seen[$entry['path']])) {
+				return(false); }
 			$identity = self::normalizeIdentity($entry['identity']);
-			if($identity === false)
-				return(false);
+			if($identity === false) {
+				return(false); }
 			$seen[$entry['path']] = true;
-			$encodedEntries[] = array(
+			$encodedEntries[] = [
 				'path' => base64_encode($entry['path']),
 				'canonical' => base64_encode($identity['canonical']),
 				'lstat' => $identity['lstat'],
 				'stat' => $identity['stat'],
 				'size' => $identity['size'],
 				'mtime' => $identity['mtime'],
-			);
+			];
 		}
 
-		$data = array(
+		$data = [
 			'version' => self::CLEANUP_VERSION,
 			'operation' => self::OPERATION_CLEANUP_OBSOLETE,
 			'hash' => $canonicalOldHash,
@@ -298,49 +258,12 @@ final class ErasedataManifestCodec
 			'path_encoding' => 'base64',
 			'base' => base64_encode($base),
 			'files' => $encodedEntries,
-		);
+		];
 		$json = json_encode($data, JSON_UNESCAPED_SLASHES);
-		if($json === false)
-			return(false);
+		if($json === false) {
+			return(false); }
 		$manifest = $json."\n";
 		return(strlen($manifest) <= self::MAX_MANIFEST_BYTES ? $manifest : false);
-	}
-
-	private static function isValidHash($hash)
-	{
-		return(is_string($hash) && preg_match('/^[0-9A-Fa-f]{40}$/D', $hash));
-	}
-
-	private static function isValidManifestBase($base)
-	{
-		return(self::isValidAbsolutePath($base) && rtrim($base, '/') !== '' && $base !== '.' && $base !== '..');
-	}
-
-	private static function isStrictlyUnderBase($path, $base)
-	{
-		return(self::isValidCanonicalAbsolutePath($path) && self::isValidCleanupBase($base)
-			&& strpos($path, $base.'/') === 0);
-	}
-
-	private static function isValidCanonicalAbsolutePath($path)
-	{
-		return(self::isValidAbsolutePath($path) && $path !== '/' && substr($path, -1) !== '/'
-			&& strpos($path, '//') === false);
-	}
-
-	private static function isValidCleanupBase($base)
-	{
-		return(self::isValidCanonicalAbsolutePath($base));
-	}
-
-	private static function hasExactKeys(array $value, array $keys)
-	{
-		if(count($value) !== count($keys))
-			return(false);
-		foreach($keys as $key)
-			if(!array_key_exists($key, $value))
-				return(false);
-		return(true);
 	}
 
 	// The one canonical-base64 rule of this plugin: a value must decode and
@@ -348,370 +271,51 @@ final class ErasedataManifestCodec
 	// of the same payload is ever accepted.
 	public static function decodeCanonicalBase64($value)
 	{
-		if(!is_string($value))
-			return(false);
+		if(!is_string($value)) {
+			return(false); }
 		$raw = base64_decode($value, true);
 		return($raw !== false && base64_encode($raw) === $value ? $raw : false);
 	}
 
-	private static function isNonnegativeInteger($value)
-	{
-		return(is_int($value) && $value >= 0);
-	}
-
-	private static function normalizeIdentity($identity)
-	{
-		if(!is_array($identity) || !self::hasExactKeys($identity, array('canonical', 'lstat', 'stat', 'size', 'mtime'))
-			|| !is_string($identity['canonical']) || !self::isValidCanonicalAbsolutePath($identity['canonical'])
-			|| !is_array($identity['lstat']) || !self::hasExactKeys($identity['lstat'], array('dev', 'ino'))
-			|| !is_array($identity['stat']) || !self::hasExactKeys($identity['stat'], array('dev', 'ino')))
-			return(false);
-		foreach(array($identity['lstat']['dev'], $identity['lstat']['ino'], $identity['stat']['dev'],
-			$identity['stat']['ino'], $identity['size'], $identity['mtime']) as $value)
-			if(!self::isNonnegativeInteger($value))
-				return(false);
-		return(array(
-			'canonical' => $identity['canonical'],
-			'lstat' => array('dev' => $identity['lstat']['dev'], 'ino' => $identity['lstat']['ino']),
-			'stat' => array('dev' => $identity['stat']['dev'], 'ino' => $identity['stat']['ino']),
-			'size' => $identity['size'],
-			'mtime' => $identity['mtime'],
-		));
-	}
-
-	private static function isValidMarker($marker)
-	{
-		return(is_string($marker) && preg_match('/^[0-9A-Fa-f]{32}$/D', $marker));
-	}
-
-	private static function isValidReplacementRecord($record, $canonicalOldHash)
-	{
-		if(!is_string($record) || !preg_match('/^([0-9A-Fa-f]{40})-(started|open|stopped)-([1-9][0-9]*)$/D', $record, $match))
-			return(false);
-		return(strtoupper($match[1]) === $canonicalOldHash);
-	}
-
-	private static function hasUniqueJSONObjectMembers($json)
-	{
-		$offset = 0;
-		if(!self::scanJSONValue($json, $offset, 0))
-			return(false);
-		self::skipJSONWhitespace($json, $offset);
-		return($offset === strlen($json));
-	}
-
-	private static function skipJSONWhitespace($json, &$offset)
-	{
-		$length = strlen($json);
-		while($offset < $length && ($json[$offset] === " " || $json[$offset] === "\t"
-			|| $json[$offset] === "\r" || $json[$offset] === "\n"))
-			$offset++;
-	}
-
-	private static function scanJSONString($json, &$offset, &$decoded)
-	{
-		$length = strlen($json);
-		if($offset >= $length || $json[$offset] !== '"')
-			return(false);
-		$start = $offset++;
-		while($offset < $length)
-		{
-			$c = $json[$offset];
-			if($c === '"')
-			{
-				$offset++;
-				$decoded = json_decode(substr($json, $start, $offset - $start), true);
-				return(is_string($decoded));
-			}
-			if($c === '\\')
-			{
-				if($offset + 1 >= $length)
-					return(false);
-				$offset += 2;
-				continue;
-			}
-			if(ord($c) < 0x20)
-				return(false);
-			$offset++;
-		}
-		return(false);
-	}
-
-	private static function scanJSONValue($json, &$offset, $depth)
-	{
-		if($depth > 512)
-			return(false);
-		self::skipJSONWhitespace($json, $offset);
-		if($offset >= strlen($json))
-			return(false);
-		if($json[$offset] === '{')
-			return(self::scanJSONObject($json, $offset, $depth + 1));
-		if($json[$offset] === '[')
-			return(self::scanJSONArray($json, $offset, $depth + 1));
-		if($json[$offset] === '"')
-		{
-			$decoded = null;
-			return(self::scanJSONString($json, $offset, $decoded));
-		}
-		$start = $offset;
-		$length = strlen($json);
-		while($offset < $length && strpos(" \t\r\n,]}", $json[$offset]) === false)
-			$offset++;
-		return($offset > $start);
-	}
-
-	private static function scanJSONObject($json, &$offset, $depth)
-	{
-		$offset++;
-		self::skipJSONWhitespace($json, $offset);
-		if($offset < strlen($json) && $json[$offset] === '}')
-		{
-			$offset++;
-			return(true);
-		}
-		$seen = array();
-		while(true)
-		{
-			$key = null;
-			if(!self::scanJSONString($json, $offset, $key) || array_key_exists($key, $seen))
-				return(false);
-			$seen[$key] = true;
-			self::skipJSONWhitespace($json, $offset);
-			if($offset >= strlen($json) || $json[$offset] !== ':')
-				return(false);
-			$offset++;
-			if(!self::scanJSONValue($json, $offset, $depth))
-				return(false);
-			self::skipJSONWhitespace($json, $offset);
-			if($offset >= strlen($json))
-				return(false);
-			if($json[$offset] === '}')
-			{
-				$offset++;
-				return(true);
-			}
-			if($json[$offset] !== ',')
-				return(false);
-			$offset++;
-			self::skipJSONWhitespace($json, $offset);
-		}
-	}
-
-	private static function scanJSONArray($json, &$offset, $depth)
-	{
-		$offset++;
-		self::skipJSONWhitespace($json, $offset);
-		if($offset < strlen($json) && $json[$offset] === ']')
-		{
-			$offset++;
-			return(true);
-		}
-		while(true)
-		{
-			if(!self::scanJSONValue($json, $offset, $depth))
-				return(false);
-			self::skipJSONWhitespace($json, $offset);
-			if($offset >= strlen($json))
-				return(false);
-			if($json[$offset] === ']')
-			{
-				$offset++;
-				return(true);
-			}
-			if($json[$offset] !== ',')
-				return(false);
-			$offset++;
-			self::skipJSONWhitespace($json, $offset);
-		}
-	}
-
 	public static function decodeBytes($bytes, $expectedHash)
 	{
-		if(!is_string($bytes) || strlen($bytes) === 0 || strlen($bytes) > self::MAX_MANIFEST_BYTES)
-			return(false);
-		if(!is_string($expectedHash) || !preg_match('/^[0-9A-Fa-f]{40}$/D', $expectedHash))
-			return(false);
+		if(!is_string($bytes) || strlen($bytes) === 0 || strlen($bytes) > self::MAX_MANIFEST_BYTES) {
+			return(false); }
+		if(!is_string($expectedHash) || !preg_match('/^[0-9A-Fa-f]{40}$/D', $expectedHash)) {
+			return(false); }
 		$canonicalExpectedHash = strtoupper($expectedHash);
 
 		// A legacy newline-delimited list cannot prove its base: a path element
 		// may itself contain a newline and forge the trailing base/mode fields.
 		// Keep this decision in the codec so no caller can accidentally revive
 		// the old destructive interpretation.
-		if(self::isUnverifiedPlaintext($bytes))
-			return(false);
+		if(self::isUnverifiedPlaintext($bytes)) {
+			return(false); }
 		$json = json_decode($bytes, true);
-		if(!is_array($json))
-			return(false);
+		if(!is_array($json)) {
+			return(false); }
 		// Serialized member names are required to be unique for cleanup jobs:
 		// those artifacts are capabilities authorizing deletion under another
 		// torrent's base. The v2 payload writer cannot emit duplicate keys.
 		if(isset($json['version']) && in_array($json['version'],
-			array(self::CLEANUP_VERSION, self::BOUND_PAYLOAD_VERSION), true)
-			&& !self::hasUniqueJSONObjectMembers($bytes))
-			return(false);
+			[self::CLEANUP_VERSION, self::BOUND_PAYLOAD_VERSION], true)
+			&& !self::hasUniqueJSONObjectMembers($bytes)) {
+			return(false); }
 		return(self::decodeJSON($json, $canonicalExpectedHash));
 	}
 
 	public static function isUnverifiedPlaintext($bytes)
 	{
-		if(!is_string($bytes))
-			return(false);
+		if(!is_string($bytes)) {
+			return(false); }
 		$length = strlen($bytes);
 		for($i = 0; $i < $length; $i++)
 		{
 			if($bytes[$i] !== ' ' && $bytes[$i] !== "\t"
-				&& $bytes[$i] !== "\r" && $bytes[$i] !== "\n")
-				return($bytes[$i] !== '{');
+				&& $bytes[$i] !== "\r" && $bytes[$i] !== "\n") {
+				return($bytes[$i] !== '{'); }
 		}
 		return(false);
-	}
-
-	private static function decodeJSON(array $json, $canonicalExpectedHash)
-	{
-		if(!array_key_exists('version', $json))
-			return(false);
-		if($json['version'] === self::VERSION)
-			return(self::decodeVersionTwoJSON($json, $canonicalExpectedHash));
-		if($json['version'] === self::CLEANUP_VERSION)
-			return(self::decodeCleanupJSON($json, $canonicalExpectedHash));
-		if($json['version'] === self::BOUND_PAYLOAD_VERSION)
-			return(self::decodeBoundPayloadJSON($json, $canonicalExpectedHash));
-		return(false);
-	}
-
-	private static function decodeBoundPayloadJSON(array $json, $canonicalExpectedHash)
-	{
-		if(!isset($json['operation'], $json['native_intent'])
-			|| $json['operation'] !== self::OPERATION_REMOVE_PAYLOAD
-			|| !self::validNativeIntent($json['native_intent']))
-			return(false);
-		$intent = self::canonicalNativeIntent($json['native_intent']);
-		unset($json['operation'], $json['native_intent']);
-		$json['version'] = self::VERSION;
-		$record = self::decodeVersionTwoJSON($json, $canonicalExpectedHash);
-		if(!is_array($record) || !empty($record['paths_ambiguous']))
-			return(false);
-		$payload = self::encode($canonicalExpectedHash, array('base' => $record['base'],
-			'files' => $record['files'], 'multi' => $record['multi']), $record['force']);
-		if(!is_string($payload) || $intent['digest'] !== hash('sha256', $payload))
-			return(false);
-		$record['version'] = self::BOUND_PAYLOAD_VERSION;
-		$record['native_intent'] = $intent;
-		return($record);
-	}
-
-	private static function decodeVersionTwoJSON(array $json, $canonicalExpectedHash)
-	{
-		$expectedKeys = array('version', 'hash', 'path_encoding', 'files', 'base', 'multi', 'force');
-		$marked = array_key_exists('path_bytes', $json);
-		if($marked)
-			$expectedKeys[] = 'path_bytes';
-		if(!self::hasExactKeys($json, $expectedKeys) || $json['version'] !== self::VERSION
-			|| ($marked && $json['path_bytes'] !== self::PATH_BYTES_DAEMON)
-			|| !is_string($json['hash']) || !preg_match('/^[0-9A-F]{40}$/D', $json['hash'])
-			|| $json['hash'] !== $canonicalExpectedHash
-			|| $json['path_encoding'] !== 'base64' || !is_bool($json['multi'])
-			|| !is_int($json['force']) || ($json['force'] !== 1 && $json['force'] !== 2))
-			return(false);
-
-		$baseRaw = self::decodeCanonicalBase64($json['base']);
-		if($baseRaw === false || !self::isValidManifestBase($baseRaw) || !is_array($json['files']))
-			return(false);
-		$numFiles = count($json['files']);
-		if($numFiles === 0 || $numFiles > self::MAX_FILES || array_keys($json['files']) !== range(0, $numFiles - 1))
-			return(false);
-
-		$seen = array();
-		$decodedFiles = array();
-		$backslash = strpos($baseRaw, '\\') !== false;
-		foreach($json['files'] as $fEnc)
-		{
-			$fRaw = self::decodeCanonicalBase64($fEnc);
-			if($fRaw === false || !self::isValidAbsolutePath($fRaw)
-				|| ($json['multi'] && !self::isUnderBase($fRaw, $baseRaw)) || isset($seen[$fRaw]))
-				return(false);
-			$seen[$fRaw] = true;
-			$decodedFiles[] = $fRaw;
-			$backslash = $backslash || strpos($fRaw, '\\') !== false;
-		}
-		if(!$json['multi'] && ($numFiles !== 1 || $decodedFiles[0] !== $baseRaw))
-			return(false);
-		// encode() marks exactly the manifests whose paths hold a backslash; a
-		// mark on any other is not its writing.
-		if($marked && !$backslash)
-			return(false);
-		return(array(
-			'version' => self::VERSION,
-			'operation' => self::OPERATION_REMOVE_PAYLOAD,
-			'hash' => $canonicalExpectedHash,
-			'files' => $decodedFiles,
-			'base' => $baseRaw,
-			'multi' => $json['multi'],
-			'force' => $json['force'],
-			'keep_base' => false,
-			'legacy' => false,
-			// Paths are returned as written, never unescaped.
-			'paths_ambiguous' => !$marked && $backslash,
-		));
-	}
-
-	private static function decodeCleanupJSON(array $json, $canonicalExpectedHash)
-	{
-		$expectedKeys = array('version', 'operation', 'hash', 'new_hash', 'marker', 'replacement_record',
-			'path_encoding', 'base', 'files');
-		if(!self::hasExactKeys($json, $expectedKeys) || $json['version'] !== self::CLEANUP_VERSION
-			|| $json['operation'] !== self::OPERATION_CLEANUP_OBSOLETE
-			|| !is_string($json['hash']) || strtoupper($json['hash']) !== $canonicalExpectedHash
-			|| !self::isValidHash($json['new_hash']) || strtoupper($json['new_hash']) === $canonicalExpectedHash
-			|| !self::isValidMarker($json['marker'])
-			|| !self::isValidReplacementRecord($json['replacement_record'], $canonicalExpectedHash)
-			|| $json['path_encoding'] !== 'base64')
-			return(false);
-		$baseRaw = self::decodeCanonicalBase64($json['base']);
-		if($baseRaw === false || !self::isValidCleanupBase($baseRaw) || !is_array($json['files']))
-			return(false);
-		$numFiles = count($json['files']);
-		if($numFiles === 0 || $numFiles > self::MAX_FILES || array_keys($json['files']) !== range(0, $numFiles - 1))
-			return(false);
-
-		$files = array();
-		$identities = array();
-		foreach($json['files'] as $entry)
-		{
-			if(!is_array($entry) || !self::hasExactKeys($entry, array('path', 'canonical', 'lstat', 'stat', 'size', 'mtime')))
-				return(false);
-			$path = self::decodeCanonicalBase64($entry['path']);
-			$canonical = self::decodeCanonicalBase64($entry['canonical']);
-			if($path === false || $canonical === false || !self::isStrictlyUnderBase($path, $baseRaw)
-				|| isset($identities[$path]))
-				return(false);
-			$identity = self::normalizeIdentity(array(
-				'canonical' => $canonical,
-				'lstat' => $entry['lstat'],
-				'stat' => $entry['stat'],
-				'size' => $entry['size'],
-				'mtime' => $entry['mtime'],
-			));
-			if($identity === false)
-				return(false);
-			$files[] = $path;
-			$identities[$path] = $identity;
-		}
-		return(array(
-			'version' => self::CLEANUP_VERSION,
-			'operation' => self::OPERATION_CLEANUP_OBSOLETE,
-			'hash' => $canonicalExpectedHash,
-			'new_hash' => strtoupper($json['new_hash']),
-			'marker' => $json['marker'],
-			'replacement_record' => $json['replacement_record'],
-			'base' => $baseRaw,
-			'files' => $files,
-			'identities' => $identities,
-			'multi' => true,
-			'force' => 1,
-			'keep_base' => true,
-			'legacy' => false,
-		));
 	}
 
 	// The only reader of manifest-protocol bytes. Every consumer goes through
@@ -720,21 +324,21 @@ final class ErasedataManifestCodec
 	// the manifest ceiling by a caller that omits it.
 	public static function readBoundedHandle($handle, $limit = self::MAX_MANIFEST_BYTES)
 	{
-		if(!is_resource($handle) || !is_int($limit) || $limit < 0)
-			return(false);
+		if(!is_resource($handle) || !is_int($limit) || $limit < 0) {
+			return(false); }
 
 		$bytes = '';
 		$readTotal = 0;
 		while(!feof($handle))
 		{
 			$chunk = fread($handle, self::READ_CHUNK_BYTES);
-			if($chunk === false)
-				return(false);
-			if(strlen($chunk) === 0)
-				break;
+			if($chunk === false) {
+				return(false); }
+			if(strlen($chunk) === 0) {
+				break; }
 			$readTotal += strlen($chunk);
-			if($readTotal > $limit)
-				return(false);
+			if($readTotal > $limit) {
+				return(false); }
 			$bytes .= $chunk;
 		}
 		return($bytes);
@@ -742,16 +346,16 @@ final class ErasedataManifestCodec
 
 	public static function readBoundedFile($path, $limit = self::MAX_MANIFEST_BYTES)
 	{
-		if(!is_string($path) || $path === '')
-			return(false);
+		if(!is_string($path) || $path === '') {
+			return(false); }
 		// Refuse static special files before open, which can block on a FIFO.
 		clearstatcache(true, $path);
 		$before = @lstat($path);
-		if(!is_array($before) || ($before['mode'] & 0170000) !== 0100000)
-			return(false);
+		if(!is_array($before) || ($before['mode'] & 0170000) !== 0100000) {
+			return(false); }
 		$handle = @fopen($path, 'rb');
-		if($handle === false)
-			return(false);
+		if($handle === false) {
+			return(false); }
 		// Inspect the opened descriptor: a directory may open successfully, but
 		// reading it emits a diagnostic before the caller can retain the job.
 		$stat = @fstat($handle);
@@ -764,8 +368,8 @@ final class ErasedataManifestCodec
 	public static function decodeStream($handle, $expectedHash)
 	{
 		$bytes = self::readBoundedHandle($handle);
-		if($bytes === false)
-			return(false);
+		if($bytes === false) {
+			return(false); }
 		return(self::decodeBytes($bytes, $expectedHash));
 	}
 
@@ -800,17 +404,413 @@ final class ErasedataManifestCodec
 		}
 		$listFile = is_string($tmpPath) && substr($tmpPath, -4) === '.tmp'
 			? substr($tmpPath, 0, -4).'.list' : '';
-		if($filesystem === null)
-			$filesystem = new ErasedataFilesystemOps();
+		if($filesystem === null) {
+			$filesystem = new ErasedataFilesystemOps(); }
 		if($listFile === '' || file_exists($listFile) || is_link($listFile)
 			|| !is_file($tmpPath) || !$filesystem->rename($tmpPath, $listFile))
 		{
-			if($reportRefusal)
+			if($reportRefusal) {
 				FileUtil::toLog("erasedata: failed to publish manifest for ".$hash
-					.", staging retained");
+					.", staging retained"); }
 			return(false);
 		}
 		erasedataRepairFileMode($listFile);
 		return(true);
+	}
+
+	private static function base64EncodedLength($rawLength)
+	{
+		if(!is_int($rawLength) || $rawLength < 0) {
+			return(false); }
+		$groups = intdiv($rawLength, 3);
+		if($groups > intdiv(PHP_INT_MAX, 4)) {
+			return(false); }
+		$encoded = $groups * 4;
+		if(($rawLength % 3) !== 0)
+		{
+			if($encoded > PHP_INT_MAX - 4) {
+				return(false); }
+			$encoded += 4;
+		}
+		return($encoded);
+	}
+
+	private static function addWithinLimit($total, $increment, $limit)
+	{
+		if(!is_int($total) || !is_int($increment) || !is_int($limit)
+			|| $total < 0 || $increment < 0 || $limit < 0
+			|| $total > $limit || $increment > $limit - $total) {
+			return(false); }
+		return($total + $increment);
+	}
+
+	private static function validNativeIntent($intent)
+	{
+		return(is_array($intent) && self::hasExactKeys($intent,
+			['incarnation', 'nonce', 'generation', 'user', 'digest'])
+			&& is_string($intent['incarnation'])
+			&& preg_match('/^[a-f0-9]{32}$/D', $intent['incarnation'])
+			&& is_string($intent['nonce']) && preg_match('/^[a-f0-9]{32}$/D', $intent['nonce'])
+			&& is_string($intent['generation'])
+			&& preg_match('/^[a-f0-9]{16}$/D', $intent['generation'])
+			&& $intent['generation'] !== '0000000000000000'
+			&& is_string($intent['user']) && preg_match('/^[a-z0-9_-]{0,128}$/D', $intent['user'])
+			&& is_string($intent['digest']) && preg_match('/^[a-f0-9]{64}$/D', $intent['digest']));
+	}
+
+	private static function isValidHash($hash)
+	{
+		return(is_string($hash) && preg_match('/^[0-9A-Fa-f]{40}$/D', $hash));
+	}
+
+	private static function isValidManifestBase($base)
+	{
+		return(self::isValidAbsolutePath($base) && rtrim($base, '/') !== '' && $base !== '.' && $base !== '..');
+	}
+
+	private static function isStrictlyUnderBase($path, $base)
+	{
+		return(self::isValidCanonicalAbsolutePath($path) && self::isValidCleanupBase($base)
+			&& strpos($path, $base.'/') === 0);
+	}
+
+	private static function isValidCanonicalAbsolutePath($path)
+	{
+		return(self::isValidAbsolutePath($path) && $path !== '/' && substr($path, -1) !== '/'
+			&& strpos($path, '//') === false);
+	}
+
+	private static function isValidCleanupBase($base)
+	{
+		return(self::isValidCanonicalAbsolutePath($base));
+	}
+
+	private static function hasExactKeys(array $value, array $keys)
+	{
+		if(count($value) !== count($keys)) {
+			return(false); }
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $value)) {
+				return(false); } }
+		return(true);
+	}
+
+	private static function isNonnegativeInteger($value)
+	{
+		return(is_int($value) && $value >= 0);
+	}
+
+	private static function normalizeIdentity($identity)
+	{
+		if(!is_array($identity) || !self::hasExactKeys($identity, ['canonical', 'lstat', 'stat', 'size', 'mtime'])
+			|| !is_string($identity['canonical']) || !self::isValidCanonicalAbsolutePath($identity['canonical'])
+			|| !is_array($identity['lstat']) || !self::hasExactKeys($identity['lstat'], ['dev', 'ino'])
+			|| !is_array($identity['stat']) || !self::hasExactKeys($identity['stat'], ['dev', 'ino'])) {
+			return(false); }
+		foreach([$identity['lstat']['dev'], $identity['lstat']['ino'], $identity['stat']['dev'],
+			$identity['stat']['ino'], $identity['size'], $identity['mtime']] as $value) {
+			if(!self::isNonnegativeInteger($value)) {
+				return(false); } }
+		return([
+			'canonical' => $identity['canonical'],
+			'lstat' => ['dev' => $identity['lstat']['dev'], 'ino' => $identity['lstat']['ino']],
+			'stat' => ['dev' => $identity['stat']['dev'], 'ino' => $identity['stat']['ino']],
+			'size' => $identity['size'],
+			'mtime' => $identity['mtime'],
+		]);
+	}
+
+	private static function isValidMarker($marker)
+	{
+		return(is_string($marker) && preg_match('/^[0-9A-Fa-f]{32}$/D', $marker));
+	}
+
+	private static function isValidReplacementRecord($record, $canonicalOldHash)
+	{
+		if(!is_string($record) || !preg_match('/^([0-9A-Fa-f]{40})-(started|open|stopped)-([1-9][0-9]*)$/D', $record, $match)) {
+			return(false); }
+		return(strtoupper($match[1]) === $canonicalOldHash);
+	}
+
+	private static function hasUniqueJSONObjectMembers($json)
+	{
+		$offset = 0;
+		if(!self::scanJSONValue($json, $offset, 0)) {
+			return(false); }
+		self::skipJSONWhitespace($json, $offset);
+		return($offset === strlen($json));
+	}
+
+	private static function skipJSONWhitespace($json, &$offset)
+	{
+		$length = strlen($json);
+		while($offset < $length && ($json[$offset] === " " || $json[$offset] === "\t"
+			|| $json[$offset] === "\r" || $json[$offset] === "\n")) {
+			$offset++; }
+	}
+
+	private static function scanJSONString($json, &$offset, &$decoded)
+	{
+		$length = strlen($json);
+		if($offset >= $length || $json[$offset] !== '"') {
+			return(false); }
+		$start = $offset++;
+		while($offset < $length)
+		{
+			$c = $json[$offset];
+			if($c === '"')
+			{
+				$offset++;
+				$decoded = json_decode(substr($json, $start, $offset - $start), true);
+				return(is_string($decoded));
+			}
+			if($c === '\\')
+			{
+				if($offset + 1 >= $length) {
+					return(false); }
+				$offset += 2;
+				continue;
+			}
+			if(ord($c) < 0x20) {
+				return(false); }
+			$offset++;
+		}
+		return(false);
+	}
+
+	private static function scanJSONValue($json, &$offset, $depth)
+	{
+		if($depth > 512) {
+			return(false); }
+		self::skipJSONWhitespace($json, $offset);
+		if($offset >= strlen($json)) {
+			return(false); }
+		if($json[$offset] === '{') {
+			return(self::scanJSONObject($json, $offset, $depth + 1)); }
+		if($json[$offset] === '[') {
+			return(self::scanJSONArray($json, $offset, $depth + 1)); }
+		if($json[$offset] === '"')
+		{
+			$decoded = null;
+			return(self::scanJSONString($json, $offset, $decoded));
+		}
+		$start = $offset;
+		$length = strlen($json);
+		while($offset < $length && strpos(" \t\r\n,]}", $json[$offset]) === false) {
+			$offset++; }
+		return($offset > $start);
+	}
+
+	private static function scanJSONObject($json, &$offset, $depth)
+	{
+		$offset++;
+		self::skipJSONWhitespace($json, $offset);
+		if($offset < strlen($json) && $json[$offset] === '}')
+		{
+			$offset++;
+			return(true);
+		}
+		$seen = [];
+		while(true)
+		{
+			$key = null;
+			if(!self::scanJSONString($json, $offset, $key) || array_key_exists($key, $seen)) {
+				return(false); }
+			$seen[$key] = true;
+			self::skipJSONWhitespace($json, $offset);
+			if($offset >= strlen($json) || $json[$offset] !== ':') {
+				return(false); }
+			$offset++;
+			if(!self::scanJSONValue($json, $offset, $depth)) {
+				return(false); }
+			self::skipJSONWhitespace($json, $offset);
+			if($offset >= strlen($json)) {
+				return(false); }
+			if($json[$offset] === '}')
+			{
+				$offset++;
+				return(true);
+			}
+			if($json[$offset] !== ',') {
+				return(false); }
+			$offset++;
+			self::skipJSONWhitespace($json, $offset);
+		}
+	}
+
+	private static function scanJSONArray($json, &$offset, $depth)
+	{
+		$offset++;
+		self::skipJSONWhitespace($json, $offset);
+		if($offset < strlen($json) && $json[$offset] === ']')
+		{
+			$offset++;
+			return(true);
+		}
+		while(true)
+		{
+			if(!self::scanJSONValue($json, $offset, $depth)) {
+				return(false); }
+			self::skipJSONWhitespace($json, $offset);
+			if($offset >= strlen($json)) {
+				return(false); }
+			if($json[$offset] === ']')
+			{
+				$offset++;
+				return(true);
+			}
+			if($json[$offset] !== ',') {
+				return(false); }
+			$offset++;
+			self::skipJSONWhitespace($json, $offset);
+		}
+	}
+
+	private static function decodeJSON(array $json, $canonicalExpectedHash)
+	{
+		if(!array_key_exists('version', $json)) {
+			return(false); }
+		if($json['version'] === self::VERSION) {
+			return(self::decodeVersionTwoJSON($json, $canonicalExpectedHash)); }
+		if($json['version'] === self::CLEANUP_VERSION) {
+			return(self::decodeCleanupJSON($json, $canonicalExpectedHash)); }
+		if($json['version'] === self::BOUND_PAYLOAD_VERSION) {
+			return(self::decodeBoundPayloadJSON($json, $canonicalExpectedHash)); }
+		return(false);
+	}
+
+	private static function decodeBoundPayloadJSON(array $json, $canonicalExpectedHash)
+	{
+		if(!isset($json['operation'], $json['native_intent'])
+			|| $json['operation'] !== self::OPERATION_REMOVE_PAYLOAD
+			|| !self::validNativeIntent($json['native_intent'])) {
+			return(false); }
+		$intent = self::canonicalNativeIntent($json['native_intent']);
+		unset($json['operation'], $json['native_intent']);
+		$json['version'] = self::VERSION;
+		$record = self::decodeVersionTwoJSON($json, $canonicalExpectedHash);
+		if(!is_array($record) || !empty($record['paths_ambiguous'])) {
+			return(false); }
+		$payload = self::encode($canonicalExpectedHash, ['base' => $record['base'],
+			'files' => $record['files'], 'multi' => $record['multi']], $record['force']);
+		if(!is_string($payload) || $intent['digest'] !== hash('sha256', $payload)) {
+			return(false); }
+		$record['version'] = self::BOUND_PAYLOAD_VERSION;
+		$record['native_intent'] = $intent;
+		return($record);
+	}
+
+	private static function decodeVersionTwoJSON(array $json, $canonicalExpectedHash)
+	{
+		$expectedKeys = ['version', 'hash', 'path_encoding', 'files', 'base', 'multi', 'force'];
+		$marked = array_key_exists('path_bytes', $json);
+		if($marked) {
+			$expectedKeys[] = 'path_bytes'; }
+		if(!self::hasExactKeys($json, $expectedKeys) || $json['version'] !== self::VERSION
+			|| ($marked && $json['path_bytes'] !== self::PATH_BYTES_DAEMON)
+			|| !is_string($json['hash']) || !preg_match('/^[0-9A-F]{40}$/D', $json['hash'])
+			|| $json['hash'] !== $canonicalExpectedHash
+			|| $json['path_encoding'] !== 'base64' || !is_bool($json['multi'])
+			|| !is_int($json['force']) || ($json['force'] !== 1 && $json['force'] !== 2)) {
+			return(false); }
+
+		$baseRaw = self::decodeCanonicalBase64($json['base']);
+		if($baseRaw === false || !self::isValidManifestBase($baseRaw) || !is_array($json['files'])) {
+			return(false); }
+		$numFiles = count($json['files']);
+		if($numFiles === 0 || $numFiles > self::MAX_FILES || array_keys($json['files']) !== range(0, $numFiles - 1)) {
+			return(false); }
+
+		$seen = [];
+		$decodedFiles = [];
+		$backslash = strpos($baseRaw, '\\') !== false;
+		foreach($json['files'] as $fEnc)
+		{
+			$fRaw = self::decodeCanonicalBase64($fEnc);
+			if($fRaw === false || !self::isValidAbsolutePath($fRaw)
+				|| ($json['multi'] && !self::isUnderBase($fRaw, $baseRaw)) || isset($seen[$fRaw])) {
+				return(false); }
+			$seen[$fRaw] = true;
+			$decodedFiles[] = $fRaw;
+			$backslash = $backslash || strpos($fRaw, '\\') !== false;
+		}
+		if(!$json['multi'] && ($numFiles !== 1 || $decodedFiles[0] !== $baseRaw)) {
+			return(false); }
+		// encode() marks exactly the manifests whose paths hold a backslash; a
+		// mark on any other is not its writing.
+		if($marked && !$backslash) {
+			return(false); }
+		return([
+			'version' => self::VERSION,
+			'operation' => self::OPERATION_REMOVE_PAYLOAD,
+			'hash' => $canonicalExpectedHash,
+			'files' => $decodedFiles,
+			'base' => $baseRaw,
+			'multi' => $json['multi'],
+			'force' => $json['force'],
+			'keep_base' => false,
+			'legacy' => false,
+			// Paths are returned as written, never unescaped.
+			'paths_ambiguous' => !$marked && $backslash,
+		]);
+	}
+
+	private static function decodeCleanupJSON(array $json, $canonicalExpectedHash)
+	{
+		$expectedKeys = ['version', 'operation', 'hash', 'new_hash', 'marker', 'replacement_record',
+			'path_encoding', 'base', 'files'];
+		if(!self::hasExactKeys($json, $expectedKeys) || $json['version'] !== self::CLEANUP_VERSION
+			|| $json['operation'] !== self::OPERATION_CLEANUP_OBSOLETE
+			|| !is_string($json['hash']) || strtoupper($json['hash']) !== $canonicalExpectedHash
+			|| !self::isValidHash($json['new_hash']) || strtoupper($json['new_hash']) === $canonicalExpectedHash
+			|| !self::isValidMarker($json['marker'])
+			|| !self::isValidReplacementRecord($json['replacement_record'], $canonicalExpectedHash)
+			|| $json['path_encoding'] !== 'base64') {
+			return(false); }
+		$baseRaw = self::decodeCanonicalBase64($json['base']);
+		if($baseRaw === false || !self::isValidCleanupBase($baseRaw) || !is_array($json['files'])) {
+			return(false); }
+		$numFiles = count($json['files']);
+		if($numFiles === 0 || $numFiles > self::MAX_FILES || array_keys($json['files']) !== range(0, $numFiles - 1)) {
+			return(false); }
+
+		$files = [];
+		$identities = [];
+		foreach($json['files'] as $entry)
+		{
+			if(!is_array($entry) || !self::hasExactKeys($entry, ['path', 'canonical', 'lstat', 'stat', 'size', 'mtime'])) {
+				return(false); }
+			$path = self::decodeCanonicalBase64($entry['path']);
+			$canonical = self::decodeCanonicalBase64($entry['canonical']);
+			if($path === false || $canonical === false || !self::isStrictlyUnderBase($path, $baseRaw)
+				|| isset($identities[$path])) {
+				return(false); }
+			$identity = self::normalizeIdentity([
+				'canonical' => $canonical,
+				'lstat' => $entry['lstat'],
+				'stat' => $entry['stat'],
+				'size' => $entry['size'],
+				'mtime' => $entry['mtime'],
+			]);
+			if($identity === false) {
+				return(false); }
+			$files[] = $path;
+			$identities[$path] = $identity;
+		}
+		return([
+			'version' => self::CLEANUP_VERSION,
+			'operation' => self::OPERATION_CLEANUP_OBSOLETE,
+			'hash' => $canonicalExpectedHash,
+			'new_hash' => strtoupper($json['new_hash']),
+			'marker' => $json['marker'],
+			'replacement_record' => $json['replacement_record'],
+			'base' => $baseRaw,
+			'files' => $files,
+			'identities' => $identities,
+			'multi' => true,
+			'force' => 1,
+			'keep_base' => true,
+			'legacy' => false,
+		]);
 	}
 }

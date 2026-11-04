@@ -3,14 +3,14 @@
 // Seconds toloka waits before each fetch so that Cloudflare sees a visitor,
 // not a scanner. Declared with if(!defined()) so a caller that loads this file
 // can shorten it first; the shipped value is what the handler always used.
-if (!defined('TOLOKA_CLOUDFLARE_PAUSE'))
-    define('TOLOKA_CLOUDFLARE_PAUSE', 5);
+if (!defined('TOLOKA_CLOUDFLARE_PAUSE')) {
+    define('TOLOKA_CLOUDFLARE_PAUSE', 5); }
 
 // Toloka.to support by ReMMeR github@r3mm3r.net
 
 class tolokaCheckImpl
 {
-    static public function download_torrent($url, $hash, $old_torrent)
+    public static function download_torrent($url, $hash, $old_torrent)
     {
         // Escaped dots. Unescaped, '.' matches any character, so this claimed
         // 'tolokaXto' and every other look-alike -- and the comment that
@@ -21,7 +21,7 @@ class tolokaCheckImpl
 	    $req_url = "https://toloka.to/p".$topic_id;
 	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare
             $client = ruTrackerChecker::makeClient($req_url);
-            if ($client->status != 200) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            if ($client->status != 200) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
 
 	    $hash_now='';
 	    if (preg_match('`href=\"magnet:[^:]+:[^:]+:(?P<hash>[0-9A-Fa-f]{40})`', $client->results, $matches)) {
@@ -53,7 +53,7 @@ class tolokaCheckImpl
             }
             // Nothing to download: that is "could not fetch", exactly as the
             // three sibling handlers answer it.
-            if (!$dow_id) return ruTrackerChecker::STE_CANT_REACH_TRACKER;
+            if (!$dow_id) { return ruTrackerChecker::STE_CANT_REACH_TRACKER; }
             $client->setcookies();
 
 	    sleep(TOLOKA_CLOUDFLARE_PAUSE); // Do not want to be banned by cloudflare

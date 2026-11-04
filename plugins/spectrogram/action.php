@@ -4,7 +4,7 @@ require_once( dirname(__FILE__).'/../_task/task.php' );
 require_once( dirname(__FILE__).'/../../php/rtorrent.php' );
 eval( FileUtil::getPluginConf( 'spectrogram' ) );
 
-$ret = array();
+$ret = [];
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 if(isset($input['cmd']))
 {
@@ -20,25 +20,25 @@ if(isset($input['cmd']))
 				if($filename !== false)
 				{
 					$mediafile = FileUtil::getFileName($filename);
-					$commands = array();
+					$commands = [];
 					$name = '"${dir}"/frame.png';
 					$commands[] = Utility::getExternal("sox").
 							" ".Utility::escapeShellArg($filename)." ".
-							implode( " ", array_map( array("Utility", "escapeShellArg"), explode(" ",$arguments) ) ).
+							implode( " ", array_map( ["Utility", "escapeShellArg"], explode(" ",$arguments) ) ).
 							' -t '.Utility::escapeShellArg($mediafile).' -o '.
 							$name;
 					$commands[] = '{';
 					$commands[] = '>-=*=-';
 					$commands[] = '}';
 					$commands[] = 'chmod a+r "${dir}"/frame.png';
-					$task = new rTask( array
-					(
+					$task = new rTask( 
+					[
 					        'arg' => FileUtil::getFileName($filename),
 						'requester'=>'spectrogram',
 						'name'=>'sox',
 						'hash'=>$input['hash'],
-						'no'=>$input['no']
-					) );
+						'no'=>$input['no'],
+					] );
 					$ret = $task->start($commands, rTask::FLG_ONE_LOG | rTask::FLG_STRIP_LOGS);
 				}
 			}

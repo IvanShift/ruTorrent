@@ -16,11 +16,15 @@ class RedirectScopeWireData
 class RedirectScopeWireAccount extends commonAccount
 {
     public $url = 'https://tracker.example:8443';
+    public function test($url)
+    {
+        return UrlHost::urlIsOneOf($url, ['tracker.example'], 'https', '/file/');
+    }
     protected function isOK($client) { return true; }
     protected function loadData($client = null)
     {
         $client->cookies['session'] = 'saved';
-        $client->markAccountCookies(array('session' => 'saved'));
+        $client->markAccountCookies(['session' => 'saved']);
         return new RedirectScopeWireData();
     }
     protected function login($client, $login, $password, &$url, &$method,
@@ -28,17 +32,13 @@ class RedirectScopeWireAccount extends commonAccount
     {
         throw new RuntimeException('A cached session must not log in during a redirect probe');
     }
-    public function test($url)
-    {
-        return UrlHost::urlIsOneOf($url, array('tracker.example'), 'https', '/file/');
-    }
 }
 
 // The real HTTP request writer and response parser run against socket pairs.
 class RedirectScopeSocketReplies extends Snoopy
 {
-    public $responses = array();
-    private $peers = array();
+    public $responses = [];
+    private $peers = [];
 
     public function connect()
     {
@@ -73,8 +73,8 @@ class RedirectScopeWireTest extends TestCase
         global $pathToExternals;
         $base = getenv('TMPDIR') ?: sys_get_temp_dir();
         $this->fixtureDir = $base . '/redirect-scope-' . getmypid() . '-' . bin2hex(random_bytes(4));
-        if (!mkdir($this->fixtureDir, 0700))
-            throw new RuntimeException('Unable to create redirect fixture directory');
+        if (!mkdir($this->fixtureDir, 0700)) {
+            throw new RuntimeException('Unable to create redirect fixture directory'); }
         $this->previousCurl = isset($pathToExternals['curl']) ? $pathToExternals['curl'] : null;
         $curl = <<<'SH'
 #!/bin/sh
@@ -112,57 +112,13 @@ SH;
     public function tearDown()
     {
         global $pathToExternals;
-        if ($this->previousCurl === null) unset($pathToExternals['curl']);
-        else $pathToExternals['curl'] = $this->previousCurl;
+        if ($this->previousCurl === null) { unset($pathToExternals['curl']); }
+        else { $pathToExternals['curl'] = $this->previousCurl; }
         putenv('REDIRECT_SCOPE_ARGS');
         putenv('REDIRECT_SCOPE_COUNT');
         putenv('REDIRECT_SCOPE_TARGET');
-        foreach (glob($this->fixtureDir . '/*') as $path) unlink($path);
+        foreach (glob($this->fixtureDir . '/*') as $path) { unlink($path); }
         rmdir($this->fixtureDir);
-    }
-
-    private function curlCalls()
-    {
-        $text = file_get_contents($this->fixtureDir . '/args');
-        $calls = array();
-        foreach (explode("@@CALL@@\n", $text) as $block)
-            if ($block !== '') $calls[] = explode("\n", trim($block));
-        return $calls;
-    }
-
-    private function headerValues($lines, $name)
-    {
-        $values = array();
-        $prefix = $name . ':';
-        foreach ($lines as $line)
-            if (strncasecmp($line, $prefix, strlen($prefix)) === 0)
-                $values[] = trim(substr($line, strlen($prefix)));
-        return $values;
-    }
-
-    private function curlHeaders($call, $name)
-    {
-        $lines = array();
-        foreach ($call as $i => $argument)
-            if ($argument === '-H' && isset($call[$i + 1]))
-                $lines[] = $call[$i + 1];
-        return $this->headerValues($lines, $name);
-    }
-
-    private function socketHeaders($request, $name)
-    {
-        return $this->headerValues(explode("\n", $request), $name);
-    }
-
-    private function runAccountRedirect($target, $rawHeader = null)
-    {
-        putenv('REDIRECT_SCOPE_TARGET=' . $target);
-        $client = new Snoopy();
-        if ($rawHeader !== null) $client->rawheaders[$rawHeader] = 'private';
-        $account = new RedirectScopeWireAccount();
-        $source = 'https://tracker.example:8443/file/start';
-        $result = $account->fetch($client, $source, 'user', 'password', 'GET', '', '');
-        return array($result, $client, $this->curlCalls());
     }
 
     public function testSelectedAccountAllowsItsHttpsSiblingOnConfiguredPort()
@@ -185,7 +141,7 @@ SH;
 
     public function testSelectedAccountRefusesPortAndForeignHopsWithSourceReplyVisible()
     {
-        foreach (array(
+        foreach ([
             'https://tracker.example/file/next',
             'https://dl.tracker.example/file/next',
             'https://sso.test/file/next',
@@ -193,16 +149,16 @@ SH;
             'https://tracker.example@evil.test:8443/file/next',
             'http://dl.tracker.example:8443/file/next',
             'https://dl.tracker.example:8443/other',
-        ) as $target) {
+        ] as $target) {
             file_put_contents($this->fixtureDir . '/count', "0\n");
             @unlink($this->fixtureDir . '/args');
             list($result, $client, $calls) = $this->runAccountRedirect($target);
             $this->assertSame(false, $result, 'Account refuses ' . $target);
             $this->assertSame(1, count($calls), 'No request reaches ' . $target);
             foreach (array_slice($calls, 1) as $unexpectedCall) {
-                foreach ($this->curlHeaders($unexpectedCall, 'Cookie') as $wireCookie)
+                foreach ($this->curlHeaders($unexpectedCall, 'Cookie') as $wireCookie) {
                     $this->assertTrue(strpos($wireCookie, 'session=saved') === false,
-                        'Selected account session never reaches refused target');
+                        'Selected account session never reaches refused target'); }
             }
             $this->assertSame(302, (int)$client->status, 'Source 302 remains visible');
             $this->assertSame($target, $client->lastredirectaddr,
@@ -217,7 +173,7 @@ SH;
 
     public function testSelectedAccountNeverAuthorizesRawCredentialsOnSibling()
     {
-        foreach (array('cOoKiE', 'aUtHoRiZaTiOn', 'pRoXy-AuThOrIzAtIoN') as $header) {
+        foreach (['cOoKiE', 'aUtHoRiZaTiOn', 'pRoXy-AuThOrIzAtIoN'] as $header) {
             file_put_contents($this->fixtureDir . '/count', "0\n");
             @unlink($this->fixtureDir . '/args');
             list($result, $client, $calls) = $this->runAccountRedirect(
@@ -232,26 +188,26 @@ SH;
 
     public function testSocketValidatorsStayOnOriginAndReturnToCallerAfterRedirect()
     {
-        foreach (array('http://tracker.test/next' => true,
-            'http://cdn.test/feed' => false) as $target => $sameOrigin) {
+        foreach (['http://tracker.test/next' => true,
+            'http://cdn.test/feed' => false] as $target => $sameOrigin) {
             $client = new RedirectScopeSocketReplies();
-            $client->rawheaders = array('iF-NoNe-MaTcH' => '"old"',
-                'IF-MODIFIED-SINCE' => 'Wed, 21 Oct 2015 07:28:00 GMT');
+            $client->rawheaders = ['iF-NoNe-MaTcH' => '"old"',
+                'IF-MODIFIED-SINCE' => 'Wed, 21 Oct 2015 07:28:00 GMT'];
             $original = $client->rawheaders;
-            $client->responses = array(
+            $client->responses = [
                 "HTTP/1.1 302 Found\r\nLocation: {$target}\r\n\r\n",
                 "HTTP/1.1 200 OK\r\n\r\n",
                 "HTTP/1.1 200 OK\r\n\r\n",
-            );
+            ];
             $this->assertSame(true, $client->fetch('http://tracker.test/feed'), 'Socket redirect succeeds');
             $first = $client->request(0);
             $second = $client->request(1);
-            $this->assertSame(array('"old"'), $this->socketHeaders($first, 'If-None-Match'),
+            $this->assertSame(['"old"'], $this->socketHeaders($first, 'If-None-Match'),
                 'Origin receives exactly one ETag validator');
-            $this->assertSame($sameOrigin ? array('"old"') : array(),
+            $this->assertSame($sameOrigin ? ['"old"'] : [],
                 $this->socketHeaders($second, 'If-None-Match'),
                 'ETag validator follows only same-origin socket hop');
-            $this->assertSame($sameOrigin ? array('Wed, 21 Oct 2015 07:28:00 GMT') : array(),
+            $this->assertSame($sameOrigin ? ['Wed, 21 Oct 2015 07:28:00 GMT'] : [],
                 $this->socketHeaders($second, 'If-Modified-Since'),
                 'Last-Modified validator follows only same-origin socket hop');
             $this->assertSame($original, $client->rawheaders,
@@ -259,36 +215,80 @@ SH;
             $this->assertSame(true, $client->fetch('http://tracker.test/again'),
                 'A later explicit source fetch remains available');
             $third = $client->request(2);
-            $this->assertSame(array('"old"'), $this->socketHeaders($third, 'If-None-Match'),
+            $this->assertSame(['"old"'], $this->socketHeaders($third, 'If-None-Match'),
                 'Later source request keeps its original validator');
         }
     }
 
     public function testCurlValidatorsAreRemovedOnlyOnChangedOrigin()
     {
-        foreach (array('https://tracker.test/next' => true,
-            'https://cdn.test/feed' => false) as $target => $sameOrigin) {
+        foreach (['https://tracker.test/next' => true,
+            'https://cdn.test/feed' => false] as $target => $sameOrigin) {
             file_put_contents($this->fixtureDir . '/count', "0\n");
             @unlink($this->fixtureDir . '/args');
             putenv('REDIRECT_SCOPE_TARGET=' . $target);
             $client = new Snoopy();
-            $client->rawheaders = array('If-None-Match' => '"old"',
-                'If-Modified-Since' => 'Wed, 21 Oct 2015 07:28:00 GMT');
+            $client->rawheaders = ['If-None-Match' => '"old"',
+                'If-Modified-Since' => 'Wed, 21 Oct 2015 07:28:00 GMT'];
             $original = $client->rawheaders;
             $this->assertSame(true, $client->fetch('https://tracker.test/feed'),
                 'Fake curl redirect succeeds');
             $calls = $this->curlCalls();
             $this->assertSame(2, count($calls), 'Fake curl sends two requests');
-            $this->assertSame(array('"old"'),
+            $this->assertSame(['"old"'],
                 $this->curlHeaders($calls[0], 'If-None-Match'), 'Source receives ETag');
-            $this->assertSame($sameOrigin ? array('"old"') : array(),
+            $this->assertSame($sameOrigin ? ['"old"'] : [],
                 $this->curlHeaders($calls[1], 'If-None-Match'),
                 'ETag follows only same-origin curl hop');
-            $this->assertSame($sameOrigin ? array('Wed, 21 Oct 2015 07:28:00 GMT') : array(),
+            $this->assertSame($sameOrigin ? ['Wed, 21 Oct 2015 07:28:00 GMT'] : [],
                 $this->curlHeaders($calls[1], 'If-Modified-Since'),
                 'Last-Modified follows only same-origin curl hop');
             $this->assertSame($original, $client->rawheaders,
                 'Caller headers survive fake curl redirect');
         }
+    }
+
+    private function curlCalls()
+    {
+        $text = file_get_contents($this->fixtureDir . '/args');
+        $calls = [];
+        foreach (explode("@@CALL@@\n", $text) as $block) {
+            if ($block !== '') { $calls[] = explode("\n", trim($block)); } }
+        return $calls;
+    }
+
+    private function headerValues($lines, $name)
+    {
+        $values = [];
+        $prefix = $name . ':';
+        foreach ($lines as $line) {
+            if (strncasecmp($line, $prefix, strlen($prefix)) === 0) {
+                $values[] = trim(substr($line, strlen($prefix))); } }
+        return $values;
+    }
+
+    private function curlHeaders($call, $name)
+    {
+        $lines = [];
+        foreach ($call as $i => $argument) {
+            if ($argument === '-H' && isset($call[$i + 1])) {
+                $lines[] = $call[$i + 1]; } }
+        return $this->headerValues($lines, $name);
+    }
+
+    private function socketHeaders($request, $name)
+    {
+        return $this->headerValues(explode("\n", $request), $name);
+    }
+
+    private function runAccountRedirect($target, $rawHeader = null)
+    {
+        putenv('REDIRECT_SCOPE_TARGET=' . $target);
+        $client = new Snoopy();
+        if ($rawHeader !== null) { $client->rawheaders[$rawHeader] = 'private'; }
+        $account = new RedirectScopeWireAccount();
+        $source = 'https://tracker.example:8443/file/start';
+        $result = $account->fetch($client, $source, 'user', 'password', 'GET', '', '');
+        return [$result, $client, $this->curlCalls()];
     }
 }

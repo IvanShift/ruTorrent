@@ -18,50 +18,9 @@ class GetpluginsOutdatedVersionTest extends TestCase
 		$this->release();
 	}
 
-	private function release()
-	{
-		if($this->harness !== null)
-		{
-			$this->harness->release();
-			$this->harness = null;
-		}
-	}
-
-	private function runWithRtorrent($name, $version)
-	{
-		$this->release();
-		$this->harness = new GetpluginsHarness($name);
-		$this->harness->withRtorrent(4242, '4242', $version);
-		$output = $this->harness->run(array('RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)));
-		$this->assertTrue(GetpluginsHarness::ran($output),
-			'getplugins.php ran against rTorrent ' . $version);
-		// systemInfoScript() carries the version as a JSON::jsValue() literal.
-		$this->assertTrue(preg_match('/\\bversion\\s*:\\s*"' . preg_quote($version, '/') . '"/', $output) === 1,
-			'and was told rTorrent is ' . $version);
-		return $output;
-	}
-
-	/**
-	 * The text a log() call for $key carries after the message, decoded from
-	 * the JavaScript string literal it is written as; null when there is no
-	 * such call or its argument is not one string literal.
-	 */
-	private static function loggedSuffix($output, $key)
-	{
-		if(preg_match('/\\blog\\(theUILang\\.' . preg_quote($key, '/') . '\\+("(?:[^"\\\\]|\\\\.)*")\\);/', $output, $found) !== 1)
-			return null;
-		$suffix = json_decode($found[1]);
-		return is_string($suffix) ? $suffix : null;
-	}
-
-	private static function times($output, $key)
-	{
-		return GetpluginsHarness::logged($output, $key);
-	}
-
 	public function testAnRtorrentOlderThanTheLatestReleaseIsReportedOnce()
 	{
-		foreach(array('0.9.8', '0.15.7', '0.16.26') as $version)
+		foreach(['0.9.8', '0.15.7', '0.16.26'] as $version)
 		{
 			$output = $this->runWithRtorrent('old', $version);
 			$this->assertEquals(1, self::times($output, 'vulnerableRTorrentVersion'),
@@ -75,7 +34,7 @@ class GetpluginsOutdatedVersionTest extends TestCase
 
 	public function testTheLatestRtorrentReleaseAndLaterAreNotReported()
 	{
-		foreach(array('0.16.27', '0.16.28', '0.17.0') as $version)
+		foreach(['0.16.27', '0.16.28', '0.17.0'] as $version)
 		{
 			$output = $this->runWithRtorrent('current', $version);
 			$this->assertEquals(0, self::times($output, 'vulnerableRTorrentVersion'),
@@ -93,7 +52,7 @@ class GetpluginsOutdatedVersionTest extends TestCase
 		$this->release();
 		$this->harness = new GetpluginsHarness('quoted');
 		$this->harness->withRtorrent(4242, '4242', $version);
-		$output = $this->harness->run(array('RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)));
+		$output = $this->harness->run(['RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)]);
 		$this->assertTrue(GetpluginsHarness::ran($output), 'getplugins.php ran against a quoted rTorrent version');
 		$this->assertEquals(1, self::times($output, 'vulnerableRTorrentVersion'), 'the version is reported once');
 		$this->assertEquals(' (' . $version . ')', self::loggedSuffix($output, 'vulnerableRTorrentVersion'),
@@ -106,7 +65,7 @@ class GetpluginsOutdatedVersionTest extends TestCase
 	{
 		$this->release();
 		$this->harness = new GetpluginsHarness('none');
-		$output = $this->harness->run(array('RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)));
+		$output = $this->harness->run(['RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)]);
 		$this->assertTrue(GetpluginsHarness::reported($output, 'badLinkTorTorrent'),
 			'a run with no rTorrent says so');
 		$this->assertEquals(0, self::times($output, 'vulnerableRTorrentVersion'),
@@ -127,8 +86,49 @@ class GetpluginsOutdatedVersionTest extends TestCase
 			$this->assertEquals(' (' . PHP_VERSION . ')', self::loggedSuffix($output, 'insecurePHPVersion'),
 				'to the log, with the version it runs on');
 		}
-		else
+		else {
 			$this->assertEquals(0, self::times($output, 'insecurePHPVersion'),
-				'PHP ' . PHP_VERSION . ' is not reported');
+				'PHP ' . PHP_VERSION . ' is not reported'); }
+	}
+
+	private function release()
+	{
+		if($this->harness !== null)
+		{
+			$this->harness->release();
+			$this->harness = null;
+		}
+	}
+
+	private function runWithRtorrent($name, $version)
+	{
+		$this->release();
+		$this->harness = new GetpluginsHarness($name);
+		$this->harness->withRtorrent(4242, '4242', $version);
+		$output = $this->harness->run(['RU_TEMP_DIRECTORY' => $this->harness->directory('temp', 0700)]);
+		$this->assertTrue(GetpluginsHarness::ran($output),
+			'getplugins.php ran against rTorrent ' . $version);
+		// systemInfoScript() carries the version as a JSON::jsValue() literal.
+		$this->assertTrue(preg_match('/\\bversion\\s*:\\s*"' . preg_quote($version, '/') . '"/', $output) === 1,
+			'and was told rTorrent is ' . $version);
+		return $output;
+	}
+
+	/**
+	 * The text a log() call for $key carries after the message, decoded from
+	 * the JavaScript string literal it is written as; null when there is no
+	 * such call or its argument is not one string literal.
+	 */
+	private static function loggedSuffix($output, $key)
+	{
+		if(preg_match('/\\blog\\(theUILang\\.' . preg_quote($key, '/') . '\\+("(?:[^"\\\\]|\\\\.)*")\\);/', $output, $found) !== 1) {
+			return null; }
+		$suffix = json_decode($found[1]);
+		return is_string($suffix) ? $suffix : null;
+	}
+
+	private static function times($output, $key)
+	{
+		return GetpluginsHarness::logged($output, $key);
 	}
 }

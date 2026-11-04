@@ -5,9 +5,9 @@ define('RETRACKERS_IMPORT_ONLY', true);
 if ($native) {
     // The modern hook queues intent; only the daemon's fixed application actor runs it.
     // docker exec does not inherit exports made by the fixture's daemon shell.
-    foreach (array('RU_PROFILE_PATH=/data/profile','RU_TEMP_DIRECTORY=/data/temp','RU_TOP_DIR=/data/',
-        'RU_SCGI_HOST=unix:///run/rtorrent/rtorrent.sock','RU_SCGI_PORT=0','RU_LOG_FILE=/data/application.log') as $env)
-        putenv($env);
+    foreach (['RU_PROFILE_PATH=/data/profile','RU_TEMP_DIRECTORY=/data/temp','RU_TOP_DIR=/data/',
+        'RU_SCGI_HOST=unix:///run/rtorrent/rtorrent.sock','RU_SCGI_PORT=0','RU_LOG_FILE=/data/application.log'] as $env) {
+        putenv($env); }
     $_SERVER['REMOTE_USER']='alice';
     require_once(__DIR__.'/../../../plugins/retrackers/retrackers.php');
     require_once(__DIR__.'/../../../php/xmlrpc.php');
@@ -16,40 +16,40 @@ if ($native) {
     function getCmd($value) { return $value; }
     class rTorrent {
         public static function quoteCommandArg($value) {
-            return '"'.str_replace(array('\\','"'), array('\\\\','\\"'), $value).'"';
+            return '"'.str_replace(['\\','"'], ['\\\\','\\"'], $value).'"';
         }
     }
 }
 require_once(__DIR__.'/../../../plugins/retrackers/update.php');
 function decodeValue($value) {
     if (isset($value->array)) {
-        $result=array(); foreach ($value->array->data->value as $child) $result[]=decodeValue($child);
+        $result=[]; foreach ($value->array->data->value as $child) { $result[]=decodeValue($child); }
         return $result;
     }
-    foreach (array('string','i8','i4','int') as $tag) if (isset($value->$tag)) return (string)$value->$tag;
+    foreach (['string','i8','i4','int'] as $tag) { if (isset($value->$tag)) { return (string)$value->$tag; } }
     throw new RuntimeException('unsupported RPC value');
 }
 function rpc($method, ...$params) {
     $xml=retrackersBuildDirectRequest($method,$params);
     $socket=stream_socket_client('unix:///run/rtorrent/rtorrent.sock',$errno,$error,3);
-    if (!$socket) throw new RuntimeException('RPC socket: '.$error);
+    if (!$socket) { throw new RuntimeException('RPC socket: '.$error); }
     stream_set_timeout($socket,5);
     $headers='CONTENT_LENGTH'."\0".strlen($xml)."\0SCGI\0"."1\0REQUEST_METHOD\0POST\0REQUEST_URI\0/RPC2\0";
     $wire=strlen($headers).':'.$headers.','.$xml;
     while ($wire !== '') {
-        $size=fwrite($socket,$wire); if (!$size) throw new RuntimeException('RPC write');
+        $size=fwrite($socket,$wire); if (!$size) { throw new RuntimeException('RPC write'); }
         $wire=substr($wire,$size);
     }
     $reply=stream_get_contents($socket,1048576); fclose($socket);
     $offset=strpos($reply,'<?xml');
     $result=$offset === false ? false : simplexml_load_string(substr($reply,$offset),SimpleXMLElement::class,LIBXML_NONET);
-    if (!$result || isset($result->fault)) throw new RuntimeException($method.': '.$reply);
+    if (!$result || isset($result->fault)) { throw new RuntimeException($method.': '.$reply); }
     return decodeValue($result->params->param->value);
 }
-function metadataInsertCheck($ok,$message) { if (!$ok) throw new RuntimeException($message); }
+function metadataInsertCheck($ok,$message) { if (!$ok) { throw new RuntimeException($message); } }
 function waitFor($predicate,$message) {
     $deadline=microtime(true)+15;
-    do { if ($predicate()) return; usleep(100000); } while (microtime(true)<$deadline);
+    do { if ($predicate()) { return; } usleep(100000); } while (microtime(true)<$deadline);
     throw new RuntimeException('timeout: '.$message);
 }
 function bstr($value) { return strlen($value).':'.$value; }
@@ -60,14 +60,14 @@ function fixtureKeys() {
     }));
 }
 function clearFixtureReceipts() {
-    foreach (fixtureKeys() as $key) rpc('method.set_key','','rr.receipts.v1',$key);
+    foreach (fixtureKeys() as $key) { rpc('method.set_key','','rr.receipts.v1',$key); }
 }
 function nativeChildren() {
     $count=0;
     foreach (glob('/proc/[0-9]*/cmdline') as $path) {
         $args=explode("\0",(string)@file_get_contents($path));
-        if (in_array($args[1] ?? '', array('/rutorrent/app/plugins/retrackers/update.php',
-            '/rutorrent/app/plugins/retrackers/dispatch.php'), true)) $count++;
+        if (in_array($args[1] ?? '', ['/rutorrent/app/plugins/retrackers/update.php',
+            '/rutorrent/app/plugins/retrackers/dispatch.php'], true)) { $count++; }
     }
     return $count;
 }
@@ -93,7 +93,7 @@ function nativeDrain($hash) {
     $adapter=new RetrackersLifecycleRpcAdapter(); $adapter->setFamily(2);
     metadataInsertCheck($adapter->armNativeQueueDispatcher('alice',$failure),'fixed dispatcher cadence refused: '.$failure);
     // An admitted profile answers idle when the cadence already started this job.
-    metadataInsertCheck(in_array(rpc('system.retrackers.dispatcher_start','','alice'),array('spawned','active','idle'),true),
+    metadataInsertCheck(in_array(rpc('system.retrackers.dispatcher_start','','alice'),['spawned','active','idle'],true),
         'fixed dispatcher was not admitted');
     waitFor(function() use ($hash) {
         try { return rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0; }
@@ -107,16 +107,16 @@ function nativeDrain($hash) {
 }
 rpc('method.insert','','rr.receipts.v1','multi|private');
 if ($native) {
-    $settings=new rRetrackers(); $settings->list=array(array('http://127.0.0.1:9/retracker'));
-    $settings->todelete=array(); $settings->dontAddPrivate=0;
+    $settings=new rRetrackers(); $settings->list=[['http://127.0.0.1:9/retracker']];
+    $settings->todelete=[]; $settings->dontAddPrivate=0;
     metadataInsertCheck($settings->store(),'native fixture settings store failed');
     $failure=null;
     metadataInsertCheck(RetrackersLifecycleCoordinator::init('alice','/rutorrent/app/plugins/retrackers/run.sh',
         '/usr/bin/php85',$failure,null,$settings),'native fixture lifecycle init failed: '.$failure);
     rpc('schedule.remove','','rr.queue.'.hash('sha256','alice'));
     // Replace only this disposable fixture's insert callbacks while preserving profile admission.
-    foreach (rpc('method.list_keys','','event.download.inserted_new') as $key)
-        rpc('method.set_key','','event.download.inserted_new',$key);
+    foreach (rpc('method.list_keys','','event.download.inserted_new') as $key) {
+        rpc('method.set_key','','event.download.inserted_new',$key); }
     $keys=rpc('method.list_keys','','rr.receipts.v1');
     metadataInsertCheck(count(array_filter($keys,function ($key) { return strncmp($key,'pf:',3)===0; }))===1 &&
         count(array_filter($keys,function ($key) { return strncmp($key,'pv:',3)===0; }))===1,
@@ -125,13 +125,13 @@ if ($native) {
     file_put_contents('/data/insert-worker.sh',"#!/bin/sh\nprintf '%s\\n' \"\$@\" > /data/worker-called\n");
 }
 if (($argv[2] ?? '') === 'eligibility') {
-    foreach (array(array(false,false,true), array(true,true,true),
-        array(true,true,false), array(true,false,true)) as $case) {
+    foreach ([[false,false,true], [true,true,true],
+        [true,true,false], [true,false,true]] as $case) {
         list($work,$private,$exclude)=$case;
         clearFixtureReceipts();
         @unlink('/data/worker-called');
-        $settings=(object)array('list'=>$work ? array(array('http://retracker.invalid/announce')) : array(),
-            'todelete'=>array(),'dontAddPrivate'=>$exclude ? 1 : 0);
+        $settings=(object)['list'=>$work ? [['http://retracker.invalid/announce']] : [],
+            'todelete'=>[],'dontAddPrivate'=>$exclude ? 1 : 0];
         $action=insertAction($settings);
         rpc('method.set_key','','event.download.inserted_new','eligibility-smoke',$action);
         $name='eligibility-'.(int)$work.'-'.(int)$private.'-'.(int)$exclude;
@@ -142,25 +142,25 @@ if (($argv[2] ?? '') === 'eligibility') {
         rpc('load.normal','','/data/'.$name.'.torrent');
         waitFor(function() use ($hash) { try { return rpc('d.hash',$hash)===$hash; } catch (Exception $e) { return false; } },'eligibility torrent inserted');
         $wanted=$work && (!$private || !$exclude);
-        if ($wanted && !$native) waitFor(function() { return file_exists('/data/worker-called'); },'eligible worker launch');
-        else usleep(300000);
+        if ($wanted && !$native) { waitFor(function() { return file_exists('/data/worker-called'); },'eligible worker launch'); }
+        else { usleep(300000); }
         $marker=rpc('d.custom',$hash,'retrackers-recovery');
         $ack=rpc('d.custom',$hash,'retrackers-recovery-ack');
         metadataInsertCheck(($marker!=='')===$wanted && ($ack!=='')===$wanted,'eligibility claim mismatch');
-        if (!$native) metadataInsertCheck(file_exists('/data/worker-called')===$wanted,'eligibility worker mismatch');
-        if (!$wanted) metadataInsertCheck(fixtureKeys()===array(),'ineligible torrent published a receipt');
+        if (!$native) { metadataInsertCheck(file_exists('/data/worker-called')===$wanted,'eligibility worker mismatch'); }
+        if (!$wanted) { metadataInsertCheck(fixtureKeys()===[],'ineligible torrent published a receipt'); }
         if ($native) {
             metadataInsertCheck((bool)glob('/data/.session/.retrackers-migration/'.$hash.'*')===$wanted,'eligibility native sidecar mismatch');
             if ($wanted) { nativeEnqueued($hash); nativeDrain($hash); }
-            else metadataInsertCheck(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
-                'ineligible torrent queued work or launched an actor');
+            else { metadataInsertCheck(rpc('d.custom',$hash,'retrackers-queued')==='' && nativeChildren()===0,
+                'ineligible torrent queued work or launched an actor'); }
         }
         rpc('d.erase',$hash);
         printf("ok - %s %s claim=%d worker=%d\n",$native?'native':'legacy',$name,(int)$wanted,(int)$wanted);
     }
     exit(0);
 }
-foreach (array('safety','defer','functional') as $kind) {
+foreach (['safety','defer','functional'] as $kind) {
     clearFixtureReceipts();
     @unlink('/data/worker-called');
     $action=$kind === 'safety' ? retrackersBuildSafetyOnlyInsertAction() :
@@ -175,7 +175,7 @@ foreach (array('safety','defer','functional') as $kind) {
     usleep(300000);
     metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery')==='', $kind.' metadata published a marker');
     metadataInsertCheck(rpc('d.custom',$hash,'retrackers-recovery-ack')==='', $kind.' metadata published an ack');
-    metadataInsertCheck(fixtureKeys()===array(),$kind.' metadata published a ledger receipt');
+    metadataInsertCheck(fixtureKeys()===[],$kind.' metadata published a ledger receipt');
     metadataInsertCheck(!file_exists('/data/worker-called'),$kind.' metadata launched a worker');
     if ($native) {
         metadataInsertCheck(!glob('/data/.session/.retrackers-migration/'.$hash.'*'),$kind.' metadata acquired a native claim');
@@ -204,6 +204,6 @@ foreach (array('safety','defer','functional') as $kind) {
         rpc('d.multicall2','', 'main', $action);
         metadataInsertCheck(rpc('d.custom3',$hash)==='', 'ordinary safety did not clear the legacy marker');
     }
-    if ($kind !== 'functional') rpc('d.erase',$hash);
+    if ($kind !== 'functional') { rpc('d.erase',$hash); }
     printf("ok - %s %s metadata stays untouched; ordinary hook executes\n",$native?'native':'legacy',$kind);
 }

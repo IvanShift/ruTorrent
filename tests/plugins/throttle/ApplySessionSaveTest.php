@@ -14,8 +14,8 @@ require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
  */
 class ThrottleApplySessionSaveTest extends TestCase
 {
-	const A = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-	const B = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+	public const A = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	public const B = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
 	private $base;
 	private $daemon;
@@ -35,6 +35,27 @@ class ThrottleApplySessionSaveTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	public function testEachDownloadGivenAChannelIsSavedAfterIt()
+	{
+		$this->apply(['apply' => '1', 'v' => '2',
+			'hash' => [self::A, 'not-a-hash', self::B]]);
+		$this->assertEquals([
+			'branch(' . self::A . ')', 'branch(' . self::B . ')',
+			'd.save_resume(' . self::A . ')', 'd.save_resume(' . self::B . ')',
+		], $this->applyRequest(), 'the channels, then one save per download that got one: '
+			. json_encode($this->daemon->calls()));
+		$this->assertTrue(strpos(implode("\n", $this->daemon->bodies()), 'thr_2') !== false,
+			'the chosen channel reaches rTorrent');
+	}
+
+	public function testNoDownloadMeansNoRequest()
+	{
+		$this->apply(['apply' => '1', 'v' => '2', 'hash' => ['not-a-hash']]);
+		$this->assertEquals([], array_values(array_filter($this->daemon->calls(), function ($call) {
+			return $call === 'branch' || $call === 'd.save_resume';
+		})), 'nothing is sent for a form without a valid download: ' . json_encode($this->daemon->calls()));
+	}
+
 	private function removeTree($path)
 	{
 		if (!is_dir($path)) {
@@ -51,7 +72,7 @@ class ThrottleApplySessionSaveTest extends TestCase
 	{
 		$root = realpath(__DIR__ . '/../../..');
 		$this->daemon = new FakeRtorrentDaemon(
-			new FakeRtorrentAddTorrentReplies(array(), array(), false),
+			new FakeRtorrentAddTorrentReplies([], [], false),
 			$this->base . '/calls.log');
 		$driver = $this->base . '/drive-throttle.php';
 		file_put_contents($driver, "<?php\n"
@@ -66,7 +87,7 @@ class ThrottleApplySessionSaveTest extends TestCase
 			. '$log_file = ' . var_export($this->base . '/app.log', true) . ";\n"
 			. 'chdir(' . var_export($root . '/plugins/throttle', true) . ");\n"
 			. 'require(' . var_export($root . '/plugins/throttle/action.php', true) . ");\n");
-		$output = array();
+		$output = [];
 		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
 			escapeshellarg($driver) . ' 2>&1', $output);
 		return implode("\n", $output);
@@ -87,27 +108,6 @@ class ThrottleApplySessionSaveTest extends TestCase
 				return $member[1] . '(' . $member[2] . ')';
 			}, $members);
 		}
-		return array();
-	}
-
-	public function testEachDownloadGivenAChannelIsSavedAfterIt()
-	{
-		$this->apply(array('apply' => '1', 'v' => '2',
-			'hash' => array(self::A, 'not-a-hash', self::B)));
-		$this->assertEquals(array(
-			'branch(' . self::A . ')', 'branch(' . self::B . ')',
-			'd.save_resume(' . self::A . ')', 'd.save_resume(' . self::B . ')',
-		), $this->applyRequest(), 'the channels, then one save per download that got one: '
-			. json_encode($this->daemon->calls()));
-		$this->assertTrue(strpos(implode("\n", $this->daemon->bodies()), 'thr_2') !== false,
-			'the chosen channel reaches rTorrent');
-	}
-
-	public function testNoDownloadMeansNoRequest()
-	{
-		$this->apply(array('apply' => '1', 'v' => '2', 'hash' => array('not-a-hash')));
-		$this->assertEquals(array(), array_values(array_filter($this->daemon->calls(), function ($call) {
-			return $call === 'branch' || $call === 'd.save_resume';
-		})), 'nothing is sent for a form without a valid download: ' . json_encode($this->daemon->calls()));
+		return [];
 	}
 }

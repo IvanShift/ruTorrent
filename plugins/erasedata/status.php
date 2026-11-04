@@ -5,11 +5,11 @@ require_once('removewithdata.php');
 
 // The retirement scanner already accounts for every durable queue artifact.
 // Report counts only: filenames, paths and hashes belong in the server log.
-$scan = erasedataRetirementScan(array(
+$scan = erasedataRetirementScan([
 	'listPath' => erasedataQueuePath(),
-));
-CachedEcho::send(JSON::safeEncode(array(
+]);
+CachedEcho::send(JSON::safeEncode([
 	'empty' => $scan['empty'],
 	'unreadable' => $scan['unreadable'],
 	'candidates' => $scan['candidates'],
-)), 'application/json');
+]), 'application/json');

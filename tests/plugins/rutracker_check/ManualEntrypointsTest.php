@@ -26,8 +26,8 @@ require __DIR__ . '/TestLib.php';
 // wrong behaviour they describe stays reproducible; the one case that needs the
 // helper asserts its presence and fails by name rather than by fatal.
 $manualLauncher = testFindRepoRoot() . '/plugins/rutracker_check/launcher.php';
-if(is_file($manualLauncher))
-	require_once($manualLauncher);
+if(is_file($manualLauncher)) {
+	require_once($manualLauncher); }
 
 class ManualEntrypointsTest
 {
@@ -38,32 +38,456 @@ class ManualEntrypointsTest
 		$this->root = testFindRepoRoot();
 	}
 
+	// ------------------------------------------------------------------ cases
+
+	/**
+	 * Two manual checks started in the same second must not share one handover
+	 * file. A name built from the user and the wall clock second collides, and
+	 * the second write lands on top of the first: one of the two batches is
+	 * lost, and whichever child runs first deletes the file under the other.
+	 */
+	public function testTwoChecksInOneSecondGetSeparateHandovers()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$attempts = 0;
+			while(true)
+			{
+				$attempts++;
+				// Start just after a second boundary so both requests are served
+				// inside one second; the precondition is asserted below rather
+				// than assumed, so this can never pass vacuously.
+				usleep((int) ((1.0 - (microtime(true) - floor(microtime(true)))) * 1000000) + 20000);
+				$startSecond = (int) time();
+				$first = $this->postToAction($tree, $this->hashBody([$this->hash(1)]));
+				$second = $this->postToAction($tree, $this->hashBody([$this->hash(2)]));
+				$endSecond = (int) time();
+				if($startSecond === $endSecond) {
+					break; }
+				if($attempts >= 5) {
+					throw new RuntimeException('could not serve two manual checks inside one second'); }
+				foreach((array) glob($tree . '/rec/*') as $stale) {
+					@unlink($stale); }
+			}
+
+			strictAssertSame(1, count($first['launches']), 'the first manual check launches one worker');
+			strictAssertSame(2, count($second['launches']), 'the second manual check launches a worker too');
+
+			$paths = [];
+			foreach($second['launches'] as $launch)
+			{
+				strictAssertTrue(count($launch['argv']) >= 3,
+					'the launched worker is handed a handover path');
+				$paths[] = $launch['argv'][2];
+			}
+			strictAssertSame(2, count(array_unique($paths)),
+				'two manual checks started in the same second use two distinct handover files');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * A handover the endpoint could not write must not be reported as queued,
+	 * and must not launch a worker that would find nothing to do.
+	 */
+	public function testAnUnwritableHandoverIsRefusedRatherThanQueued()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			// A temp directory that is not a directory at all: nothing can be
+			// created inside it, on any platform, without depending on modes.
+			$blocked = $tree . '/not-a-directory';
+			if(file_put_contents($blocked, 'x') === false) {
+				throw new RuntimeException('could not create the blocked temp path'); }
+
+			$response = $this->postToAction($tree, $this->hashBody([$this->hash(3)]),
+				['tempdir' => $blocked, 'expect_child' => false]);
+
+			$decoded = $this->decode($response);
+			strictAssertTrue(isset($decoded['status']), 'the refusal answer carries a status');
+			strictAssertTrue($decoded['status'] !== 'queued',
+				'a manual check whose handover could not be written is not reported as queued');
+			strictAssertSame(0, count($response['launches']),
+				'a manual check whose handover could not be written launches no worker');
+			strictAssertTrue(count(strictLogsMatching($response['logs'], 'rutracker_check')) > 0,
+				'a refused manual check writes a classified log line');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * The PHP binary is a configured string, not a literal. Interpolated into a
+	 * shell command unquoted, a path containing a space is split into two words
+	 * and the worker never starts -- while the caller is still told the batch
+	 * was accepted.
+	 */
+	public function testAPhpPathContainingASpaceStillLaunchesTheWorker()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$directory = $tree . '/bin dir';
+			if(!mkdir($directory, 0700, true)) {
+				throw new RuntimeException('could not create the spaced directory'); }
+			$spaced = $directory . '/php-recorder';
+			if(!copy($tree . '/php-recorder', $spaced)) {
+				throw new RuntimeException('could not place the spaced recorder'); }
+			chmod($spaced, 0700);
+
+			$response = $this->postToAction($tree, $this->hashBody([$this->hash(4)]),
+				['php' => $spaced]);
+
+			strictAssertSame(1, count($response['launches']),
+				'a PHP path containing a space is quoted, so the worker still starts');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * A launch the shell did not accept is a handled refusal, not a success.
+	 * Nothing below this endpoint reports it, so an unobserved launch leaves the
+	 * user with a queued answer and no check.
+	 */
+	public function testALaunchTheShellRefusedIsNotReportedAsQueued()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$response = $this->postToAction($tree, $this->hashBody([$this->hash(5)]),
+				['php' => $tree . '/no-such-binary', 'expect_child' => false]);
+
+			$decoded = $this->decode($response);
+			strictAssertTrue(isset($decoded['status']), 'the refusal answer carries a status');
+			strictAssertTrue($decoded['status'] !== 'queued',
+				'a manual check whose worker could not be launched is not reported as queued');
+			strictAssertTrue(count(strictLogsMatching($response['logs'], 'rutracker_check')) > 0,
+				'a launch refusal writes a classified log line');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/** A body far larger than any real selection is refused without launching. */
+	public function testAnOversizedBodyIsRefusedWithoutLaunchingAWorker()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$hashes = [];
+			for($i = 0; $i < 40000; $i++) {
+				$hashes[] = $this->hash($i); }
+			$body = $this->hashBody($hashes);
+			strictAssertTrue(strlen($body) > 1000000, 'the oversized body really is oversized');
+
+			$response = $this->postToAction($tree, $body, ['expect_child' => false]);
+
+			$decoded = $this->decode($response);
+			strictAssertTrue(isset($decoded['status']), 'the oversized answer carries a status');
+			strictAssertTrue($decoded['status'] !== 'queued',
+				'an oversized manual request is not reported as queued');
+			strictAssertSame(0, count($response['launches']),
+				'an oversized manual request launches no worker');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * Whatever follows hash= reaches the worker and is handed to the checker.
+	 * A torrent hash is 40 hex characters; anything else is not a hash this
+	 * route can act on and must not travel any further.
+	 */
+	public function testOnlyRealHashesReachTheWorker()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$valid = $this->hash(6);
+			$body = 'cmd=check&hash=' . $valid
+				. '&hash=not-a-hash'
+				. '&hash=' . strtolower($valid)
+				. '&hash=' . substr($valid, 0, 39)
+				. '&hash=';
+
+			$response = $this->postToAction($tree, $body);
+			strictAssertSame(1, count($response['launches']), 'the valid hash still queues a worker');
+
+			$handover = $response['launches'][0]['handover'];
+			strictAssertTrue(is_string($handover), 'the handover the worker received was captured');
+			$hashes = unserialize($handover, ['allowed_classes' => false]);
+			strictAssertTrue(is_array($hashes), 'the handover holds a list');
+
+			foreach($hashes as $hash) {
+				strictAssertTrue(is_string($hash) && preg_match('`^[0-9A-Fa-f]{40}$`', $hash) === 1,
+					'every hash handed to the worker is a 40 character hex hash; got '
+					. var_export($hash, true)); }
+			strictAssertSame(1, count($hashes),
+				'the duplicate spelling of one hash is handed over once');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * One torrent that throws must not cancel the rest of the batch. The user
+	 * selected all of them, and a single unreachable tracker is the ordinary
+	 * case rather than a reason to abandon the others.
+	 */
+	public function testOneFailingHashDoesNotCancelTheRestOfTheBatch()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$hashes = [$this->hash(7), $this->hash(8), $this->hash(9)];
+			$result = $this->runWorker($tree, $hashes, $hashes[0]);
+
+			strictAssertTrue(strpos($result['stderr'], 'Fatal error') === false,
+				'the worker did not fatal: ' . $result['stderr']);
+			strictAssertSame(3, count($result['checked']),
+				'every selected torrent is still checked after one of them throws');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * The handover is the worker's own temporary file. Left behind, it
+	 * accumulates in the temp directory for every failed batch, forever.
+	 */
+	public function testTheHandoverIsRemovedEvenWhenAHashThrows()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$hashes = [$this->hash(10), $this->hash(11)];
+			$result = $this->runWorker($tree, $hashes, $hashes[0]);
+
+			strictAssertTrue(!$result['handover_exists'],
+				'the handover file is removed even when a checked torrent throws');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * A refusal the user can act on has to say which refusal it was. The routine
+	 * log carries a classified reason, and it stays plain English -- it must not
+	 * carry the exception text a third party controls.
+	 */
+	public function testAWorkerFailureIsLoggedAsAClassifiedEnglishReason()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$hashes = [$this->hash(12)];
+			$result = $this->runWorker($tree, $hashes, $hashes[0]);
+
+			$matching = strictLogsMatching($result['logs'], 'batch_check');
+			strictAssertTrue(count($matching) > 0,
+				'a torrent that throws is reported in the log');
+			foreach($matching as $line)
+			{
+				strictAssertEnglish($line, 'the worker log line is classified English');
+				strictAssertTrue(strpos($line, 'blew up on') === false,
+					'the worker log carries a classified reason, not the raw exception text: ' . $line);
+			}
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * The browser cannot tell a queued batch from a refused one when both answer
+	 * with the same body, so the user is told a check is running when none is.
+	 */
+	public function testAQueuedBatchAndARefusedBatchAnswerDifferently()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$queued = $this->postToAction($tree, $this->hashBody([$this->hash(13)]));
+			$refused = $this->postToAction($tree, $this->hashBody([$this->hash(14)]),
+				['php' => $tree . '/no-such-binary', 'expect_child' => false]);
+
+			$queuedBody = $this->decode($queued);
+			$refusedBody = $this->decode($refused);
+
+			strictAssertSame('queued', isset($queuedBody['status']) ? $queuedBody['status'] : null,
+				'an accepted manual check reports that it was queued');
+			strictAssertTrue($queuedBody != $refusedBody,
+				'a refused manual check does not answer exactly like an accepted one');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * A request with nothing to act on is answered, not queued. It is also not
+	 * an rTorrent failure: the browser reaches this endpoint through
+	 * getTorrents(), whose error callback marks rTorrent as stopped, so a
+	 * non-2xx answer here reports the daemon as down over a request the daemon
+	 * never saw.
+	 */
+	public function testAnEmptySelectionIsAnsweredWithoutClaimingRtorrentIsDown()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$response = $this->postToAction($tree, 'cmd=check', ['expect_child' => false]);
+
+			strictAssertSame(200, $response['status'],
+				'the manual endpoint answers 2xx so the UI does not mark rTorrent stopped');
+			$decoded = $this->decode($response);
+			strictAssertTrue(isset($decoded['status']) && $decoded['status'] !== 'queued',
+				'a selection with no usable hash is not reported as queued');
+			strictAssertSame(0, count($response['launches']),
+				'a selection with no usable hash launches no worker');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * A write that stored only part of the selection is not a write that
+	 * succeeded. file_put_contents() and fwrite() both report the bytes they
+	 * managed to store, and a truncated handover unserializes to false in the
+	 * child, which then checks nothing and says nothing -- while the user was
+	 * told the batch was queued.
+	 *
+	 * A filesystem that fills up mid-write cannot be arranged here without root,
+	 * so the byte count is driven through the dispatch helper's own writer seam,
+	 * the same seam the launcher, logger and deleter already use.
+	 */
+	public function testAnIncompleteHandoverWriteIsRefusedRatherThanQueued()
+	{
+		strictAssertTrue(class_exists('RuTrackerBatchDispatch'),
+			'the manual entrypoints share a dispatch helper that owns the handover');
+
+		$tree = $this->makeTree();
+		try
+		{
+			$logs = [];
+			$logger = function ($message) use (&$logs) { $logs[] = $message; };
+			$launched = 0;
+			$launcher = function ($command) use (&$launched) { $launched++; return true; };
+			// Store one byte fewer than asked for, which is exactly what a full
+			// filesystem does.
+			$short = function ($handle, $payload) { return fwrite($handle, substr($payload, 0, -1)); };
+
+			$dispatched = RuTrackerBatchDispatch::dispatch(
+				[$this->hash(18)], $tree . '/tmp', PHP_BINARY,
+				$tree . '/plugins/rutracker_check/batch_check.php', 'tester',
+				$launcher, $logger, null, $short);
+
+			strictAssertSame(false, $dispatched,
+				'a handover that was only partly written is not reported as dispatched');
+			strictAssertSame(0, $launched,
+				'a handover that was only partly written launches no worker');
+			strictAssertTrue(count(strictLogsMatching($logs, 'rutracker_check')) > 0,
+				'an incomplete handover write is reported as a classified reason');
+			foreach($logs as $line) {
+				strictAssertEnglish($line, 'the dispatch log line is classified English'); }
+			strictAssertSame([], array_values((array) glob($tree . '/tmp/rutorrent-prm-*')),
+				'the handover no worker will read is removed');
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
+	/**
+	 * Every handled outcome of this endpoint keeps a 2xx status, for the same
+	 * reason: the shared error callback treats any failure status as the daemon
+	 * being unreachable.
+	 */
+	public function testEveryHandledOutcomeKeepsA2xxStatus()
+	{
+		$tree = $this->makeTree();
+		try
+		{
+			$blocked = $tree . '/blocked-path';
+			if(file_put_contents($blocked, 'x') === false) {
+				throw new RuntimeException('could not create the blocked temp path'); }
+
+			$cases = [
+				'a queued batch' => [$this->hashBody([$this->hash(15)]), []],
+				'a batch with no usable hash' => ['cmd=check&hash=nope',
+					['expect_child' => false]],
+				'a batch whose handover cannot be written' => [
+					$this->hashBody([$this->hash(16)]),
+					['tempdir' => $blocked, 'expect_child' => false]],
+				'a batch whose worker cannot be launched' => [
+					$this->hashBody([$this->hash(17)]),
+					['php' => $tree . '/no-such-binary', 'expect_child' => false]],
+			];
+			foreach($cases as $name => $case)
+			{
+				$response = $this->postToAction($tree, $case[0], $case[1]);
+				strictAssertSame(200, $response['status'],
+					$name . ' keeps a 2xx status so the UI does not mark rTorrent stopped');
+				$this->decode($response);
+			}
+		}
+		finally
+		{
+			strictRemoveTree($tree);
+		}
+	}
+
 	// ---------------------------------------------------------------- helpers
 
 	private function makeTree()
 	{
 		$tree = sys_get_temp_dir() . '/rutorrent-manual-' . uniqid('', true);
-		if(!mkdir($tree, 0700, true) && !is_dir($tree))
-			throw new RuntimeException('could not create the fixture tree');
-		foreach(array('plugins/rutracker_check', 'php/utility', 'rec', 'tmp') as $sub)
-			if(!mkdir($tree . '/' . $sub, 0700, true))
-				throw new RuntimeException('could not create ' . $sub);
+		if(!mkdir($tree, 0700, true) && !is_dir($tree)) {
+			throw new RuntimeException('could not create the fixture tree'); }
+		foreach(['plugins/rutracker_check', 'php/utility', 'rec', 'tmp'] as $sub) {
+			if(!mkdir($tree . '/' . $sub, 0700, true)) {
+				throw new RuntimeException('could not create ' . $sub); } }
 
 		// Copy the shipped entrypoints and their helpers. A missing dependency
 		// is a fixture error, not a reason for the worker to silently check nothing.
-		foreach(array('action.php', 'batch_check.php', 'launcher.php', 'cli_log.php') as $name)
+		foreach(['action.php', 'batch_check.php', 'launcher.php', 'cli_log.php'] as $name)
 		{
 			$source = $this->root . '/plugins/rutracker_check/' . $name;
-			if(!is_file($source))
-				throw new RuntimeException('the production ' . $name . ' was not found');
-			if(!copy($source, $tree . '/plugins/rutracker_check/' . $name))
-				throw new RuntimeException('could not copy ' . $name);
+			if(!is_file($source)) {
+				throw new RuntimeException('the production ' . $name . ' was not found'); }
+			if(!copy($source, $tree . '/plugins/rutracker_check/' . $name)) {
+				throw new RuntimeException('could not copy ' . $name); }
 		}
 
-		if(!copy($this->root . '/php/cli-only.php', $tree . '/php/cli-only.php'))
-			throw new RuntimeException('could not copy worker SAPI guard');
-		if(!copy($this->root . '/php/utility/utility.php', $tree . '/php/utility/utility.php'))
-			throw new RuntimeException('could not copy shell argument owner');
+		if(!copy($this->root . '/php/cli-only.php', $tree . '/php/cli-only.php')) {
+			throw new RuntimeException('could not copy worker SAPI guard'); }
+		if(!copy($this->root . '/php/utility/utility.php', $tree . '/php/utility/utility.php')) {
+			throw new RuntimeException('could not copy shell argument owner'); }
 
 		$this->writeUtilStub($tree);
 		$this->writeRecorder($tree);
@@ -117,8 +541,8 @@ class ManualEntrypointsTest
 			. '		echo($content);' . "\n"
 			. '	}' . "\n"
 			. '}' . "\n";
-		if(file_put_contents($tree . '/php/util.php', $source) === false)
-			throw new RuntimeException('could not write the utility stub');
+		if(file_put_contents($tree . '/php/util.php', $source) === false) {
+			throw new RuntimeException('could not write the utility stub'); }
 	}
 
 	/**
@@ -139,27 +563,27 @@ class ManualEntrypointsTest
 			. "mv \"\$rec/argv.\$id.part\" \"\$rec/argv.\$id\"\n"
 			. "exit 0\n";
 		$path = $tree . '/php-recorder';
-		if(file_put_contents($path, $script) === false)
-			throw new RuntimeException('could not write the recorder');
+		if(file_put_contents($path, $script) === false) {
+			throw new RuntimeException('could not write the recorder'); }
 		chmod($path, 0700);
 	}
 
 	private function recordedLaunches($tree)
 	{
-		$found = array();
+		$found = [];
 		foreach((array) glob($tree . '/rec/argv.*') as $file)
 		{
-			if(substr($file, -5) === '.part')
-				continue;
+			if(substr($file, -5) === '.part') {
+				continue; }
 			$lines = file($file, FILE_IGNORE_NEW_LINES);
-			if($lines === false)
-				continue;
+			if($lines === false) {
+				continue; }
 			$id = substr($file, strrpos($file, '.') + 1);
 			$handover = $tree . '/rec/handover.' . $id;
-			$found[] = array(
+			$found[] = [
 				'argv' => $lines,
 				'handover' => is_file($handover) ? file_get_contents($handover) : null,
-			);
+			];
 		}
 		return $found;
 	}
@@ -167,17 +591,17 @@ class ManualEntrypointsTest
 	private function logLines($tree)
 	{
 		$path = $tree . '/log.txt';
-		if(!is_file($path))
-			return array();
+		if(!is_file($path)) {
+			return []; }
 		$lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-		return ($lines === false) ? array() : $lines;
+		return ($lines === false) ? [] : $lines;
 	}
 
 	private function reservePort()
 	{
 		$socket = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-		if($socket === false)
-			throw new RuntimeException('could not reserve a loopback port: ' . $errstr);
+		if($socket === false) {
+			throw new RuntimeException('could not reserve a loopback port: ' . $errstr); }
 		$name = stream_socket_get_name($socket, false);
 		fclose($socket);
 		return (int) substr($name, strrpos($name, ':') + 1);
@@ -189,7 +613,7 @@ class ManualEntrypointsTest
 	 *
 	 * $options: php (the binary the entrypoint launches), tempdir, expect_child.
 	 */
-	private function postToAction($tree, $body, $options = array())
+	private function postToAction($tree, $body, $options = [])
 	{
 		$php = isset($options['php']) ? $options['php'] : ($tree . '/php-recorder');
 		$tempdir = isset($options['tempdir']) ? $options['tempdir'] : ($tree . '/tmp');
@@ -197,13 +621,13 @@ class ManualEntrypointsTest
 
 		$before = count($this->recordedLaunches($tree));
 		$port = $this->reservePort();
-		$environment = array_merge($_ENV, array(
+		$environment = array_merge($_ENV, [
 			'MANUAL_TEST_TEMPDIR' => $tempdir,
 			'MANUAL_TEST_LOG' => $tree . '/log.txt',
 			'MANUAL_TEST_PHP' => $php,
 			'MANUAL_TEST_USER' => 'tester',
 			'PATH' => getenv('PATH'),
-		));
+		]);
 		// exec, so the shell replaces itself with PHP instead of staying its
 		// parent. proc_terminate() signals the process proc_open() started, and
 		// without this that process is /bin/sh: the shell dies, the server it
@@ -211,13 +635,13 @@ class ManualEntrypointsTest
 		$command = 'exec ' . escapeshellarg(PHP_BINARY)
 			. ' -d display_errors=0 -d error_reporting=0'
 			. ' -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($tree);
-		$process = proc_open($command, array(
-			0 => array('pipe', 'r'),
-			1 => array('file', $tree . '/server.out', 'a'),
-			2 => array('file', $tree . '/server.err', 'a'),
-		), $pipes, $tree, $environment);
-		if(!is_resource($process))
-			throw new RuntimeException('could not start the copied entrypoint server');
+		$process = proc_open($command, [
+			0 => ['pipe', 'r'],
+			1 => ['file', $tree . '/server.out', 'a'],
+			2 => ['file', $tree . '/server.err', 'a'],
+		], $pipes, $tree, $environment);
+		if(!is_resource($process)) {
+			throw new RuntimeException('could not start the copied entrypoint server'); }
 		try
 		{
 			fclose($pipes[0]);
@@ -236,8 +660,8 @@ class ManualEntrypointsTest
 		$deadline = microtime(true) + ($expectChild ? 5.0 : 1.0);
 		while(microtime(true) < $deadline)
 		{
-			if(count($this->recordedLaunches($tree)) > $before)
-				break;
+			if(count($this->recordedLaunches($tree)) > $before) {
+				break; }
 			usleep(20000);
 		}
 
@@ -265,8 +689,8 @@ class ManualEntrypointsTest
 	private function rawPost($port, $path, $body)
 	{
 		$socket = @stream_socket_client('tcp://127.0.0.1:' . $port, $errno, $errstr, 10.0);
-		if($socket === false)
-			throw new RuntimeException('could not connect to the copied entrypoint: ' . $errstr);
+		if($socket === false) {
+			throw new RuntimeException('could not connect to the copied entrypoint: ' . $errstr); }
 		$request = "POST " . $path . " HTTP/1.0\r\n"
 			. "Host: 127.0.0.1\r\n"
 			. "Content-Type: application/x-www-form-urlencoded\r\n"
@@ -278,20 +702,20 @@ class ManualEntrypointsTest
 		while(!feof($socket))
 		{
 			$chunk = fread($socket, 65536);
-			if($chunk === false || $chunk === '')
-				break;
+			if($chunk === false || $chunk === '') {
+				break; }
 			$raw .= $chunk;
 		}
 		fclose($socket);
 		$split = strpos($raw, "\r\n\r\n");
-		if($split === false)
-			throw new RuntimeException('the copied entrypoint returned no header boundary');
+		if($split === false) {
+			throw new RuntimeException('the copied entrypoint returned no header boundary'); }
 		$head = substr($raw, 0, $split);
 		$lines = explode("\r\n", $head);
 		$status = 0;
-		if(preg_match('`^HTTP/\d\.\d\s+(\d+)`', $lines[0], $matches))
-			$status = (int) $matches[1];
-		return array('status' => $status, 'head' => $head, 'body' => substr($raw, $split + 4));
+		if(preg_match('`^HTTP/\d\.\d\s+(\d+)`', $lines[0], $matches)) {
+			$status = (int) $matches[1]; }
+		return ['status' => $status, 'head' => $head, 'body' => substr($raw, $split + 4)];
 	}
 
 	/** Run the copied batch_check.php worker over a handover file. */
@@ -320,44 +744,44 @@ class ManualEntrypointsTest
 			. '		return true;' . "\n"
 			. '	}' . "\n"
 			. '}' . "\n";
-		if(file_put_contents($tree . '/plugins/rutracker_check/check.php', $checker) === false)
-			throw new RuntimeException('could not write the checker stub');
+		if(file_put_contents($tree . '/plugins/rutracker_check/check.php', $checker) === false) {
+			throw new RuntimeException('could not write the checker stub'); }
 
 		$handover = $tree . '/tmp/handover-' . uniqid('', true);
-		if(file_put_contents($handover, serialize($hashes)) === false)
-			throw new RuntimeException('could not write the handover');
+		if(file_put_contents($handover, serialize($hashes)) === false) {
+			throw new RuntimeException('could not write the handover'); }
 
 		$checked = $tree . '/checked.txt';
 		@unlink($checked);
-		$environment = array_merge($_ENV, array(
+		$environment = array_merge($_ENV, [
 			'MANUAL_TEST_CHECKED' => $checked,
 			'MANUAL_TEST_THROW' => ($throwOn === null) ? '' : $throwOn,
 			'MANUAL_TEST_LOG' => $tree . '/log.txt',
 			'PATH' => getenv('PATH'),
-		));
+		]);
 		$command = escapeshellarg(PHP_BINARY)
 			. ' -d display_errors=0 -d error_reporting=0 -f '
 			. escapeshellarg($tree . '/plugins/rutracker_check/batch_check.php')
 			. ' ' . escapeshellarg($handover) . ' ' . escapeshellarg('tester');
-		$process = proc_open($command, array(
-			0 => array('pipe', 'r'),
-			1 => array('file', $tree . '/worker.out', 'a'),
-			2 => array('file', $tree . '/worker.err', 'a'),
-		), $pipes, $tree, $environment);
-		if(!is_resource($process))
-			throw new RuntimeException('could not start the copied worker');
+		$process = proc_open($command, [
+			0 => ['pipe', 'r'],
+			1 => ['file', $tree . '/worker.out', 'a'],
+			2 => ['file', $tree . '/worker.err', 'a'],
+		], $pipes, $tree, $environment);
+		if(!is_resource($process)) {
+			throw new RuntimeException('could not start the copied worker'); }
 		fclose($pipes[0]);
 		$status = proc_close($process);
 
-		$lines = is_file($checked) ? file($checked, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : array();
-		return array(
+		$lines = is_file($checked) ? file($checked, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+		return [
 			'exit' => $status,
-			'checked' => ($lines === false) ? array() : $lines,
+			'checked' => ($lines === false) ? [] : $lines,
 			'handover' => $handover,
 			'handover_exists' => is_file($handover),
 			'logs' => $this->logLines($tree),
 			'stderr' => is_file($tree . '/worker.err') ? file_get_contents($tree . '/worker.err') : '',
-		);
+		];
 	}
 
 	private function decode($response)
@@ -370,439 +794,15 @@ class ManualEntrypointsTest
 
 	private function hashBody($hashes)
 	{
-		$parts = array();
-		foreach($hashes as $hash)
-			$parts[] = 'hash=' . $hash;
+		$parts = [];
+		foreach($hashes as $hash) {
+			$parts[] = 'hash=' . $hash; }
 		return 'cmd=check&' . implode('&', $parts);
 	}
 
 	private function hash($seed)
 	{
 		return strtoupper(substr(str_repeat(dechex($seed % 16), 40), 0, 40));
-	}
-
-	// ------------------------------------------------------------------ cases
-
-	/**
-	 * Two manual checks started in the same second must not share one handover
-	 * file. A name built from the user and the wall clock second collides, and
-	 * the second write lands on top of the first: one of the two batches is
-	 * lost, and whichever child runs first deletes the file under the other.
-	 */
-	public function testTwoChecksInOneSecondGetSeparateHandovers()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$attempts = 0;
-			while(true)
-			{
-				$attempts++;
-				// Start just after a second boundary so both requests are served
-				// inside one second; the precondition is asserted below rather
-				// than assumed, so this can never pass vacuously.
-				usleep((int) ((1.0 - (microtime(true) - floor(microtime(true)))) * 1000000) + 20000);
-				$startSecond = (int) time();
-				$first = $this->postToAction($tree, $this->hashBody(array($this->hash(1))));
-				$second = $this->postToAction($tree, $this->hashBody(array($this->hash(2))));
-				$endSecond = (int) time();
-				if($startSecond === $endSecond)
-					break;
-				if($attempts >= 5)
-					throw new RuntimeException('could not serve two manual checks inside one second');
-				foreach((array) glob($tree . '/rec/*') as $stale)
-					@unlink($stale);
-			}
-
-			strictAssertSame(1, count($first['launches']), 'the first manual check launches one worker');
-			strictAssertSame(2, count($second['launches']), 'the second manual check launches a worker too');
-
-			$paths = array();
-			foreach($second['launches'] as $launch)
-			{
-				strictAssertTrue(count($launch['argv']) >= 3,
-					'the launched worker is handed a handover path');
-				$paths[] = $launch['argv'][2];
-			}
-			strictAssertSame(2, count(array_unique($paths)),
-				'two manual checks started in the same second use two distinct handover files');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * A handover the endpoint could not write must not be reported as queued,
-	 * and must not launch a worker that would find nothing to do.
-	 */
-	public function testAnUnwritableHandoverIsRefusedRatherThanQueued()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			// A temp directory that is not a directory at all: nothing can be
-			// created inside it, on any platform, without depending on modes.
-			$blocked = $tree . '/not-a-directory';
-			if(file_put_contents($blocked, 'x') === false)
-				throw new RuntimeException('could not create the blocked temp path');
-
-			$response = $this->postToAction($tree, $this->hashBody(array($this->hash(3))),
-				array('tempdir' => $blocked, 'expect_child' => false));
-
-			$decoded = $this->decode($response);
-			strictAssertTrue(isset($decoded['status']), 'the refusal answer carries a status');
-			strictAssertTrue($decoded['status'] !== 'queued',
-				'a manual check whose handover could not be written is not reported as queued');
-			strictAssertSame(0, count($response['launches']),
-				'a manual check whose handover could not be written launches no worker');
-			strictAssertTrue(count(strictLogsMatching($response['logs'], 'rutracker_check')) > 0,
-				'a refused manual check writes a classified log line');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * The PHP binary is a configured string, not a literal. Interpolated into a
-	 * shell command unquoted, a path containing a space is split into two words
-	 * and the worker never starts -- while the caller is still told the batch
-	 * was accepted.
-	 */
-	public function testAPhpPathContainingASpaceStillLaunchesTheWorker()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$directory = $tree . '/bin dir';
-			if(!mkdir($directory, 0700, true))
-				throw new RuntimeException('could not create the spaced directory');
-			$spaced = $directory . '/php-recorder';
-			if(!copy($tree . '/php-recorder', $spaced))
-				throw new RuntimeException('could not place the spaced recorder');
-			chmod($spaced, 0700);
-
-			$response = $this->postToAction($tree, $this->hashBody(array($this->hash(4))),
-				array('php' => $spaced));
-
-			strictAssertSame(1, count($response['launches']),
-				'a PHP path containing a space is quoted, so the worker still starts');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * A launch the shell did not accept is a handled refusal, not a success.
-	 * Nothing below this endpoint reports it, so an unobserved launch leaves the
-	 * user with a queued answer and no check.
-	 */
-	public function testALaunchTheShellRefusedIsNotReportedAsQueued()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$response = $this->postToAction($tree, $this->hashBody(array($this->hash(5))),
-				array('php' => $tree . '/no-such-binary', 'expect_child' => false));
-
-			$decoded = $this->decode($response);
-			strictAssertTrue(isset($decoded['status']), 'the refusal answer carries a status');
-			strictAssertTrue($decoded['status'] !== 'queued',
-				'a manual check whose worker could not be launched is not reported as queued');
-			strictAssertTrue(count(strictLogsMatching($response['logs'], 'rutracker_check')) > 0,
-				'a launch refusal writes a classified log line');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/** A body far larger than any real selection is refused without launching. */
-	public function testAnOversizedBodyIsRefusedWithoutLaunchingAWorker()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$hashes = array();
-			for($i = 0; $i < 40000; $i++)
-				$hashes[] = $this->hash($i);
-			$body = $this->hashBody($hashes);
-			strictAssertTrue(strlen($body) > 1000000, 'the oversized body really is oversized');
-
-			$response = $this->postToAction($tree, $body, array('expect_child' => false));
-
-			$decoded = $this->decode($response);
-			strictAssertTrue(isset($decoded['status']), 'the oversized answer carries a status');
-			strictAssertTrue($decoded['status'] !== 'queued',
-				'an oversized manual request is not reported as queued');
-			strictAssertSame(0, count($response['launches']),
-				'an oversized manual request launches no worker');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * Whatever follows hash= reaches the worker and is handed to the checker.
-	 * A torrent hash is 40 hex characters; anything else is not a hash this
-	 * route can act on and must not travel any further.
-	 */
-	public function testOnlyRealHashesReachTheWorker()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$valid = $this->hash(6);
-			$body = 'cmd=check&hash=' . $valid
-				. '&hash=not-a-hash'
-				. '&hash=' . strtolower($valid)
-				. '&hash=' . substr($valid, 0, 39)
-				. '&hash=';
-
-			$response = $this->postToAction($tree, $body);
-			strictAssertSame(1, count($response['launches']), 'the valid hash still queues a worker');
-
-			$handover = $response['launches'][0]['handover'];
-			strictAssertTrue(is_string($handover), 'the handover the worker received was captured');
-			$hashes = unserialize($handover, array('allowed_classes' => false));
-			strictAssertTrue(is_array($hashes), 'the handover holds a list');
-
-			foreach($hashes as $hash)
-				strictAssertTrue(is_string($hash) && preg_match('`^[0-9A-Fa-f]{40}$`', $hash) === 1,
-					'every hash handed to the worker is a 40 character hex hash; got '
-					. var_export($hash, true));
-			strictAssertSame(1, count($hashes),
-				'the duplicate spelling of one hash is handed over once');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * One torrent that throws must not cancel the rest of the batch. The user
-	 * selected all of them, and a single unreachable tracker is the ordinary
-	 * case rather than a reason to abandon the others.
-	 */
-	public function testOneFailingHashDoesNotCancelTheRestOfTheBatch()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$hashes = array($this->hash(7), $this->hash(8), $this->hash(9));
-			$result = $this->runWorker($tree, $hashes, $hashes[0]);
-
-			strictAssertTrue(strpos($result['stderr'], 'Fatal error') === false,
-				'the worker did not fatal: ' . $result['stderr']);
-			strictAssertSame(3, count($result['checked']),
-				'every selected torrent is still checked after one of them throws');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * The handover is the worker's own temporary file. Left behind, it
-	 * accumulates in the temp directory for every failed batch, forever.
-	 */
-	public function testTheHandoverIsRemovedEvenWhenAHashThrows()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$hashes = array($this->hash(10), $this->hash(11));
-			$result = $this->runWorker($tree, $hashes, $hashes[0]);
-
-			strictAssertTrue(!$result['handover_exists'],
-				'the handover file is removed even when a checked torrent throws');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * A refusal the user can act on has to say which refusal it was. The routine
-	 * log carries a classified reason, and it stays plain English -- it must not
-	 * carry the exception text a third party controls.
-	 */
-	public function testAWorkerFailureIsLoggedAsAClassifiedEnglishReason()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$hashes = array($this->hash(12));
-			$result = $this->runWorker($tree, $hashes, $hashes[0]);
-
-			$matching = strictLogsMatching($result['logs'], 'batch_check');
-			strictAssertTrue(count($matching) > 0,
-				'a torrent that throws is reported in the log');
-			foreach($matching as $line)
-			{
-				strictAssertEnglish($line, 'the worker log line is classified English');
-				strictAssertTrue(strpos($line, 'blew up on') === false,
-					'the worker log carries a classified reason, not the raw exception text: ' . $line);
-			}
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * The browser cannot tell a queued batch from a refused one when both answer
-	 * with the same body, so the user is told a check is running when none is.
-	 */
-	public function testAQueuedBatchAndARefusedBatchAnswerDifferently()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$queued = $this->postToAction($tree, $this->hashBody(array($this->hash(13))));
-			$refused = $this->postToAction($tree, $this->hashBody(array($this->hash(14))),
-				array('php' => $tree . '/no-such-binary', 'expect_child' => false));
-
-			$queuedBody = $this->decode($queued);
-			$refusedBody = $this->decode($refused);
-
-			strictAssertSame('queued', isset($queuedBody['status']) ? $queuedBody['status'] : null,
-				'an accepted manual check reports that it was queued');
-			strictAssertTrue($queuedBody != $refusedBody,
-				'a refused manual check does not answer exactly like an accepted one');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * A request with nothing to act on is answered, not queued. It is also not
-	 * an rTorrent failure: the browser reaches this endpoint through
-	 * getTorrents(), whose error callback marks rTorrent as stopped, so a
-	 * non-2xx answer here reports the daemon as down over a request the daemon
-	 * never saw.
-	 */
-	public function testAnEmptySelectionIsAnsweredWithoutClaimingRtorrentIsDown()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$response = $this->postToAction($tree, 'cmd=check', array('expect_child' => false));
-
-			strictAssertSame(200, $response['status'],
-				'the manual endpoint answers 2xx so the UI does not mark rTorrent stopped');
-			$decoded = $this->decode($response);
-			strictAssertTrue(isset($decoded['status']) && $decoded['status'] !== 'queued',
-				'a selection with no usable hash is not reported as queued');
-			strictAssertSame(0, count($response['launches']),
-				'a selection with no usable hash launches no worker');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * A write that stored only part of the selection is not a write that
-	 * succeeded. file_put_contents() and fwrite() both report the bytes they
-	 * managed to store, and a truncated handover unserializes to false in the
-	 * child, which then checks nothing and says nothing -- while the user was
-	 * told the batch was queued.
-	 *
-	 * A filesystem that fills up mid-write cannot be arranged here without root,
-	 * so the byte count is driven through the dispatch helper's own writer seam,
-	 * the same seam the launcher, logger and deleter already use.
-	 */
-	public function testAnIncompleteHandoverWriteIsRefusedRatherThanQueued()
-	{
-		strictAssertTrue(class_exists('RuTrackerBatchDispatch'),
-			'the manual entrypoints share a dispatch helper that owns the handover');
-
-		$tree = $this->makeTree();
-		try
-		{
-			$logs = array();
-			$logger = function ($message) use (&$logs) { $logs[] = $message; };
-			$launched = 0;
-			$launcher = function ($command) use (&$launched) { $launched++; return true; };
-			// Store one byte fewer than asked for, which is exactly what a full
-			// filesystem does.
-			$short = function ($handle, $payload) { return fwrite($handle, substr($payload, 0, -1)); };
-
-			$dispatched = RuTrackerBatchDispatch::dispatch(
-				array($this->hash(18)), $tree . '/tmp', PHP_BINARY,
-				$tree . '/plugins/rutracker_check/batch_check.php', 'tester',
-				$launcher, $logger, null, $short);
-
-			strictAssertSame(false, $dispatched,
-				'a handover that was only partly written is not reported as dispatched');
-			strictAssertSame(0, $launched,
-				'a handover that was only partly written launches no worker');
-			strictAssertTrue(count(strictLogsMatching($logs, 'rutracker_check')) > 0,
-				'an incomplete handover write is reported as a classified reason');
-			foreach($logs as $line)
-				strictAssertEnglish($line, 'the dispatch log line is classified English');
-			strictAssertSame(array(), array_values((array) glob($tree . '/tmp/rutorrent-prm-*')),
-				'the handover no worker will read is removed');
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
-	}
-
-	/**
-	 * Every handled outcome of this endpoint keeps a 2xx status, for the same
-	 * reason: the shared error callback treats any failure status as the daemon
-	 * being unreachable.
-	 */
-	public function testEveryHandledOutcomeKeepsA2xxStatus()
-	{
-		$tree = $this->makeTree();
-		try
-		{
-			$blocked = $tree . '/blocked-path';
-			if(file_put_contents($blocked, 'x') === false)
-				throw new RuntimeException('could not create the blocked temp path');
-
-			$cases = array(
-				'a queued batch' => array($this->hashBody(array($this->hash(15))), array()),
-				'a batch with no usable hash' => array('cmd=check&hash=nope',
-					array('expect_child' => false)),
-				'a batch whose handover cannot be written' => array(
-					$this->hashBody(array($this->hash(16))),
-					array('tempdir' => $blocked, 'expect_child' => false)),
-				'a batch whose worker cannot be launched' => array(
-					$this->hashBody(array($this->hash(17))),
-					array('php' => $tree . '/no-such-binary', 'expect_child' => false)),
-			);
-			foreach($cases as $name => $case)
-			{
-				$response = $this->postToAction($tree, $case[0], $case[1]);
-				strictAssertSame(200, $response['status'],
-					$name . ' keeps a 2xx status so the UI does not mark rTorrent stopped');
-				$this->decode($response);
-			}
-		}
-		finally
-		{
-			strictRemoveTree($tree);
-		}
 	}
 }
 

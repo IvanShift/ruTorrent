@@ -11,12 +11,12 @@ require_once __DIR__ . '/SettlingRenameFiles.php';
 function moveSettleLookups($state)
 {
     $lookups = @json_decode((string) @file_get_contents($state['root'] . '/settle-lookups.json'), true);
-    return is_array($lookups) ? $lookups : array();
+    return is_array($lookups) ? $lookups : [];
 }
 
 function moveSettleRenames($state)
 {
-    return @file($state['root'] . '/renames', FILE_IGNORE_NEW_LINES) ?: array();
+    return @file($state['root'] . '/renames', FILE_IGNORE_NEW_LINES) ?: [];
 }
 
 // The same st_dev EXDEV refusal the worker suite uses, for the source renamed
@@ -24,9 +24,9 @@ function moveSettleRenames($state)
 function moveSettleExdev($state)
 {
     $path = $state['root'] . '/rename';
-    $refused = array();
-    foreach (array($state['destination'], SettlingRenameFiles::hiddenName($state['destination'])) as $to)
-        $refused[] = '[ "$2" = ' . escapeshellarg($to) . ' ]';
+    $refused = [];
+    foreach ([$state['destination'], SettlingRenameFiles::hiddenName($state['destination'])] as $to) {
+        $refused[] = '[ "$2" = ' . escapeshellarg($to) . ' ]'; }
     file_put_contents($path, str_replace('[ -e "$2" ]', 'if [ "$1" = ' . escapeshellarg($state['source'])
         . ' ] && { ' . implode(' || ', $refused) . '; }; then echo "rename-noreplace-error: errno=18 Invalid cross-device link" >&2; exit 4; fi'
         . "\n" . '[ -e "$2" ]', file_get_contents($path)));
@@ -40,33 +40,33 @@ function moveSettlePattern($path)
 // Everything left in the downloads directory: no source, quarantine or hidden name.
 function moveSettleDownloads($state)
 {
-    return array_values(array_diff(scandir($state['root'] . '/dl'), array('.', '..')));
+    return array_values(array_diff(scandir($state['root'] . '/dl'), ['.', '..']));
 }
 
 $suite = new StrictTestSuite();
-foreach (array(false, true) as $multi)
+foreach ([false, true] as $multi) {
     $suite->test('same-mount publication confirms a destination that answers late multi=' . (int) $multi, function () use ($multi) {
         $state = moveWorkerFixture($multi);
-        $state['settle'] = array(moveSettlePattern($state['destination']), 3);
+        $state['settle'] = [moveSettlePattern($state['destination']), 3];
         try {
             list($exit, $after, $calls, $output) = moveWorkerRun($state);
             strictAssertSame(0, $exit, 'the published move completes: ' . $output . ' ' . @file_get_contents($state['root'] . '/errors.log'));
-            strictAssertSame(array($state['destination'] => 3), moveSettleLookups($state), 'the destination is confirmed on its third lookup');
+            strictAssertSame([$state['destination'] => 3], moveSettleLookups($state), 'the destination is confirmed on its third lookup');
             strictAssertSame(1, count(moveSettleRenames($state)), 'the publication rename is made once');
             strictAssertSame(false, $after['queued'], 'the native queue retires');
             strictAssertSame('absent', $after['lease'], 'the lease is acknowledged');
             strictAssertSame('payload', file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']), 'payload at destination');
-            strictAssertSame(array(), moveSettleDownloads($state), 'the source is retired');
+            strictAssertSame([], moveSettleDownloads($state), 'the source is retired');
         } finally { strictRemoveTree($state['root']); }
-    });
+    }); }
 
 $suite->test('same-mount publication that never answers stays held and its rename is not repeated', function () {
     $state = moveWorkerFixture();
-    $state['settle'] = array(moveSettlePattern($state['destination']), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1);
+    $state['settle'] = [moveSettlePattern($state['destination']), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1];
     try {
         list($exit, $after, $calls, $output) = moveWorkerRun($state);
         strictAssertSame(1, $exit, 'an absent destination keeps the claim: ' . $output);
-        strictAssertSame(array($state['destination'] => ERASEDATA_RENAME_SETTLE_ATTEMPTS), moveSettleLookups($state),
+        strictAssertSame([$state['destination'] => ERASEDATA_RENAME_SETTLE_ATTEMPTS], moveSettleLookups($state),
             'the settle stops at its bound');
         strictAssertSame(true, strpos(file_get_contents($state['root'] . '/errors.log'), 'payload-identity-ambiguous') !== false,
             'the classification is the one an absent destination always had');
@@ -84,11 +84,11 @@ $suite->test('same-mount publication that never answers stays held and its renam
 
 $suite->test('a different inode at the late destination is still refused exactly', function () {
     $state = moveWorkerFixture();
-    $state['settle'] = array(moveSettlePattern($state['destination']), 2, true);
+    $state['settle'] = [moveSettlePattern($state['destination']), 2, true];
     try {
         list($exit, $after, $calls, $output) = moveWorkerRun($state);
         strictAssertSame(1, $exit, 'another inode never passes for the published payload: ' . $output);
-        strictAssertSame(array($state['destination'] => 2), moveSettleLookups($state), 'the first present answer ends the settle');
+        strictAssertSame([$state['destination'] => 2], moveSettleLookups($state), 'the first present answer ends the settle');
         strictAssertSame(true, strpos(file_get_contents($state['root'] . '/errors.log'), 'payload-identity-ambiguous') !== false,
             'the identity mismatch is classified as before');
         strictAssertSame('active', $after['lease'], 'the captured obligation is retained');
@@ -97,31 +97,31 @@ $suite->test('a different inode at the late destination is still refused exactly
     } finally { strictRemoveTree($state['root']); }
 });
 
-foreach (array(false, true) as $multi)
-    foreach (array('stage publication', 'source quarantine') as $site)
+foreach ([false, true] as $multi) {
+    foreach (['stage publication', 'source quarantine'] as $site) {
         $suite->test('same st_dev EXDEV ' . $site . ' that answers late completes multi=' . (int) $multi, function () use ($multi, $site) {
             $state = moveWorkerFixture($multi);
             $late = $site === 'stage publication' ? $state['destination']
                 : dirname($state['source']) . '/.autotools-move-' . $state['qid'] . '.source';
-            $state['settle'] = array(moveSettlePattern($late), 3);
+            $state['settle'] = [moveSettlePattern($late), 3];
             moveSettleExdev($state);
             try {
                 touch($multi ? $state['source'] . '/item' : $state['source'], 1000000000, 1000000100);
                 list($exit, $after, $calls, $output) = moveWorkerRun($state);
                 strictAssertSame(0, $exit, 'the staged move completes: ' . $output . ' ' . @file_get_contents($state['root'] . '/errors.log'));
-                strictAssertSame(array($late => 3), moveSettleLookups($state), 'the ' . $site . ' name is confirmed on its third lookup');
+                strictAssertSame([$late => 3], moveSettleLookups($state), 'the ' . $site . ' name is confirmed on its third lookup');
                 strictAssertSame(2, count(moveSettleRenames($state)), 'one stage publication and one quarantine rename');
                 strictAssertSame(false, $after['queued'], 'the native queue retires');
                 strictAssertSame('payload', file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']), 'copied bytes');
                 strictAssertSame(1000000000, filemtime($multi ? $state['destination'] . '/item' : $state['destination']), 'the staged copy preserves mtime');
-                strictAssertSame(array(), moveSettleDownloads($state), 'neither the source nor its quarantine copy is left behind');
+                strictAssertSame([], moveSettleDownloads($state), 'neither the source nor its quarantine copy is left behind');
             } finally { strictRemoveTree($state['root']); }
-        });
-foreach (array(false, true) as $multi)
-    foreach (array('published', 'staged') as $phase)
+        }); } }
+foreach ([false, true] as $multi) {
+    foreach (['published', 'staged'] as $phase) {
     $suite->test('a published cross-mount destination still missing on recovery keeps its original receipt phase=' . $phase . ' multi=' . (int) $multi, function () use ($multi, $phase) {
         $state = moveWorkerFixture($multi);
-        $state['settle'] = array(moveSettlePattern($state['destination']), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1);
+        $state['settle'] = [moveSettlePattern($state['destination']), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1];
         moveSettleExdev($state);
         $journal = $state['root'] . '/session/.autotools-file-jobs/' . $state['hash'] . '.move.json';
         try {
@@ -152,24 +152,24 @@ foreach (array(false, true) as $multi)
             strictAssertSame(false, $after['queued'], 'the native queue retires after recovery');
             strictAssertSame(false, file_exists($journal), 'the original receipt retires only after completion');
             strictAssertSame(2, count(moveSettleRenames($state)), 'only the original stage publication and source quarantine occur');
-            strictAssertSame(array(), moveSettleDownloads($state), 'no public source or hidden source copy is left behind');
+            strictAssertSame([], moveSettleDownloads($state), 'no public source or hidden source copy is left behind');
             strictAssertSame('payload', file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']), 'the original copy is published');
         } finally { strictRemoveTree($state['root']); }
-    });
+    }); } }
 // The quarantine this worker renamed stays invisible past the bound: retiring
 // then would leave the whole source copy hidden with no journal to recover it.
-foreach (array(false, true) as $multi)
-    foreach (array('current', 'legacy') as $receipt)
-    foreach (array('retained', 'absent', 'notice-pending', 'notice-attempted', 'completed') as $claim)
+foreach ([false, true] as $multi) {
+    foreach (['current', 'legacy'] as $receipt) {
+    foreach (['retained', 'absent', 'notice-pending', 'notice-attempted', 'completed'] as $claim) {
     $suite->test('a source quarantine that never answers stays held and the next worker deletes it receipt=' . $receipt . ' claim=' . $claim . ' multi=' . (int) $multi, function () use ($multi, $receipt, $claim) {
         $state = moveWorkerFixture($multi);
         $late = dirname($state['source']) . '/.autotools-move-' . $state['qid'] . '.source';
-        $state['settle'] = array(moveSettlePattern($late), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1);
+        $state['settle'] = [moveSettlePattern($late), ERASEDATA_RENAME_SETTLE_ATTEMPTS + 1];
         moveSettleExdev($state);
         try {
             list($exit, $after, $calls, $output) = moveWorkerRun($state);
             strictAssertSame(1, $exit, 'an unconfirmed quarantine keeps the job: ' . $output);
-            strictAssertSame(array($late => ERASEDATA_RENAME_SETTLE_ATTEMPTS), moveSettleLookups($state), 'the settle stops at its bound');
+            strictAssertSame([$late => ERASEDATA_RENAME_SETTLE_ATTEMPTS], moveSettleLookups($state), 'the settle stops at its bound');
             $log = file_get_contents($state['root'] . '/errors.log');
             strictAssertSame(true, strpos($log, 'quarantine-unconfirmed') !== false, 'the hold names the unconfirmed quarantine: ' . $log);
             strictAssertSame(false, strpos($log, 'source retired') !== false, 'nothing claims the source was retired');
@@ -184,8 +184,8 @@ foreach (array(false, true) as $multi)
             // An old worker could ACK after a negative quarantine lookup and
             // die before writing notice-pending. Its absent native claim does
             // not attest deletion of this still-hidden source obligation.
-            if ($claim !== 'retained') $after['lease'] = 'absent';
-            if (!in_array($claim, array('retained', 'absent'), true)) $record['phase'] = $claim;
+            if ($claim !== 'retained') { $after['lease'] = 'absent'; }
+            if (!in_array($claim, ['retained', 'absent'], true)) { $record['phase'] = $claim; }
             file_put_contents($journal, json_encode($record, JSON_UNESCAPED_SLASHES));
             unset($after['settle']);
             list($exit, $after, $calls, $output) = moveWorkerRun($after);
@@ -199,9 +199,9 @@ foreach (array(false, true) as $multi)
             strictAssertSame(2, count(moveSettleRenames($state)), 'no worker renames the payload again');
             strictAssertSame(false, $after['queued'], 'the native queue retires');
             strictAssertSame('payload', file_get_contents($multi ? $state['destination'] . '/item' : $state['destination']), 'copied bytes');
-            strictAssertSame(array(), moveSettleDownloads($state), 'the quarantine copy is deleted, not leaked');
+            strictAssertSame([], moveSettleDownloads($state), 'the quarantine copy is deleted, not leaked');
         } finally { strictRemoveTree($state['root']); }
-    });
+    }); } } }
 $suite->test('a cross-mount receipt confirmed before source cleanup recovers after the final unlink', function () {
     if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
         echo "scope - permission denial requires non-root worker\n";
@@ -237,7 +237,7 @@ $suite->test('a cross-mount receipt confirmed before source cleanup recovers aft
         strictAssertSame(false, $after['queued'], 'the native queue retires');
         strictAssertSame('absent', $after['lease'], 'the exact native lease retires');
         strictAssertSame(false, file_exists($journal), 'the completed receipt retires');
-        strictAssertSame(array(), moveSettleDownloads($state), 'no source copy remains');
+        strictAssertSame([], moveSettleDownloads($state), 'no source copy remains');
         strictAssertSame('payload', file_get_contents($state['destination']), 'the copied payload remains');
     } finally { chmod($state['root'] . '/dl', 0700); strictRemoveTree($state['root']); }
 });

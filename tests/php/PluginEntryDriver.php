@@ -23,12 +23,12 @@ require_once(__DIR__ . '/FakeRtorrentDaemon.php');
  */
 final class PluginEntryDriver
 {
-	public static function run($base, $port, $script, array $options = array())
+	public static function run($base, $port, $script, array $options = [])
 	{
 		$root = realpath(__DIR__ . '/../..');
 		@mkdir($base . '/profile/settings', 0700, true);
 		$method = isset($options['post']) ? 'POST' : 'GET';
-		$request = $options['post'] ?? ($options['get'] ?? array());
+		$request = $options['post'] ?? ($options['get'] ?? []);
 		$driver = $base . '/drive-' . bin2hex(random_bytes(4)) . '.php';
 		file_put_contents($driver, "<?php\n"
 			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($base . '/profile', true) . ";\n"
@@ -52,26 +52,26 @@ final class PluginEntryDriver
 			. ($options['before'] ?? '') . "\n"
 			. 'chdir(' . var_export(dirname($root . '/' . $script), true) . ");\n"
 			. 'require(' . var_export($root . '/' . $script, true) . ");\n");
-		$process = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr', $driver),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
-		if (!is_resource($process))
-			throw new RuntimeException('plugin entry driver did not start');
+		$process = proc_open([PHP_BINARY, '-d', 'display_errors=stderr', $driver],
+			[0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+		if (!is_resource($process)) {
+			throw new RuntimeException('plugin entry driver did not start'); }
 		fclose($pipes[0]);
 		$out = stream_get_contents($pipes[1]);
 		$err = stream_get_contents($pipes[2]);
 		fclose($pipes[1]);
 		fclose($pipes[2]);
-		return array(proc_close($process), $out, $err);
+		return [proc_close($process), $out, $err];
 	}
 
 	/** The start.sh text of every task the run tried to start. */
 	public static function taskScripts($base)
 	{
 		$tasks = $base . '/profile/settings/tasks';
-		$scripts = array();
-		foreach (is_dir($tasks) ? scandir($tasks) : array() as $entry)
-			if ($entry !== '.' && $entry !== '..' && is_file($tasks . '/' . $entry . '/start.sh'))
-				$scripts[] = file_get_contents($tasks . '/' . $entry . '/start.sh');
+		$scripts = [];
+		foreach (is_dir($tasks) ? scandir($tasks) : [] as $entry) {
+			if ($entry !== '.' && $entry !== '..' && is_file($tasks . '/' . $entry . '/start.sh')) {
+				$scripts[] = file_get_contents($tasks . '/' . $entry . '/start.sh'); } }
 		return $scripts;
 	}
 
@@ -82,11 +82,11 @@ final class PluginEntryDriver
 			@unlink($path);
 			return;
 		}
-		if (!is_dir($path))
-			return;
-		foreach (scandir($path) as $entry)
-			if ($entry !== '.' && $entry !== '..')
-				self::removeTree($path . '/' . $entry);
+		if (!is_dir($path)) {
+			return; }
+		foreach (scandir($path) as $entry) {
+			if ($entry !== '.' && $entry !== '..') {
+				self::removeTree($path . '/' . $entry); } }
 		@rmdir($path);
 	}
 }

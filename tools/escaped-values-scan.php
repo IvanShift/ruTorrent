@@ -17,9 +17,9 @@ rutorrent_require_cli(__FILE__);
 
 final class EscapedValuesScan
 {
-	const MAX_LEVELS = 8;
+	public const MAX_LEVELS = 8;
 	// d.hash, d.name, d.custom1, d.directory, d.base_path, per download.
-	const COLUMNS = 5;
+	public const COLUMNS = 5;
 
 	/** Whether a value read before round 5 and written back would look like this. */
 	public static function looksEscaped($value)
@@ -42,16 +42,11 @@ final class EscapedValuesScan
 		$length = strlen($value);
 		for ($i = 0; $i < $length; $i++) {
 			if (($value[$i] === '\\') && (($i + 1) < $length) &&
-				(($value[$i + 1] === '\\') || ($value[$i + 1] === '"')))
-				$i++;
+				(($value[$i + 1] === '\\') || ($value[$i + 1] === '"'))) {
+				$i++; }
 			$out .= $value[$i];
 		}
 		return($out);
-	}
-
-	private static function present($path)
-	{
-		return(($path !== '') && (@file_exists($path) || @is_link($path)));
 	}
 
 	/**
@@ -60,9 +55,9 @@ final class EscapedValuesScan
 	 */
 	public static function classify($label, $directory, $basePath, $exists = null)
 	{
-		if ($exists === null)
-			$exists = array(__CLASS__, 'present');
-		$findings = array();
+		if ($exists === null) {
+			$exists = [__CLASS__, 'present']; }
+		$findings = [];
 		$decoded = rawurldecode((string)$label);
 		if (self::looksEscaped($decoded)) {
 			$levels = 0;
@@ -71,33 +66,33 @@ final class EscapedValuesScan
 				$candidate = self::unescapeOnce($candidate);
 				$levels++;
 			}
-			$findings[] = array('label-escaped', 'label', $levels, $decoded, $candidate);
+			$findings[] = ['label-escaped', 'label', $levels, $decoded, $candidate];
 		}
-		$seen = array();
-		foreach (array('directory' => $directory, 'base_path' => $basePath) as $field => $value) {
-			if (!is_string($value) || ($value === '') || !self::looksEscaped($value) || isset($seen[$value]))
-				continue;
+		$seen = [];
+		foreach (['directory' => $directory, 'base_path' => $basePath] as $field => $value) {
+			if (!is_string($value) || ($value === '') || !self::looksEscaped($value) || isset($seen[$value])) {
+				continue; }
 			$seen[$value] = true;
 			$stored = call_user_func($exists, $value);
 			$candidate = $value;
 			$found = null;
 			for ($levels = 1; $levels <= self::MAX_LEVELS; $levels++) {
 				$next = self::unescapeOnce($candidate);
-				if ($next === $candidate)
-					break;
+				if ($next === $candidate) {
+					break; }
 				$candidate = $next;
 				if (call_user_func($exists, $candidate)) {
-					$found = array($levels, $candidate);
+					$found = [$levels, $candidate];
 					break;
 				}
 			}
-			if ($found === null)
-				$found = array(max(1, $levels - 1), $candidate);
+			if ($found === null) {
+				$found = [max(1, $levels - 1), $candidate]; }
 			$unescaped = ($found[1] !== $value) && call_user_func($exists, $found[1]);
 			$class = $stored
 				? ($unescaped ? 'escaped-path-both-exist' : 'escaped-path-legitimate-or-escaped')
 				: ($unescaped ? 'escaped-path-missing' : 'escaped-path-unresolved');
-			$findings[] = array($class, $field, $found[0], $value, $found[1]);
+			$findings[] = [$class, $field, $found[0], $value, $found[1]];
 		}
 		return($findings);
 	}
@@ -105,23 +100,23 @@ final class EscapedValuesScan
 	/** Empty neighboring directories may survive after their torrent was fixed. */
 	public static function emptyDirectories($directories, $referenced)
 	{
-		$parents = array();
-		foreach($directories as $directory)
-			foreach(array($directory, dirname($directory)) as $parent)
-				if($parent !== '' && is_dir($parent) && !is_link($parent)) $parents[$parent] = true;
-		$result = array();
+		$parents = [];
+		foreach($directories as $directory) {
+			foreach([$directory, dirname($directory)] as $parent) {
+				if($parent !== '' && is_dir($parent) && !is_link($parent)) { $parents[$parent] = true; } } }
+		$result = [];
 		foreach(array_keys($parents) as $parent)
 		{
 			$entries = @scandir($parent);
-			if($entries === false) throw new RuntimeException('directory-unreadable');
+			if($entries === false) { throw new RuntimeException('directory-unreadable'); }
 			foreach($entries as $entry)
 			{
-				if(!self::looksEscaped($entry)) continue;
+				if(!self::looksEscaped($entry)) { continue; }
 				$path = rtrim($parent, '/').'/'.$entry;
-				if(isset($referenced[$path]) || isset($result[$path]) || is_link($path) || !is_dir($path)) continue;
+				if(isset($referenced[$path]) || isset($result[$path]) || is_link($path) || !is_dir($path)) { continue; }
 				$children = @scandir($path);
-				if($children === false) throw new RuntimeException('directory-unreadable');
-				if(count($children) === 2) $result[$path] = self::unescapeOnce($path);
+				if($children === false) { throw new RuntimeException('directory-unreadable'); }
+				if(count($children) === 2) { $result[$path] = self::unescapeOnce($path); }
 			}
 		}
 		return $result;
@@ -137,7 +132,7 @@ final class EscapedValuesScan
 		}
 		$cmd = new rXMLRPCCommand('d.multicall', 'main');
 		$cmd->addParameters(array_map('getCmd',
-			array('d.get_hash=', 'd.get_name=', 'd.get_custom1=', 'd.get_directory=', 'd.get_base_path=')));
+			['d.get_hash=', 'd.get_name=', 'd.get_custom1=', 'd.get_directory=', 'd.get_base_path=']));
 		$req = new rXMLRPCRequest($cmd);
 		$req->important = false;
 		if (!$req->run() || $req->fault) {
@@ -149,27 +144,27 @@ final class EscapedValuesScan
 			fwrite($err, "escaped-values-scan: the download list answer is malformed; nothing was checked\n");
 			return(2);
 		}
-		foreach($req->val as $index => $value)
+		foreach($req->val as $index => $value) {
 			if(!is_string($value) || (($index % self::COLUMNS) === 0 && !preg_match('/^[0-9A-Fa-f]{40}\z/', $value)))
 			{
 				fwrite($err, "escaped-values-scan: the download list answer is malformed; nothing was checked\n");
 				return(2);
-			}
+			} }
 		$downloads = 0;
 		$findings = 0;
 		$affected = 0;
-		$directories = array();
-		$referenced = array();
+		$directories = [];
+		$referenced = [];
 		for ($i = 0; $i < count($req->val); $i += self::COLUMNS) {
 			$downloads++;
 			list($hash, $name, $label, $directory, $basePath) = array_slice($req->val, $i, self::COLUMNS);
 			$rows = self::classify($label, $directory, $basePath);
-			if(is_string($directory) && $directory !== '') $directories[] = $directory;
-			foreach(array($directory, $basePath) as $path)
-				if(is_string($path) && $path !== '') $referenced[$path] = true;
-			foreach($rows as $row) $referenced[$row[4]] = true;
-			if (count($rows))
-				$affected++;
+			if(is_string($directory) && $directory !== '') { $directories[] = $directory; }
+			foreach([$directory, $basePath] as $path) {
+				if(is_string($path) && $path !== '') { $referenced[$path] = true; } }
+			foreach($rows as $row) { $referenced[$row[4]] = true; }
+			if (count($rows)) {
+				$affected++; }
 			foreach ($rows as $row) {
 				$findings++;
 				fwrite($out, self::printable($hash) . "\tclass=" . $row[0] . "\tfield=" . $row[1]
@@ -183,29 +178,34 @@ final class EscapedValuesScan
 			fwrite($err, 'escaped-values-scan: '.$error->getMessage()."; neighboring directory scan incomplete\n");
 			return(2);
 		}
-		foreach($empty as $path => $candidate)
+		foreach($empty as $path => $candidate) {
 			fwrite($out, "-\tclass=escaped-empty-directory\tfield=neighbor\tlevels=1\tvalue="
-				.self::printable($path)."\tunescaped=".self::printable($candidate)."\tname=\n");
+				.self::printable($path)."\tunescaped=".self::printable($candidate)."\tname=\n"); }
 		$findings += count($empty);
 		fwrite($out, 'escaped-values-scan: ' . $downloads . ' downloads read; ' . $findings
 			. ' ambiguous candidates on ' . $affected . ' downloads; '.count($empty)
 			. " empty neighboring directories; no corruption or duplicate payload proven; nothing was changed\n");
 		return($findings && in_array('--fail-on-candidates', $args, true) ? 1 : 0);
 	}
+
+	private static function present($path)
+	{
+		return(($path !== '') && (@file_exists($path) || @is_link($path)));
+	}
 }
 
 if (!defined('ESCAPED_VALUES_SCAN_IMPORT_ONLY')) {
-	$args = array_slice(isset($argv) && is_array($argv) ? $argv : array(), 1);
+	$args = array_slice(isset($argv) && is_array($argv) ? $argv : [], 1);
 	$user = '';
-	foreach ($args as $arg)
-		if (strncmp($arg, '--user=', 7) === 0)
-			$user = substr($arg, 7);
+	foreach ($args as $arg) {
+		if (strncmp($arg, '--user=', 7) === 0) {
+			$user = substr($arg, 7); } }
 	// Before the configuration loads: a per-user conf/users/<user>/config.php
 	// may name another SCGI endpoint. User::getUser() folds the name the way
 	// it folds an HTTP login, so the tool picks the profile the WebUI uses.
 	$_SERVER['REMOTE_USER'] = $user;
 }
-if(!defined('RUTORRENT_SETTINGS_READ_ONLY')) define('RUTORRENT_SETTINGS_READ_ONLY', true);
+if(!defined('RUTORRENT_SETTINGS_READ_ONLY')) { define('RUTORRENT_SETTINGS_READ_ONLY', true); }
 require_once(dirname(__DIR__) . '/php/xmlrpc.php');
-if (!defined('ESCAPED_VALUES_SCAN_IMPORT_ONLY'))
-	exit(EscapedValuesScan::main($args, STDOUT, STDERR));
+if (!defined('ESCAPED_VALUES_SCAN_IMPORT_ONLY')) {
+	exit(EscapedValuesScan::main($args, STDOUT, STDERR)); }

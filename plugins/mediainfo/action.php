@@ -8,8 +8,8 @@ class mediainfoSettings
 {
 	public $hash = "mediainfo.dat";
 	public $modified = false;
-	public $data = array();
-	static public function load()
+	public $data = [];
+	public static function load()
 	{
 		$cache = new rCache();
 		$rt = new mediainfoSettings();
@@ -17,7 +17,7 @@ class mediainfoSettings
 	}
 }
 
-$ret = array( "status"=>255, "errors"=>array("Can't retrieve information") );
+$ret = [ "status"=>255, "errors"=>["Can't retrieve information"] ];
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 
 if(isset($input['hash']) &&
@@ -32,17 +32,17 @@ if(isset($input['hash']) &&
 			$filename = rTorrent::getFilePath($input['hash'], $input['no']);
 			if($filename !== false)
 			{
-				$commands = array();
+				$commands = [];
 				$flags = '';
 				$st = mediainfoSettings::load();
-				$task = new rTask( array
-				(
+				$task = new rTask( 
+				[
 					'arg' => FileUtil::getFileName($filename),
 					'requester'=>'mediainfo',
 					'name'=>'mediainfo',
 					'hash'=>$input['hash'],
-					'no'=>$input['no']
-				) );
+					'no'=>$input['no'],
+				] );
 				if($st && !empty($st->data["mediainfousetemplate"]))
 				{
 					$randName = $task->makeDirectory()."/opts";

@@ -64,9 +64,9 @@ while (true) {
 fclose($server);
 echo json_encode($requests), "\n";
 PHP;
-    $process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r', $worker,
-        base64_encode(json_encode($responses))),
-        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+    $process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r', $worker,
+        base64_encode(json_encode($responses))],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
     testAssertTrue(is_resource($process), 'The local HTTP peer starts');
     try {
         stream_set_timeout($pipes[1], 8);
@@ -76,12 +76,12 @@ PHP;
         $check = $body((int) $match[1]);
         fwrite($pipes[0], "done\n");
         $json = '';
-        while (($line = fgets($pipes[1])) !== false) $json .= $line;
+        while (($line = fgets($pipes[1])) !== false) { $json .= $line; }
         $requests = json_decode(trim($json), true);
         testAssertTrue(is_array($requests), 'The peer reports the requests it received');
         $check(array_map('base64_decode', $requests));
     } finally {
-        foreach ($pipes as $pipe) if (is_resource($pipe)) fclose($pipe);
+        foreach ($pipes as $pipe) { if (is_resource($pipe)) { fclose($pipe); } }
         proc_close($process);
     }
 }
@@ -96,13 +96,13 @@ function rsPoll($validatorLines, callable $check)
         return base64_encode("HTTP/1.0 200 OK\r\n" . $extra . "Content-Type: text/xml\r\n"
             . "Content-Length: " . strlen($feed) . "\r\n\r\n" . $feed);
     };
-    rsPeer(array($answer($validatorLines), $answer('')), function ($port) use ($check) {
+    rsPeer([$answer($validatorLines), $answer('')], function ($port) use ($check) {
         // The url carries credentials, which Snoopy writes after rawheaders.
         $feedUrl = 'http://' . RS_USER . ':' . RS_PASS . '@127.0.0.1:' . $port . '/feed.xml';
         $rss = new rRSS($feedUrl);
         $history = new rRSSHistory();
         testAssertTrue($rss->fetch($history), 'The first poll succeeds');
-        $first = array('etag' => $rss->etag, 'lastModified' => $rss->lastModified);
+        $first = ['etag' => $rss->etag, 'lastModified' => $rss->lastModified];
         testAssertTrue($rss->fetch($history), 'The second poll succeeds');
         return function ($requests) use ($check, $first) { $check($requests, $first); };
     });
@@ -116,7 +116,7 @@ function rsWellFormed($wire, $what)
     testAssertTrue(substr($wire, -4) === "\r\n\r\n", "$what ends at that blank line");
 }
 
-$tests = array(
+$tests = [
     // The control: validators of the shape the grammars allow are kept and
     // sent back exactly as the feed wrote them -- case included, which is the
     // only way an entity tag can match the one the server issued.
@@ -204,9 +204,9 @@ $tests = array(
     'an ETag with no quotes at all is not kept' => function () {
         rsPoll("ETag: v1abc\r\n", function ($requests, $first) {
             testAssertTrue($first['etag'] === null, 'An unquoted token is not an entity tag');
-            foreach (rsFieldLines($requests[1]) as $line)
+            foreach (rsFieldLines($requests[1]) as $line) {
                 testAssertTrue(strpos($line, 'If-None-Match') !== 0,
-                    'The second poll asks no conditional question');
+                    'The second poll asks no conditional question'); }
         });
     },
     // An ETag is a quoted string. An unquoted one is not an entity tag, and
@@ -215,9 +215,9 @@ $tests = array(
         rsPoll("ETag: v1 and anything at all\r\n", function ($requests, $first) {
             testAssertTrue($first['etag'] === null, 'An unquoted ETag is not an entity tag');
             testAssertTrue(count($requests) === 2, 'The feed is polled twice');
-            foreach (rsFieldLines($requests[1]) as $line)
+            foreach (rsFieldLines($requests[1]) as $line) {
                 testAssertTrue(strpos($line, 'If-None-Match') !== 0,
-                    'The second poll asks no conditional question');
+                    'The second poll asks no conditional question'); }
         });
     },
     'a NUL in Last-Modified is ignored without aborting either poll' => function () {
@@ -229,18 +229,18 @@ $tests = array(
                     rsWellFormed($wire, "poll $index");
                     testAssertTrue(strpos($wire, "\0") === false, "No NUL reaches poll $index");
                 }
-                foreach (rsFieldLines($requests[1]) as $line)
+                foreach (rsFieldLines($requests[1]) as $line) {
                     testAssertTrue(strpos($line, 'If-Modified-Since') !== 0,
-                        'The second poll sends no invalid date');
+                        'The second poll sends no invalid date'); }
             });
     },
     // A date is not a date because it has date-shaped bytes in it.
     'a Last-Modified that is not a date is not kept' => function () {
         rsPoll("Last-Modified: not a date at all\r\n", function ($requests, $first) {
             testAssertTrue($first['lastModified'] === null, 'A string that parses as no date is not kept');
-            foreach (rsFieldLines($requests[1]) as $line)
+            foreach (rsFieldLines($requests[1]) as $line) {
                 testAssertTrue(strpos($line, 'If-Modified-Since') !== 0,
-                    'The second poll sends no date');
+                    'The second poll sends no date'); }
         });
     },
     // A date goes back out in If-Modified-Since. There is no If-Last-Modified
@@ -252,9 +252,9 @@ $tests = array(
                 $lines = rsFieldLines($requests[1]);
                 testAssertTrue(in_array('If-Modified-Since: Wed, 21 Oct 2026 07:28:00 GMT', $lines, true),
                     'The poll asks If-Modified-Since: ' . json_encode($lines));
-                foreach ($lines as $line)
+                foreach ($lines as $line) {
                     testAssertTrue(stripos($line, 'If-Last-Modified') !== 0,
-                        'and asks under no other name: ' . $line);
+                        'and asks under no other name: ' . $line); }
             });
     },
     // RFC 9110 5.6.7: a recipient must accept all three formats, and a
@@ -286,15 +286,15 @@ $tests = array(
     // so a date-shaped string that is not one buys exactly what the wrong
     // header name bought.
     'a timestamp that is not an HTTP-date is not kept' => function () {
-        foreach (array('2026-10-21 07:28:00', '21 Oct 2026 07:28:00 GMT',
+        foreach (['2026-10-21 07:28:00', '21 Oct 2026 07:28:00 GMT',
             'Wed, 21 Oct 2026 07:28:00 +0000', 'Wed, 21 Oct 2026 07:28:00 GMT junk',
-            '1761031680', 'Wed, 32 Oct 2026 07:28:00 GMT') as $value) {
+            '1761031680', 'Wed, 32 Oct 2026 07:28:00 GMT'] as $value) {
             rsPoll("Last-Modified: " . $value . "\r\n", function ($requests, $first) use ($value) {
                 testAssertTrue($first['lastModified'] === null,
                     '"' . $value . '" is not an HTTP-date: ' . var_export($first['lastModified'], true));
-                foreach (rsFieldLines($requests[1]) as $line)
+                foreach (rsFieldLines($requests[1]) as $line) {
                     testAssertTrue(stripos($line, 'If-Modified-Since') !== 0,
-                        'so the poll is unconditional on it: ' . $line);
+                        'so the poll is unconditional on it: ' . $line); }
             });
         }
     },
@@ -319,6 +319,6 @@ $tests = array(
                 'The high bytes reach the second poll as the feed wrote them');
         });
     },
-);
+];
 
 exit(testRunCases($tests));

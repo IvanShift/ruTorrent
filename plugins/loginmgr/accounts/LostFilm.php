@@ -7,6 +7,10 @@ class LostFilmAccount extends commonAccount
 	// POST that has already gone out in the clear -- and the site issues
 	// exactly such a redirect, so http here bought nothing but the exposure.
 	public $url = "https://lostfilm.tv";
+	public function test($url)
+	{
+		return(self::urlAddresses($url,["lostfilm.tv"],"https","/download.php"));
+	}
 
 	protected function isOK($client)
 	{
@@ -19,8 +23,8 @@ class LostFilmAccount extends commonAccount
 		{
 			if(!$client->fetch($this->url."/details.php?id=".$id) ||
 				!$this->hasReadableBody($client) ||
-				!preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^'[:cntrl:]]*)'`si", $client->results, $md5))
-				return(false);
+				!preg_match("`/download\.php\?id=".$id."&\S+\s*\sonMouseOver=\"setCookie\('dlt','([^'[:cntrl:]]*)'`si", $client->results, $md5)) {
+				return(false); }
 			$client->cookies["dlt_2"] = $md5[1];
 			// The retry is an answer like any other. get_filename() reads only
 			// the Content-Disposition header -- never the status, never the
@@ -37,8 +41,8 @@ class LostFilmAccount extends commonAccount
 	}
 	protected function getDownloadId($url)
 	{
-		if(!$this->test($url) || strcasecmp((string) parse_url($url, PHP_URL_PATH), '/download.php') !== 0)
-			return(false);
+		if(!$this->test($url) || strcasecmp((string) parse_url($url, PHP_URL_PATH), '/download.php') !== 0) {
+			return(false); }
 		return(self::queryDigits($url, 'id'));
 	}
 
@@ -57,9 +61,5 @@ class LostFilmAccount extends commonAccount
 			}
 		}
 		return(false);
-	}
-	public function test($url)
-	{
-		return(self::urlAddresses($url,array("lostfilm.tv"),"https","/download.php"));
 	}
 }

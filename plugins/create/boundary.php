@@ -25,51 +25,57 @@ final class CreateBoundary
 		return($reason);
 	}
 
+	/** Logs a refusal of $what with its reason and entry, one line whatever the name holds. */
+	public static function log($what, $reason, $entry)
+	{
+		FileUtil::toLog($what.' refused reason='.$reason.' entry='.JSON::safeEncode($entry));
+	}
+
 	/** The reason refusal() gives, with $at set to the entry it is about. */
 	private static function find(&$path, &$at)
 	{
 		$inside = rTorrentSettings::get()->correctReportedDirectory($path) && rTorrent::isInsideTopDirectory($path);
 		$at = $path;
-		if(!$inside)
-			return('outside-top-directory');
+		if(!$inside) {
+			return('outside-top-directory'); }
 		global $topDirectory;
 		// Nothing is outside a top directory of "/", the default.
-		if(FileUtil::addslash($topDirectory) === '/')
-			return(null);
+		if(FileUtil::addslash($topDirectory) === '/') {
+			return(null); }
 		// isInsideTopDirectory() above refuses without realpath() or
 		// is_link() only for a local rtorrent; for a remote one it answers
 		// without them, so the walk checks every function it calls. A
 		// disabled one returns null on PHP 7.4, which would skip the links
 		// or, for is_dir(), the whole walk; PHP 8 throws.
-		foreach(array('scandir', 'is_dir', 'is_link', 'realpath') as $function)
-			if(!function_exists($function))
-				return('walk-unavailable');
-		if(!@is_dir($path))
-			return(null);
+		foreach(['scandir', 'is_dir', 'is_link', 'realpath'] as $function) {
+			if(!function_exists($function)) {
+				return('walk-unavailable'); } }
+		if(!@is_dir($path)) {
+			return(null); }
 		// Each real folder is listed once and without recursion, so a link
 		// back up the tree cannot loop the walk. Lookups go through real
 		// paths: the links in a path as the creator sees it ($name, kept for
 		// the answer) count toward the kernel's limit, past which an entry
 		// looks like neither a link nor a folder.
-		$pending = array(array(rtrim($path, '/'), $path));
-		$seen = array();
+		$pending = [[rtrim($path, '/'), $path]];
+		$seen = [];
 		while(count($pending))
 		{
 			list($name, $dir) = array_pop($pending);
 			$at = $name;
 			$real = @realpath($dir);
-			if($real === false)
-				return('unreadable-directory');
-			if(isset($seen[$real]))
-				continue;
+			if($real === false) {
+				return('unreadable-directory'); }
+			if(isset($seen[$real])) {
+				continue; }
 			$seen[$real] = true;
 			$items = @scandir($real);
-			if(!is_array($items))
-				return('unreadable-directory');
+			if(!is_array($items)) {
+				return('unreadable-directory'); }
 			foreach($items as $item)
 			{
-				if(($item === '.') || ($item === '..'))
-					continue;
+				if(($item === '.') || ($item === '..')) {
+					continue; }
 				$link = $real.'/'.$item;
 				if(@is_link($link) && !rTorrent::isInsideTopDirectory($link))
 				{
@@ -78,16 +84,10 @@ final class CreateBoundary
 					// resolve is refused too.
 					return(is_string(@realpath($link)) ? 'link-outside-top-directory' : 'link-unresolved');
 				}
-				if(@is_dir($link))
-					$pending[] = array($name.'/'.$item, $link);
+				if(@is_dir($link)) {
+					$pending[] = [$name.'/'.$item, $link]; }
 			}
 		}
 		return(null);
-	}
-
-	/** Logs a refusal of $what with its reason and entry, one line whatever the name holds. */
-	public static function log($what, $reason, $entry)
-	{
-		FileUtil::toLog($what.' refused reason='.$reason.' entry='.JSON::safeEncode($entry));
 	}
 }

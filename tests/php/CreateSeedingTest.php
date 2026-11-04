@@ -5,7 +5,7 @@ require_once(__DIR__ . '/TestCase.php');
 class FileUtil
 {
     public static $path;
-    public static $logs = array();
+    public static $logs = [];
     public static function getUniqueUploadedFilename($name) { return(self::$path); }
     public static function addslash($path) { return(rtrim($path, '/') . '/'); }
     public static function toLog($message) { self::$logs[] = $message; }
@@ -26,24 +26,24 @@ class rTorrentSettings
 class rTorrent
 {
     public static $status;
-    public static $calls = array();
+    public static $calls = [];
     public static $inside = true;
     public static function isInsideTopDirectory($path) { return(self::$inside); }
     public static function fastResume($torrent, $path) {
-        self::$calls[] = array('resume', $path);
+        self::$calls[] = ['resume', $path];
         return(false);
     }
     public static function sendTorrent($torrent, $start, $new, $path, $label,
         $resume, $local, $isNew = true, $addition = null, &$pendingReceipt = null,
         $beforeDispatch = null, $directoryIsReported = false) {
-        self::$calls[] = array('send', $start, $new, $path, $label, $resume, $local, $directoryIsReported);
+        self::$calls[] = ['send', $start, $new, $path, $label, $resume, $local, $directoryIsReported];
         return(self::$status);
     }
 }
 class CreateSeedingFixtureTorrent
 {
-    public $info = array('name' => 'example');
-    public $saved = array();
+    public $info = ['name' => 'example'];
+    public $saved = [];
     public function save($path) { $this->saved[] = $path; return(true); }
 }
 
@@ -53,35 +53,35 @@ class CreateSeedingTest extends TestCase
     {
         $helper = __DIR__ . '/../../plugins/create/seeding.php';
         $this->assertTrue(is_file($helper), 'create CLI paths need one seeding publisher');
-        if (!is_file($helper)) return;
+        if (!is_file($helper)) { return; }
         require_once($helper);
         $dir = sys_get_temp_dir() . '/rutorrent-create-seed-' . getmypid();
         mkdir($dir, 0700);
         $GLOBALS['topDirectory'] = '/';
         try {
-            foreach (array('correct', 'create') as $origin) {
-                foreach (array(true, null, false) as $status) {
+            foreach (['correct', 'create'] as $origin) {
+                foreach ([true, null, false] as $status) {
                     FileUtil::$path = $dir . '/uploaded.torrent';
-                    FileUtil::$logs = array();
+                    FileUtil::$logs = [];
                     rTorrent::$status = $status;
-                    rTorrent::$calls = array();
+                    rTorrent::$calls = [];
                     $torrent = new CreateSeedingFixtureTorrent();
-                    CreateSeeding::publish($torrent, array('path_edit' => $dir),
+                    CreateSeeding::publish($torrent, ['path_edit' => $dir],
                         0666, $origin);
-                    $this->assertSame(array(FileUtil::$path), $torrent->saved);
+                    $this->assertSame([FileUtil::$path], $torrent->saved);
                     $this->assertSame('send', rTorrent::$calls[1][0]);
                     $this->assertSame(true, rTorrent::$calls[1][1]);
                     $this->assertSame(true, rTorrent::$calls[1][2]);
                     $this->assertSame(dirname($dir), rTorrent::$calls[1][3]);
                     $this->assertSame(true, rTorrent::$calls[1][7], 'the source directory is reported, never reinterpreted as typed input');
                     $expected = $status === null ?
-                        array($origin . ': seeding load pending confirmation') :
+                        [$origin . ': seeding load pending confirmation'] :
                         ($status === false ?
-                            array($origin . ': seeding load dispatch failed') : array());
+                            [$origin . ': seeding load dispatch failed'] : []);
                     $this->assertSame($expected, FileUtil::$logs);
                 }
             }
-            foreach (array('correct.php', 'createtorrent.php') as $script) {
+            foreach (['correct.php', 'createtorrent.php'] as $script) {
                 $source = file_get_contents(__DIR__ . '/../../plugins/create/' . $script);
                 $this->assertTrue(strpos($source, 'CreateSeeding::publish(') !== false,
                     $script . ' uses the shared publisher');
@@ -97,22 +97,22 @@ class CreateSeedingTest extends TestCase
     {
         require_once(__DIR__ . '/../../plugins/create/seeding.php');
         $GLOBALS['topDirectory'] = '/nonexistent/';
-        foreach (array('correct', 'create') as $origin) {
+        foreach (['correct', 'create'] as $origin) {
             FileUtil::$path = '/nonexistent/uploaded.torrent';
-            FileUtil::$logs = array();
-            rTorrent::$calls = array();
+            FileUtil::$logs = [];
+            rTorrent::$calls = [];
             rTorrent::$inside = false;
             $torrent = new CreateSeedingFixtureTorrent();
             ob_start();
             try {
-                CreateSeeding::publish($torrent, array('path_edit' => '/nonexistent/payload'), 0666, $origin);
+                CreateSeeding::publish($torrent, ['path_edit' => '/nonexistent/payload'], 0666, $origin);
             } finally {
                 $printed = ob_get_clean();
                 rTorrent::$inside = true;
             }
-            $this->assertSame(array(), $torrent->saved, 'no copy of the torrent is kept for seeding');
-            $this->assertSame(array(), rTorrent::$calls, 'and rtorrent is given nothing to serve');
-            $this->assertSame(array($origin . ': seeding refused reason=outside-top-directory entry="\\/payload"'),
+            $this->assertSame([], $torrent->saved, 'no copy of the torrent is kept for seeding');
+            $this->assertSame([], rTorrent::$calls, 'and rtorrent is given nothing to serve');
+            $this->assertSame([$origin . ': seeding refused reason=outside-top-directory entry="\\/payload"'],
                 FileUtil::$logs, 'the log names the classified reason and the entry');
             $this->assertSame("Seeding refused (outside-top-directory): \"\\/payload\"\n", $printed,
                 'and so does the task log, encoded like the log');

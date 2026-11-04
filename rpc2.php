@@ -84,11 +84,11 @@ $allowRootDirectory = $policy['allowRootDirectory'];
 function rpc2_log($message, $force = false)
 {
 	global $logging, $log_file;
-	if(!$logging && !$force)
-		return;
-	$line = date('d.m.Y H:i:s').' rpc2: '.str_replace(array("\r", "\n"), ' ', $message)."\n";
-	if(!empty($log_file) && (@file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX) !== false))
-		return;
+	if(!$logging && !$force) {
+		return; }
+	$line = date('d.m.Y H:i:s').' rpc2: '.str_replace(["\r", "\n"], ' ', $message)."\n";
+	if(!empty($log_file) && (@file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX) !== false)) {
+		return; }
 	error_log('rpc2: '.$line);
 }
 
@@ -109,17 +109,17 @@ function rpc2_send($payload, $trusted)
 {
 	require_once(dirname(__FILE__).'/php/scgitransport.php');
 	global $scgi_host, $rpcLogCalls;
-	if(!empty($rpcLogCalls))
-		rpc2_log('rpc-call request base64='.base64_encode($payload), true);
+	if(!empty($rpcLogCalls)) {
+		rpc2_log('rpc-call request base64='.base64_encode($payload), true); }
 	$failure = null;
 	$result = rSCGITransport::sendConfigured($payload, $trusted,
-		array('responseMode' => rSCGITransport::RESPONSE_BODY), $failure, $error);
-	if(!empty($rpcLogCalls))
+		['responseMode' => rSCGITransport::RESPONSE_BODY], $failure, $error);
+	if(!empty($rpcLogCalls)) {
 		rpc2_log($result === null ? 'rpc-call response: transport-failed'
-			: 'rpc-call response base64='.base64_encode($result), true);
-	if($result === null)
+			: 'rpc-call response base64='.base64_encode($result), true); }
+	if($result === null) {
 		rpc2_log(($failure === 'connect-failed') ? 'cannot reach rtorrent at '.$scgi_host.': '.$error
-			: rSCGITransport::describeFailure($failure));
+			: rSCGITransport::describeFailure($failure)); }
 	return $result;
 }
 
@@ -134,7 +134,7 @@ if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST')
 // an XML media type forces cross-origin browser requests through CORS preflight.
 $contentType = isset($_SERVER['CONTENT_TYPE'])
 	? strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'], 2)[0])) : '';
-if(!in_array($contentType, array('text/xml', 'application/xml'), true))
+if(!in_array($contentType, ['text/xml', 'application/xml'], true))
 {
 	rpc2_log('refused POST: XML Content-Type required', true);
 	rpc2_fault('415 Unsupported Media Type', 'XML Content-Type required.');
@@ -175,10 +175,10 @@ if($raw === '')
 	rpc2_fault('400 Bad Request', 'Empty XMLRPC request.');
 }
 
-$proxyOptions = array('directory' => array(
+$proxyOptions = ['directory' => [
 	'root'    => ($topDirectory === '') ? '/' : $topDirectory,
-	'resolve' => array('XMLRPCPathResolver', 'deepestExistingAncestor'),
-));
+	'resolve' => ['XMLRPCPathResolver', 'deepestExistingAncestor'],
+]];
 if($mode === 'sanitize')
 {
 	// rpc2 does not load ruTorrent settings. Pin the native command ceiling
@@ -198,8 +198,8 @@ if($mode === 'sanitize')
 	$proxyOptions['rtorrentVersion'] = $version;
 }
 $decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, $proxyOptions);
-foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line)
-	rpc2_log($line);
+foreach(XMLRPCProxy::decisionLogLines($decision, $policy) as $line) {
+	rpc2_log($line); }
 
 if($decision['action'] !== 'send')
 {
@@ -213,8 +213,8 @@ if($decision['action'] !== 'send')
 }
 
 $result = rpc2_send($decision['payload'], $decision['trusted']);
-if($result === null)
-	rpc2_fault('502 Bad Gateway', 'Could not complete the rTorrent XMLRPC request.');
+if($result === null) {
+	rpc2_fault('502 Bad Gateway', 'Could not complete the rTorrent XMLRPC request.'); }
 
 header('Content-Type: text/xml');
 header('Content-Length: '.strlen($result));

@@ -6,10 +6,10 @@ require_once(dirname(__FILE__)."/manifest.php");
 
 // Bound of ErasedataFilesystemOps::renamedEntryIdentity(): ten lookups with
 // nine 50 ms pauses, at most 0.45 s of waiting for one renamed name.
-if(!defined('ERASEDATA_RENAME_SETTLE_ATTEMPTS'))
-	define('ERASEDATA_RENAME_SETTLE_ATTEMPTS', 10);
-if(!defined('ERASEDATA_RENAME_SETTLE_PAUSE_US'))
-	define('ERASEDATA_RENAME_SETTLE_PAUSE_US', 50000);
+if(!defined('ERASEDATA_RENAME_SETTLE_ATTEMPTS')) {
+	define('ERASEDATA_RENAME_SETTLE_ATTEMPTS', 10); }
+if(!defined('ERASEDATA_RENAME_SETTLE_PAUSE_US')) {
+	define('ERASEDATA_RENAME_SETTLE_PAUSE_US', 50000); }
 
 // The seam for the filesystem mutations and identity reads the erasedata
 // collector performs, and the one owner of the no-replace helper, its parent
@@ -20,7 +20,27 @@ if(!defined('ERASEDATA_RENAME_SETTLE_PAUSE_US'))
 // collector.
 class ErasedataFilesystemOps
 {
+	// Exit status ABI of rutorrent-erasedata-rename-noreplace, the helper that
+	// tools/native-helpers.list declares. This is the table's one definition:
+	// rename-noreplace.c names the same statuses, rename-noreplace-test.sh and
+	// QUEUE-ATTESTATION.md use them, and RenameHelperStatusTest pins all three
+	// to these values. 'probe-success' is success for --probe only: the
+	// filesystem is usable through the helper's caller-locked fallback.
+	public const RENAME_HELPER_STATUS = [
+		0 => ['ok', 'success'],
+		1 => ['rename-noreplace-collision', 'refusal'],
+		2 => ['rename-noreplace-invalid-arguments', 'refusal'],
+		3 => ['rename-noreplace-unsupported', 'refusal'],
+		4 => ['rename-noreplace-error', 'refusal'],
+		5 => ['rename-noreplace-fallback', 'probe-success'],
+	];
 	private static $deletionLease = null;
+
+	private static $renameRefusal = '';
+	private static $renameContext = '';
+	private static $renameProbe = false;
+	private static $renameErrno = null;
+	private static $payloadRefusalPath = '';
 
 	// The worker owns this already-attested open file description. Every native
 	// helper must inherit it so PHP or daemon death cannot admit a new load while
@@ -33,41 +53,15 @@ class ErasedataFilesystemOps
 			return(true);
 		}
 		$stat = is_resource($lease) ? @fstat($lease) : false;
-		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000)
-			return(false);
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0100000) {
+			return(false); }
 		self::$deletionLease = $lease;
 		return(true);
 	}
-	// Exit status ABI of rutorrent-erasedata-rename-noreplace, the helper that
-	// tools/native-helpers.list declares. This is the table's one definition:
-	// rename-noreplace.c names the same statuses, rename-noreplace-test.sh and
-	// QUEUE-ATTESTATION.md use them, and RenameHelperStatusTest pins all three
-	// to these values. 'probe-success' is success for --probe only: the
-	// filesystem is usable through the helper's caller-locked fallback.
-	const RENAME_HELPER_STATUS = array(
-		0 => array('ok', 'success'),
-		1 => array('rename-noreplace-collision', 'refusal'),
-		2 => array('rename-noreplace-invalid-arguments', 'refusal'),
-		3 => array('rename-noreplace-unsupported', 'refusal'),
-		4 => array('rename-noreplace-error', 'refusal'),
-		5 => array('rename-noreplace-fallback', 'probe-success'),
-	);
-
-	private static $renameRefusal = '';
-	private static $renameContext = '';
-	private static $renameProbe = false;
-	private static $renameErrno = null;
-	private static $payloadRefusalPath = '';
 
 	public static function lastPayloadRefusalPath()
 	{
 		return(self::$payloadRefusalPath);
-	}
-
-	private static function payloadPathRefused($path)
-	{
-		self::$payloadRefusalPath = is_string($path) ? $path : '';
-		return(false);
 	}
 
 	// EXDEV may occur between bind mounts with equal st_dev. Only the native
@@ -118,166 +112,58 @@ class ErasedataFilesystemOps
 		}
 	}
 
-	private static function renameDiagnostic($reason, $from, $to = null, $errno = null)
-	{
-		self::$renameRefusal = $reason;
-		self::$renameErrno = $errno;
-		// A context without a destination belongs to a directory probe.
-		self::$renameProbe = $to === null;
-		self::$renameContext = $reason.' path='.erasedataLogPath($from)
-			.($to === null ? '' : ' destination='.erasedataLogPath($to))
-			.($errno === null ? '' : ' errno='.$errno);
-		// Callers own the durable report memory. A retrying filesystem seam must
-		// not emit an unconditional line on every five-second drain tick.
-		return(false);
-	}
-
 	// The pending classified refusal with its operator action, for the
 	// caller's own log line under its own component name; '' when none.
 	public static function renameRefusalReport()
 	{
-		if(self::$renameContext === '')
-			return('');
-		if(self::$renameRefusal === 'rename-noreplace-collision')
-			$action = 'preserve both entries; inspect the occupied destination before retrying';
+		if(self::$renameContext === '') {
+			return(''); }
+		if(self::$renameRefusal === 'rename-noreplace-collision') {
+			$action = 'preserve both entries; inspect the occupied destination before retrying'; }
 		// ETIMEDOUT from --probe. The helper's own wait for the flock reports it,
 		// and a network filesystem can answer it for itself.
-		elseif(self::$renameRefusal === 'rename-noreplace-error' && self::$renameProbe && self::$renameErrno === 110)
+		elseif(self::$renameRefusal === 'rename-noreplace-error' && self::$renameProbe && self::$renameErrno === 110) {
 			$action = "another process held the named parent's flock past the helper's limit, or the filesystem timed out;"
-				." find the holder's pid by the parent's inode in /proc/locks, stop it and retry; torrent and payload retained";
+				." find the holder's pid by the parent's inode in /proc/locks, stop it and retry; torrent and payload retained"; }
 		// Since the locked fallback, status 3 no longer means a missing
 		// RENAME_NOREPLACE flag. Plain renameat itself refused (EINVAL for a
 		// directory moved into its own subtree, ENOSYS, EOPNOTSUPP), or the
 		// probe's self-check saw a rename replace an existing entry.
-		elseif(self::$renameRefusal === 'rename-noreplace-unsupported')
+		elseif(self::$renameRefusal === 'rename-noreplace-unsupported') {
 			$action = (self::$renameProbe
 				? 'the filesystem refused rename or replaced an entry in the probe self-check; keep this path on a filesystem with working rename'
 				: 'the filesystem refused this rename itself, for example a directory moved into its own subtree; inspect source and destination')
-				.'; torrent and payload retained';
-		else
-			$action = 'check the native helper and the named parent permissions; torrent and payload retained';
+				.'; torrent and payload retained'; }
+		else {
+			$action = 'check the native helper and the named parent permissions; torrent and payload retained'; }
 		return(self::$renameContext.'; mutation refused; '.$action);
 	}
 
 	public static function reportRenameRefusal($component = 'erasedata')
 	{
 		$report = self::renameRefusalReport();
-		if($report !== '' && method_exists('FileUtil', 'toLog'))
-			FileUtil::toLog($component.': '.$report);
-	}
-
-	private static function runRenameHelper(array $arguments, $from, $to = null)
-	{
-		if(!function_exists('proc_open'))
-			return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to));
-		$descriptors = array(0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'), 2 => array('pipe', 'w'));
-		if(self::$deletionLease !== null)
-		{
-			if(!is_resource(self::$deletionLease))
-				return(self::renameDiagnostic('rename-noreplace-lease-unavailable', $from, $to));
-			// proc_open duplicates the resource's OFD; reopening /proc/self/fd
-			// would create a different description and lose the flock lifetime.
-			$descriptors[198] = self::$deletionLease;
-		}
-		$held = array();
-		try
-		{
-			foreach($arguments as $index => $argument)
-			{
-				if(!preg_match('~^(/proc/self/fd|/dev/fd)/([0-9]+)(/.*)?$~D', $argument, $match))
-					continue;
-				$number = $match[2];
-				if(!isset($held[$number]))
-				{
-					// Open our own descriptor alias and explicitly inherit the
-					// directory resource. Non-dumpable FPM workers cannot expose
-					// their /proc/<parent-pid>/fd entries to an exec child.
-					$alias = $match[1].'/'.$number;
-					$handle = @fopen($alias, 'r');
-					$stat = is_resource($handle) ? @fstat($handle) : false;
-					if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000)
-					{
-						if(is_resource($handle)) fclose($handle);
-						return(self::renameDiagnostic('rename-noreplace-descriptor-unavailable', $from, $to));
-					}
-					$childNumber = 3 + count($held);
-					$held[$number] = array('handle' => $handle, 'child' => $childNumber);
-					$descriptors[$childNumber] = $handle;
-				}
-				$arguments[$index] = '/proc/self/fd/'.$held[$number]['child']
-					.(isset($match[3]) ? $match[3] : '');
-			}
-			$process = @proc_open($arguments, $descriptors, $pipes);
-			if(!is_resource($process))
-				return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to));
-			// Status distinguishes the trusted helper's fixed refusal classes.
-			$error = stream_get_contents($pipes[2], 1024);
-			fclose($pipes[2]);
-			$code = proc_close($process);
-		}
-		finally
-		{
-			foreach($held as $resource) fclose($resource['handle']);
-		}
-		$table = self::RENAME_HELPER_STATUS;
-		$status = isset($table[$code]) ? $table[$code] : null;
-		$probe = isset($arguments[1]) && $arguments[1] === '--probe';
-		if($status !== null && ($status[1] === 'success' || ($status[1] === 'probe-success' && $probe)))
-		{
-			self::clearRenameRefusal();
-			return(true);
-		}
-		$errno = preg_match('/\berrno=([0-9]{1,5})\b/', $error, $match) ? (int)$match[1] : null;
-		return(self::renameDiagnostic($status !== null && $status[1] === 'refusal' ? $status[0]
-			: 'rename-noreplace-process-exit-'.$code, $from, $to, $errno));
+		if($report !== '' && method_exists('FileUtil', 'toLog')) {
+			FileUtil::toLog($component.': '.$report); }
 	}
 
 	public static function canRenameNoReplace($directory = null, $reportRefusal = true)
 	{
 		$result = self::renameCapabilityQuery($directory);
-		if(!$result && $reportRefusal) self::reportRenameRefusal();
+		if(!$result && $reportRefusal) { self::reportRenameRefusal(); }
 		return($result);
-	}
-
-	private static function renameCapabilityQuery($directory)
-	{
-		$helper = static::renameHelperPath();
-		// A presence query without a directory names the helper it checked.
-		if($helper === false || !is_executable($helper))
-			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
-				: 'rename-noreplace-helper-unavailable',
-				$directory !== null ? $directory : ($helper === false ? '' : $helper)));
-		// Presence is the compatibility query. Callers about to mutate must
-		// probe each actual parent, not infer support from another mount.
-		if($directory === null)
-		{
-			self::clearRenameRefusal();
-			return(true);
-		}
-		if(!ErasedataManifestCodec::isValidAbsolutePath($directory))
-			return(self::renameDiagnostic('rename-noreplace-invalid-parent', $directory));
-		$physical = @realpath($directory);
-		if($physical === false || !is_dir($physical))
-			return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
-		// A final /. lets the native probe open the inherited directory itself,
-		// while retaining O_NOFOLLOW on its final component.
-		$probePath = preg_match('~^(/proc/self/fd|/dev/fd)/[0-9]+$~D', $directory)
-			? $directory.'/.' : $physical;
-		return(self::runRenameHelper(array($helper, '--probe', $probePath), $physical));
 	}
 
 	public function entryIdentity($path)
 	{
 		clearstatcache(true, $path);
 		$stat = @lstat($path);
-		if(!is_array($stat))
-			return(false);
+		if(!is_array($stat)) {
+			return(false); }
 		$typeBits = $stat['mode'] & 0170000;
 		$isLink = $typeBits === 0120000;
 		$isDir = $typeBits === 0040000;
 		$isFile = $typeBits === 0100000;
-		return(array(
+		return([
 			'exists' => true,
 			'type' => $isLink ? 'link' : ($isDir ? 'directory' : ($isFile ? 'file' : 'other')),
 			'is_link' => $isLink,
@@ -290,7 +176,7 @@ class ErasedataFilesystemOps
 			'size' => $stat['size'],
 			'mtime' => $stat['mtime'],
 			'lstat' => $stat,
-		));
+		]);
 	}
 
 	// The identity of a name this process has just renamed into place. On
@@ -307,8 +193,8 @@ class ErasedataFilesystemOps
 		for($attempt = 1; ; $attempt++)
 		{
 			$identity = $this->entryIdentity($path);
-			if($identity !== false || $attempt >= ERASEDATA_RENAME_SETTLE_ATTEMPTS)
-				return($identity);
+			if($identity !== false || $attempt >= ERASEDATA_RENAME_SETTLE_ATTEMPTS) {
+				return($identity); }
 			usleep(ERASEDATA_RENAME_SETTLE_PAUSE_US);
 		}
 	}
@@ -319,8 +205,8 @@ class ErasedataFilesystemOps
 	public function renamedPathIdentity($path)
 	{
 		$entry = $this->renamedEntryIdentity($path);
-		if(!is_array($entry))
-			return(false);
+		if(!is_array($entry)) {
+			return(false); }
 		$identity = $this->pathIdentity($path);
 		return(is_array($identity) && !empty($identity['exists'])
 			&& erasedataIdentityDeviceAndInode($entry) === erasedataIdentityDeviceAndInode($identity['lstat'])
@@ -331,10 +217,10 @@ class ErasedataFilesystemOps
 	{
 		clearstatcache(true, $path);
 		$stat = @stat($path);
-		if(!is_array($stat))
-			return(false);
+		if(!is_array($stat)) {
+			return(false); }
 		$typeBits = $stat['mode'] & 0170000;
-		return(array(
+		return([
 			'exists' => true,
 			'type' => $typeBits === 0040000 ? 'directory'
 				: ($typeBits === 0100000 ? 'file' : 'other'),
@@ -348,12 +234,7 @@ class ErasedataFilesystemOps
 			'size' => $stat['size'],
 			'mtime' => $stat['mtime'],
 			'stat' => $stat,
-		));
-	}
-
-	protected function renameCapability($directory)
-	{
-		return(self::canRenameNoReplace($directory, false));
+		]);
 	}
 
 	public function probeRenameParent($directory)
@@ -379,29 +260,29 @@ class ErasedataFilesystemOps
 	{
 		self::clearRenameRefusal();
 		$within = $root === null ? null : $this->actualParent($root);
-		if($within === false)
-			return(false);
+		if($within === false) {
+			return(false); }
 		foreach($directories as $directory)
 		{
 			$physical = $this->actualParent($directory);
-			if($physical === false)
-				return(false);
+			if($physical === false) {
+				return(false); }
 			if($within !== null && $physical !== $within
-				&& strpos($physical, rtrim($within, '/').'/') !== 0)
-				return(self::renameDiagnostic('rename-noreplace-parent-outside-root', $directory));
+				&& strpos($physical, rtrim($within, '/').'/') !== 0) {
+				return(self::renameDiagnostic('rename-noreplace-parent-outside-root', $directory)); }
 			$key = erasedataIdentityDeviceAndInode($this->targetIdentity($physical));
-			if($key === false)
-				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
+			if($key === false) {
+				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory)); }
 			$key = $physical.'|'.$key['dev'].':'.$key['ino'];
 			if(isset($probed[$key]))
 			{
-				if($probed[$key] === true)
-					continue;
+				if($probed[$key] === true) {
+					continue; }
 				return(self::renameDiagnostic($probed[$key][0], $physical, null, $probed[$key][1]));
 			}
 			if(!$this->probeRenameParent($physical))
 			{
-				$probed[$key] = array(self::$renameRefusal, self::$renameErrno);
+				$probed[$key] = [self::$renameRefusal, self::$renameErrno];
 				return(false);
 			}
 			$probed[$key] = true;
@@ -440,21 +321,6 @@ class ErasedataFilesystemOps
 		return(self::directoryChainTrusted($path, false));
 	}
 
-	private static function directoryChainTrusted($path, $boundary)
-	{
-		if(!is_string($path) || $path === '' || $path[0] !== '/'
-			|| @realpath($path) !== $path || !function_exists('posix_geteuid'))
-			return(false);
-		$current = '';
-		foreach(array_merge(array(''), array_filter(explode('/', $path), 'strlen')) as $part)
-		{
-			$current = rtrim($current, '/').'/'.$part;
-			if(!self::payloadEntryTrusted($current, 0040000, $boundary))
-				return(false);
-		}
-		return(true);
-	}
-
 	// A payload file under the same rule; its directories are checked apart.
 	public static function payloadFileTrusted($path, $top = null)
 	{
@@ -479,26 +345,26 @@ class ErasedataFilesystemOps
 	{
 		self::$payloadRefusalPath = '';
 		if(!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, "\0") !== false
-			|| !function_exists('posix_geteuid'))
-			return(self::payloadPathRefused($path));
-		$pending = array();
+			|| !function_exists('posix_geteuid')) {
+			return(self::payloadPathRefused($path)); }
+		$pending = [];
 		foreach(explode('/', $path) as $component)
 		{
-			if($component === '.' || $component === '..')
-				return(self::payloadPathRefused($path));
-			if($component !== '')
-				$pending[] = array($component, false);
+			if($component === '.' || $component === '..') {
+				return(self::payloadPathRefused($path)); }
+			if($component !== '') {
+				$pending[] = [$component, false]; }
 		}
 		$boundary = self::payloadTop($top);
-		if(!self::payloadEntryTrusted('/', 0040000, $boundary))
-			return(self::payloadPathRefused('/'));
+		if(!self::payloadEntryTrusted('/', 0040000, $boundary)) {
+			return(self::payloadPathRefused('/')); }
 		$current = '/';
 		$links = 0;
 		while($pending)
 		{
 			list($component, $fromLink) = array_shift($pending);
-			if($component === '.')
-				continue;
+			if($component === '.') {
+				continue; }
 			if($component === '..')
 			{
 				$current = dirname($current);
@@ -507,87 +373,29 @@ class ErasedataFilesystemOps
 			$next = rtrim($current, '/').'/'.$component;
 			clearstatcache(true, $next);
 			$stat = @lstat($next);
-			if(!is_array($stat))
-				return($missingTail && !$fromLink ? true : self::payloadPathRefused($next));
+			if(!is_array($stat)) {
+				return($missingTail && !$fromLink ? true : self::payloadPathRefused($next)); }
 			if(($stat['mode'] & 0170000) === 0120000)
 			{
 				$target = @readlink($next);
 				// 40 is Linux's limit on links followed in one resolution.
 				if(($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid())
-					|| !is_string($target) || $target === '' || ++$links > 40)
-					return(self::payloadPathRefused($next));
-				if($target[0] === '/')
-					$current = '/';
-				$expansion = array();
-				foreach(explode('/', $target) as $part)
-					if($part !== '')
-						$expansion[] = array($part, true);
+					|| !is_string($target) || $target === '' || ++$links > 40) {
+					return(self::payloadPathRefused($next)); }
+				if($target[0] === '/') {
+					$current = '/'; }
+				$expansion = [];
+				foreach(explode('/', $target) as $part) {
+					if($part !== '') {
+						$expansion[] = [$part, true]; } }
 				$pending = array_merge($expansion, $pending);
 				continue;
 			}
-			if(!self::payloadEntryTrusted($next, 0040000, $boundary))
-				return(self::payloadPathRefused($next));
+			if(!self::payloadEntryTrusted($next, 0040000, $boundary)) {
+				return(self::payloadPathRefused($next)); }
 			$current = $next;
 		}
 		return(true);
-	}
-
-	private static function payloadTop($top)
-	{
-		if($top === null)
-			$top = isset($GLOBALS['topDirectory']) ? $GLOBALS['topDirectory'] : null;
-		if(!is_string($top) || $top === '' || $top[0] !== '/')
-			return(false);
-		$physical = @realpath(rtrim($top, '/') === '' ? '/' : rtrim($top, '/'));
-		return($physical !== false && $physical !== '/' && is_dir($physical) ? $physical : false);
-	}
-
-	private static function payloadEntryTrusted($path, $type, $boundary)
-	{
-		clearstatcache(true, $path);
-		$stat = @lstat($path);
-		if(!is_array($stat) || ($stat['mode'] & 0170000) !== $type
-			|| ($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid()))
-			return(false);
-		$withinTop = $boundary !== false && ($path === $boundary
-			|| strpos($path, rtrim($boundary, '/').'/') === 0);
-		return($withinTop || ($stat['mode'] & 0022) === 0
-			|| ($type === 0040000 && ($stat['mode'] & 01000) !== 0));
-	}
-
-	// The physical directory a rename in $directory happens on: the directory
-	// itself or, for one created later, its deepest existing ancestor.
-	private function actualParent($directory)
-	{
-		if(!ErasedataManifestCodec::isValidAbsolutePath($directory))
-			return(self::renameDiagnostic('rename-noreplace-invalid-parent',
-				is_string($directory) ? $directory : ''));
-		while(!is_dir($directory))
-		{
-			if(erasedataPathExists($directory) || dirname($directory) === $directory)
-				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory));
-			$directory = dirname($directory);
-		}
-		$physical = @realpath($directory);
-		return($physical === false
-			? self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory) : $physical);
-	}
-
-	private function privateCaptureParent($directory)
-	{
-		$uid = erasedataEffectiveUid();
-		for($path = $directory; is_string($path) && $path !== dirname($path); $path = dirname($path))
-		{
-			if(!preg_match('/^\.erasedata-(?:entry|rmdir|recovery)-/', basename($path))) continue;
-			$root = @lstat($path);
-			$marker = @lstat(erasedataPrivateMarkerPath($path));
-			if(is_array($root) && ($root['mode'] & 0170000) === 0040000
-				&& ($root['mode'] & 07777) === 0700 && $root['uid'] === $uid
-				&& is_array($marker) && ($marker['mode'] & 0170000) === 0100000
-				&& ($marker['mode'] & 07777) === 0600 && $marker['uid'] === $uid && $marker['nlink'] === 1)
-				return(true);
-		}
-		return(false);
 	}
 
 	public function rename($from, $to)
@@ -601,14 +409,14 @@ class ErasedataFilesystemOps
 		$privateCapture = $this->privateCaptureParent($parent);
 		// A capture may need no-replace restore of its PUBLIC source name. Never
 		// probe the private destination root: crash debris there blocks recovery.
-		if(!$publication && !$privateCapture && !$this->renameCapability(dirname($from)))
-			return(false);
+		if(!$publication && !$privateCapture && !$this->renameCapability(dirname($from))) {
+			return(false); }
 		// In a sticky public parent, another UID may still rename its own
 		// source. Do not capture such an entry into a private root.
 		if((strpos($to, '/.erasedata-rmdir-') !== false
 			|| strpos($to, '/.erasedata-entry-') !== false)
-			&& !erasedataCaptureSourceOwned($from))
-			return(self::renameDiagnostic('capture-source-owner', $from, $to));
+			&& !erasedataCaptureSourceOwned($from)) {
+			return(self::renameDiagnostic('capture-source-owner', $from, $to)); }
 		return(@rename($from, $to) || self::renameDiagnostic('rename-refused', $from, $to));
 	}
 
@@ -618,10 +426,10 @@ class ErasedataFilesystemOps
 	{
 		self::clearRenameRefusal();
 		$helper = static::renameHelperPath();
-		if($helper === false || !is_executable($helper))
+		if($helper === false || !is_executable($helper)) {
 			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
-				: 'rename-noreplace-helper-unavailable', $from, $to));
-		return(self::runRenameHelper(array($helper, $from, $to), $from, $to));
+				: 'rename-noreplace-helper-unavailable', $from, $to)); }
+		return(self::runRenameHelper([$helper, $from, $to], $from, $to));
 	}
 
 	public function unlink($path)
@@ -692,22 +500,22 @@ class ErasedataFilesystemOps
 	{
 		if(!is_string($path) || $path === '' || $path[0] !== '/'
 			|| strpos($path, "\0") !== false
-			|| strlen($path) > ErasedataManifestCodec::MAX_PATH_BYTES)
-			return(false);
+			|| strlen($path) > ErasedataManifestCodec::MAX_PATH_BYTES) {
+			return(false); }
 		$parts = explode('/', $path);
-		$components = array();
+		$components = [];
 		for($i = 1; $i < count($parts); $i++)
 		{
 			// A trailing slash lands here as an empty component as well, so
 			// "<dir>/" and "<dir>//leaf" are both refused rather than silently
 			// meaning "<dir>".
-			if($parts[$i] === '' || $parts[$i] === '.' || $parts[$i] === '..')
-				return(false);
+			if($parts[$i] === '' || $parts[$i] === '.' || $parts[$i] === '..') {
+				return(false); }
 			$components[] = $parts[$i];
 		}
 		$count = count($components);
-		if(!$count)
-			return(false);
+		if(!$count) {
+			return(false); }
 		$ancestor = '/';
 		$depth = 0;
 		for(; $depth < $count; $depth++)
@@ -715,20 +523,20 @@ class ErasedataFilesystemOps
 			$candidate = ($ancestor === '/' ? '' : $ancestor).'/'.$components[$depth];
 			clearstatcache(true, $candidate);
 			$link = @lstat($candidate);
-			if(!is_array($link) || !isset($link['mode']))
-				break;
+			if(!is_array($link) || !isset($link['mode'])) {
+				break; }
 			// The name is there. A symlink is resolved HERE or the whole answer
 			// fails: a link that cannot be resolved -- dangling today and live
 			// tomorrow, or a loop -- is not an ancestor anything may be built on.
 			if(($link['mode'] & 0170000) === 0120000)
 			{
 				$real = @realpath($candidate);
-				if(!is_string($real) || $real === '' || $real[0] !== '/')
-					return(false);
+				if(!is_string($real) || $real === '' || $real[0] !== '/') {
+					return(false); }
 				$ancestor = ($real === '/') ? '/' : rtrim($real, '/');
 			}
-			else
-				$ancestor = $candidate;
+			else {
+				$ancestor = $candidate; }
 		}
 		if($depth < $count)
 		{
@@ -742,27 +550,27 @@ class ErasedataFilesystemOps
 			clearstatcache(true, $search);
 			$searchStat = @stat($search);
 			if(!is_array($searchStat) || !isset($searchStat['mode'])
-				|| ($searchStat['mode'] & 0170000) !== 0040000)
-				return(false);
+				|| ($searchStat['mode'] & 0170000) !== 0040000) {
+				return(false); }
 			$probe = $ancestor;
 			for($i = $depth; $i < $count; $i++)
 			{
 				$probe = ($probe === '/' ? '' : $probe).'/'.$components[$i];
 				clearstatcache(true, $probe);
-				if(@lstat($probe) !== false)
-					return(false);
+				if(@lstat($probe) !== false) {
+					return(false); }
 			}
 		}
 		$base = ($ancestor === '/') ? '' : $ancestor;
 		$name = $base;
-		for($i = $depth; $i < $count; $i++)
-			$name .= '/'.$components[$i];
-		if($name === '')
-			$name = '/';
+		for($i = $depth; $i < $count; $i++) {
+			$name .= '/'.$components[$i]; }
+		if($name === '') {
+			$name = '/'; }
 		// Belt and braces: the components above cannot climb, and this proves it
 		// of the name that is actually returned rather than of the argument.
-		if($base !== '' && $name !== $base && strpos($name, $base.'/') !== 0)
-			return(false);
+		if($base !== '' && $name !== $base && strpos($name, $base.'/') !== 0) {
+			return(false); }
 		return($name);
 	}
 
@@ -791,68 +599,35 @@ class ErasedataFilesystemOps
 	public function pathIdentity($path)
 	{
 		if(!is_string($path) || $path === '' || $path[0] !== '/'
-			|| strpos($path, "\0") !== false)
-			return(false);
+			|| strpos($path, "\0") !== false) {
+			return(false); }
 		clearstatcache(true, $path);
 		if(!file_exists($path) && !is_link($path))
 		{
 			// Absent -- so the canonical name is the one it WOULD have, proven
 			// component by component, or there is no answer at all.
 			$canonical = $this->canonicalMissingPath($path);
-			if(!is_string($canonical) || $canonical === '')
-				return(false);
-			return(array(
+			if(!is_string($canonical) || $canonical === '') {
+				return(false); }
+			return([
 				'exists' => false,
 				'path' => $canonical,
 				'lstat' => null,
 				'stat' => null,
-			));
+			]);
 		}
 		$lstat = @lstat($path);
 		$stat = @stat($path);
 		$resolved = @realpath($path);
 		if(!is_array($lstat) || !is_array($stat)
-			|| !is_string($resolved) || $resolved === '')
-			return(false);
-		return(array(
+			|| !is_string($resolved) || $resolved === '') {
+			return(false); }
+		return([
 			'exists' => true,
 			'path' => ($resolved === '/') ? '/' : rtrim($resolved, '/'),
-			'lstat' => array('dev'=>$lstat['dev'], 'ino'=>$lstat['ino']),
-			'stat' => array('dev'=>$stat['dev'], 'ino'=>$stat['ino']),
-		));
-	}
-
-	// The numeric entries of $root that name the identity $identity right now,
-	// or false when the root cannot be listed at all.
-	//
-	// Nothing in a /proc/self/fd entry says who opened it, so a matching dev/ino
-	// alone identifies the DIRECTORY, never the descriptor. This is the half of
-	// acquireDirectoryCapability() that lets it tell its own descriptor from a
-	// stranger's: the snapshot is taken before the handle exists and again while
-	// it is held, and scandir() is used rather than a bare numeric probe so the
-	// answer is whatever the process really holds.
-	//
-	// The transient descriptor scandir() itself consumes is never a false
-	// positive: it names $root, and it is closed before the stat() loop below
-	// runs, so it neither matches the target identity nor survives to be stat'd.
-	private function descriptorsNamingIdentity($root, array $identity)
-	{
-		if(!is_string($root) || $root === '' || !is_dir($root))
-			return(false);
-		$entries = @scandir($root);
-		if(!is_array($entries))
-			return(false);
-		$naming = array();
-		foreach($entries as $entry)
-		{
-			if(!ctype_digit($entry))
-				continue;
-			$reference = $root.'/'.$entry;
-			clearstatcache(true, $reference);
-			if(erasedataIdentityDeviceAndInode(@stat($reference)) === $identity)
-				$naming[] = $entry;
-		}
-		return($naming);
+			'lstat' => ['dev'=>$lstat['dev'], 'ino'=>$lstat['ino']],
+			'stat' => ['dev'=>$stat['dev'], 'ino'=>$stat['ino']],
+		]);
 	}
 
 	// One open directory handle whose physical identity is proven, plus a
@@ -883,17 +658,17 @@ class ErasedataFilesystemOps
 	public function acquireDirectoryCapability($path, $expectedIdentity, $candidates = null)
 	{
 		$expected = erasedataIdentityDeviceAndInode($expectedIdentity);
-		if($expected === false)
-			return(false);
-		if(!is_array($candidates))
-			$candidates = erasedataDescriptorCandidates();
+		if($expected === false) {
+			return(false); }
+		if(!is_array($candidates)) {
+			$candidates = erasedataDescriptorCandidates(); }
 		// Before the handle exists: every descriptor that already names it.
-		$before = array();
-		foreach($candidates as $index => $root)
-			$before[$index] = $this->descriptorsNamingIdentity($root, $expected);
+		$before = [];
+		foreach($candidates as $index => $root) {
+			$before[$index] = $this->descriptorsNamingIdentity($root, $expected); }
 		$handle = @fopen($path, 'r');
-		if($handle === false)
-			return(false);
+		if($handle === false) {
+			return(false); }
 		$stat = @fstat($handle);
 		$open = erasedataIdentityDeviceAndInode($stat);
 		// The handle must be a DIRECTORY of the proven identity. Existence of a
@@ -907,21 +682,21 @@ class ErasedataFilesystemOps
 		}
 		foreach($candidates as $index => $root)
 		{
-			if(!isset($before[$index]) || !is_array($before[$index]))
-				continue;
+			if(!isset($before[$index]) || !is_array($before[$index])) {
+				continue; }
 			$after = $this->descriptorsNamingIdentity($root, $open);
-			if(!is_array($after))
-				continue;
+			if(!is_array($after)) {
+				continue; }
 			$opened = array_values(array_diff($after, $before[$index]));
-			if(count($opened) !== 1)
-				continue;
-			return(array(
+			if(count($opened) !== 1) {
+				continue; }
+			return([
 				'handle' => $handle,
 				'path' => $root.'/'.$opened[0],
 				'root' => $root,
 				'dev' => $open['dev'],
 				'ino' => $open['ino'],
-			));
+			]);
 		}
 		@fclose($handle);
 		return(false);
@@ -930,15 +705,15 @@ class ErasedataFilesystemOps
 	public function releaseDirectoryCapability($capability)
 	{
 		if(!is_array($capability) || !isset($capability['handle'])
-			|| !is_resource($capability['handle']))
-			return(false);
+			|| !is_resource($capability['handle'])) {
+			return(false); }
 		$closed = @fclose($capability['handle']) === true;
 		// The descriptor name disappears with the handle, but a stat of it taken
 		// while the capability was held is still cached, and a cached stat is
 		// how a released capability goes on looking like a live directory. The
 		// cache is dropped here so nothing downstream can act on that answer.
-		if(isset($capability['path']) && is_string($capability['path']))
-			clearstatcache(true, $capability['path']);
+		if(isset($capability['path']) && is_string($capability['path'])) {
+			clearstatcache(true, $capability['path']); }
 		return($closed);
 	}
 
@@ -971,14 +746,239 @@ class ErasedataFilesystemOps
 	public function removePrivateContainer($root, array $allowedEntries)
 	{
 		$entries = $this->scanDirectory($root);
-		if($entries === false || count(array_diff($entries, $allowedEntries)) > 0)
-			return(false);
+		if($entries === false || count(array_diff($entries, $allowedEntries)) > 0) {
+			return(false); }
 		$marker = erasedataPrivateMarkerPath($root);
 		if(in_array(basename($marker), $allowedEntries, true)
 			&& erasedataPathExists($marker)
-			&& (!erasedataPrivateMarkerIsValid($root) || !$this->unlink($marker)))
-			return(false);
+			&& (!erasedataPrivateMarkerIsValid($root) || !$this->unlink($marker))) {
+			return(false); }
 		return($this->removeDirectory($root));
+	}
+
+	protected function renameCapability($directory)
+	{
+		return(self::canRenameNoReplace($directory, false));
+	}
+
+	private static function payloadPathRefused($path)
+	{
+		self::$payloadRefusalPath = is_string($path) ? $path : '';
+		return(false);
+	}
+
+	private static function renameDiagnostic($reason, $from, $to = null, $errno = null)
+	{
+		self::$renameRefusal = $reason;
+		self::$renameErrno = $errno;
+		// A context without a destination belongs to a directory probe.
+		self::$renameProbe = $to === null;
+		self::$renameContext = $reason.' path='.erasedataLogPath($from)
+			.($to === null ? '' : ' destination='.erasedataLogPath($to))
+			.($errno === null ? '' : ' errno='.$errno);
+		// Callers own the durable report memory. A retrying filesystem seam must
+		// not emit an unconditional line on every five-second drain tick.
+		return(false);
+	}
+
+	private static function runRenameHelper(array $arguments, $from, $to = null)
+	{
+		if(!function_exists('proc_open')) {
+			return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to)); }
+		$descriptors = [0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']];
+		if(self::$deletionLease !== null)
+		{
+			if(!is_resource(self::$deletionLease)) {
+				return(self::renameDiagnostic('rename-noreplace-lease-unavailable', $from, $to)); }
+			// proc_open duplicates the resource's OFD; reopening /proc/self/fd
+			// would create a different description and lose the flock lifetime.
+			$descriptors[198] = self::$deletionLease;
+		}
+		$held = [];
+		try
+		{
+			foreach($arguments as $index => $argument)
+			{
+				if(!preg_match('~^(/proc/self/fd|/dev/fd)/([0-9]+)(/.*)?$~D', $argument, $match)) {
+					continue; }
+				$number = $match[2];
+				if(!isset($held[$number]))
+				{
+					// Open our own descriptor alias and explicitly inherit the
+					// directory resource. Non-dumpable FPM workers cannot expose
+					// their /proc/<parent-pid>/fd entries to an exec child.
+					$alias = $match[1].'/'.$number;
+					$handle = @fopen($alias, 'r');
+					$stat = is_resource($handle) ? @fstat($handle) : false;
+					if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000)
+					{
+						if(is_resource($handle)) { fclose($handle); }
+						return(self::renameDiagnostic('rename-noreplace-descriptor-unavailable', $from, $to));
+					}
+					$childNumber = 3 + count($held);
+					$held[$number] = ['handle' => $handle, 'child' => $childNumber];
+					$descriptors[$childNumber] = $handle;
+				}
+				$arguments[$index] = '/proc/self/fd/'.$held[$number]['child']
+					.(isset($match[3]) ? $match[3] : '');
+			}
+			$process = @proc_open($arguments, $descriptors, $pipes);
+			if(!is_resource($process)) {
+				return(self::renameDiagnostic('rename-noreplace-process-unavailable', $from, $to)); }
+			// Status distinguishes the trusted helper's fixed refusal classes.
+			$error = stream_get_contents($pipes[2], 1024);
+			fclose($pipes[2]);
+			$code = proc_close($process);
+		}
+		finally
+		{
+			foreach($held as $resource) { fclose($resource['handle']); }
+		}
+		$table = self::RENAME_HELPER_STATUS;
+		$status = isset($table[$code]) ? $table[$code] : null;
+		$probe = isset($arguments[1]) && $arguments[1] === '--probe';
+		if($status !== null && ($status[1] === 'success' || ($status[1] === 'probe-success' && $probe)))
+		{
+			self::clearRenameRefusal();
+			return(true);
+		}
+		$errno = preg_match('/\berrno=([0-9]{1,5})\b/', $error, $match) ? (int)$match[1] : null;
+		return(self::renameDiagnostic($status !== null && $status[1] === 'refusal' ? $status[0]
+			: 'rename-noreplace-process-exit-'.$code, $from, $to, $errno));
+	}
+
+	private static function renameCapabilityQuery($directory)
+	{
+		$helper = static::renameHelperPath();
+		// A presence query without a directory names the helper it checked.
+		if($helper === false || !is_executable($helper)) {
+			return(self::renameDiagnostic($helper === false ? self::$renameRefusal
+				: 'rename-noreplace-helper-unavailable',
+				$directory !== null ? $directory : ($helper === false ? '' : $helper))); }
+		// Presence is the compatibility query. Callers about to mutate must
+		// probe each actual parent, not infer support from another mount.
+		if($directory === null)
+		{
+			self::clearRenameRefusal();
+			return(true);
+		}
+		if(!ErasedataManifestCodec::isValidAbsolutePath($directory)) {
+			return(self::renameDiagnostic('rename-noreplace-invalid-parent', $directory)); }
+		$physical = @realpath($directory);
+		if($physical === false || !is_dir($physical)) {
+			return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory)); }
+		// A final /. lets the native probe open the inherited directory itself,
+		// while retaining O_NOFOLLOW on its final component.
+		$probePath = preg_match('~^(/proc/self/fd|/dev/fd)/[0-9]+$~D', $directory)
+			? $directory.'/.' : $physical;
+		return(self::runRenameHelper([$helper, '--probe', $probePath], $physical));
+	}
+
+	private static function directoryChainTrusted($path, $boundary)
+	{
+		if(!is_string($path) || $path === '' || $path[0] !== '/'
+			|| @realpath($path) !== $path || !function_exists('posix_geteuid')) {
+			return(false); }
+		$current = '';
+		foreach(array_merge([''], array_filter(explode('/', $path), 'strlen')) as $part)
+		{
+			$current = rtrim($current, '/').'/'.$part;
+			if(!self::payloadEntryTrusted($current, 0040000, $boundary)) {
+				return(false); }
+		}
+		return(true);
+	}
+
+	private static function payloadTop($top)
+	{
+		if($top === null) {
+			$top = isset($GLOBALS['topDirectory']) ? $GLOBALS['topDirectory'] : null; }
+		if(!is_string($top) || $top === '' || $top[0] !== '/') {
+			return(false); }
+		$physical = @realpath(rtrim($top, '/') === '' ? '/' : rtrim($top, '/'));
+		return($physical !== false && $physical !== '/' && is_dir($physical) ? $physical : false);
+	}
+
+	private static function payloadEntryTrusted($path, $type, $boundary)
+	{
+		clearstatcache(true, $path);
+		$stat = @lstat($path);
+		if(!is_array($stat) || ($stat['mode'] & 0170000) !== $type
+			|| ($stat['uid'] !== 0 && $stat['uid'] !== posix_geteuid())) {
+			return(false); }
+		$withinTop = $boundary !== false && ($path === $boundary
+			|| strpos($path, rtrim($boundary, '/').'/') === 0);
+		return($withinTop || ($stat['mode'] & 0022) === 0
+			|| ($type === 0040000 && ($stat['mode'] & 01000) !== 0));
+	}
+
+	// The physical directory a rename in $directory happens on: the directory
+	// itself or, for one created later, its deepest existing ancestor.
+	private function actualParent($directory)
+	{
+		if(!ErasedataManifestCodec::isValidAbsolutePath($directory)) {
+			return(self::renameDiagnostic('rename-noreplace-invalid-parent',
+				is_string($directory) ? $directory : '')); }
+		while(!is_dir($directory))
+		{
+			if(erasedataPathExists($directory) || dirname($directory) === $directory) {
+				return(self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory)); }
+			$directory = dirname($directory);
+		}
+		$physical = @realpath($directory);
+		return($physical === false
+			? self::renameDiagnostic('rename-noreplace-parent-unresolved', $directory) : $physical);
+	}
+
+	private function privateCaptureParent($directory)
+	{
+		$uid = erasedataEffectiveUid();
+		for($path = $directory; is_string($path) && $path !== dirname($path); $path = dirname($path))
+		{
+			if(!preg_match('/^\.erasedata-(?:entry|rmdir|recovery)-/', basename($path))) { continue; }
+			$root = @lstat($path);
+			$marker = @lstat(erasedataPrivateMarkerPath($path));
+			if(is_array($root) && ($root['mode'] & 0170000) === 0040000
+				&& ($root['mode'] & 07777) === 0700 && $root['uid'] === $uid
+				&& is_array($marker) && ($marker['mode'] & 0170000) === 0100000
+				&& ($marker['mode'] & 07777) === 0600 && $marker['uid'] === $uid && $marker['nlink'] === 1) {
+				return(true); }
+		}
+		return(false);
+	}
+
+	// The numeric entries of $root that name the identity $identity right now,
+	// or false when the root cannot be listed at all.
+	//
+	// Nothing in a /proc/self/fd entry says who opened it, so a matching dev/ino
+	// alone identifies the DIRECTORY, never the descriptor. This is the half of
+	// acquireDirectoryCapability() that lets it tell its own descriptor from a
+	// stranger's: the snapshot is taken before the handle exists and again while
+	// it is held, and scandir() is used rather than a bare numeric probe so the
+	// answer is whatever the process really holds.
+	//
+	// The transient descriptor scandir() itself consumes is never a false
+	// positive: it names $root, and it is closed before the stat() loop below
+	// runs, so it neither matches the target identity nor survives to be stat'd.
+	private function descriptorsNamingIdentity($root, array $identity)
+	{
+		if(!is_string($root) || $root === '' || !is_dir($root)) {
+			return(false); }
+		$entries = @scandir($root);
+		if(!is_array($entries)) {
+			return(false); }
+		$naming = [];
+		foreach($entries as $entry)
+		{
+			if(!ctype_digit($entry)) {
+				continue; }
+			$reference = $root.'/'.$entry;
+			clearstatcache(true, $reference);
+			if(erasedataIdentityDeviceAndInode(@stat($reference)) === $identity) {
+				$naming[] = $entry; }
+		}
+		return($naming);
 	}
 }
 function erasedataPathExists($path)
@@ -998,16 +998,16 @@ function erasedataPathExists($path)
 function erasedataDirectoryMatches($directory, $prefix, $suffix)
 {
 	$names = @scandir($directory);
-	if(!is_array($names))
-		return(false);
-	$matches = array();
-	foreach($names as $name)
+	if(!is_array($names)) {
+		return(false); }
+	$matches = [];
+	foreach($names as $name) {
 		if($name !== '.' && $name !== '..'
 			&& ($prefix !== '' || $name[0] !== '.')
 			&& strlen($name) >= strlen($prefix) + strlen($suffix)
 			&& strncmp($name, $prefix, strlen($prefix)) === 0
-			&& ($suffix === '' || substr($name, -strlen($suffix)) === $suffix))
-			$matches[] = $directory.'/'.$name;
+			&& ($suffix === '' || substr($name, -strlen($suffix)) === $suffix)) {
+			$matches[] = $directory.'/'.$name; } }
 	sort($matches, SORT_STRING);
 	return($matches);
 }
@@ -1018,7 +1018,7 @@ function erasedataDirectoryMatches($directory, $prefix, $suffix)
 // /dev/fd the fallback for systems that do not mount procfs.
 function erasedataDescriptorCandidates()
 {
-	return(array('/proc/self/fd', '/dev/fd'));
+	return(['/proc/self/fd', '/dev/fd']);
 }
 
 // dev/ino of one identity array, as strings, or false.
@@ -1037,18 +1037,18 @@ function erasedataDescriptorCandidates()
 // nonnegative int at the only boundary where a decoded one could arrive.
 function erasedataIdentityDeviceAndInode($identity)
 {
-	if(!is_array($identity))
-		return(false);
+	if(!is_array($identity)) {
+		return(false); }
 	$source = $identity;
-	if(isset($identity['stat']) && is_array($identity['stat']))
-		$source = $identity['stat'];
-	else if(isset($identity['lstat']) && is_array($identity['lstat']))
-		$source = $identity['lstat'];
+	if(isset($identity['stat']) && is_array($identity['stat'])) {
+		$source = $identity['stat']; }
+	elseif(isset($identity['lstat']) && is_array($identity['lstat'])) {
+		$source = $identity['lstat']; }
 	if(!isset($source['dev']) || !isset($source['ino'])
 		|| !(is_int($source['dev']) || is_float($source['dev']) || is_string($source['dev']))
-		|| !(is_int($source['ino']) || is_float($source['ino']) || is_string($source['ino'])))
-		return(false);
-	return(array('dev' => (string)$source['dev'], 'ino' => (string)$source['ino']));
+		|| !(is_int($source['ino']) || is_float($source['ino']) || is_string($source['ino']))) {
+		return(false); }
+	return(['dev' => (string)$source['dev'], 'ino' => (string)$source['ino']]);
 }
 
 // Report the path that was actually inspected, with enough metadata to repair
@@ -1100,33 +1100,33 @@ function erasedataRenameProbeWorkspaceValid($path, $uid)
 	$parent = function_exists('fopen') && function_exists('flock') ? @fopen(dirname($path), 're') : false;
 	$wouldBlock = 0;
 	$locked = is_resource($parent) && flock($parent, LOCK_SH | LOCK_NB, $wouldBlock);
-	if($wouldBlock)
-		return(true);
-	if($locked && !erasedataPathExists($path) && erasedataPathLookupAnswers($path))
-		return(true);
+	if($wouldBlock) {
+		return(true); }
+	if($locked && !erasedataPathExists($path) && erasedataPathLookupAnswers($path)) {
+		return(true); }
 	$root = @lstat($path);
 	if(!is_array($root) || ($root['mode'] & 0170000) !== 0040000
-		|| ($root['mode'] & 07777) !== 0700 || $root['uid'] !== $uid)
-		return(false);
+		|| ($root['mode'] & 07777) !== 0700 || $root['uid'] !== $uid) {
+		return(false); }
 	$entries = @scandir($path);
-	if(!is_array($entries)) return(false);
-	foreach(array_diff($entries, array('.', '..')) as $name)
+	if(!is_array($entries)) { return(false); }
+	foreach(array_diff($entries, ['.', '..']) as $name)
 	{
-		$isFile = in_array($name, array('.lock', 'from-file', 'to-file'), true);
-		$isDirectory = in_array($name, array('from-dir', 'to-dir'), true);
-		if(!$isFile && !$isDirectory) return(false);
+		$isFile = in_array($name, ['.lock', 'from-file', 'to-file'], true);
+		$isDirectory = in_array($name, ['from-dir', 'to-dir'], true);
+		if(!$isFile && !$isDirectory) { return(false); }
 		$child = @lstat($path.'/'.$name);
 		// An active native probe can remove its own inspected entry.
-		if($child === false && !erasedataPathExists($path.'/'.$name)) continue;
+		if($child === false && !erasedataPathExists($path.'/'.$name)) { continue; }
 		if(!is_array($child) || $child['uid'] !== $uid
 			|| ($child['mode'] & 0170000) !== ($isFile ? 0100000 : 0040000)
 			|| ($child['mode'] & 07777) !== ($isFile ? 0600 : 0700)
 			|| ($isFile ? $child['nlink'] !== 1 : !erasedataLeafDirectoryLinks($child['nlink']))
-			|| ($name === '.lock' && $child['size'] !== 0)) return(false);
+			|| ($name === '.lock' && $child['size'] !== 0)) { return(false); }
 		if($isDirectory)
 		{
 			$children = @scandir($path.'/'.$name);
-			if(!is_array($children) || count(array_diff($children, array('.', '..')))) return(false);
+			if(!is_array($children) || count(array_diff($children, ['.', '..']))) { return(false); }
 		}
 	}
 	return(true);
@@ -1137,16 +1137,16 @@ function erasedataRenameProbeWorkspaceValid($path, $uid)
 function erasedataValidateFirstUseWitness($path, $marker, $recovery)
 {
 	$expected = 'regular-file uid=0 mode=0400 nlink=1';
-	if(!is_array($marker))
-		return(erasedataQueueRefusal('witness-missing', $path, $marker, $expected, $recovery));
-	if(($marker['mode'] & 0170000) !== 0100000)
-		return(erasedataQueueRefusal('witness-type', $path, $marker, $expected, $recovery));
-	if($marker['uid'] !== 0)
-		return(erasedataQueueRefusal('witness-owner', $path, $marker, $expected, $recovery));
-	if(($marker['mode'] & 07777) !== 0400)
-		return(erasedataQueueRefusal('witness-mode', $path, $marker, $expected, $recovery));
-	if($marker['nlink'] !== 1)
-		return(erasedataQueueRefusal('witness-links', $path, $marker, $expected, $recovery));
+	if(!is_array($marker)) {
+		return(erasedataQueueRefusal('witness-missing', $path, $marker, $expected, $recovery)); }
+	if(($marker['mode'] & 0170000) !== 0100000) {
+		return(erasedataQueueRefusal('witness-type', $path, $marker, $expected, $recovery)); }
+	if($marker['uid'] !== 0) {
+		return(erasedataQueueRefusal('witness-owner', $path, $marker, $expected, $recovery)); }
+	if(($marker['mode'] & 07777) !== 0400) {
+		return(erasedataQueueRefusal('witness-mode', $path, $marker, $expected, $recovery)); }
+	if($marker['nlink'] !== 1) {
+		return(erasedataQueueRefusal('witness-links', $path, $marker, $expected, $recovery)); }
 	return(true);
 }
 
@@ -1154,17 +1154,17 @@ function erasedataValidateFirstUseWitness($path, $marker, $recovery)
 // still call erasedataEnsureQueueDirectory directly and re-read every identity.
 function erasedataInitializationQueueReady(&$path = null)
 {
-	static $admissions = array();
+	static $admissions = [];
 	$key = FileUtil::getSettingsPath();
 	if(!array_key_exists($key, $admissions))
 	{
 		$queue = erasedataQueuePath();
-		$admissions[$key] = array('path' => $queue,
-			'ready' => $queue !== false && erasedataEnsureQueueDirectory($queue));
+		$admissions[$key] = ['path' => $queue,
+			'ready' => $queue !== false && erasedataEnsureQueueDirectory($queue)];
 		// Full init routes load the RPC helper before admission. Retire a stale
 		// ordinary collector once, while keeping every durable drain obligation.
-		if(!$admissions[$key]['ready'] && function_exists('erasedataRetireRefusedCollector'))
-			erasedataRetireRefusedCollector();
+		if(!$admissions[$key]['ready'] && function_exists('erasedataRetireRefusedCollector')) {
+			erasedataRetireRefusedCollector(); }
 	}
 	$path = $admissions[$key]['path'];
 	return($admissions[$key]['ready']);
@@ -1178,26 +1178,26 @@ function erasedataQueuePath()
 	$settingsPath = FileUtil::getSettingsPath();
 	$legacy = $settingsPath.'/erasedata';
 	$settings = @realpath($settingsPath);
-	if($settings === false)
-		return($legacy);
+	if($settings === false) {
+		return($legacy); }
 	$profile = dirname($settings);
 	if(basename($profile) === 'share')
 	{
 		$root = dirname($profile);
 		$leaf = 'default';
 	}
-	else if(basename(dirname($profile)) === 'users'
+	elseif(basename(dirname($profile)) === 'users'
 		&& basename(dirname(dirname($profile))) === 'share')
 	{
 		$root = dirname(dirname(dirname($profile)));
 		$leaf = 'user-'.hash('sha256', basename($profile));
 	}
-	else
-		return($legacy);
+	else {
+		return($legacy); }
 	$protected = $root.'/erasedata-jobs';
 	$witness = $root.'/.erasedata-first-use';
-	if(!erasedataPathExists($protected) && !erasedataPathExists($witness))
-		return($legacy);
+	if(!erasedataPathExists($protected) && !erasedataPathExists($witness)) {
+		return($legacy); }
 	$uid = erasedataEffectiveUid();
 	$unsealed = false;
 	clearstatcache(true, $protected);
@@ -1206,21 +1206,21 @@ function erasedataQueuePath()
 	$marker = @lstat($witness);
 	$recovery = 'stop services; inspect legacy *.list and *.pending obligations before operator attestation; '
 		.'restore the witness only through the documented root-owned bootstrap/attestation procedure';
-	if($uid === false)
-		return(erasedataQueueRefusal('effective-uid-unavailable', $protected, $stat, 'service UID', $recovery));
-	if(!erasedataValidateFirstUseWitness($witness, $marker, $recovery))
-		return(false);
+	if($uid === false) {
+		return(erasedataQueueRefusal('effective-uid-unavailable', $protected, $stat, 'service UID', $recovery)); }
+	if(!erasedataValidateFirstUseWitness($witness, $marker, $recovery)) {
+		return(false); }
 	$recovery = 'stop services; preserve and inspect the named queue obligations before operator attestation';
-	if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000)
-		return(erasedataQueueRefusal('protected-root-type', $protected, $stat, 'directory uid='.$uid.' mode=0700', $recovery));
-	if($stat['uid'] !== $uid || ($stat['mode'] & 0077) !== 0)
-		return(erasedataQueueRefusal('protected-root-owner-mode', $protected, $stat, 'directory uid='.$uid.' mode=0700', $recovery));
+	if(!is_array($stat) || ($stat['mode'] & 0170000) !== 0040000) {
+		return(erasedataQueueRefusal('protected-root-type', $protected, $stat, 'directory uid='.$uid.' mode=0700', $recovery)); }
+	if($stat['uid'] !== $uid || ($stat['mode'] & 0077) !== 0) {
+		return(erasedataQueueRefusal('protected-root-owner-mode', $protected, $stat, 'directory uid='.$uid.' mode=0700', $recovery)); }
 	$ancestor = null;
-	if(!erasedataGuardParentChain($protected.'/'.$leaf, $uid, false, $unsealed, false, $ancestor))
-		return(false);
-	if($unsealed)
+	if(!erasedataGuardParentChain($protected.'/'.$leaf, $uid, false, $unsealed, false, $ancestor)) {
+		return(false); }
+	if($unsealed) {
 		return(erasedataQueueRefusal('protected-root-writable-ancestor', $ancestor['path'],
-			$ancestor['stat'], 'no group/other write; queue mode=0700', $recovery));
+			$ancestor['stat'], 'no group/other write; queue mode=0700', $recovery)); }
 	// A pre-existing legacy name can hold obligations. Never hide it behind a
 	// new queue, even if the protected root has already been provisioned.
 	if(erasedataPathExists($legacy) || erasedataPathExists($settings.'/erasedata'))
@@ -1236,9 +1236,9 @@ function erasedataQueuePath()
 // capture. Lexical links and their resolved targets are checked separately.
 function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealData = false, &$ancestor = null, $report = true)
 {
-	$parents = array();
-	for($dir = dirname($path); $dir !== dirname($dir); $dir = dirname($dir))
-		$parents[] = $dir;
+	$parents = [];
+	for($dir = dirname($path); $dir !== dirname($dir); $dir = dirname($dir)) {
+		$parents[] = $dir; }
 	$parents[] = '/';
 	foreach(array_reverse($parents) as $dir)
 	{
@@ -1248,16 +1248,16 @@ function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealDa
 		if(!is_array($stat) || ($stat['uid'] !== $uid && $stat['uid'] !== 0)
 			|| ($type !== 0040000 && !($allowLinks && $type === 0120000)))
 		{
-			if(!$report) return(false);
-			if(!$sealData)
+			if(!$report) { return(false); }
+			if(!$sealData) {
 				return(erasedataQueueRefusal('unsafe ancestor', $type === 0040000 ? (@realpath($dir) ?: $dir) : $dir,
 					$stat, 'directory owned by root or uid='.$uid,
-					'stop services; inspect queue obligations before operator attestation; restore the named ancestor owner/type'));
+					'stop services; inspect queue obligations before operator attestation; restore the named ancestor owner/type')); }
 			FileUtil::toLog('erasedata: private-root refused: unsafe ancestor '.$dir);
 			return(false);
 		}
-		if($type === 0120000)
-			continue;
+		if($type === 0120000) {
+			continue; }
 		if(($stat['mode'] & 0022) && !($stat['mode'] & 01000))
 		{
 			$settings = dirname($path);
@@ -1268,17 +1268,17 @@ function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealDa
 					&& ($dir === $userProfile || $dir === $users));
 			if(!$ownedProfileDirectory || $stat['uid'] !== $uid)
 			{
-				if(!$report) return(false);
-				if(!$sealData)
+				if(!$report) { return(false); }
+				if(!$sealData) {
 					return(erasedataQueueRefusal('unsupported writable ancestor', @realpath($dir) ?: $dir,
 						$stat, 'no group/other write; queue mode=0700',
-						'stop services; inspect *.list and *.pending obligations before operator attestation; chmod go-w on the named ancestor'));
+						'stop services; inspect *.list and *.pending obligations before operator attestation; chmod go-w on the named ancestor')); }
 				FileUtil::toLog('erasedata: private-root refused: unsupported writable ancestor '.$dir);
 				return(false);
 			}
 			$unsealed = true;
-			if($ancestor === null)
-				$ancestor = array('path' => @realpath($dir) ?: $dir, 'stat' => $stat);
+			if($ancestor === null) {
+				$ancestor = ['path' => @realpath($dir) ?: $dir, 'stat' => $stat]; }
 			if($sealData)
 			{
 				if(!@chmod($dir, ($stat['mode'] & 07777) | 01000))
@@ -1304,8 +1304,8 @@ function erasedataGuardParentChain($path, $uid, $allowLinks, &$unsealed, $sealDa
 // queue we inspected, even when both targets have otherwise safe modes.
 function erasedataQueueParentUnchanged($listPath, $parent)
 {
-	if(@realpath(dirname($listPath)) === $parent)
-		return(true);
+	if(@realpath(dirname($listPath)) === $parent) {
+		return(true); }
 	FileUtil::toLog('erasedata: queue refused: queue parent changed during admission '.$listPath);
 	return(false);
 }
@@ -1327,10 +1327,10 @@ function erasedataListedEntryStat($directory, $entry)
 	{
 		clearstatcache(true, $path);
 		$stat = @lstat($path);
-		if(is_array($stat)) return($stat);
+		if(is_array($stat)) { return($stat); }
 		$current = @scandir($directory);
-		if(!is_array($current)) return(false);
-		if(!in_array($entry, $current, true)) return(null);
+		if(!is_array($current)) { return(false); }
+		if(!in_array($entry, $current, true)) { return(null); }
 		// The same worker may already have re-created the fixed intent name.
 		// Inspect that inode rather than refusing from the first stale miss.
 	}
@@ -1341,21 +1341,21 @@ function erasedataQueueEntriesOwned($physicalPath, array $entries, $uid, $listPa
 {
 	foreach($entries as $entry)
 	{
-		if($entry === '.' || $entry === '..')
-			continue;
+		if($entry === '.' || $entry === '..') {
+			continue; }
 		$entryPath = $physicalPath.'/'.$entry;
 		$stat = erasedataListedEntryStat($physicalPath, $entry);
-		if($stat === null) continue;
+		if($stat === null) { continue; }
 		if(!is_array($stat) || $stat['uid'] !== $uid)
 		{
 			FileUtil::toLog('erasedata: queue refused: foreign or unreadable entry in '.$listPath);
 			return(false);
 		}
 		if(erasedataRenameProbeName($entry)
-			&& !erasedataRenameProbeWorkspaceValid($entryPath, $uid))
+			&& !erasedataRenameProbeWorkspaceValid($entryPath, $uid)) {
 			return(erasedataQueueRefusal('unsafe-rename-probe', $entryPath, $stat,
 				'private owned probe directory with fixed plain entries',
-				'stop services; preserve unexpected probe contents and inspect the named workspace'));
+				'stop services; preserve unexpected probe contents and inspect the named workspace')); }
 	}
 	return(true);
 }
@@ -1393,8 +1393,8 @@ function erasedataEnsureQueueDirectory($listPath)
 			FileUtil::toLog('erasedata: queue refused: settings parent is unresolved '.$settings);
 			return(false);
 		}
-		if(!erasedataGuardParentChain($settings, $uid, true, $unsafe))
-			return(false);
+		if(!erasedataGuardParentChain($settings, $uid, true, $unsafe)) {
+			return(false); }
 		$physicalSettings = rtrim($profile, '/').'/'.basename($settings);
 		if(!erasedataGuardParentChain($physicalSettings, $uid, false, $unsafe)
 			|| $unsafe)
@@ -1413,8 +1413,8 @@ function erasedataEnsureQueueDirectory($listPath)
 	}
 	$unsealed = false;
 	$ancestor = null;
-	if(!erasedataGuardParentChain($listPath, $uid, true, $unsealed, false, $ancestor))
-		return(false);
+	if(!erasedataGuardParentChain($listPath, $uid, true, $unsealed, false, $ancestor)) {
+		return(false); }
 	$parent = @realpath(dirname($listPath));
 	if($parent === false)
 	{
@@ -1422,8 +1422,8 @@ function erasedataEnsureQueueDirectory($listPath)
 		return(false);
 	}
 	$physicalPath = rtrim($parent, '/').'/'.basename($listPath);
-	if(!erasedataGuardParentChain($physicalPath, $uid, false, $unsealed, false, $ancestor))
-		return(false);
+	if(!erasedataGuardParentChain($physicalPath, $uid, false, $unsealed, false, $ancestor)) {
+		return(false); }
 	clearstatcache(true, $physicalPath);
 	$before = @lstat($physicalPath);
 	if(is_array($before) && (($before['mode'] & 0170000) !== 0040000
@@ -1444,8 +1444,8 @@ function erasedataEnsureQueueDirectory($listPath)
 	$reopened = false;
 	if(!erasedataGuardParentChain($listPath, $uid, true, $reopened)
 		|| !erasedataQueueParentUnchanged($listPath, $parent)
-		|| !erasedataGuardParentChain($physicalPath, $uid, false, $reopened))
-		return(false);
+		|| !erasedataGuardParentChain($physicalPath, $uid, false, $reopened)) {
+		return(false); }
 	if($reopened)
 	{
 		FileUtil::toLog('erasedata: queue refused: path reopened during admission; cleanup held '.$listPath);
@@ -1469,8 +1469,8 @@ function erasedataEnsureQueueDirectory($listPath)
 		return(false);
 	}
 	if(!erasedataQueueEntriesOwned($physicalPath, $entries, $uid, $listPath)
-		|| !erasedataQueueParentUnchanged($listPath, $parent))
-		return(false);
+		|| !erasedataQueueParentUnchanged($listPath, $parent)) {
+		return(false); }
 	clearstatcache(true, $physicalPath);
 	$current = @lstat($physicalPath);
 	if(!is_array($current) || $current['dev'] !== $after['dev']
@@ -1506,11 +1506,11 @@ if(!function_exists('erasedataSharedFileMode'))
 function erasedataStagingFile($directory, $prefix)
 {
 	$physical = is_string($directory) && $directory !== '' ? @realpath($directory) : false;
-	if($physical === false || !is_dir($physical))
-		return(false);
+	if($physical === false || !is_dir($physical)) {
+		return(false); }
 	$staging = @tempnam($physical, $prefix);
-	if($staging === false)
-		return(false);
+	if($staging === false) {
+		return(false); }
 	if(dirname($staging) !== $physical)
 	{
 		@unlink($staging);
@@ -1534,15 +1534,15 @@ function erasedataStagingFile($directory, $prefix)
 function erasedataWriteDurableFile($path, $bytes, $mode = null)
 {
 	if(!is_string($path) || $path === '' || strpos($path, "\0") !== false
-		|| !is_string($bytes))
-		return(false);
-	if(is_null($mode))
-		$mode = erasedataSharedFileMode();
-	if(!is_int($mode))
-		return(false);
+		|| !is_string($bytes)) {
+		return(false); }
+	if(is_null($mode)) {
+		$mode = erasedataSharedFileMode(); }
+	if(!is_int($mode)) {
+		return(false); }
 	$token = erasedataPrivateToken();
-	if($token === false)
-		return(false);
+	if($token === false) {
+		return(false); }
 	// Beside the final name, so the rename below is within one directory and
 	// therefore atomic, and unique, so two writers never share a staging object.
 	// The leading dot keeps it out of the <hash>.<generation>.<...>.tmp grammar
@@ -1553,8 +1553,8 @@ function erasedataWriteDurableFile($path, $bytes, $mode = null)
 	// generation-bearing .tmp candidate outright, dot or no dot.
 	$staging = dirname($path).'/.'.basename($path).'.'.$token.'.tmp';
 	$handle = @fopen($staging, 'xb');
-	if($handle === false)
-		return(false);
+	if($handle === false) {
+		return(false); }
 	$total = strlen($bytes);
 	$written = 0;
 	$complete = true;
@@ -1568,17 +1568,17 @@ function erasedataWriteDurableFile($path, $bytes, $mode = null)
 		}
 		$written += $chunk;
 	}
-	if($written !== $total)
-		$complete = false;
-	if($complete && @fflush($handle) === false)
-		$complete = false;
-	if(@fclose($handle) !== true)
-		$complete = false;
+	if($written !== $total) {
+		$complete = false; }
+	if($complete && @fflush($handle) === false) {
+		$complete = false; }
+	if(@fclose($handle) !== true) {
+		$complete = false; }
 	if($complete)
 	{
 		@chmod($staging, $mode);
-		if(@rename($staging, $path) === true)
-			return(true);
+		if(@rename($staging, $path) === true) {
+			return(true); }
 	}
 	@unlink($staging);
 	return(false);
@@ -1604,15 +1604,15 @@ function erasedataGenerationIsValid($value)
 // generation naming exactly one physical job.
 function erasedataGenerationIncrement($generation)
 {
-	if(!erasedataGenerationIsValid($generation))
-		return(false);
+	if(!erasedataGenerationIsValid($generation)) {
+		return(false); }
 	$digits = '0123456789abcdef';
 	$next = $generation;
 	for($position = 15; $position >= 0; $position--)
 	{
 		$value = strpos($digits, $next[$position]);
-		if(!is_int($value))
-			return(false);
+		if(!is_int($value)) {
+			return(false); }
 		if($value < 15)
 		{
 			$next[$position] = $digits[$value + 1];
@@ -1627,8 +1627,8 @@ function erasedataGenerationIncrement($generation)
 // one case means the lexical order IS the numeric order.
 function erasedataGenerationCompare($left, $right)
 {
-	if(!erasedataGenerationIsValid($left) || !erasedataGenerationIsValid($right))
-		return(false);
+	if(!erasedataGenerationIsValid($left) || !erasedataGenerationIsValid($right)) {
+		return(false); }
 	$order = strcmp($left, $right);
 	return($order < 0 ? -1 : ($order > 0 ? 1 : 0));
 }
@@ -1646,10 +1646,10 @@ function erasedataGenerationCompare($left, $right)
 // erasedataRunCollector() must not trip the collector.
 function erasedataMayStartCollector($sapi, $scriptFilename, $entryPoint)
 {
-	if($sapi !== 'cli')
-		return(false);
-	if(!is_string($scriptFilename) || $scriptFilename === '')
-		return(false);
+	if($sapi !== 'cli') {
+		return(false); }
+	if(!is_string($scriptFilename) || $scriptFilename === '') {
+		return(false); }
 	return(realpath($scriptFilename) === $entryPoint);
 }
 
@@ -1670,8 +1670,8 @@ function erasedataMayStartCollector($sapi, $scriptFilename, $entryPoint)
 function erasedataPathIdentity($path)
 {
 	static $ops = null;
-	if($ops === null)
-		$ops = new ErasedataFilesystemOps();
+	if($ops === null) {
+		$ops = new ErasedataFilesystemOps(); }
 	return($ops->pathIdentity($path));
 }
 
@@ -1687,12 +1687,12 @@ function erasedataPathTouchesOwnedPaths($path, array $ownedPaths)
 	// it before anything can reach here; fail closed rather than fatally if one
 	// ever does not, because answering "touches nothing" would authorise a
 	// deletion.
-	if(!function_exists('erasedataPathsOverlap'))
-		return(true);
-	if(isset($ownedPaths['files']) && is_array($ownedPaths['files']))
-		foreach($ownedPaths['files'] as $owned)
-			if(erasedataPathsOverlap($path, $owned))
-				return(true);
+	if(!function_exists('erasedataPathsOverlap')) {
+		return(true); }
+	if(isset($ownedPaths['files']) && is_array($ownedPaths['files'])) {
+		foreach($ownedPaths['files'] as $owned) {
+			if(erasedataPathsOverlap($path, $owned)) {
+				return(true); } } }
 	return(isset($ownedPaths['base']) && is_string($ownedPaths['base'])
 		&& erasedataPathsOverlap($path, $ownedPaths['base']));
 }
@@ -1728,16 +1728,16 @@ function erasedataCaptureSourceOwned($path)
 function erasedataProtectPrivateParent($root)
 {
 	$uid = erasedataEffectiveUid();
-	if($uid === false || !is_string($root) || $root === '' || $root[0] !== '/')
-		return(false);
+	if($uid === false || !is_string($root) || $root === '' || $root[0] !== '/') {
+		return(false); }
 	$unsealed = false;
 	$parent = @realpath(dirname($root));
 	if($parent === false
 		|| !erasedataGuardParentChain($root, $uid, true, $unsealed, true)
 		|| @realpath(dirname($root)) !== $parent
 		|| !erasedataGuardParentChain($parent.'/'.basename($root),
-			$uid, false, $unsealed, true))
-		return(false);
+			$uid, false, $unsealed, true)) {
+		return(false); }
 	return(true);
 }
 
@@ -1747,26 +1747,26 @@ function erasedataProtectPrivateParent($root)
 // crash-before-marker. A body or marker of unknown provenance remains held.
 function erasedataDiscardEmptyUnsignedRoot($root)
 {
-	if(!erasedataProtectPrivateParent($root))
-		return(false);
+	if(!erasedataProtectPrivateParent($root)) {
+		return(false); }
 	$uid = erasedataEffectiveUid();
 	clearstatcache(true, $root);
 	$stat = @lstat($root);
 	$entries = @scandir($root);
 	return($uid !== false && is_array($stat) && $stat['uid'] === $uid
 		&& ($stat['mode'] & 0170000) === 0040000
-		&& is_array($entries) && count(array_diff($entries, array('.', '..'))) === 0
+		&& is_array($entries) && count(array_diff($entries, ['.', '..'])) === 0
 		&& @rmdir($root));
 }
 
 function erasedataPrivateRootKey($reservationKey, $create)
 {
 	if(!is_string($reservationKey) || $reservationKey === ''
-		|| $reservationKey[0] !== '/' || strpos($reservationKey, "\0") !== false)
-		return(false);
+		|| $reservationKey[0] !== '/' || strpos($reservationKey, "\0") !== false) {
+		return(false); }
 	$queue = dirname($reservationKey);
-	if(!erasedataEnsureQueueDirectory($queue))
-		return(false);
+	if(!erasedataEnsureQueueDirectory($queue)) {
+		return(false); }
 	$path = $queue.'/.private-root-key';
 	$statePath = $queue.'/.private-root-key-state';
 	clearstatcache(true, $path);
@@ -1843,25 +1843,25 @@ function erasedataPrivateRootKey($reservationKey, $create)
 
 function erasedataPrivateRootSignature($root, $reservationKey, $createKey)
 {
-	if(!erasedataProtectPrivateParent($root))
-		return(false);
+	if(!erasedataProtectPrivateParent($root)) {
+		return(false); }
 	clearstatcache(true, $root);
 	$stat = @lstat($root);
 	$uid = erasedataEffectiveUid();
 	if(!is_array($stat) || $uid === false || $stat['uid'] !== $uid
 		|| ($stat['mode'] & 0170000) !== 0040000
-		|| ($stat['mode'] & 0022))
-		return(false);
+		|| ($stat['mode'] & 0022)) {
+		return(false); }
 	$key = erasedataPrivateRootKey($reservationKey, $createKey);
-	if($key === false)
-		return(false);
+	if($key === false) {
+		return(false); }
 	$physicalParent = @realpath(dirname($root));
-	if($physicalParent === false)
-		return(false);
+	if($physicalParent === false) {
+		return(false); }
 	$physicalRoot = rtrim($physicalParent, '/').'/'.basename($root);
 	$parentStat = @lstat($physicalParent);
-	if(!is_array($parentStat))
-		return(false);
+	if(!is_array($parentStat)) {
+		return(false); }
 	return(hash_hmac('sha256', "v1\0".$physicalRoot."\0"
 		.$parentStat['dev']."\0".$parentStat['ino']."\0"
 		.$stat['dev']."\0".$stat['ino'], $key));
@@ -1871,28 +1871,28 @@ function erasedataCreatePrivateMarker($root, $reservationKey = null)
 {
 	$signature = $reservationKey === null ? ''
 		: erasedataPrivateRootSignature($root, $reservationKey, true);
-	if($signature === false)
-		return(false);
+	if($signature === false) {
+		return(false); }
 	$path = erasedataPrivateMarkerPath($root);
 	$handle = @fopen($path, 'xb');
-	if($handle === false)
-		return(false);
+	if($handle === false) {
+		return(false); }
 	@chmod($path, 0600);
 	$written = $signature === '' ? 0 : @fwrite($handle, $signature);
 	$flushed = @fflush($handle);
 	$closed = @fclose($handle);
-	if($written !== strlen($signature) || !$flushed || !$closed)
-		return(false);
+	if($written !== strlen($signature) || !$flushed || !$closed) {
+		return(false); }
 	return(true);
 }
 
 function erasedataPrivateMarkerIsValid($root, $reservationKey = null)
 {
 	$marker = erasedataPrivateMarkerPath($root);
-	if(!is_file($marker) || is_link($marker))
-		return(false);
-	if($reservationKey === null)
-		return(true);
+	if(!is_file($marker) || is_link($marker)) {
+		return(false); }
+	if($reservationKey === null) {
+		return(true); }
 	$signature = erasedataPrivateRootSignature($root, $reservationKey, false);
 	$stored = ErasedataManifestCodec::readBoundedFile($marker, 64);
 	return(is_string($signature) && is_string($stored)
@@ -1901,20 +1901,20 @@ function erasedataPrivateMarkerIsValid($root, $reservationKey = null)
 
 function erasedataEntryIdentityParts($identity)
 {
-	if(!is_array($identity))
-		return(false);
+	if(!is_array($identity)) {
+		return(false); }
 	$stat = isset($identity['lstat']) && is_array($identity['lstat'])
 		? $identity['lstat'] : $identity;
-	if(!isset($stat['dev']) || !isset($stat['ino']) || !isset($stat['mode']))
-		return(false);
+	if(!isset($stat['dev']) || !isset($stat['ino']) || !isset($stat['mode'])) {
+		return(false); }
 	$typeBits = $stat['mode'] & 0170000;
 	$type = $typeBits === 0120000 ? 'l'
 		: ($typeBits === 0040000 ? 'd' : ($typeBits === 0100000 ? 'f' : 'o'));
-	return(array(
+	return([
 		'dev' => (string)$stat['dev'],
 		'ino' => (string)$stat['ino'],
 		'type' => $type,
-	));
+	]);
 }
 
 function erasedataSameEntryIdentity($expected, $current)
@@ -1946,27 +1946,27 @@ function erasedataCapturedEntryRoots($path, $reservationKey,
 {
 	$parent = dirname($path);
 	$entries = $filesystem->scanDirectory($parent);
-	if($entries === false)
-		return(erasedataPathExists($parent) ? false : array());
+	if($entries === false) {
+		return(erasedataPathExists($parent) ? false : []); }
 	$prefix = basename(erasedataCapturedEntryPrefix($path, $reservationKey));
-	$roots = array();
-	foreach($entries as $entry)
+	$roots = [];
+	foreach($entries as $entry) {
 		if(strpos($entry, $prefix) === 0
 			&& preg_match('/^[0-9]+-[0-9]+-[ldfo]-[a-f0-9]{32}$/D',
 				substr($entry, strlen($prefix))))
 		{
 			$root = $parent.'/'.$entry;
-			if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) continue;
-			if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) continue;
+			if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) { continue; }
+			if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) { continue; }
 			if(!erasedataPrivateMarkerIsValid($root,
 				$reservationKey === 'manifest-consumption' ? null : $reservationKey))
 			{
-				if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+				if(erasedataDiscardEmptyUnsignedRoot($root)) { continue; }
 				FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
 				return(false);
 			}
 			$roots[] = $root;
-		}
+		} }
 	return($roots);
 }
 
@@ -1974,8 +1974,8 @@ function erasedataCapturedEntryName($root)
 {
 	$namePath = erasedataCapturedEntryNamePath($root);
 	if(!erasedataPrivateMarkerIsValid($root)
-		|| !is_file($namePath) || is_link($namePath))
-		return(false);
+		|| !is_file($namePath) || is_link($namePath)) {
+		return(false); }
 	// Bounded while reading: a name record longer than the ceiling is refused
 	// without ever being allocated whole.
 	$encoded = ErasedataManifestCodec::readBoundedFile(
@@ -1983,8 +1983,8 @@ function erasedataCapturedEntryName($root)
 	$name = is_string($encoded)
 		? ErasedataManifestCodec::decodeCanonicalBase64($encoded) : false;
 	if($name === false || $name === '' || $name === '.' || $name === '..'
-		|| strpos($name, '/') !== false || strpos($name, "\0") !== false)
-		return(false);
+		|| strpos($name, '/') !== false || strpos($name, "\0") !== false) {
+		return(false); }
 	return($name);
 }
 
@@ -1992,24 +1992,24 @@ function erasedataCapturedEntryRootInfo($root, $path, $reservationKey,
 	ErasedataFilesystemOps $filesystem)
 {
 	$prefix = erasedataCapturedEntryPrefix($path, $reservationKey);
-	if(strpos($root, $prefix) !== 0 || erasedataCapturedEntryName($root) !== FileUtil::getFileName($path))
-		return(false);
+	if(strpos($root, $prefix) !== 0 || erasedataCapturedEntryName($root) !== FileUtil::getFileName($path)) {
+		return(false); }
 	$suffix = substr($root, strlen($prefix));
 	if(!preg_match('/^([0-9]+)-([0-9]+)-([ldfo])-[a-f0-9]{32}$/D',
-		$suffix, $matches))
-		return(false);
+		$suffix, $matches)) {
+		return(false); }
 	$rootIdentity = $filesystem->entryIdentity($root);
-	if(!is_array($rootIdentity) || empty($rootIdentity['is_dir']))
-		return(false);
-	return(array(
+	if(!is_array($rootIdentity) || empty($rootIdentity['is_dir'])) {
+		return(false); }
+	return([
 		'root' => $root,
 		'entry' => erasedataCapturedEntryDataPath($root),
-		'identity' => array(
+		'identity' => [
 			'dev' => $matches[1],
 			'ino' => $matches[2],
 			'type' => $matches[3],
-		),
-	));
+		],
+	]);
 }
 
 function erasedataCreateCapturedEntryRoot($path, $reservationKey, $expected,
@@ -2017,13 +2017,13 @@ function erasedataCreateCapturedEntryRoot($path, $reservationKey, $expected,
 {
 	$parts = erasedataEntryIdentityParts($expected);
 	$token = erasedataPrivateToken();
-	if($parts === false || $token === false)
-		return(false);
+	if($parts === false || $token === false) {
+		return(false); }
 	$root = erasedataCapturedEntryPrefix($path, $reservationKey)
 		.$parts['dev'].'-'.$parts['ino'].'-'.$parts['type'].'-'.$token;
 	if(!erasedataProtectPrivateParent($root)
-		|| !$filesystem->makeDirectory($root, 0700))
-		return(false);
+		|| !$filesystem->makeDirectory($root, 0700)) {
+		return(false); }
 	$namePath = erasedataCapturedEntryNamePath($root);
 	$name = base64_encode(FileUtil::getFileName($path));
 	$written = @file_put_contents($namePath, $name, LOCK_EX);
@@ -2049,11 +2049,11 @@ function erasedataCapturedEntryBridgeMatches($path, $entry,
 function erasedataPublishCapturedEntryBridge($path, $entry,
 	ErasedataFilesystemOps $filesystem)
 {
-	if(erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem))
-		return(true);
+	if(erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem)) {
+		return(true); }
 	$target = basename(dirname($entry)).'/'.basename($entry);
-	if(erasedataPathExists($path) || !$filesystem->makeSymlink($target, $path))
-		return(false);
+	if(erasedataPathExists($path) || !$filesystem->makeSymlink($target, $path)) {
+		return(false); }
 	return(erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem));
 }
 
@@ -2061,35 +2061,35 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 	ErasedataFilesystemOps $filesystem, $publishOnMismatch = true)
 {
 	$entries = $filesystem->scanDirectory($root);
-	if($entries === false)
-		return(false);
+	if($entries === false) {
+		return(false); }
 	$tombstones = array_values(array_filter($entries, function($name) {
 		return((bool)preg_match('/^\.bridge-([0-9]+)-([0-9]+)$/D', $name));
 	}));
-	if(count($tombstones) > 1)
-		return(false);
+	if(count($tombstones) > 1) {
+		return(false); }
 	$target = basename(dirname($entry)).'/'.basename($entry);
 	$renamed = false;
 	if(!count($tombstones))
 	{
-		if(!erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem))
-			return(!erasedataPathExists($path));
+		if(!erasedataCapturedEntryBridgeMatches($path, $entry, $filesystem)) {
+			return(!erasedataPathExists($path)); }
 		$expected = $filesystem->entryIdentity($path);
 		if(!is_array($expected) || empty($expected['is_link'])
-			|| $filesystem->readLink($path) !== $target)
-			return(false);
+			|| $filesystem->readLink($path) !== $target) {
+			return(false); }
 		$tombstone = $root.'/.bridge-'.$expected['dev'].'-'.$expected['ino'];
 		if(erasedataPathExists($tombstone)
-			|| !$filesystem->rename($path, $tombstone))
-			return(false);
+			|| !$filesystem->rename($path, $tombstone)) {
+			return(false); }
 		$renamed = true;
 	}
-	else
-		$tombstone = $root.'/'.$tombstones[0];
+	else {
+		$tombstone = $root.'/'.$tombstones[0]; }
 
 	if(!preg_match('/^\.bridge-([0-9]+)-([0-9]+)$/D',
-		basename($tombstone), $matches))
-		return(false);
+		basename($tombstone), $matches)) {
+		return(false); }
 	$current = $renamed ? $filesystem->renamedEntryIdentity($tombstone)
 		: $filesystem->entryIdentity($tombstone);
 	if(!is_array($current) || empty($current['is_link'])
@@ -2097,13 +2097,13 @@ function erasedataRemoveCapturedEntryBridge($path, $entry, $root,
 		|| (string)$current['ino'] !== $matches[2]
 		|| $filesystem->readLink($tombstone) !== $target)
 	{
-		if($publishOnMismatch && !erasedataPathExists($path))
+		if($publishOnMismatch && !erasedataPathExists($path)) {
 			$filesystem->makeSymlink(
-				basename($root).'/'.basename($tombstone), $path);
+				basename($root).'/'.basename($tombstone), $path); }
 		return(false);
 	}
-	if(erasedataPathExists($path) || !$filesystem->unlink($tombstone))
-		return(false);
+	if(erasedataPathExists($path) || !$filesystem->unlink($tombstone)) {
+		return(false); }
 	return(!erasedataPathExists($tombstone));
 }
 
@@ -2113,13 +2113,13 @@ function erasedataRemoveCapturedEntryRoot($root,
 	$entries = $filesystem->scanDirectory($root);
 	$namePath = erasedataCapturedEntryNamePath($root);
 	$marker = erasedataPrivateMarkerPath($root);
-	if($entries === false || count(array_diff($entries, array(
-		'.', '..', basename($namePath), basename($marker)))) > 0)
-		return(false);
-	if(!$filesystem->unlink($namePath) && erasedataPathExists($namePath))
-		return(false);
-	if(!$filesystem->unlink($marker) && erasedataPathExists($marker))
-		return(false);
+	if($entries === false || count(array_diff($entries, [
+		'.', '..', basename($namePath), basename($marker)])) > 0) {
+		return(false); }
+	if(!$filesystem->unlink($namePath) && erasedataPathExists($namePath)) {
+		return(false); }
+	if(!$filesystem->unlink($marker) && erasedataPathExists($marker)) {
+		return(false); }
 	return($filesystem->removeDirectory($root) || !erasedataPathExists($root));
 }
 
@@ -2131,7 +2131,7 @@ function erasedataDiscardCompletedCapturedRoot($root, $reservationKey,
 	ErasedataFilesystemOps $filesystem)
 {
 	if(preg_match('/^\.erasedata-entry-[a-f0-9]{64}-[0-9]+-[0-9]+-[ldfo]-[a-f0-9]{32}$/D',
-		basename($root)) !== 1 || !erasedataProtectPrivateParent($root)) return(false);
+		basename($root)) !== 1 || !erasedataProtectPrivateParent($root)) { return(false); }
 	$uid = erasedataEffectiveUid();
 	$parent = dirname($root);$parentStat = @lstat($parent);
 	clearstatcache(true, $root);
@@ -2143,33 +2143,33 @@ function erasedataDiscardCompletedCapturedRoot($root, $reservationKey,
 	if($uid === false || !is_array($parentStat) || !is_array($rootStat)
 		|| $rootStat['uid'] !== $uid || ($rootStat['mode'] & 0177777) !== 0040700
 		|| !erasedataLeafDirectoryLinks($rootStat['nlink']) || !is_array($contents)
-		|| array_values(array_diff($contents, array('.', '..'))) !== array(basename($marker))
+		|| array_values(array_diff($contents, ['.', '..'])) !== [basename($marker)]
 		|| !is_array($markerStat) || $markerStat['uid'] !== $uid
 		|| ($markerStat['mode'] & 0177777) !== 0100600 || $markerStat['nlink'] !== 1
-		|| $markerStat['size'] !== ($reservationKey === 'manifest-consumption' ? 0 : 64)) return(false);
+		|| $markerStat['size'] !== ($reservationKey === 'manifest-consumption' ? 0 : 64)) { return(false); }
 	$handle = @fopen($marker, 'rb');
-	if(!is_resource($handle)) return(false);
+	if(!is_resource($handle)) { return(false); }
 	try
 	{
 		$opened = @fstat($handle);
-		if(!is_array($opened) || !erasedataSameStatIdentity($opened, $markerStat)) return(false);
+		if(!is_array($opened) || !erasedataSameStatIdentity($opened, $markerStat)) { return(false); }
 		$stored = ErasedataManifestCodec::readBoundedHandle($handle, 64);
 		$signature = $reservationKey === 'manifest-consumption' ? ''
 			: erasedataPrivateRootSignature($root, $reservationKey, false);
-		if(!is_string($signature) || !is_string($stored) || !hash_equals($signature, $stored)) return(false);
+		if(!is_string($signature) || !is_string($stored) || !hash_equals($signature, $stored)) { return(false); }
 		$entries = $filesystem->scanDirectory($parent);
-		if(!is_array($entries)) return(false);
+		if(!is_array($entries)) { return(false); }
 		foreach($entries as $entry)
 		{
-			if($entry === '.' || $entry === '..') continue;
+			if($entry === '.' || $entry === '..') { continue; }
 			$path = $parent.'/'.$entry;
 			$stat = erasedataListedEntryStat($parent, $entry);
-			if($stat === null) continue;
-			if(!is_array($stat)) return(false);
+			if($stat === null) { continue; }
+			if(!is_array($stat)) { return(false); }
 			if(($stat['mode'] & 0170000) === 0120000)
 			{
 				$target = $filesystem->readLink($path);
-				if(!is_string($target) || strpos($target, basename($root)) !== false) return(false);
+				if(!is_string($target) || strpos($target, basename($root)) !== false) { return(false); }
 			}
 		}
 		clearstatcache();
@@ -2179,14 +2179,14 @@ function erasedataDiscardCompletedCapturedRoot($root, $reservationKey,
 			|| !erasedataSameStatIdentity($rootStat, $currentRoot)
 			|| !erasedataSameStatIdentity($markerStat, $currentMarker)
 			|| !is_array($currentContents)
-			|| array_values(array_diff($currentContents, array('.', '..'))) !== array(basename($marker))) return(false);
-		foreach(array('uid','mode','nlink') as $field)
-			if($currentRoot[$field] !== $rootStat[$field]) return(false);
-		foreach(array('uid','mode','nlink','size') as $field)
-			if($currentMarker[$field] !== $markerStat[$field]) return(false);
+			|| array_values(array_diff($currentContents, ['.', '..'])) !== [basename($marker)]) { return(false); }
+		foreach(['uid','mode','nlink'] as $field) {
+			if($currentRoot[$field] !== $rootStat[$field]) { return(false); } }
+		foreach(['uid','mode','nlink','size'] as $field) {
+			if($currentMarker[$field] !== $markerStat[$field]) { return(false); } }
 		if(!@rewind($handle) || ErasedataManifestCodec::readBoundedHandle($handle,64) !== $stored
-			|| !erasedataProtectPrivateParent($root)) return(false);
-		if(!$filesystem->unlink($marker)) return(false);
+			|| !erasedataProtectPrivateParent($root)) { return(false); }
+		if(!$filesystem->unlink($marker)) { return(false); }
 		return($filesystem->removeDirectory($root) || (!erasedataPathExists($root) && erasedataPathLookupAnswers($root)));
 	}
 	finally { @fclose($handle); }
@@ -2196,31 +2196,31 @@ function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 	ErasedataFilesystemOps $filesystem, $emptyDirectoryOnly = false)
 {
 	$roots = erasedataCapturedEntryRoots($path, $reservationKey, $filesystem);
-	if($roots === false || count($roots) > 1)
-		return(false);
+	if($roots === false || count($roots) > 1) {
+		return(false); }
 	$captured = false;
 	if(!count($roots))
 	{
-		if(!is_array($expected))
-			return(!erasedataPathExists($path));
+		if(!is_array($expected)) {
+			return(!erasedataPathExists($path)); }
 		$root = erasedataCreateCapturedEntryRoot(
 			$path, $reservationKey, $expected, $filesystem);
-		if($root === false)
-			return(false);
+		if($root === false) {
+			return(false); }
 		$entry = erasedataCapturedEntryDataPath($root);
 		if(!$filesystem->rename($path, $entry))
 		{
 			erasedataRemoveCapturedEntryRoot($root, $filesystem);
 			return(false);
 		}
-		$roots = array($root);
+		$roots = [$root];
 		$captured = true;
 	}
 
 	$info = erasedataCapturedEntryRootInfo(
 		$roots[0], $path, $reservationKey, $filesystem);
-	if($info === false)
-		return(false);
+	if($info === false) {
+		return(false); }
 	// A negative answer for an entry captured just now is not a consumed
 	// capture: the bridge-and-root branch below would otherwise take it as one.
 	$entryIdentity = $captured ? $filesystem->renamedEntryIdentity($info['entry'])
@@ -2231,22 +2231,22 @@ function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 			|| !erasedataPathExists($path))
 		{
 			if(!erasedataRemoveCapturedEntryBridge(
-				$path, $info['entry'], $info['root'], $filesystem))
-				return(false);
+				$path, $info['entry'], $info['root'], $filesystem)) {
+				return(false); }
 		}
-		else if(erasedataPathExists($path))
+		elseif(erasedataPathExists($path))
 		{
 			$entries = $filesystem->scanDirectory($info['root']);
 			if($entries === false || count(array_filter($entries, function($name) {
 				return(strpos($name, '.bridge-') === 0);
-			})) > 0)
-				return(false);
+			})) > 0) {
+				return(false); }
 			$current = $filesystem->entryIdentity($path);
 			if(!is_array($current)
-				|| erasedataEntryIdentityParts($current) !== $info['identity'])
-				return(false);
-			if(!erasedataRemoveCapturedEntryRoot($info['root'], $filesystem))
-				return(false);
+				|| erasedataEntryIdentityParts($current) !== $info['identity']) {
+				return(false); }
+			if(!erasedataRemoveCapturedEntryRoot($info['root'], $filesystem)) {
+				return(false); }
 			return(erasedataDeleteCapturedEntry(
 				$path, $current, $reservationKey, $filesystem, $emptyDirectoryOnly));
 		}
@@ -2258,38 +2258,38 @@ function erasedataDeleteCapturedEntry($path, $expected, $reservationKey,
 		erasedataPublishCapturedEntryBridge($path, $info['entry'], $filesystem);
 		return(false);
 	}
-	if(!erasedataPublishCapturedEntryBridge($path, $info['entry'], $filesystem))
-		return(false);
+	if(!erasedataPublishCapturedEntryBridge($path, $info['entry'], $filesystem)) {
+		return(false); }
 
 	if(!empty($entryIdentity['is_dir']))
 	{
 		$reference = $filesystem->openDirectoryReference($info['entry'], $entryIdentity);
-		if($reference === false)
-			return(false);
+		if($reference === false) {
+			return(false); }
 		if($emptyDirectoryOnly)
 		{
 			$referencePath = is_array($reference) && isset($reference['path'])
 				? $reference['path'] : $reference;
 			$entries = $filesystem->scanDirectory($referencePath);
 			$deleted = is_array($entries)
-				&& count(array_diff($entries, array('.', '..'))) === 0;
+				&& count(array_diff($entries, ['.', '..'])) === 0;
 		}
-		else
+		else {
 			$deleted = erasedataDeleteDirectoryReferenceContents(
-				$reference, $reservationKey, $filesystem);
+				$reference, $reservationKey, $filesystem); }
 		$filesystem->closeDirectoryReference($reference);
 		$current = $filesystem->entryIdentity($info['entry']);
 		if(!$deleted || !erasedataSameEntryIdentity($entryIdentity, $current)
-			|| !$filesystem->removeDirectory($info['entry']))
-			return(false);
+			|| !$filesystem->removeDirectory($info['entry'])) {
+			return(false); }
 	}
-	else if(!$filesystem->unlink($info['entry']))
-		return(false);
+	elseif(!$filesystem->unlink($info['entry'])) {
+		return(false); }
 
 	if(erasedataPathExists($info['entry'])
 		|| !erasedataRemoveCapturedEntryBridge(
-			$path, $info['entry'], $info['root'], $filesystem))
-		return(false);
+			$path, $info['entry'], $info['root'], $filesystem)) {
+		return(false); }
 	return(erasedataRemoveCapturedEntryRoot($info['root'], $filesystem));
 }
 
@@ -2308,15 +2308,15 @@ function erasedataResumeCapturedEntries($parent, $reservationKey,
 	}
 	foreach($entries as $entry)
 	{
-		if(strpos($entry, '.erasedata-entry-') !== 0)
-			continue;
+		if(strpos($entry, '.erasedata-entry-') !== 0) {
+			continue; }
 		$root = $parent.'/'.$entry;
-		if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) continue;
-		if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) continue;
+		if(erasedataDiscardCompletedCapturedRoot($root, $reservationKey, $filesystem)) { continue; }
+		if(!erasedataPathExists($root) && erasedataPathLookupAnswers($root)) { continue; }
 		if($reservationKey !== 'manifest-consumption'
 			&& !erasedataPrivateMarkerIsValid($root, $reservationKey))
 		{
-			if(erasedataDiscardEmptyUnsignedRoot($root)) continue;
+			if(erasedataDiscardEmptyUnsignedRoot($root)) { continue; }
 			FileUtil::toLog('erasedata: private root retained: unsigned or changed '.basename($root));
 			$blocker = $root;
 			return(false);
@@ -2337,15 +2337,15 @@ function erasedataResumeCapturedEntries($parent, $reservationKey,
 			// refused, and the caller has to say so.
 			$contents = $filesystem->scanDirectory($root);
 			if(is_array($contents)
-				&& count(array_diff($contents, array('.', '..'))) === 0
-				&& $filesystem->removeDirectory($root))
-				continue;
+				&& count(array_diff($contents, ['.', '..'])) === 0
+				&& $filesystem->removeDirectory($root)) {
+				continue; }
 			$blocker = $root;
 			return(false);
 		}
 		$path = $parent.'/'.$name;
-		if(strpos($root, erasedataCapturedEntryPrefix($path, $reservationKey)) !== 0)
-			continue;
+		if(strpos($root, erasedataCapturedEntryPrefix($path, $reservationKey)) !== 0) {
+			continue; }
 		if(!erasedataDeleteCapturedEntry($path, null, $reservationKey, $filesystem))
 		{
 			$blocker = $root;
@@ -2361,21 +2361,21 @@ function erasedataDeleteDirectoryReferenceContents($reference, $reservationKey,
 	$referencePath = is_array($reference) && isset($reference['path'])
 		? $reference['path'] : $reference;
 	if(!erasedataResumeCapturedEntries(
-		$referencePath, $reservationKey, $filesystem))
-		return(false);
+		$referencePath, $reservationKey, $filesystem)) {
+		return(false); }
 	$files = $filesystem->scanDirectory($referencePath);
-	if($files === false)
-		return(false);
-	foreach(array_diff($files, array('.', '..')) as $file)
+	if($files === false) {
+		return(false); }
+	foreach(array_diff($files, ['.', '..']) as $file)
 	{
-		if(strpos($file, '.erasedata-entry-') === 0)
-			return(false);
+		if(strpos($file, '.erasedata-entry-') === 0) {
+			return(false); }
 		$child = $referencePath.'/'.$file;
 		$identity = $filesystem->entryIdentity($child);
 		if(!is_array($identity)
 			|| !erasedataDeleteCapturedEntry(
-				$child, $identity, $reservationKey, $filesystem))
-			return(false);
+				$child, $identity, $reservationKey, $filesystem)) {
+			return(false); }
 	}
 	return(true);
 }

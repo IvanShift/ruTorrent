@@ -17,50 +17,6 @@ require_once(__DIR__ . '/RetrackersWireFake.php');
  */
 class RetryWaitTest extends TestCase
 {
-	/**
-	 * $reasonAt maps elapsed seconds to the failure of an attempt started then,
-	 * or null when the source is ready and the attempt succeeds.
-	 */
-	private function simulate($waits, callable $reasonAt, $limit, $waitReasons = null)
-	{
-		$wire = new RetrackersWireFake();
-		$wire->waits = $waits;
-		$hash = str_repeat('A', 40);
-		$wire->add($hash, str_repeat('C', 40), 'alice', '1');
-		$wire->ledger = array_merge($wire->ledger, array('pv:' . str_repeat('1', 32),
-			'pf:' . hash('sha256', 'alice') . ':' . str_repeat('2', 64)));
-		$queue = new RetrackersWireQueueAdapter($wire);
-		$method = new ReflectionMethod('RetrackersRecoveryCoordinator', 'finishPreFenceFailure');
-		if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
-		FileUtil::$messages = array();
-		$start = $wire->now;
-		$attempts = array();
-		$worst = 0;
-		while ($wire->now - $start <= $limit && $wire->torrents[$hash]['queued'] !== '') {
-			$errors = RetrackersBoundedDispatcher::run($queue, 'alice', $wire->now);
-			$this->assertTrue($errors === array('errors' => array()), 'every simulated pass is clean');
-			while ($wire->started) {
-				array_shift($wire->started);
-				$reason = $reasonAt($wire->now - $start);
-				$attempts[] = array($wire->now - $start, $reason);
-				if ($reason === null) {
-					$wire->finish($hash);
-					continue;
-				}
-				$claim = $wire->torrents[$hash]['claim'];
-				$worker = new RetrackersWireWorkerAdapter($wire, $hash, 'alice');
-				// Each worker is its own process; only this store outlives it.
-				if ($waitReasons !== null) $worker->waitReasons = $waitReasons;
-				$method->invoke(null, $reason, $claim['tx'], $hash, $wire->marker($hash), $claim['local_id'], $worker);
-				$state = RetrackersQueueRetry::parse($wire->torrents[$hash]['retry'], substr($wire->torrents[$hash]['queued'], 68));
-				$worst = max($worst, $state['attempt']);
-			}
-			$wire->now++;
-		}
-		return(array('done' => $wire->torrents[$hash]['queued'] === '', 'retry' => $wire->torrents[$hash]['retry'],
-			'attempts' => $attempts, 'worst' => $worst, 'log' => FileUtil::$messages,
-			'elapsed' => $wire->now - $start));
-	}
 
 	public function testPauseLongerThanTheOldBudgetWaitsAndCompletesAfterResume()
 	{
@@ -136,13 +92,13 @@ class RetryWaitTest extends TestCase
 			null, 'lifecycle-unsupported', $failure, $outcome) && $outcome === 'deferred' &&
 			$wire->torrents[$hash]['retry'] === 'r1:' . $claim['queue_id'] . ':1:' . ($wire->now + 2) . ':source-not-ready',
 			'an unanswered method list never sends a same-count CAS that an old daemon would reject');
-		$wire->fail['system.listMethods'] = array();
+		$wire->fail['system.listMethods'] = [];
 		$this->assertTrue($adapter->nativeRetryWaits(), 'an unconfirmed list is not cached as absent');
 	}
 
 	public function testOnlyAnAdvertisedOneEnablesWaits()
 	{
-		foreach (array('1' => true, '0' => false) as $value => $expected) {
+		foreach (['1' => true, '0' => false] as $value => $expected) {
 			$wire = new RetrackersWireFake();
 			$wire->waits = true;
 			$wire->waitsValue = (string)$value;
@@ -156,7 +112,7 @@ class RetryWaitTest extends TestCase
 		$wire->fail['system.retrackers.retry_waits'] = array_fill(0, 500, 'read-timeout');
 		$adapter = new RetrackersWireWorkerAdapter($wire);
 		$this->assertTrue(!$adapter->nativeRetryWaits(), 'an unanswered capability value keeps the counted rule');
-		$wire->fail['system.retrackers.retry_waits'] = array();
+		$wire->fail['system.retrackers.retry_waits'] = [];
 		$this->assertTrue($adapter->nativeRetryWaits(), 'and is read again on the next deferral');
 	}
 
@@ -165,7 +121,7 @@ class RetryWaitTest extends TestCase
 	public function testAChangedReasonInsideOneWaitIsLoggedOnce()
 	{
 		$result = $this->simulate(true, function ($elapsed) {
-			if ($elapsed < 200) return('initial-hashing-pending');
+			if ($elapsed < 200) { return('initial-hashing-pending'); }
 			return($elapsed < 1000 ? 'lifecycle-unsupported' : null);
 		}, 2000, new RetrackersMemoryCache());
 		$lines = array_values(array_filter($result['log'], function ($line) {
@@ -187,18 +143,62 @@ class RetryWaitTest extends TestCase
 	public function testWaitReasonRecordsMergeConcurrentWorkers()
 	{
 		$mine = new RetrackersWaitReasons();
-		$mine->last = array('A:1' => 'initial-hashing-pending', 'B:2' => 'old');
+		$mine->last = ['A:1' => 'initial-hashing-pending', 'B:2' => 'old'];
 		$newer = new RetrackersWaitReasons();
-		$newer->last = array('B:2' => 'lifecycle-unsupported', 'C:3' => 'ownership-mismatch', 'A:1' => 'stale');
-		$this->assertTrue($mine->merge($newer, array('A:1')) === true && $mine->last === array(
-			'B:2' => 'lifecycle-unsupported', 'C:3' => 'ownership-mismatch', 'A:1' => 'initial-hashing-pending'),
+		$newer->last = ['B:2' => 'lifecycle-unsupported', 'C:3' => 'ownership-mismatch', 'A:1' => 'stale'];
+		$this->assertTrue($mine->merge($newer, ['A:1']) === true && $mine->last === [
+			'B:2' => 'lifecycle-unsupported', 'C:3' => 'ownership-mismatch', 'A:1' => 'initial-hashing-pending'],
 			'the other worker\'s entries survive and this job\'s reason is the one just logged');
 		$many = new RetrackersWaitReasons();
-		for ($i = 0; $i < RetrackersWaitReasons::LIMIT + 5; $i++) $many->last['H:' . $i] = 'x';
+		for ($i = 0; $i < RetrackersWaitReasons::LIMIT + 5; $i++) { $many->last['H:' . $i] = 'x'; }
 		$own = new RetrackersWaitReasons();
-		$own->last = array('mine' => 'y');
-		$own->merge($many, array('mine'));
+		$own->last = ['mine' => 'y'];
+		$own->merge($many, ['mine']);
 		$this->assertTrue(count($own->last) === RetrackersWaitReasons::LIMIT && end($own->last) === 'y' &&
 			!isset($own->last['H:0']), 'the merged record stays bounded and keeps the newest entries');
+	}
+	/**
+	 * $reasonAt maps elapsed seconds to the failure of an attempt started then,
+	 * or null when the source is ready and the attempt succeeds.
+	 */
+	private function simulate($waits, callable $reasonAt, $limit, $waitReasons = null)
+	{
+		$wire = new RetrackersWireFake();
+		$wire->waits = $waits;
+		$hash = str_repeat('A', 40);
+		$wire->add($hash, str_repeat('C', 40), 'alice', '1');
+		$wire->ledger = array_merge($wire->ledger, ['pv:' . str_repeat('1', 32),
+			'pf:' . hash('sha256', 'alice') . ':' . str_repeat('2', 64)]);
+		$queue = new RetrackersWireQueueAdapter($wire);
+		$method = new ReflectionMethod('RetrackersRecoveryCoordinator', 'finishPreFenceFailure');
+		if (PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
+		FileUtil::$messages = [];
+		$start = $wire->now;
+		$attempts = [];
+		$worst = 0;
+		while ($wire->now - $start <= $limit && $wire->torrents[$hash]['queued'] !== '') {
+			$errors = RetrackersBoundedDispatcher::run($queue, 'alice', $wire->now);
+			$this->assertTrue($errors === ['errors' => []], 'every simulated pass is clean');
+			while ($wire->started) {
+				array_shift($wire->started);
+				$reason = $reasonAt($wire->now - $start);
+				$attempts[] = [$wire->now - $start, $reason];
+				if ($reason === null) {
+					$wire->finish($hash);
+					continue;
+				}
+				$claim = $wire->torrents[$hash]['claim'];
+				$worker = new RetrackersWireWorkerAdapter($wire, $hash, 'alice');
+				// Each worker is its own process; only this store outlives it.
+				if ($waitReasons !== null) { $worker->waitReasons = $waitReasons; }
+				$method->invoke(null, $reason, $claim['tx'], $hash, $wire->marker($hash), $claim['local_id'], $worker);
+				$state = RetrackersQueueRetry::parse($wire->torrents[$hash]['retry'], substr($wire->torrents[$hash]['queued'], 68));
+				$worst = max($worst, $state['attempt']);
+			}
+			$wire->now++;
+		}
+		return(['done' => $wire->torrents[$hash]['queued'] === '', 'retry' => $wire->torrents[$hash]['retry'],
+			'attempts' => $attempts, 'worst' => $worst, 'log' => FileUtil::$messages,
+			'elapsed' => $wire->now - $start]);
 	}
 }

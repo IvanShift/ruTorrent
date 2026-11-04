@@ -12,14 +12,14 @@ class EraseWithDataCommandTest extends TestCase
         mkdir($fixture,0700);
         try
         {
-            foreach(array(false,true) as $ready)
+            foreach([false,true] as $ready)
             {
                 $data=ErasedataQueueRefusalFixture::run($fixture,'ratio',$ready);
-                $this->assertEquals(array('ratio'),$data['registered'], 'Ratio itself initializes against either queue verdict');
+                $this->assertEquals(['ratio'],$data['registered'], 'Ratio itself initializes against either queue verdict');
                 $this->assertTrue($data['queue_exists'], 'actual admission inspects or creates the physical queue');
                 if($ready)
                 {
-                    $this->assertEquals(array(),$data['log'], 'accepted physical queue passes actual admission without a stubbed gate');
+                    $this->assertEquals([],$data['log'], 'accepted physical queue passes actual admission without a stubbed gate');
                     $this->assertEquals('stale-own',$data['schedules']['erasedataalice'], 'successful admission keeps ordinary cleanup scheduled');
                 }
                 else
@@ -32,25 +32,6 @@ class EraseWithDataCommandTest extends TestCase
         }
         finally{$this->removeTree($fixture);}
     }
-	private function removeTree($path)
-	{
-		if(is_link($path) || is_file($path))
-		{
-			@unlink($path);
-			return;
-		}
-		if(!is_dir($path))
-			return;
-		foreach(array_diff(scandir($path), array('.', '..')) as $entry)
-			$this->removeTree($path.'/'.$entry);
-		@rmdir($path);
-	}
-
-	private function command($force)
-	{
-		$rat = new rRatio();
-		return($rat->getEraseWithDataCommand($force));
-	}
 
 	public function testStopsAndClosesBeforeDeleting()
 	{
@@ -93,15 +74,15 @@ class EraseWithDataCommandTest extends TestCase
 			.'FileUtil::$logs = array(); $out[$force] = array($ratio->getEraseWithDataCommand($force), FileUtil::$logs); } '
 			.'echo json_encode($out);');
 		try {
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php').' 2>&1', $output, $status);
 			$decoded = json_decode(implode("\n", $output), true);
 			$this->assertEquals(0, $status, 'copied Ratio command runs without the erasedata helper');
-			$this->assertEquals(array(
-				'1' => array('cat=', array('ratio: erasedata-helper-unavailable')),
-				'2' => array('cat=', array('ratio: erasedata-helper-unavailable')),
-			), $decoded, 'both erase actions refuse with one classified log line each');
+			$this->assertEquals([
+				'1' => ['cat=', ['ratio: erasedata-helper-unavailable']],
+				'2' => ['cat=', ['ratio: erasedata-helper-unavailable']],
+			], $decoded, 'both erase actions refuse with one classified log line each');
 		} finally {
 			$this->removeTree($fixture);
 		}
@@ -147,34 +128,34 @@ echo json_encode(array('rearms' => $GLOBALS['rearms'], 'log' => FileUtil::$log))
 PHP;
 		file_put_contents($fixture.'/probe.php', $probe);
 		try {
-			foreach(array('missing-registration' => 1, 'registered' => 0, 'ratio-disabled' => 1) as $mode => $expected)
+			foreach(['missing-registration' => 1, 'registered' => 0, 'ratio-disabled' => 1] as $mode => $expected)
 			{
-				$output = array();
+				$output = [];
 				$status = 0;
 				exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
 					.' '.escapeshellarg($mode).' 2>&1', $output, $status);
 				$this->assertEquals(0, $status, 'copied ratio init exits normally: '.implode("\n", $output));
-				$this->assertEquals(array('rearms' => $expected, 'log' => array()),
+				$this->assertEquals(['rearms' => $expected, 'log' => []],
 					json_decode(implode("\n", $output), true),
 					'erasedata absent re-arms once; an already initialized erasedata is not re-registered');
 			}
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
 				.' rearm-refused 2>&1', $output, $status);
 			$this->assertEquals(0, $status, 'failed rearm is a visible refusal, not a fatal');
-			$this->assertEquals(array('rearms' => 1,
-				'log' => array('erasedata: rearm-refused generation=1 members=1 consequence=obligations-retained')),
+			$this->assertEquals(['rearms' => 1,
+				'log' => ['erasedata: rearm-refused generation=1 members=1 consequence=obligations-retained']],
 				json_decode(implode("\n", $output), true),
 				'the shared helper keeps its classified refusal without a duplicate generic log');
 			unlink($helper);
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php')
 				.' missing-registration 2>&1', $output, $status);
 			$this->assertEquals(0, $status, 'missing helper is a visible refusal, not a fatal');
-			$this->assertEquals(array('rearms' => 0,
-				'log' => array('ratio: erasedata-rearm-helper-unavailable')),
+			$this->assertEquals(['rearms' => 0,
+				'log' => ['ratio: erasedata-rearm-helper-unavailable']],
 				json_decode(implode("\n", $output), true),
 				'ratio names the missing recovery helper while leaving the queue untouched');
 		} finally {
@@ -205,7 +186,7 @@ PHP;
 
 	public function testRejectsCoercedForceParameters()
 	{
-		$invalid = array(null, false, true, 0, 1, 2, "", "0", "01", "02", " 1", "1 ", "1; injected", array(1));
+		$invalid = [null, false, true, 0, 1, 2, "", "0", "01", "02", " 1", "1 ", "1; injected", [1]];
 		foreach($invalid as $force)
 		{
 			$cmd = $this->command($force);
@@ -234,7 +215,7 @@ PHP;
 			.'file_put_contents(getenv("ERASEDATA_ENTRY_LOG"),json_encode(array($hashes,$force)));return array();}');
 		putenv('ERASEDATA_ENTRY_LOG='.$callLog);
 		try {
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($entrypoint).' '.escapeshellarg($hash).' 2>&1', $output, $status);
 			$this->assertEquals(1, $status, 'missing force must be rejected by the CLI entrypoint: '.implode("\n", $output));
@@ -256,7 +237,7 @@ PHP;
 		$hash = str_repeat('A', 40);
 		mkdir($fixture, 0777, true);
 		copy(__DIR__.'/../../../plugins/erasedata/manifest.php', $fixture.'/manifest.php');
-		$probe = implode("\n", array(
+		$probe = implode("\n", [
 			'<?php',
 			'class FileUtil { public static $log = array();',
 			'    public static function toLog($m) { self::$log[] = $m; } }',
@@ -267,18 +248,18 @@ PHP;
 			'echo json_encode(array("result" => $ok, "log" => FileUtil::$log,',
 			'    "staged" => is_file($tmp),',
 			'    "published" => file_exists(substr($tmp, 0, -4).".list")));',
-		));
+		]);
 		file_put_contents($fixture.'/probe.php', $probe);
 		try {
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($fixture.'/probe.php').' 2>&1', $output, $status);
 			$joined = implode("\n", $output);
 			$this->assertEquals(0, $status, 'loading manifest.php on its own must not be fatal: '.$joined);
 			$decoded = json_decode($joined, true);
 			$this->assertTrue(is_array($decoded), 'the probe must report a result: '.$joined);
-			if(!is_array($decoded))
-				return;
+			if(!is_array($decoded)) {
+				return; }
 			$this->assertEquals(false, $decoded['result'],
 				'publishing refuses when the files it borrows from are not loaded');
 			$this->assertTrue($decoded['staged'],
@@ -316,18 +297,37 @@ PHP;
 		putenv('ERASEDATA_ENTRY_SETTINGS='.$settings);
 		putenv('ERASEDATA_ENTRY_LOG='.$callLog);
 		try {
-			$output = array();
+			$output = [];
 			$status = 0;
 			exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($entrypoint).' '.escapeshellarg($hash).' 1 2>&1', $output, $status);
 			$this->assertEquals(0, $status, 'the copied production entrypoint exits successfully: '.implode("\n", $output));
 			$this->assertTrue(is_file($callLog)
-				&& json_decode(file_get_contents($callLog), true) === array(array($hash), 1),
+				&& json_decode(file_get_contents($callLog), true) === [[$hash], 1],
 				'a legacy pending generation cannot suppress erase of a re-added torrent with the same hash');
 		} finally {
 			putenv('ERASEDATA_ENTRY_SETTINGS');
 			putenv('ERASEDATA_ENTRY_LOG');
 			$this->removeTree($fixture);
 		}
+	}
+	private function removeTree($path)
+	{
+		if(is_link($path) || is_file($path))
+		{
+			@unlink($path);
+			return;
+		}
+		if(!is_dir($path)) {
+			return; }
+		foreach(array_diff(scandir($path), ['.', '..']) as $entry) {
+			$this->removeTree($path.'/'.$entry); }
+		@rmdir($path);
+	}
+
+	private function command($force)
+	{
+		$rat = new rRatio();
+		return($rat->getEraseWithDataCommand($force));
 	}
 }
 

@@ -6,18 +6,18 @@ class rRetrackers
 {
 	public $hash = "retrackers.dat";
 	public $modified = false;
-	public $list = array();
-	public $todelete = array();
+	public $list = [];
+	public $todelete = [];
 	public $dontAddPrivate = 1;
 	public $addToBegin = 0;
 
-	static public function load($create = true)
+	public static function load($create = true)
 	{
 		$cache = new rCache('', $create);
 		$rt = new rRetrackers();
 		$cache->get($rt);
-		if(!isset($rt->todelete))
-			$rt->todelete = array();
+		if(!isset($rt->todelete)) {
+			$rt->todelete = []; }
 		return($rt);
 	}
 	public function store()
@@ -28,40 +28,40 @@ class rRetrackers
 	public function set($body = null, &$failure = null)
 	{
 		$failure = null;
-		if ($body === null) $body = file_get_contents("php://input");
+		if ($body === null) { $body = file_get_contents("php://input"); }
 		if (!is_string($body)) {
 			$failure = 'settings-body-unreadable';
 			return(false);
 		}
-		$list = $deletions = $trackers = $flags = array();
+		$list = $deletions = $trackers = $flags = [];
 		foreach (explode('&', $body) as $var) {
 			// This ordered format uses repeated tracker fields and literal '+'.
 			$parts = explode('=', $var, 2);
 			$key = $parts[0];
 			$value = isset($parts[1]) ? rawurldecode($parts[1]) : '';
 			if ($key === 'dont_private' || $key === 'add_begin') {
-				if ($value !== '0' && $value !== '1') $failure = $key.': invalid-boolean';
-				else $flags[$key] = (int)$value;
-			} else if ($key === 'todelete') {
+				if ($value !== '0' && $value !== '1') { $failure = $key.': invalid-boolean'; }
+				else { $flags[$key] = (int)$value; }
+			} elseif ($key === 'todelete') {
 				$value = trim($value);
-				if ($value === '') $failure = 'todelete['.(count($deletions) + 1).']: empty-deletion-pattern';
-				else $deletions[] = $value;
-			} else if ($key === 'tracker') {
+				if ($value === '') { $failure = 'todelete['.(count($deletions) + 1).']: empty-deletion-pattern'; }
+				else { $deletions[] = $value; }
+			} elseif ($key === 'tracker') {
 				$value = RetrackersTrackerURL::normalize($value);
 				if ($value !== '') {
 					$reason = RetrackersTrackerURL::additionFailure($value);
-					if ($reason !== null) $failure = 'tracker['.(count($list) + 1).']['.(count($trackers) + 1).']: '.$reason;
-					else $trackers[] = $value;
-				} else if (count($trackers)) {
+					if ($reason !== null) { $failure = 'tracker['.(count($list) + 1).']['.(count($trackers) + 1).']: '.$reason; }
+					else { $trackers[] = $value; }
+				} elseif (count($trackers)) {
 					$list[] = $trackers;
-					$trackers = array();
+					$trackers = [];
 				}
 			}
-			if ($failure !== null) return(false);
+			if ($failure !== null) { return(false); }
 		}
-		if (count($trackers)) $list[] = $trackers;
+		if (count($trackers)) { $list[] = $trackers; }
 		// Do not publish a partial replacement or refresh lifecycle on refusal.
-		$previous = array($this->list, $this->todelete, $this->dontAddPrivate, $this->addToBegin);
+		$previous = [$this->list, $this->todelete, $this->dontAddPrivate, $this->addToBegin];
 		$this->list = $list;
 		$this->todelete = $deletions;
 		$this->dontAddPrivate = $flags['dont_private'] ?? 0;

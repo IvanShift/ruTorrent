@@ -7,11 +7,11 @@ rutorrent_require_cli(__FILE__);
 // What this hook prints becomes x-dest; a PHP diagnostic goes to stderr.
 ini_set( 'display_errors', 'stderr' );
 
-if( !chdir( dirname( __FILE__) ) )
-	exit();
+if( !chdir( dirname( __FILE__) ) ) {
+	exit(); }
 
-if( count( $argv ) > 7 )
-	$_SERVER['REMOTE_USER'] = $argv[7];
+if( count( $argv ) > 7 ) {
+	$_SERVER['REMOTE_USER'] = $argv[7]; }
 
 require_once( "./hook_lib.php" );
 eval( FileUtil::getPluginConf( 'autotools' ) );
@@ -20,6 +20,6 @@ eval( FileUtil::getPluginConf( 'autotools' ) );
 // for this process, and what it prints becomes x-dest. The hook therefore
 // never waits for the daemon or for the journal lock; what it cannot do at
 // once is recorded for recover.php (see hook_lib.php).
-if( $autodebug_enabled ) rtDbg( "AutoMove", "--- begin ---" );
+if( $autodebug_enabled ) { rtDbg( "AutoMove", "--- begin ---" ); }
 echo AutoToolsFinishedHook::hook( array_slice( $argv, 1, 8 ), $autodebug_enabled );
-if( $autodebug_enabled ) rtDbg( "AutoMove", "--- end ---" );
+if( $autodebug_enabled ) { rtDbg( "AutoMove", "--- end ---" ); }

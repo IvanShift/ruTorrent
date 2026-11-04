@@ -4,7 +4,7 @@ require_once(dirname(__DIR__) . "/nyaa_family.php");
 
 class NyaaEngine extends NyaaFamilyEngine
 {
-	public $categories = array(
+	public $categories = [
 		'All categories'=>'0_0',
 		'> Anime'=>'1_0',
 		'--A-- Anine Music Video'=>'1_1',
@@ -28,11 +28,11 @@ class NyaaEngine extends NyaaFamilyEngine
 		'-- Photos'=>'5_2',
 		'> Software'=>'6_0',
 		'-- Applications'=>'6_1',
-		'-- Games'=>'6_2'
-		);
+		'-- Games'=>'6_2',
+		];
 
 	protected $baseUrl = 'https://nyaa.si';
-	protected $globalCategories = array(
+	protected $globalCategories = [
 		'all' => '0_0',
 		'anime' => '1_0',
 		'music' => '2_0',
@@ -40,6 +40,6 @@ class NyaaEngine extends NyaaFamilyEngine
 		'live action' => '4_0',
 		'pictures' => '5_0',
 		'software' => '6_1',
-		'games' => '6_2'
-	);
+		'games' => '6_2',
+	];
 }

@@ -2,8 +2,8 @@
 require_once( 'cookies.php' );
 
 $cmd = '';
-if(isset($_REQUEST['mode']))
-	$cmd = $_REQUEST['mode'];
+if(isset($_REQUEST['mode'])) {
+	$cmd = $_REQUEST['mode']; }
 
 switch($cmd)
 {
@@ -15,16 +15,16 @@ switch($cmd)
 			$hosts = $cookies->getInfo();
 			CachedEcho::send(JSON::safeEncode(isset($hosts[UrlHost::normalize($_REQUEST['host'])])),"application/json");
 		}
-		else
-			CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
+		else {
+			CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json"); }
 		break;
 	}
 	case 'add':
 	{
 		Requests::requirePost();
 		$cookies = rCookies::load();
-		if(isset($_POST['host'], $_POST['cookies']))
-			$cookies->add($_POST['host'], rawurldecode($_POST['cookies']));
+		if(isset($_POST['host'], $_POST['cookies'])) {
+			$cookies->add($_POST['host'], rawurldecode($_POST['cookies'])); }
         	CachedEcho::send(JSON::safeEncode($cookies->getInfo()),"application/json");
 		break;
 	}

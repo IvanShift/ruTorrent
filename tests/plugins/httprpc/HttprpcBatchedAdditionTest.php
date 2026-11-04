@@ -30,6 +30,59 @@ class HttprpcBatchedAdditionTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	public function testAnExternalBatchWithRatioViewTailsIsRefusedAsAWhole()
+	{
+		$out = $this->post($this->batchedAdd([
+			'view.set_visible=rat_1',
+			'view.set_visible=rat_1',
+			'view.set_visible=rat_1']));
+
+		$this->assertTrue(strpos($out, "The command 'view.set_visible' was rejected by this server") !== false,
+			'the door names the refused ratio-view tail: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->calls() === ['system.client_version'],
+			'no batch member reached rTorrent: ' . json_encode($this->daemon->calls()));
+	}
+
+	public function testAnExternalBatchWithConnectionSeedTailIsRefusedAsAWhole()
+	{
+		$out = $this->post($this->batchedAdd([
+			'd.throttle_name.set=NULL',
+			'd.connection_seed.set=seed',
+			'd.custom.set=x-filename,evening catch-up.mkv']));
+
+		$this->assertTrue(strpos($out, "The command 'd.connection_seed.set' was rejected by this server") !== false,
+			'the door names the refused connection-setting tail: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->calls() === ['system.client_version'],
+			'neither allowed sibling was sent: ' . json_encode($this->daemon->calls()));
+	}
+
+	public function testAnExternalBatchWithAllowedTailsReachesRtorrent()
+	{
+		$out = $this->post($this->batchedAdd([
+			'd.throttle_name.set=NULL',
+			'd.custom.set=x-filename,evening catch-up.mkv',
+			'd.custom1.set=films']));
+
+		$this->assertTrue(strpos($out, 'rejected by this server') === false,
+			'the door permits all three safe tails: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->calls() === [
+			'system.client_version', 'load.raw_start', 'load.raw_start', 'load.raw_start'],
+			'all three adds reached rTorrent: ' . json_encode($this->daemon->calls()));
+	}
+
+	public function testABatchCarryingExecuteIsStillRefusedAtTheDoor()
+	{
+		$out = $this->post($this->batchedAdd([
+			'd.custom1.set=tv',
+			'execute=/bin/id',
+			'd.custom1.set=films']));
+
+		$this->assertTrue(strpos($out, "The command 'execute' was rejected by this server") !== false,
+			'the door refuses execute and names it: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->calls() === ['system.client_version'],
+			'no batch member reached rTorrent: ' . json_encode($this->daemon->calls()));
+	}
+
 	private function removeTree($path)
 	{
 		if (!is_dir($path)) {
@@ -80,8 +133,8 @@ class HttprpcBatchedAdditionTest extends TestCase
 		if ($this->daemon !== null) {
 			$this->daemon->stop();
 		}
-		$this->daemon = new FakeRtorrentDaemon(array(
-			new FakeRtorrentDirectStringReply('0.16.24'), array(0, 0, 0)),
+		$this->daemon = new FakeRtorrentDaemon([
+			new FakeRtorrentDirectStringReply('0.16.24'), [0, 0, 0]],
 			$this->base . '/calls.log');
 
 		$driver = $this->base . '/drive-httprpc.php';
@@ -97,63 +150,10 @@ class HttprpcBatchedAdditionTest extends TestCase
 			. 'chdir(' . var_export($root . '/plugins/httprpc', true) . ");\n"
 			. 'require(' . var_export($root . '/plugins/httprpc/action.php', true) . ");\n");
 
-		$output = array();
+		$output = [];
 		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
 			escapeshellarg($driver) . ' 2>&1', $output);
 		return implode("\n", $output);
-	}
-
-	public function testAnExternalBatchWithRatioViewTailsIsRefusedAsAWhole()
-	{
-		$out = $this->post($this->batchedAdd(array(
-			'view.set_visible=rat_1',
-			'view.set_visible=rat_1',
-			'view.set_visible=rat_1')));
-
-		$this->assertTrue(strpos($out, "The command 'view.set_visible' was rejected by this server") !== false,
-			'the door names the refused ratio-view tail: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->calls() === array('system.client_version'),
-			'no batch member reached rTorrent: ' . json_encode($this->daemon->calls()));
-	}
-
-	public function testAnExternalBatchWithConnectionSeedTailIsRefusedAsAWhole()
-	{
-		$out = $this->post($this->batchedAdd(array(
-			'd.throttle_name.set=NULL',
-			'd.connection_seed.set=seed',
-			'd.custom.set=x-filename,evening catch-up.mkv')));
-
-		$this->assertTrue(strpos($out, "The command 'd.connection_seed.set' was rejected by this server") !== false,
-			'the door names the refused connection-setting tail: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->calls() === array('system.client_version'),
-			'neither allowed sibling was sent: ' . json_encode($this->daemon->calls()));
-	}
-
-	public function testAnExternalBatchWithAllowedTailsReachesRtorrent()
-	{
-		$out = $this->post($this->batchedAdd(array(
-			'd.throttle_name.set=NULL',
-			'd.custom.set=x-filename,evening catch-up.mkv',
-			'd.custom1.set=films')));
-
-		$this->assertTrue(strpos($out, 'rejected by this server') === false,
-			'the door permits all three safe tails: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->calls() === array(
-			'system.client_version', 'load.raw_start', 'load.raw_start', 'load.raw_start'),
-			'all three adds reached rTorrent: ' . json_encode($this->daemon->calls()));
-	}
-
-	public function testABatchCarryingExecuteIsStillRefusedAtTheDoor()
-	{
-		$out = $this->post($this->batchedAdd(array(
-			'd.custom1.set=tv',
-			'execute=/bin/id',
-			'd.custom1.set=films')));
-
-		$this->assertTrue(strpos($out, "The command 'execute' was rejected by this server") !== false,
-			'the door refuses execute and names it: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->calls() === array('system.client_version'),
-			'no batch member reached rTorrent: ' . json_encode($this->daemon->calls()));
 	}
 
 }

@@ -21,7 +21,7 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
  */
 class XMLRPCProxyLegacySpellingHolder
 {
-	public $aliases = array();
+	public $aliases = [];
 
 	public function load($file)
 	{
@@ -32,89 +32,6 @@ class XMLRPCProxyLegacySpellingHolder
 class XMLRPCProxyLegacySpellingTest extends TestCase
 {
 	use AdditionCallerFixtures;
-
-	/**
-	 * Every alias in the tree as name => registered name, with the file it
-	 * came from, so a failure says where to look.
-	 */
-	private function aliases()
-	{
-		$all = array();
-		$files = glob(__DIR__ . '/../../php/methods-*.php');
-		sort($files);
-		foreach($files as $file)
-		{
-			$holder = new XMLRPCProxyLegacySpellingHolder();
-			$holder->load($file);
-			foreach($holder->aliases as $name => $info)
-			{
-				$target = (is_array($info) && isset($info['name']))
-					? $info['name'] : (string)$info;
-				$all[] = array(
-					'file'   => basename($file),
-					'name'   => $name,
-					'target' => $target,
-				);
-			}
-		}
-		return array_merge($all, $this->inlineAliases());
-	}
-
-	/**
-	 * The seventh table. php/settings.php builds one inline for every daemon
-	 * above 0.8.6, before it requires any of the files, and a caller reaches
-	 * rXMLRPCCommand through that one too. It is read out of the source rather
-	 * than written out here, so an entry added to it is covered without this
-	 * file being edited — and the count is asserted, so a change in how it is
-	 * written is a failure rather than a silent empty table.
-	 */
-	private function inlineAliases()
-	{
-		$gate = $this->baseAliasGate();
-		$found = array();
-		foreach ($gate === null ? array() : $gate['aliases'] as $name => $entry)
-			$found[] = array('file' => 'settings.php', 'name' => $name, 'target' => $entry['name']);
-		return $found;
-	}
-
-	/**
-	 * The names the proxy holds to the directory this server allows.
-	 */
-	private function directoryCommands()
-	{
-		$property = new ReflectionProperty('XMLRPCProxy', 'directoryCommands');
-		self::makeAccessible($property);
-		return $property->getValue();
-	}
-
-	private function call($method, $params = array())
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method
-			. '</methodName><params>';
-		foreach($params as $p)
-			$xml .= '<param><value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
-				. '</string></value></param>';
-		$xml .= '</params></methodCall>';
-		return $xml;
-	}
-
-	private function decide($xml)
-	{
-		return XMLRPCProxy::decide($xml, 'sanitize',
-			array('d.custom1.set', 'd.directory.set'), false,
-			array('directory' => array('root' => '/', 'resolve' => null)));
-	}
-
-	/**
-	 * The same door with a boundary that actually excludes something, for the
-	 * commands whose refusal is about where they write.
-	 */
-	private function decideConfined($xml)
-	{
-		return XMLRPCProxy::decide($xml, 'sanitize',
-			array('d.custom1.set', 'd.directory.set', 'd.directory_base.set'), false,
-			array('directory' => array('root' => '/torrents1', 'resolve' => null)));
-	}
 
 	public function testTheAliasTablesAreReadable()
 	{
@@ -129,9 +46,9 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	public function testAllSevenAliasTablesAreRead()
 	{
-		$files = array();
-		foreach($this->aliases() as $alias)
-			$files[$alias['file']] = true;
+		$files = [];
+		foreach($this->aliases() as $alias) {
+			$files[$alias['file']] = true; }
 		ksort($files);
 
 		$this->assertTrue(count($files) === 7,
@@ -140,24 +57,24 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 			'the table php/settings.php builds inline was parsed out of it ('
 			. count($this->inlineAliases()) . ' entries)');
 		$gate = $this->baseAliasGate();
-		foreach ($gate === null ? array() : $gate['aliases'] as $name => $info)
+		foreach ($gate === null ? [] : $gate['aliases'] as $name => $info) {
 			$this->assertTrue(is_array($info) && isset($info['name']) && array_key_exists('prm', $info),
-				'the inline entry '.$name.' names a command and a prm flag');
+				'the inline entry '.$name.' names a command and a prm flag'); }
 	}
 
 	public function testInlineAliasGateAcceptsBothLiteralArraySpellings()
 	{
 		$source = self::$settingsSource;
 		try {
-			foreach (array(
+			foreach ([
 				"array('a' => array('name' => 'd.name', 'prm' => 0))",
 				"[ 'a' => [ 'name' => 'd.name', 'prm' => 0, ], ]",
-			) as $literal) {
+			] as $literal) {
 				self::$settingsSource = '<?php $this->aliases = array(); '
 					.'if ($this->iVersion > 0x0806) { $this->aliases = '.$literal.'; }';
 				$gate = $this->baseAliasGate();
-				$this->assertEquals(array('op' => '>', 'version' => 0x0806,
-					'aliases' => array('a' => array('name' => 'd.name', 'prm' => 0))), $gate,
+				$this->assertEquals(['op' => '>', 'version' => 0x0806,
+					'aliases' => ['a' => ['name' => 'd.name', 'prm' => 0]]], $gate,
 					'the version gate owns the literal aliases after an empty reset');
 			}
 		} finally {
@@ -181,21 +98,21 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 
 		foreach($this->aliases() as $alias)
 		{
-			if(!in_array($alias['target'], $directoryCommands, true))
-				continue;
+			if(!in_array($alias['target'], $directoryCommands, true)) {
+				continue; }
 			$checked++;
 			$name = $alias['name'];
 			$where = $name . ' (' . $alias['file'] . ')';
 
-			$calls = array(
-				'as a call of its own' => $this->call($name, array($hash, $outside)),
+			$calls = [
+				'as a call of its own' => $this->call($name, [$hash, $outside]),
 				'as a d.multicall command parameter' =>
-					$this->call('d.multicall', array('main', '', $name . '=' . $outside)),
+					$this->call('d.multicall', ['main', '', $name . '=' . $outside]),
 				'as a system.multicall member' => $this->systemMulticall($name,
-					array($hash, $outside)),
+					[$hash, $outside]),
 				'inside a system.multicall member' => $this->systemMulticall('d.multicall',
-					array('main', '', $name . '=' . $outside)),
-			);
+					['main', '', $name . '=' . $outside]),
+			];
 
 			foreach($calls as $shape => $request)
 			{
@@ -211,40 +128,26 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 			'the tables name at least one alias of a directory setter (' . $checked . ')');
 	}
 
-	private function systemMulticall($method, $params)
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall'
-			. '</methodName><params><param><value><array><data>'
-			. '<value><struct><member><name>methodName</name><value><string>'
-			. htmlspecialchars($method, ENT_NOQUOTES) . '</string></value></member>'
-			. '<member><name>params</name><value><array><data>';
-		foreach($params as $p)
-			$xml .= '<value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
-				. '</string></value>';
-		return $xml . '</data></array></value></member></struct></value>'
-			. '</data></array></value></param></params></methodCall>';
-	}
-
 	/**
 	 * And the same at every one of those positions for the refused families,
 	 * which the tests below already ask about at the first two.
 	 */
 	public function testASystemMulticallCannotCarryAnAliasOfARefusedCommand()
 	{
-		$forwarded = array();
+		$forwarded = [];
 		foreach($this->aliases() as $alias)
 		{
-			if(XMLRPCProxy::refusedCommandName($alias['target']) === null)
-				continue;
+			if(XMLRPCProxy::refusedCommandName($alias['target']) === null) {
+				continue; }
 
-			$asMember = $this->decide($this->systemMulticall($alias['name'], array('x')));
-			if($asMember['action'] !== 'reject')
-				$forwarded[] = $alias['name'] . ' as a member (' . $alias['file'] . ')';
+			$asMember = $this->decide($this->systemMulticall($alias['name'], ['x']));
+			if($asMember['action'] !== 'reject') {
+				$forwarded[] = $alias['name'] . ' as a member (' . $alias['file'] . ')'; }
 
 			$inMember = $this->decide($this->systemMulticall('d.multicall',
-				array('main', '', $alias['name'] . '=/bin/id')));
-			if($inMember['action'] !== 'reject')
-				$forwarded[] = $alias['name'] . ' inside a member (' . $alias['file'] . ')';
+				['main', '', $alias['name'] . '=/bin/id']));
+			if($inMember['action'] !== 'reject') {
+				$forwarded[] = $alias['name'] . ' inside a member (' . $alias['file'] . ')'; }
 		}
 		$this->assertTrue(count($forwarded) === 0,
 			'a system.multicall carrying an alias of a refused command is rejected'
@@ -256,13 +159,13 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	public function testAnAliasOfARefusedCommandIsRefusedUnderItsOwnName()
 	{
-		$missed = array();
+		$missed = [];
 		foreach($this->aliases() as $alias)
 		{
-			if(XMLRPCProxy::refusedCommandName($alias['target']) === null)
-				continue;
-			if(XMLRPCProxy::refusedCommandName($alias['name']) !== null)
-				continue;
+			if(XMLRPCProxy::refusedCommandName($alias['target']) === null) {
+				continue; }
+			if(XMLRPCProxy::refusedCommandName($alias['name']) !== null) {
+				continue; }
 			$missed[] = $alias['file'] . ': ' . $alias['name']
 				. ' -> ' . $alias['target'];
 		}
@@ -278,14 +181,14 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	public function testTheRawDoorRefusesAnAliasOfARefusedCommand()
 	{
-		$forwarded = array();
+		$forwarded = [];
 		foreach($this->aliases() as $alias)
 		{
-			if(XMLRPCProxy::refusedCommandName($alias['target']) === null)
-				continue;
-			$decision = $this->decide($this->call($alias['name'], array('x')));
-			if($decision['action'] !== 'reject')
-				$forwarded[] = $alias['name'] . ' (' . $alias['file'] . ')';
+			if(XMLRPCProxy::refusedCommandName($alias['target']) === null) {
+				continue; }
+			$decision = $this->decide($this->call($alias['name'], ['x']));
+			if($decision['action'] !== 'reject') {
+				$forwarded[] = $alias['name'] . ' (' . $alias['file'] . ')'; }
 		}
 		$this->assertTrue(count($forwarded) === 0,
 			'the raw door rejects a call naming an alias of a refused command'
@@ -298,15 +201,15 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	public function testAMulticallCannotCarryAnAliasOfARefusedCommand()
 	{
-		$forwarded = array();
+		$forwarded = [];
 		foreach($this->aliases() as $alias)
 		{
-			if(XMLRPCProxy::refusedCommandName($alias['target']) === null)
-				continue;
+			if(XMLRPCProxy::refusedCommandName($alias['target']) === null) {
+				continue; }
 			$decision = $this->decide($this->call('d.multicall',
-				array('main', '', $alias['name'] . '=/bin/id')));
-			if($decision['action'] !== 'reject')
-				$forwarded[] = $alias['name'] . ' (' . $alias['file'] . ')';
+				['main', '', $alias['name'] . '=/bin/id']));
+			if($decision['action'] !== 'reject') {
+				$forwarded[] = $alias['name'] . ' (' . $alias['file'] . ')'; }
 		}
 		$this->assertTrue(count($forwarded) === 0,
 			'a multicall carrying an alias of a refused command is rejected'
@@ -320,14 +223,111 @@ class XMLRPCProxyLegacySpellingTest extends TestCase
 	 */
 	public function testMethodInsertIsRefusedUnderBothSpellings()
 	{
-		foreach(array('method.insert', 'system.method.insert',
-			'method.set_key', 'system.method.set_key') as $name)
+		foreach(['method.insert', 'system.method.insert',
+			'method.set_key', 'system.method.set_key'] as $name)
 		{
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($name) !== null,
 				$name . ' names a refused command');
-			$decision = $this->decide($this->call($name, array('x')));
+			$decision = $this->decide($this->call($name, ['x']));
 			$this->assertTrue($decision['action'] === 'reject',
 				$name . ' is rejected at the raw door');
 		}
+	}
+
+	/**
+	 * Every alias in the tree as name => registered name, with the file it
+	 * came from, so a failure says where to look.
+	 */
+	private function aliases()
+	{
+		$all = [];
+		$files = glob(__DIR__ . '/../../php/methods-*.php');
+		sort($files);
+		foreach($files as $file)
+		{
+			$holder = new XMLRPCProxyLegacySpellingHolder();
+			$holder->load($file);
+			foreach($holder->aliases as $name => $info)
+			{
+				$target = (is_array($info) && isset($info['name']))
+					? $info['name'] : (string)$info;
+				$all[] = [
+					'file'   => basename($file),
+					'name'   => $name,
+					'target' => $target,
+				];
+			}
+		}
+		return array_merge($all, $this->inlineAliases());
+	}
+
+	/**
+	 * The seventh table. php/settings.php builds one inline for every daemon
+	 * above 0.8.6, before it requires any of the files, and a caller reaches
+	 * rXMLRPCCommand through that one too. It is read out of the source rather
+	 * than written out here, so an entry added to it is covered without this
+	 * file being edited — and the count is asserted, so a change in how it is
+	 * written is a failure rather than a silent empty table.
+	 */
+	private function inlineAliases()
+	{
+		$gate = $this->baseAliasGate();
+		$found = [];
+		foreach ($gate === null ? [] : $gate['aliases'] as $name => $entry) {
+			$found[] = ['file' => 'settings.php', 'name' => $name, 'target' => $entry['name']]; }
+		return $found;
+	}
+
+	/**
+	 * The names the proxy holds to the directory this server allows.
+	 */
+	private function directoryCommands()
+	{
+		$property = new ReflectionProperty('XMLRPCProxy', 'directoryCommands');
+		self::makeAccessible($property);
+		return $property->getValue();
+	}
+
+	private function call($method, $params = [])
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method
+			. '</methodName><params>';
+		foreach($params as $p) {
+			$xml .= '<param><value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
+				. '</string></value></param>'; }
+		$xml .= '</params></methodCall>';
+		return $xml;
+	}
+
+	private function decide($xml)
+	{
+		return XMLRPCProxy::decide($xml, 'sanitize',
+			['d.custom1.set', 'd.directory.set'], false,
+			['directory' => ['root' => '/', 'resolve' => null]]);
+	}
+
+	/**
+	 * The same door with a boundary that actually excludes something, for the
+	 * commands whose refusal is about where they write.
+	 */
+	private function decideConfined($xml)
+	{
+		return XMLRPCProxy::decide($xml, 'sanitize',
+			['d.custom1.set', 'd.directory.set', 'd.directory_base.set'], false,
+			['directory' => ['root' => '/torrents1', 'resolve' => null]]);
+	}
+
+	private function systemMulticall($method, $params)
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall'
+			. '</methodName><params><param><value><array><data>'
+			. '<value><struct><member><name>methodName</name><value><string>'
+			. htmlspecialchars($method, ENT_NOQUOTES) . '</string></value></member>'
+			. '<member><name>params</name><value><array><data>';
+		foreach($params as $p) {
+			$xml .= '<value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
+				. '</string></value>'; }
+		return $xml . '</data></array></value></member></struct></value>'
+			. '</data></array></value></param></params></methodCall>';
 	}
 }

@@ -3,25 +3,13 @@ require_once dirname(__DIR__, 2) . '/php/TestCase.php';
 
 class ExternalConfigurationTest extends TestCase
 {
-    private function configurationNamespace($present)
-    {
-        $namespace = 'CreateConfig' . bin2hex(random_bytes(4));
-        eval('namespace ' . $namespace . '; function is_executable($path) { return '
-            . ($present ? 'true' : 'false') . ' && $path === "/usr/local/bin/mktorrent"; }');
-        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/external.php'), 1);
-        eval('namespace ' . $namespace . '; ' . $source);
-        // externals.php (upstream ca354ca9) maps a backend to its program name.
-        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/externals.php'), 1);
-        eval('namespace ' . $namespace . '; ' . $source);
-        return $namespace;
-    }
 
     public function testChangingOnlyTheCreatorDoesNotInheritThePackagedBinaryPath()
     {
         $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/conf.php'), 1);
         $namespace = 'CreateOverride' . bin2hex(random_bytes(4));
         eval('namespace ' . $namespace . '; function is_executable($path) { return $path === "/usr/local/bin/mktorrent"; }');
-        foreach (array('torrenttools', 'buildtorrent', false) as $override) {
+        foreach (['torrenttools', 'buildtorrent', false] as $override) {
             $pathToCreatetorrent = null;
             eval('namespace ' . $namespace . '; ' . $source);
             $useExternal = $override;
@@ -32,14 +20,14 @@ class ExternalConfigurationTest extends TestCase
 
     public function testTheFinalCreatorAndAnExplicitPathControlThePackagedDefault()
     {
-        foreach (array(false, true) as $present) {
+        foreach ([false, true] as $present) {
             $namespace = $this->configurationNamespace($present);
             $resolver = $namespace . '\\CreateExternalConfiguration';
             $this->assertEquals($present ? '/usr/local/bin/mktorrent' : '', $resolver::path('mktorrent', ''),
                 'Only a present packaged mktorrent receives the absolute FPM default');
-            foreach (array('torrenttools', 'buildtorrent', false) as $creator)
+            foreach (['torrenttools', 'buildtorrent', false] as $creator) {
                 $this->assertEquals('', $resolver::path($creator, ''),
-                    'Other creator choices retain their empty configured path');
+                    'Other creator choices retain their empty configured path'); }
             $this->assertEquals('/operator/custom-creator', $resolver::path('mktorrent', '/operator/custom-creator'),
                 'An explicit operator path retains priority over the packaged binary');
         }
@@ -61,10 +49,10 @@ class ExternalConfigurationTest extends TestCase
         $this->assertEquals(1, $replaced, 'The fixture supplies the real resolver before the real init body');
         $init = str_replace("require_once( dirname(__FILE__).'/externals.php' );", '', $init, $replaced);
         $this->assertEquals(1, $replaced, 'The fixture supplies the real program-name map before the real init body');
-        foreach (array('torrenttools', 'mktorrent', false) as $creator) {
+        foreach (['torrenttools', 'mktorrent', false] as $creator) {
             $fileUtil::$conf = 'namespace ' . $namespace . '; ' . $conf . '$useExternal = ' . var_export($creator, true) . ';';
-            $plugin = array('name'=>'create');
-            $pInfo = array('perms'=>array());
+            $plugin = ['name'=>'create'];
+            $pInfo = ['perms'=>[]];
             $theSettings = new $settingsClass();
             $do_diagnostic = true;
             $jResult = '';
@@ -89,8 +77,8 @@ class ExternalConfigurationTest extends TestCase
         $this->assertEquals(6, $replaced, 'The fixture supplies dependencies before the real action configuration');
         $fallback = substr($action, strpos($action, 'if(!$pathToCreatetorrent'));
         $fallback = substr($fallback, 0, strpos($fallback, 'if($useExternal=="mktorrent")'));
-        foreach (array(array('mktorrent', '', '/usr/local/bin/mktorrent'),
-            array('torrenttools', '', 'torrenttools'), array('buildtorrent', '/custom/buildtorrent', '/custom/buildtorrent')) as $case) {
+        foreach ([['mktorrent', '', '/usr/local/bin/mktorrent'],
+            ['torrenttools', '', 'torrenttools'], ['buildtorrent', '/custom/buildtorrent', '/custom/buildtorrent']] as $case) {
             $fileUtil::$conf = 'namespace ' . $namespace . '; ' . $conf
                 . '$useExternal = ' . var_export($case[0], true) . ';'
                 . '$pathToCreatetorrent = ' . var_export($case[1], true) . ';';
@@ -99,5 +87,17 @@ class ExternalConfigurationTest extends TestCase
             $this->assertEquals($case[2], $pathToCreatetorrent,
                 'The real action gives the selected wrapper its selected program');
         }
+    }
+    private function configurationNamespace($present)
+    {
+        $namespace = 'CreateConfig' . bin2hex(random_bytes(4));
+        eval('namespace ' . $namespace . '; function is_executable($path) { return '
+            . ($present ? 'true' : 'false') . ' && $path === "/usr/local/bin/mktorrent"; }');
+        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/external.php'), 1);
+        eval('namespace ' . $namespace . '; ' . $source);
+        // externals.php (upstream ca354ca9) maps a backend to its program name.
+        $source = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 3) . '/plugins/create/externals.php'), 1);
+        eval('namespace ' . $namespace . '; ' . $source);
+        return $namespace;
     }
 }

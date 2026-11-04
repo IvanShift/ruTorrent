@@ -15,16 +15,16 @@ class HttprpcCommandParameterTest extends TestCase
 		$old = 0x0908;
 		$modern = 0x1016;
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
-			'd.get_name=', 'd.name=', 'list', array(), $old) === 'd.name=""',
+			'd.get_name=', 'd.name=', 'list', [], $old) === 'd.name=""',
 			'httprpc maps a client alias to a native old-daemon reader');
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
-			'd.get_name=', 'd.get_name=', 'list', array(), $modern) === null,
+			'd.get_name=', 'd.get_name=', 'list', [], $modern) === null,
 			'a client-only spelling cannot become a trusted alias in an extension');
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 			'd.base_path.realpath.or_empty=', 'd.base_path.realpath.or_empty=',
-			'list', array(), $old) === null,
+			'list', [], $old) === null,
 			'a newer getter cannot be used as a trusted old-daemon command extension');
-		$aliases = array('get_up_total' => array('name' => 'throttle.global_up.total', 'prm' => 0));
+		$aliases = ['get_up_total' => ['name' => 'throttle.global_up.total', 'prm' => 0]];
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 			'get_up_total', 'throttle.global_up.total', 'ttl', $aliases, $old)
 			=== 'throttle.global_up.total',
@@ -35,21 +35,21 @@ class HttprpcCommandParameterTest extends TestCase
 	{
 		$this->assertTrue(method_exists('XMLRPCProxy', 'refusedCommandName'),
 			'httprpc can call the shared command policy');
-		if(!method_exists('XMLRPCProxy', 'refusedCommandName'))
-			return;
+		if(!method_exists('XMLRPCProxy', 'refusedCommandName')) {
+			return; }
 
 		// Every mode consumes the same $add array. These are the dangerous
 		// names that the old substring check let through in either position.
-		foreach(array('list', 'ttl', 'prp') as $mode)
-			foreach(array('import=/tmp/commands.rc',
-				'method.insert=x,simple,"d.name="', 'system.shutdown') as $command)
+		foreach(['list', 'ttl', 'prp'] as $mode) {
+			foreach(['import=/tmp/commands.rc',
+				'method.insert=x,simple,"d.name="', 'system.shutdown'] as $command)
 			{
 				$this->assertTrue(XMLRPCProxy::refusedCommandName($command) !== null,
 					$mode.' names '.$command);
 				$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 					$command, $command, $mode) === null,
 					$mode.' rejects '.$command);
-			}
+			} }
 	}
 
 	public function testNestedCommandsAndSafeReadersUseSharedPolicy()
@@ -59,32 +59,32 @@ class HttprpcCommandParameterTest extends TestCase
 			$this->assertTrue(false, 'httprpc has a shared command policy');
 			return;
 		}
-		foreach(array('cat="$d.multicall=main,import=/tmp/commands.rc"',
-			'cat=$system.shutdown', 'd.multicall=main,method.insert=x') as $command)
+		foreach(['cat="$d.multicall=main,import=/tmp/commands.rc"',
+			'cat=$system.shutdown', 'd.multicall=main,method.insert=x'] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) !== null,
-				'nested command is refused: '.$command);
+				'nested command is refused: '.$command); }
 		$this->assertTrue(XMLRPCProxy::refusedCommandName('d.directory.set=/outside')
 			=== 'd.directory.set', 'directory setters follow the shared direct-call boundary');
-		foreach(array('d.get_custom=imported', 'd.get_custom=execution',
-			'd.get_hash=', 'cat=$d.views=', 't.get_url=') as $command)
+		foreach(['d.get_custom=imported', 'd.get_custom=execution',
+			'd.get_hash=', 'cat=$d.views=', 't.get_url='] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) === null,
-				'reader stays available: '.$command);
+				'reader stays available: '.$command); }
 	}
 
 	public function testDirectModesAdmitGettersButRefuseOtherMutators()
 	{
 		$this->assertTrue(method_exists('XMLRPCProxy', 'sanitizeHttprpcCommandParameter'),
 			'httprpc has a shared read-only policy for cmd= values');
-		if(!method_exists('XMLRPCProxy', 'sanitizeHttprpcCommandParameter'))
-			return;
+		if(!method_exists('XMLRPCProxy', 'sanitizeHttprpcCommandParameter')) {
+			return; }
 
-		foreach(array('stg', 'ttl', 'prp') as $mode)
+		foreach(['stg', 'ttl', 'prp'] as $mode) {
 			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 				'd.erase', 'd.erase', $mode) === null,
-				$mode.' refuses a state-changing method outside the deny list');
-		$aliases = array(
-			'get_up_total' => array('name' => 'throttle.global_up.total', 'prm' => 0),
-		);
+				$mode.' refuses a state-changing method outside the deny list'); }
+		$aliases = [
+			'get_up_total' => ['name' => 'throttle.global_up.total', 'prm' => 0],
+		];
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 			'get_up_total', 'throttle.global_up.total', 'ttl', $aliases)
 				=== 'throttle.global_up.total',
@@ -116,18 +116,18 @@ class HttprpcCommandParameterTest extends TestCase
 			'd.custom.if_z=key,imported', 'd.custom.if_z=key,imported', 'list')
 				=== 'd.custom.if_z="key","imported"',
 			'a fallback argument is data even when it begins with a denied prefix');
-		foreach(array(
+		foreach([
 			'cat=$d.views=',
 			'cat="$t.multicall=d.hash=,t.scrape_complete=,cat={#}"',
 			'cat="$t.multicall=d.hash=,t.scrape_incomplete=,cat={#}"',
-		) as $reader)
+		] as $reader) {
 			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 				$reader, $reader, 'list') === $reader,
-				'bundled read expression remains available: '.$reader);
+				'bundled read expression remains available: '.$reader); }
 		$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 			't.get_url=', 't.url=', 'trkall2') === 't.url=',
 			'trkall2 keeps a plain zero-argument tracker reader slot');
-		foreach(array('list', 'fls', 'prs', 'trk') as $mode)
+		foreach(['list', 'fls', 'prs', 'trk'] as $mode)
 		{
 			$this->assertTrue(XMLRPCProxy::sanitizeHttprpcCommandParameter(
 				'd.erase=', 'd.erase=', $mode) === null,
@@ -153,13 +153,6 @@ class HttprpcCommandParameterTest extends TestCase
 			'the guard receives the existing exact getter alias registry');
 	}
 
-	// What the substring check answered, kept here as the control: every one
-	// of these was admitted, and every one is now refused.
-	private function oldFilterWouldAdmit($command)
-	{
-		return strpos($command, "execute") === false;
-	}
-
 	public function testTheSubstringCheckAdmittedTheRefusedFamilies()
 	{
 		// Not an assertion about the new code: the statement of what was wrong,
@@ -167,7 +160,7 @@ class HttprpcCommandParameterTest extends TestCase
 		// check caught, it caught by accident -- a command carrying the word
 		// "execute" in an argument was dropped too. What it could not catch is
 		// everything that never spells that word.
-		foreach(array(
+		foreach([
 			'import=/etc/passwd',
 			'try_import=/etc/passwd',
 			'system.shutdown',
@@ -180,14 +173,14 @@ class HttprpcCommandParameterTest extends TestCase
 			'session.path.set=/tmp',
 			'directory.default.set=/',
 			'system.env=PATH',
-		) as $command)
+		] as $command) {
 			$this->assertTrue($this->oldFilterWouldAdmit($command),
-				'the substring check admitted '.$command);
+				'the substring check admitted '.$command); }
 	}
 
 	public function testTheRefusedFamiliesAreRefused()
 	{
-		foreach(array(
+		foreach([
 			'execute=/bin/id',
 			'execute2=/bin/id',
 			'execute.capture=/bin/id',
@@ -208,9 +201,9 @@ class HttprpcCommandParameterTest extends TestCase
 			'system.env=PATH',
 			'system.shutdown',
 			'system.shutdown.quick',
-		) as $command)
+		] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) !== null,
-				$command.' is refused');
+				$command.' is refused'); }
 	}
 
 	public function testARefusalNamesTheCommandItRefused()
@@ -223,16 +216,16 @@ class HttprpcCommandParameterTest extends TestCase
 
 	public function testNestedAndDollarIntroducedNamesAreReached()
 	{
-		foreach(array(
+		foreach([
 			'$execute=/bin/id',
 			'cat=$execute=/bin/id',
 			'd.multicall=main,execute=/bin/id',
 			'cat="$d.multicall=main,import=/etc/passwd"',
 			'branch=1,"execute=/bin/id","d.name="',
 			'cat={$system.shutdown}',
-		) as $command)
+		] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) !== null,
-				$command.' is refused wherever the name stands');
+				$command.' is refused wherever the name stands'); }
 	}
 
 	public function testWhatRuTorrentItselfSendsIsNotRefused()
@@ -240,7 +233,7 @@ class HttprpcCommandParameterTest extends TestCase
 		// Every literal ruTorrent registers through theRequestManager.addRequest,
 		// in both the spellings theRequestManager.map() produces. A door that
 		// refused one of these would cost a column and look like a plugin fault.
-		foreach(array(
+		foreach([
 			'f.prioritize_first=',
 			'f.prioritize_last=',
 			'd.get_custom=sch_ignore',
@@ -262,23 +255,23 @@ class HttprpcCommandParameterTest extends TestCase
 			'd.is_multi_file=',
 			't.get_url=',
 			'p.get_address=',
-		) as $command)
+		] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) === null,
-				$command.' is not refused');
+				$command.' is not refused'); }
 	}
 
 	public function testAnArgumentIsNotMistakenForACommand()
 	{
 		// A value that begins with a refused word stands where an argument
 		// stands, not where a command stands.
-		foreach(array(
+		foreach([
 			'd.get_custom=scheduled',
 			'd.get_custom=imported',
 			'd.get_custom=logs',
 			'd.get_custom=execution',
-		) as $command)
+		] as $command) {
 			$this->assertTrue(XMLRPCProxy::refusedCommandName($command) === null,
-				$command.' is read as an argument, not as a command');
+				$command.' is read as an argument, not as a command'); }
 	}
 
 	public function testTheTwoChecksOnACommandNameAreIndependent()
@@ -295,5 +288,12 @@ class HttprpcCommandParameterTest extends TestCase
 			'a command string is not a well-formed command name');
 		$this->assertTrue(XMLRPCProxy::refusedCommandName('d.multicall=main,execute=x') !== null,
 			'and the policy refuses what it carries');
+	}
+
+	// What the substring check answered, kept here as the control: every one
+	// of these was admitted, and every one is now refused.
+	private function oldFilterWouldAdmit($command)
+	{
+		return strpos($command, "execute") === false;
 	}
 }

@@ -21,7 +21,7 @@ class AdditionProxyPolicyParityTest extends TestCase
 	 * custom field: nothing in it is a command, and the second word begins
 	 * with a refused prefix, which is all refusedCommandName() looks at.
 	 */
-	const ORDINARY_VALUE = 'evening catch-up';
+	public const ORDINARY_VALUE = 'evening catch-up';
 
 	private $previousSettings;
 
@@ -33,6 +33,107 @@ class AdditionProxyPolicyParityTest extends TestCase
 	public function tearDown()
 	{
 		$this->restoreSettings($this->previousSettings);
+	}
+
+	public function testTheAdditionSetAndThePolicyAreBothRead()
+	{
+		$this->assertTrue(count($this->shippedSafeParams()) > 0,
+			'conf/xmlrpc_proxy.php defines an external load-tail policy');
+		foreach ($this->proxyVersions() as $version => $label)
+		{
+			list($external, $internal) = $this->partitionAdditions($version);
+			$this->assertTrue(count($external) > 0 && count($internal) > 0,
+				'on rtorrent ' . $label . ' the scanner finds both shared and internal-only additions');
+		}
+	}
+
+	public function testInternalOnlyAdditionsAreRefusedAtTheExternalDoor()
+	{
+		$this->assertTrue(!in_array('d.connection_seed.set', $this->shippedSafeParams(), true),
+			'the private connection-seed setter is not granted to external clients');
+		foreach ($this->proxyVersions() as $version => $label)
+		{
+			list($external, $internal) = $this->partitionAdditions($version);
+			$this->assertTrue(isset($internal['d.connection_seed.set']),
+				'on rtorrent ' . $label . ' the internal-only control comes from a real caller');
+			foreach ($internal as $addition)
+			{
+				$parameter = $this->parameterFor($addition['name']);
+				foreach ([$this->single([$parameter]),
+					$this->batched([$parameter])] as $xml)
+				{
+					$decision = $this->decide($xml, $version);
+					$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
+						'on rtorrent ' . $label . ' external load refuses ' . $addition['name']
+						. ' from ' . $addition['where']);
+				}
+			}
+		}
+	}
+
+	public function testSharedAdditionsSurviveSingleAndBatchedLoads()
+	{
+		foreach ($this->proxyVersions() as $version => $label)
+		{
+			list($external, $internal) = $this->partitionAdditions($version);
+			$parameters = [];
+			foreach ($external as $addition)
+			{
+				$parameter = $this->parameterFor($addition['name']);
+				$parameters[] = $parameter;
+				foreach ([$this->single([$parameter]),
+					$this->batched([$parameter])] as $xml)
+				{
+					$decision = $this->decide($xml, $version);
+					$this->assertTrue($decision['action'] === 'send' && $decision['trusted'] === true
+						&& strpos($decision['payload'], $addition['name'] . '=') !== false,
+						'on rtorrent ' . $label . ' the proxy rebuilds shared ' . $addition['name']
+						. ' from ' . $addition['where'] . ': ' . implode(' ', $decision['log']));
+				}
+			}
+			$batch = $this->decide($this->batched($parameters), $version);
+			$this->assertTrue($batch['action'] === 'send' && $batch['trusted'] === true,
+				'on rtorrent ' . $label . ' all shared additions survive one batch: '
+				. implode(' ', $batch['log']));
+		}
+	}
+
+	public function testDeniedCommandsStayDeniedBesideSharedAdditions()
+	{
+		$refused = ['execute=/bin/id', 'execute2=/bin/id', 'import=/etc/passwd',
+			'try_import=/etc/passwd', 'method.insert=x,simple,"d.name="',
+			'schedule2=x,0,0,"d.name="', 'catch=/bin/id', 'log.open_file=x,/tmp/x',
+			'network.scgi.open_port=0.0.0.0:5000', 'session.path.set=/tmp',
+			'directory.default.set=/', 'system.env=PATH'];
+		foreach ($this->proxyVersions() as $version => $label)
+		{
+			list($external, $internal) = $this->partitionAdditions($version);
+			$first = reset($external);
+			foreach ($refused as $parameter)
+			{
+				$decision = $this->decide($this->batched([
+					$this->parameterFor($first['name']), $parameter]), $version);
+				$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
+					'on rtorrent ' . $label . ' refused ' . $parameter
+					. ' cannot borrow an allowed addition');
+			}
+		}
+	}
+
+	public function testCalledArgumentsStayDeniedOnSharedAdditions()
+	{
+		foreach ($this->proxyVersions() as $version => $label)
+		{
+			list($external, $internal) = $this->partitionAdditions($version);
+			foreach ($external as $addition)
+			{
+				$decision = $this->decide($this->batched([
+					$addition['name'] . '=$execute=/bin/id']), $version);
+				$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
+					'on rtorrent ' . $label . ' ' . $addition['name']
+					. ' carrying a called argument is refused');
+			}
+		}
 	}
 
 	/** $XMLRPCProxySafeParams exactly as conf/xmlrpc_proxy.php ships it. */
@@ -54,7 +155,7 @@ class AdditionProxyPolicyParityTest extends TestCase
 	{
 		$this->installSettingsFor($iVersion);
 		$scanner = new TorrentAdditionSourceScanner($this->repoRoot());
-		$out = array();
+		$out = [];
 		foreach ($scanner->callSites() as $site) {
 			foreach ($site['elements'] as $element) {
 				$name = TorrentAdditionSourceScanner::commandName($element);
@@ -63,8 +164,8 @@ class AdditionProxyPolicyParityTest extends TestCase
 					// failure, not this one's.
 					continue;
 				}
-				$out[$name] = array('name' => $name,
-					'where' => $site['file'] . ':' . $site['line']);
+				$out[$name] = ['name' => $name,
+					'where' => $site['file'] . ':' . $site['line']];
 			}
 		}
 		ksort($out);
@@ -119,132 +220,31 @@ class AdditionProxyPolicyParityTest extends TestCase
 	private function decide($xml, $version)
 	{
 		return XMLRPCProxy::decide($xml, 'sanitize', $this->shippedSafeParams(), false,
-			array('directory' => array('root' => '/', 'resolve' => null),
-				'rtorrentVersion' => $version));
+			['directory' => ['root' => '/', 'resolve' => null],
+				'rtorrentVersion' => $version]);
 	}
 
 	private function proxyVersions()
 	{
-		return array(0x0908 => '0.9.8', 0x1018 => '0.16.24');
+		return [0x0908 => '0.9.8', 0x1018 => '0.16.24'];
 	}
 
 	private function partitionAdditions($version)
 	{
 		$safe = $this->shippedSafeParams();
-		$external = array();
-		$internal = array();
+		$external = [];
+		$internal = [];
 		foreach ($this->additionsUnder($version) as $name => $addition)
 		{
-			if (in_array($name, $safe, true)) $external[$name] = $addition;
-			else $internal[$name] = $addition;
+			if (in_array($name, $safe, true)) { $external[$name] = $addition; }
+			else { $internal[$name] = $addition; }
 		}
-		return array($external, $internal);
+		return [$external, $internal];
 	}
 
 	private function parameterFor($name)
 	{
 		return $name . '=' . ($name === 'd.custom.set'
 			? 'user-note,' . self::ORDINARY_VALUE : self::ORDINARY_VALUE);
-	}
-
-	public function testTheAdditionSetAndThePolicyAreBothRead()
-	{
-		$this->assertTrue(count($this->shippedSafeParams()) > 0,
-			'conf/xmlrpc_proxy.php defines an external load-tail policy');
-		foreach ($this->proxyVersions() as $version => $label)
-		{
-			list($external, $internal) = $this->partitionAdditions($version);
-			$this->assertTrue(count($external) > 0 && count($internal) > 0,
-				'on rtorrent ' . $label . ' the scanner finds both shared and internal-only additions');
-		}
-	}
-
-	public function testInternalOnlyAdditionsAreRefusedAtTheExternalDoor()
-	{
-		$this->assertTrue(!in_array('d.connection_seed.set', $this->shippedSafeParams(), true),
-			'the private connection-seed setter is not granted to external clients');
-		foreach ($this->proxyVersions() as $version => $label)
-		{
-			list($external, $internal) = $this->partitionAdditions($version);
-			$this->assertTrue(isset($internal['d.connection_seed.set']),
-				'on rtorrent ' . $label . ' the internal-only control comes from a real caller');
-			foreach ($internal as $addition)
-			{
-				$parameter = $this->parameterFor($addition['name']);
-				foreach (array($this->single(array($parameter)),
-					$this->batched(array($parameter))) as $xml)
-				{
-					$decision = $this->decide($xml, $version);
-					$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
-						'on rtorrent ' . $label . ' external load refuses ' . $addition['name']
-						. ' from ' . $addition['where']);
-				}
-			}
-		}
-	}
-
-	public function testSharedAdditionsSurviveSingleAndBatchedLoads()
-	{
-		foreach ($this->proxyVersions() as $version => $label)
-		{
-			list($external, $internal) = $this->partitionAdditions($version);
-			$parameters = array();
-			foreach ($external as $addition)
-			{
-				$parameter = $this->parameterFor($addition['name']);
-				$parameters[] = $parameter;
-				foreach (array($this->single(array($parameter)),
-					$this->batched(array($parameter))) as $xml)
-				{
-					$decision = $this->decide($xml, $version);
-					$this->assertTrue($decision['action'] === 'send' && $decision['trusted'] === true
-						&& strpos($decision['payload'], $addition['name'] . '=') !== false,
-						'on rtorrent ' . $label . ' the proxy rebuilds shared ' . $addition['name']
-						. ' from ' . $addition['where'] . ': ' . implode(' ', $decision['log']));
-				}
-			}
-			$batch = $this->decide($this->batched($parameters), $version);
-			$this->assertTrue($batch['action'] === 'send' && $batch['trusted'] === true,
-				'on rtorrent ' . $label . ' all shared additions survive one batch: '
-				. implode(' ', $batch['log']));
-		}
-	}
-
-	public function testDeniedCommandsStayDeniedBesideSharedAdditions()
-	{
-		$refused = array('execute=/bin/id', 'execute2=/bin/id', 'import=/etc/passwd',
-			'try_import=/etc/passwd', 'method.insert=x,simple,"d.name="',
-			'schedule2=x,0,0,"d.name="', 'catch=/bin/id', 'log.open_file=x,/tmp/x',
-			'network.scgi.open_port=0.0.0.0:5000', 'session.path.set=/tmp',
-			'directory.default.set=/', 'system.env=PATH');
-		foreach ($this->proxyVersions() as $version => $label)
-		{
-			list($external, $internal) = $this->partitionAdditions($version);
-			$first = reset($external);
-			foreach ($refused as $parameter)
-			{
-				$decision = $this->decide($this->batched(array(
-					$this->parameterFor($first['name']), $parameter)), $version);
-				$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
-					'on rtorrent ' . $label . ' refused ' . $parameter
-					. ' cannot borrow an allowed addition');
-			}
-		}
-	}
-
-	public function testCalledArgumentsStayDeniedOnSharedAdditions()
-	{
-		foreach ($this->proxyVersions() as $version => $label)
-		{
-			list($external, $internal) = $this->partitionAdditions($version);
-			foreach ($external as $addition)
-			{
-				$decision = $this->decide($this->batched(array(
-					$addition['name'] . '=$execute=/bin/id')), $version);
-				$this->assertTrue($decision['action'] === 'reject' && $decision['payload'] === '',
-					'on rtorrent ' . $label . ' ' . $addition['name']
-					. ' carrying a called argument is refused');
-			}
-		}
 	}
 }

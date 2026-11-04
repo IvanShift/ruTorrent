@@ -62,20 +62,20 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// this layer has no standing to make.
 	function erasedataEncodePendingMarker(array $record)
 	{
-		$keys = array('version', 'generation', 'hash', 'force');
-		if(count($record) !== count($keys))
-			return(false);
-		foreach($keys as $key)
-			if(!array_key_exists($key, $record))
-				return(false);
-		if($record['version'] !== ERASEDATA_PENDING_MARKER_VERSION)
-			return(false);
-		if(!erasedataGenerationIsValid($record['generation']))
-			return(false);
-		if(!erasedataIsCanonicalPendingHash($record['hash']))
-			return(false);
-		if($record['force'] !== 1 && $record['force'] !== 2)
-			return(false);
+		$keys = ['version', 'generation', 'hash', 'force'];
+		if(count($record) !== count($keys)) {
+			return(false); }
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $record)) {
+				return(false); } }
+		if($record['version'] !== ERASEDATA_PENDING_MARKER_VERSION) {
+			return(false); }
+		if(!erasedataGenerationIsValid($record['generation'])) {
+			return(false); }
+		if(!erasedataIsCanonicalPendingHash($record['hash'])) {
+			return(false); }
+		if($record['force'] !== 1 && $record['force'] !== 2) {
+			return(false); }
 		return('version='.ERASEDATA_PENDING_MARKER_VERSION."\n"
 			.'generation='.$record['generation']."\n"
 			.'hash='.$record['hash']."\n"
@@ -89,18 +89,18 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	{
 		if(!is_string($bytes) || $bytes === ''
 			|| strlen($bytes) > ERASEDATA_PENDING_MARKER_MAX_BYTES
-			|| substr($bytes, -1) !== "\n")
-			return(false);
+			|| substr($bytes, -1) !== "\n") {
+			return(false); }
 		$lines = explode("\n", substr($bytes, 0, -1));
-		$keys = array('version', 'generation', 'hash', 'force');
-		if(count($lines) !== count($keys))
-			return(false);
-		$fields = array();
+		$keys = ['version', 'generation', 'hash', 'force'];
+		if(count($lines) !== count($keys)) {
+			return(false); }
+		$fields = [];
 		foreach($lines as $line)
 		{
 			$split = strpos($line, '=');
-			if($split === false || $split === 0)
-				return(false);
+			if($split === false || $split === 0) {
+				return(false); }
 			$key = substr($line, 0, $split);
 			// Belt and braces, and deliberately not mutation-killable: the
 			// record is already required to hold exactly four lines, so one
@@ -108,27 +108,27 @@ if(!function_exists('erasedataEncodePendingMarker'))
 			// below refuses it anyway. This states the "no duplicate key"
 			// clause of the contract above instead of leaving it an accident
 			// of the arity check, which a later optional field would undo.
-			if(array_key_exists($key, $fields))
-				return(false);
+			if(array_key_exists($key, $fields)) {
+				return(false); }
 			$fields[$key] = substr($line, $split + 1);
 		}
-		foreach($keys as $key)
-			if(!array_key_exists($key, $fields))
-				return(false);
-		if($fields['version'] !== (string)ERASEDATA_PENDING_MARKER_VERSION)
-			return(false);
-		if(!erasedataGenerationIsValid($fields['generation']))
-			return(false);
-		if(!erasedataIsCanonicalPendingHash($fields['hash']))
-			return(false);
-		if($fields['force'] !== '1' && $fields['force'] !== '2')
-			return(false);
-		return(array(
+		foreach($keys as $key) {
+			if(!array_key_exists($key, $fields)) {
+				return(false); } }
+		if($fields['version'] !== (string)ERASEDATA_PENDING_MARKER_VERSION) {
+			return(false); }
+		if(!erasedataGenerationIsValid($fields['generation'])) {
+			return(false); }
+		if(!erasedataIsCanonicalPendingHash($fields['hash'])) {
+			return(false); }
+		if($fields['force'] !== '1' && $fields['force'] !== '2') {
+			return(false); }
+		return([
 			'version' => ERASEDATA_PENDING_MARKER_VERSION,
 			'generation' => $fields['generation'],
 			'hash' => $fields['hash'],
 			'force' => (int)$fields['force'],
-		));
+		]);
 	}
 
 	// 40 hex digits, uppercase: the canonical spelling every record carries and
@@ -155,39 +155,39 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// obligation and must refuse the request rather than go on.
 	function erasedataQueueRequest($listPath, $hash, $force, $generation, ?array $published = null)
 	{
-		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false)
-			return(false);
+		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false) {
+			return(false); }
 		// Refused, not coerced: see erasedataEncodePendingMarker().
-		if($force !== 1 && $force !== 2)
-			return(false);
-		if(!erasedataIsPendingHash($hash))
-			return(false);
-		if(!erasedataGenerationIsValid($generation))
-			return(false);
+		if($force !== 1 && $force !== 2) {
+			return(false); }
+		if(!erasedataIsPendingHash($hash)) {
+			return(false); }
+		if(!erasedataGenerationIsValid($generation)) {
+			return(false); }
 		$canonical = strtoupper($hash);
 		$marker = erasedataPendingMarkerPath($listPath, $canonical, $generation);
 		clearstatcache(true, $marker);
 		// Already recorded, and never rewritten: a caller that fires again -- a
 		// ratio group command does so on every check -- must not be able to
 		// change the force or the generation an admission already bound.
-		if(is_file($marker))
-			return(true);
+		if(is_file($marker)) {
+			return(true); }
 		// This generation's own manifest is already published, so the obligation
 		// is discharged and the collector owns what is left of it. A bare
 		// <hash>.list is NOT that manifest: it belongs to an older torrent that
 		// happened to share the infohash.
 		if($published === null
 			? erasedataPendingGenerationIsPublished($listPath, $canonical, $generation)
-			: isset($published[$canonical][$generation]))
-			return(true);
-		$bytes = erasedataEncodePendingMarker(array(
+			: isset($published[$canonical][$generation])) {
+			return(true); }
+		$bytes = erasedataEncodePendingMarker([
 			'version' => ERASEDATA_PENDING_MARKER_VERSION,
 			'generation' => $generation,
 			'hash' => $canonical,
 			'force' => $force,
-		));
-		if($bytes === false)
-			return(false);
+		]);
+		if($bytes === false) {
+			return(false); }
 		return(erasedataWriteDurableFile($marker, $bytes));
 	}
 
@@ -199,21 +199,21 @@ if(!function_exists('erasedataEncodePendingMarker'))
 		$failedHash = null;
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
 			|| ($force !== 1 && $force !== 2) || !erasedataGenerationIsValid($generation)
-			|| count($hashes) > ERASEDATA_PENDING_MAX_MARKERS)
-			return(false);
-		foreach($hashes as $hash)
-			if(!erasedataIsPendingHash($hash))
-				return(false);
+			|| count($hashes) > ERASEDATA_PENDING_MAX_MARKERS) {
+			return(false); }
+		foreach($hashes as $hash) {
+			if(!erasedataIsPendingHash($hash)) {
+				return(false); } }
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return(false);
+		if(!is_array($entries)) {
+			return(false); }
 		$published = erasedataPublishedGenerations($entries);
-		foreach($hashes as $hash)
+		foreach($hashes as $hash) {
 			if(!erasedataQueueRequest($listPath, $hash, $force, $generation, $published))
 			{
 				$failedHash = strtoupper($hash);
 				return(false);
-			}
+			} }
 		return(true);
 	}
 
@@ -233,8 +233,8 @@ if(!function_exists('erasedataEncodePendingMarker'))
 		if(!is_string($listPath) || $listPath === ''
 			|| strpos($listPath, "\0") !== false
 			|| !erasedataIsPendingHash($hash)
-			|| !erasedataGenerationIsValid($generation))
-			return(false);
+			|| !erasedataGenerationIsValid($generation)) {
+			return(false); }
 		return($listPath.'/'.strtoupper($hash).'.'.$generation.'.pending');
 	}
 
@@ -243,15 +243,15 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// <hash>.list carries no generation and so acknowledges nothing.
 	function erasedataPublishedGenerations($entries)
 	{
-		$published = array();
+		$published = [];
 		foreach($entries as $entry)
 		{
 			$parts = explode('.', $entry);
-			if(count($parts) < 4 || $parts[count($parts) - 1] !== 'list')
-				continue;
+			if(count($parts) < 4 || $parts[count($parts) - 1] !== 'list') {
+				continue; }
 			if(!erasedataIsPendingHash($parts[0])
-				|| !erasedataGenerationIsValid($parts[1]))
-				continue;
+				|| !erasedataGenerationIsValid($parts[1])) {
+				continue; }
 			$published[strtoupper($parts[0])][$parts[1]] = true;
 		}
 		return($published);
@@ -260,8 +260,8 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	function erasedataPendingGenerationIsPublished($listPath, $canonicalHash, $generation)
 	{
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return(false);
+		if(!is_array($entries)) {
+			return(false); }
 		$published = erasedataPublishedGenerations($entries);
 		return(isset($published[$canonicalHash][$generation]));
 	}
@@ -289,28 +289,28 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// on it instead of picking one of the two.
 	function erasedataPendingObligations($listPath)
 	{
-		if(!is_string($listPath) || $listPath === '')
-			return(false);
+		if(!is_string($listPath) || $listPath === '') {
+			return(false); }
 		$entries = @scandir($listPath);
-		if(!is_array($entries))
-			return(false);
+		if(!is_array($entries)) {
+			return(false); }
 		$published = erasedataPublishedGenerations($entries);
-		$obligations = array();
+		$obligations = [];
 		$markers = 0;
 		foreach($entries as $entry)
 		{
 			$parts = explode('.', $entry);
-			if(count($parts) !== 3 || $parts[2] !== 'pending')
-				continue;
+			if(count($parts) !== 3 || $parts[2] !== 'pending') {
+				continue; }
 			if(!erasedataIsPendingHash($parts[0])
-				|| !erasedataGenerationIsValid($parts[1]))
-				continue;
-			if(++$markers > ERASEDATA_PENDING_MAX_MARKERS)
-				return(false);
+				|| !erasedataGenerationIsValid($parts[1])) {
+				continue; }
+			if(++$markers > ERASEDATA_PENDING_MAX_MARKERS) {
+				return(false); }
 			$canonical = strtoupper($parts[0]);
 			$generation = $parts[1];
-			if(isset($published[$canonical][$generation]))
-				continue;
+			if(isset($published[$canonical][$generation])) {
+				continue; }
 			$path = $listPath.'/'.$entry;
 			$bytes = ErasedataManifestCodec::readBoundedFile($path,
 				ERASEDATA_PENDING_MARKER_MAX_BYTES);
@@ -319,26 +319,26 @@ if(!function_exists('erasedataEncodePendingMarker'))
 			// disagrees with the name it is filed under binds nothing, so it is
 			// not an obligation. It is left exactly where it is.
 			if(!is_array($record) || $record['hash'] !== $canonical
-				|| $record['generation'] !== $generation)
-				continue;
+				|| $record['generation'] !== $generation) {
+				continue; }
 			if(!isset($obligations[$generation]))
 			{
-				if(count($obligations) >= ERASEDATA_PENDING_MAX_GENERATIONS)
-					return(false);
-				$obligations[$generation] = array(
+				if(count($obligations) >= ERASEDATA_PENDING_MAX_GENERATIONS) {
+					return(false); }
+				$obligations[$generation] = [
 					'generation' => $generation,
 					'force' => $record['force'],
-					'hashes' => array(),
-					'markers' => array(),
-				);
+					'hashes' => [],
+					'markers' => [],
+				];
 			}
-			else if($obligations[$generation]['force'] !== $record['force'])
-				$obligations[$generation]['force'] = false;
+			elseif($obligations[$generation]['force'] !== $record['force']) {
+				$obligations[$generation]['force'] = false; }
 			$obligations[$generation]['hashes'][] = $canonical;
-			$obligations[$generation]['markers'][$canonical] = array(
+			$obligations[$generation]['markers'][$canonical] = [
 				'path' => $path,
 				'force' => $record['force'],
-			);
+			];
 		}
 		foreach(array_keys($obligations) as $generation)
 		{
@@ -362,23 +362,23 @@ if(!function_exists('erasedataEncodePendingMarker'))
 			|| $members > ERASEDATA_PENDING_MAX_MARKERS
 			|| !function_exists('posix_getrlimit')
 			|| !function_exists('posix_setrlimit')
-			|| !defined('POSIX_RLIMIT_NOFILE'))
-			return(false);
+			|| !defined('POSIX_RLIMIT_NOFILE')) {
+			return(false); }
 		$limits = @posix_getrlimit();
 		if(!is_array($limits) || !isset($limits['soft openfiles'],
-			$limits['hard openfiles']))
-			return(false);
+			$limits['hard openfiles'])) {
+			return(false); }
 		$needed = $members + 64;
 		$soft = $limits['soft openfiles'];
-		if($soft === 'unlimited' || (is_int($soft) && $soft >= $needed))
-			return(true);
+		if($soft === 'unlimited' || (is_int($soft) && $soft >= $needed)) {
+			return(true); }
 		$hard = $limits['hard openfiles'];
 		$infinity = defined('POSIX_RLIMIT_INFINITY') ? POSIX_RLIMIT_INFINITY : null;
-		if($hard === 'unlimited')
-			$hard = $infinity;
+		if($hard === 'unlimited') {
+			$hard = $infinity; }
 		if(!is_int($soft) || !is_int($hard)
-			|| ($hard !== $infinity && $hard < $needed))
-			return(false);
+			|| ($hard !== $infinity && $hard < $needed)) {
+			return(false); }
 		return(@posix_setrlimit(POSIX_RLIMIT_NOFILE, $needed, $hard));
 	}
 
@@ -397,18 +397,18 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	function erasedataLockObligations($listPath, $hashes)
 	{
 		if(!is_string($listPath) || $listPath === '' || strpos($listPath, "\0") !== false
-			|| !is_array($hashes) || count($hashes) > ERASEDATA_PENDING_MAX_MARKERS)
-			return(false);
-		$canonical = array();
+			|| !is_array($hashes) || count($hashes) > ERASEDATA_PENDING_MAX_MARKERS) {
+			return(false); }
+		$canonical = [];
 		foreach($hashes as $hash)
 		{
-			if(!erasedataIsPendingHash($hash))
-				return(false);
+			if(!erasedataIsPendingHash($hash)) {
+				return(false); }
 			$canonical[strtoupper($hash)] = true;
 		}
 		$canonical = array_keys($canonical);
 		sort($canonical, SORT_STRING);
-		$locks = array();
+		$locks = [];
 		foreach($canonical as $hash)
 		{
 			$path = $listPath.'/'.$hash.'.lock';
@@ -437,8 +437,8 @@ if(!function_exists('erasedataEncodePendingMarker'))
 	// when every lock really came off.
 	function erasedataUnlockObligations($locks)
 	{
-		if(!is_array($locks))
-			return(false);
+		if(!is_array($locks)) {
+			return(false); }
 		$released = true;
 		foreach(array_reverse($locks, true) as $handle)
 		{
@@ -447,10 +447,10 @@ if(!function_exists('erasedataEncodePendingMarker'))
 				$released = false;
 				continue;
 			}
-			if(!@flock($handle, LOCK_UN))
-				$released = false;
-			if(@fclose($handle) !== true)
-				$released = false;
+			if(!@flock($handle, LOCK_UN)) {
+				$released = false; }
+			if(@fclose($handle) !== true) {
+				$released = false; }
 		}
 		return($released);
 	}

@@ -2,7 +2,7 @@
 
 require_once( "task.php" );
 
-$ret = array();
+$ret = [];
 
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 switch($input['cmd'] ?? null)
@@ -27,9 +27,9 @@ switch($input['cmd'] ?? null)
 	case "remove":
 	{
 		Requests::requirePost();
-		$list = array();
-		if(!isset($HTTP_RAW_POST_DATA))
-			$HTTP_RAW_POST_DATA = file_get_contents("php://input");
+		$list = [];
+		if(!isset($HTTP_RAW_POST_DATA)) {
+			$HTTP_RAW_POST_DATA = file_get_contents("php://input"); }
 		$vars = explode('&', $HTTP_RAW_POST_DATA);
 		foreach($vars as $var)
 		{
@@ -37,8 +37,8 @@ switch($input['cmd'] ?? null)
 			if($parts[0]=="no")
 			{
 				$value = trim(rawurldecode($parts[1]));
-				if(strlen($value))
-					$list[] = $value;
+				if(strlen($value)) {
+					$list[] = $value; }
 			}
 		}
 		$ret = rTaskManager::remove($list);

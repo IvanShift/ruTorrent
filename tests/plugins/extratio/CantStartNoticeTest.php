@@ -15,8 +15,8 @@ class CantStartNoticeTest extends TestCase
 		$seen = 0;
 		foreach (scandir($root) as $plugin) {
 			$init = $root . '/' . $plugin . '/init.php';
-			if ($plugin[0] === '.' || !is_file($init))
-				continue;
+			if ($plugin[0] === '.' || !is_file($init)) {
+				continue; }
 			preg_match_all("/noty\\('([^':]+): '\\s*\\+\\s*theUILang\\.pluginCantStart/",
 				file_get_contents($init), $names);
 			foreach ($names[1] as $name) {

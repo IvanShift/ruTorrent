@@ -5,8 +5,8 @@ final class TorrentTrackerTiers
 {
     public static function fromLines(array $lines)
     {
-        $tiers = array();
-        $tier = array();
+        $tiers = [];
+        $tier = [];
         $count = 0;
         foreach ($lines as $line) {
             $tracker = trim($line);
@@ -15,11 +15,11 @@ final class TorrentTrackerTiers
                 $count++;
             } elseif (count($tier)) {
                 $tiers[] = $tier;
-                $tier = array();
+                $tier = [];
             }
         }
-        if (count($tier)) $tiers[] = $tier;
-        return(array('tiers' => $tiers, 'count' => $count));
+        if (count($tier)) { $tiers[] = $tier; }
+        return(['tiers' => $tiers, 'count' => $count]);
     }
 
     public static function fromEditFormValues(array $values)

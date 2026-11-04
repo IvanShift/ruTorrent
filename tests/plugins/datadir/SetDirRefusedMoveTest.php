@@ -10,7 +10,7 @@ require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
  */
 class SetDirRefusedMoveTest extends TestCase
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	private $base;
 	private $daemon;
@@ -30,12 +30,47 @@ class SetDirRefusedMoveTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	public function testLegacyDaemonCannotStopOrMoveAnUnobstructedDownload()
+	{
+		$r = $this->setTheDataDirectory([]);
+		$calls = $r['calls'];
+		$this->assertTrue($this->called($calls, 'system.listMethods'),
+			'worker checked the native claim ABI');
+		$this->assertTrue(!$this->called($calls, 'd.stop')
+			&& !$this->called($calls, 'd.stop_close_claim'),
+			'unsupported daemon is never stopped or claimed: ' . implode(', ', $calls));
+		$this->assertTrue(!$this->repointed($calls),
+			'unsupported daemon is never repointed');
+		$this->assertEquals([true, true], $r['at_source'],
+			'both payload files remain at their source');
+		$this->assertEquals([false, false], $r['at_dest'],
+			'no payload was moved');
+	}
+
+	public function testLegacyDaemonPreservesPausedStateAndForeignDestination()
+	{
+		foreach ([[1, 1], [0, 0]] as $state) {
+			$r = $this->setTheDataDirectory(['2.bin'], $state[0], $state[1]);
+			$calls = $r['calls'];
+			$this->assertTrue(!$this->called($calls, 'd.stop')
+				&& !$this->called($calls, 'd.start')
+				&& !$this->called($calls, 'd.stop_close_claim'),
+				'unsupported daemon run state is unchanged: ' . implode(', ', $calls));
+			$this->assertTrue(!$this->repointed($calls),
+				'refused worker does not repoint data');
+			$this->assertEquals([true, true], $r['at_source'],
+				'payload remains whole at source');
+			$this->assertEquals(['already there'], $r['occupants'],
+				'foreign destination bytes survive');
+		}
+	}
+
 	private function removeTree($path)
 	{
 		if (is_link($path)) { @unlink($path); return; }
 		if (!is_dir($path)) { @unlink($path); return; }
-		foreach (array_diff(scandir($path), array('.', '..')) as $entry)
-			$this->removeTree($path . '/' . $entry);
+		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+			$this->removeTree($path . '/' . $entry); }
 		@rmdir($path);
 	}
 
@@ -56,15 +91,15 @@ class SetDirRefusedMoveTest extends TestCase
 	private function setTheDataDirectory($occupy, $isOpen = 1, $isActive = 1)
 	{
 		$this->removeTree($this->base);
-		if ($this->daemon !== null)
-			$this->daemon->stop();
+		if ($this->daemon !== null) {
+			$this->daemon->stop(); }
 
-		$names = array('1.bin', '2.bin');
+		$names = ['1.bin', '2.bin'];
 		@mkdir($this->base . '/profile/settings', 0700, true);
 		@mkdir($this->base . '/src/mytorrent', 0700, true);
 		@mkdir($this->base . '/dst', 0700, true);
-		foreach ($names as $n)
-			file_put_contents($this->base . '/src/mytorrent/' . $n, 'download ' . $n);
+		foreach ($names as $n) {
+			file_put_contents($this->base . '/src/mytorrent/' . $n, 'download ' . $n); }
 		foreach ($occupy as $n)
 		{
 			@mkdir($this->base . '/dst/mytorrent', 0700, true);
@@ -73,7 +108,7 @@ class SetDirRefusedMoveTest extends TestCase
 
 		// A legacy daemon advertises system.listMethods but lacks the
 		// atomic stop/close claim methods. No mutation request may follow.
-		$replies = array(array('system.listMethods'));
+		$replies = [['system.listMethods']];
 		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
 		$driver = $this->base . '/drive-setdir.php';
@@ -94,10 +129,10 @@ class SetDirRefusedMoveTest extends TestCase
 			. ' ' . escapeshellarg(self::HASH)
 			. ' ' . escapeshellarg($this->base . '/dst')
 			. ' 1 1 0 tester';
-		$out = array();
+		$out = [];
 		exec($cmd . ' 2>&1', $out);
 
-		return array(
+		return [
 			// Only what happened after the files were let go of: the run
 			// opens a closed download at the start to read its paths, and that
 			// is not the restart being asked about.
@@ -113,7 +148,7 @@ class SetDirRefusedMoveTest extends TestCase
 			'occupants' => array_map(function($n) {
 				return @file_get_contents($this->base . '/dst/mytorrent/' . $n);
 			}, $occupy),
-		);
+		];
 	}
 
 	private function called($calls, $method)
@@ -124,44 +159,9 @@ class SetDirRefusedMoveTest extends TestCase
 	/** Any command that repoints the download, however the version spells it. */
 	private function repointed($calls)
 	{
-		foreach ($calls as $call)
-			if (strpos($call, 'd.set_directory') === 0 || strpos($call, 'd.directory.set') === 0)
-				return true;
+		foreach ($calls as $call) {
+			if (strpos($call, 'd.set_directory') === 0 || strpos($call, 'd.directory.set') === 0) {
+				return true; } }
 		return false;
-	}
-
-	public function testLegacyDaemonCannotStopOrMoveAnUnobstructedDownload()
-	{
-		$r = $this->setTheDataDirectory(array());
-		$calls = $r['calls'];
-		$this->assertTrue($this->called($calls, 'system.listMethods'),
-			'worker checked the native claim ABI');
-		$this->assertTrue(!$this->called($calls, 'd.stop')
-			&& !$this->called($calls, 'd.stop_close_claim'),
-			'unsupported daemon is never stopped or claimed: ' . implode(', ', $calls));
-		$this->assertTrue(!$this->repointed($calls),
-			'unsupported daemon is never repointed');
-		$this->assertEquals(array(true, true), $r['at_source'],
-			'both payload files remain at their source');
-		$this->assertEquals(array(false, false), $r['at_dest'],
-			'no payload was moved');
-	}
-
-	public function testLegacyDaemonPreservesPausedStateAndForeignDestination()
-	{
-		foreach (array(array(1, 1), array(0, 0)) as $state) {
-			$r = $this->setTheDataDirectory(array('2.bin'), $state[0], $state[1]);
-			$calls = $r['calls'];
-			$this->assertTrue(!$this->called($calls, 'd.stop')
-				&& !$this->called($calls, 'd.start')
-				&& !$this->called($calls, 'd.stop_close_claim'),
-				'unsupported daemon run state is unchanged: ' . implode(', ', $calls));
-			$this->assertTrue(!$this->repointed($calls),
-				'refused worker does not repoint data');
-			$this->assertEquals(array(true, true), $r['at_source'],
-				'payload remains whole at source');
-			$this->assertEquals(array('already there'), $r['occupants'],
-				'foreign destination bytes survive');
-		}
 	}
 }

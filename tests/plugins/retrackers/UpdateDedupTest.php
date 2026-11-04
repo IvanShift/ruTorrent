@@ -9,20 +9,20 @@ if (!class_exists('rTorrent', false)) {
 	{
 		public static function quoteCommandArg($value)
 		{
-			return('"' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $value) . '"');
+			return('"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"');
 		}
 	}
 }
 
 class RetrackersDedupRpcTestAdapter extends RetrackersWorkerRpcAdapter
 {
-	public $calls = array();
+	public $calls = [];
 	public $next = false;
 	public $nextFailure = null;
 
 	protected function send($payload, $plan, &$failure = null, $historical = false)
 	{
-		$this->calls[] = array($payload, $plan);
+		$this->calls[] = [$payload, $plan];
 		$failure = $this->nextFailure;
 		return($this->next);
 	}
@@ -30,17 +30,6 @@ class RetrackersDedupRpcTestAdapter extends RetrackersWorkerRpcAdapter
 
 class RetrackersUpdateDedupTest extends TestCase
 {
-	private function sealedCallback($class, $wire)
-	{
-		$reflection = new ReflectionClass($class);
-		$callback = $reflection->newInstanceWithoutConstructor();
-		$property = $reflection->getProperty('wire');
-		if (PHP_VERSION_ID < 80100) {
-			$property->setAccessible(true);
-		}
-		$property->setValue($callback, $wire);
-		return($callback);
-	}
 
 	public function testSharedCasFragmentsKeepExactEscapingAndDryLimit()
 	{
@@ -49,8 +38,8 @@ class RetrackersUpdateDedupTest extends TestCase
 		if (!trait_exists('RetrackersCasCommandBuilder')) {
 			return;
 		}
-		foreach (array('RetrackersOldGenerationCommitCallback',
-			'RetrackersCandidateCleanupCallback') as $callbackClass) {
+		foreach (['RetrackersOldGenerationCommitCallback',
+			'RetrackersCandidateCleanupCallback'] as $callbackClass) {
 			$this->assertTrue(in_array('RetrackersCasCommandBuilder',
 				class_uses($callbackClass), true), $callbackClass . ' uses shared CAS fragments');
 			$integerMethod = new ReflectionMethod($callbackClass, 'integerEquals');
@@ -59,7 +48,7 @@ class RetrackersUpdateDedupTest extends TestCase
 				$integerMethod->setAccessible(true);
 				$stringMethod->setAccessible(true);
 			}
-			foreach (array(false, true) as $materialize) {
+			foreach ([false, true] as $materialize) {
 				$integer = $integerMethod->invoke(null,
 					't.group=', '12', $materialize, 128);
 				$string = $stringMethod->invoke(null,
@@ -95,35 +84,35 @@ class RetrackersUpdateDedupTest extends TestCase
 	{
 		$adapter = new RetrackersDedupRpcTestAdapter();
 		$tx = str_repeat('a', 32);
-		foreach (array(
-			array('cleanupPhaseReceipts', array('cb', 'cd', 'cx')),
-			array('oldGenerationCommitReceipts', array('eb', 'ed', 'ex')),
-		) as $case) {
-			$keys = array();
+		foreach ([
+			['cleanupPhaseReceipts', ['cb', 'cd', 'cx']],
+			['oldGenerationCommitReceipts', ['eb', 'ed', 'ex']],
+		] as $case) {
+			$keys = [];
 			foreach ($case[1] as $prefix) {
 				$keys[] = $prefix . ':' . $tx;
 			}
-			$calls = array(
-				array('method.list_keys', array('', 'rr.receipts.v1')),
-				array('method.get', array('', 'rr.receipts.v1')),
-			);
+			$calls = [
+				['method.list_keys', ['', 'rr.receipts.v1']],
+				['method.get', ['', 'rr.receipts.v1']],
+			];
 			foreach ($keys as $key) {
-				$calls[] = array('method.has_key', array('', 'rr.receipts.v1', $key));
+				$calls[] = ['method.has_key', ['', 'rr.receipts.v1', $key]];
 			}
-			$adapter->next = array('ok' => true, 'value' => array(
-				array('ok' => true, 'value' => ''),
-				array('ok' => true, 'value' => ''),
-				array('ok' => true, 'value' => '1'),
-				array('ok' => true, 'value' => '0'),
-				array('ok' => true, 'value' => '1'),
-			));
+			$adapter->next = ['ok' => true, 'value' => [
+				['ok' => true, 'value' => ''],
+				['ok' => true, 'value' => ''],
+				['ok' => true, 'value' => '1'],
+				['ok' => true, 'value' => '0'],
+				['ok' => true, 'value' => '1'],
+			]];
 			$failure = 'stale';
 			$result = $adapter->{$case[0]}($tx, $failure);
-			$this->assertSame(array('begin' => '1', 'done' => '0', 'exit' => '1'),
+			$this->assertSame(['begin' => '1', 'done' => '0', 'exit' => '1'],
 				$result, $case[0] . ' maps the three slots');
 			$this->assertSame(null, $failure, $case[0] . ' clears stale failure');
-			$this->assertSame(array(retrackersBuildSystemMulticallRequest($calls),
-				retrackersRestrictedPlanLedger($keys)), end($adapter->calls),
+			$this->assertSame([retrackersBuildSystemMulticallRequest($calls),
+				retrackersRestrictedPlanLedger($keys)], end($adapter->calls),
 				$case[0] . ' keeps exact five-call wire and plan');
 			$adapter->next['value'][4]['value'] = '2';
 			$this->assertSame(false, $adapter->{$case[0]}($tx, $failure),
@@ -135,7 +124,7 @@ class RetrackersUpdateDedupTest extends TestCase
 				$case[0] . ' refuses empty receipt value');
 			$this->assertSame('receipt-ledger-corrupt', $failure,
 				$case[0] . ' classifies empty receipt value');
-			$adapter->next = array('ok' => false);
+			$adapter->next = ['ok' => false];
 			$adapter->nextFailure = 'rpc-fault';
 			$this->assertSame(false, $adapter->{$case[0]}($tx, $failure),
 				$case[0] . ' refuses RPC fault');
@@ -156,19 +145,19 @@ class RetrackersUpdateDedupTest extends TestCase
 	{
 		$adapter = new RetrackersDedupRpcTestAdapter();
 		$adapter->setFamily(2);
-		foreach (array(
-			array('executeOldGenerationCommit', 'RetrackersOldGenerationCommitCallback'),
-			array('executeLoadDispatch', 'RetrackersLoadDispatchCallback'),
-			array('executeCandidateCleanup', 'RetrackersCandidateCleanupCallback'),
-		) as $case) {
+		foreach ([
+			['executeOldGenerationCommit', 'RetrackersOldGenerationCommitCallback'],
+			['executeLoadDispatch', 'RetrackersLoadDispatchCallback'],
+			['executeCandidateCleanup', 'RetrackersCandidateCleanupCallback'],
+		] as $case) {
 			$wire = 'sealed:' . $case[0];
 			$callback = $this->sealedCallback($case[1], $wire);
-			$adapter->next = array('ok' => true, 'value' => 'DONE');
+			$adapter->next = ['ok' => true, 'value' => 'DONE'];
 			$failure = 'stale';
 			$this->assertSame('DONE', $adapter->{$case[0]}($callback, $failure),
 				$case[0] . ' returns direct string');
 			$this->assertSame(null, $failure, $case[0] . ' clears stale failure');
-			$this->assertSame(array($wire, $callback->responsePlan(2)),
+			$this->assertSame([$wire, $callback->responsePlan(2)],
 				end($adapter->calls), $case[0] . ' sends checked wire, not rebuilt params');
 			$adapter->next = false;
 			$adapter->nextFailure = 'transport-closed';
@@ -176,7 +165,7 @@ class RetrackersUpdateDedupTest extends TestCase
 				$case[0] . ' refuses transport failure');
 			$this->assertSame('transport-closed', $failure,
 				$case[0] . ' preserves transport failure');
-			$adapter->next = array('ok' => true, 'value' => 0);
+			$adapter->next = ['ok' => true, 'value' => 0];
 			$adapter->nextFailure = 'decode-failed';
 			$failure = 'decode-failed';
 			$this->assertSame(false, $adapter->{$case[0]}($callback, $failure),
@@ -184,10 +173,21 @@ class RetrackersUpdateDedupTest extends TestCase
 			$this->assertSame('decode-failed', $failure,
 				$case[0] . ' retains transport decode failure');
 			$adapter->nextFailure = null;
-			$adapter->next = array('ok' => false);
+			$adapter->next = ['ok' => false];
 			$this->assertSame(false, $adapter->{$case[0]}($callback, $failure),
 				$case[0] . ' refuses RPC fault');
 			$this->assertSame('rpc-fault', $failure, $case[0] . ' classifies RPC fault');
 		}
+	}
+	private function sealedCallback($class, $wire)
+	{
+		$reflection = new ReflectionClass($class);
+		$callback = $reflection->newInstanceWithoutConstructor();
+		$property = $reflection->getProperty('wire');
+		if (PHP_VERSION_ID < 80100) {
+			$property->setAccessible(true);
+		}
+		$property->setValue($callback, $wire);
+		return($callback);
 	}
 }

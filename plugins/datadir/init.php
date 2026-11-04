@@ -5,9 +5,9 @@ require_once __DIR__ . '/../../php/rtorrent.php';
 require_once __DIR__ . '/recoverycommand.php';
 
 // One daemon-wide scan covers every protected profile journal.
-$schedule = new rXMLRPCCommand('schedule', array('datadir-recover-all',
+$schedule = new rXMLRPCCommand('schedule', ['datadir-recover-all',
     rTorrentSettings::getAlignedStart('datadir-recover-all', 60) . '', '60',
-    rtDataDirRecoveryCommand(Utility::getPHP(), __DIR__ . '/recover.php')));
+    rtDataDirRecoveryCommand(Utility::getPHP(), __DIR__ . '/recover.php')]);
 $request = new rXMLRPCRequest($schedule);
 $request->important = false;
 if ($request->success()) {

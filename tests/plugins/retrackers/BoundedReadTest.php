@@ -14,24 +14,9 @@ require_once(__DIR__ . '/../../../plugins/retrackers/update.php');
 class BoundedReadTest extends TestCase
 {
 	// rSCGITransport codes that describe a wrong or refused answer, not a missing one.
-	const PROTOCOL = array('empty-request', 'invalid-options', 'invalid-response-mode', 'invalid-response-limit',
+	public const PROTOCOL = ['empty-request', 'invalid-options', 'invalid-response-mode', 'invalid-response-limit',
 		'headers-too-large', 'malformed-header', 'missing-content-length', 'duplicate-content-length',
-		'malformed-content-length', 'zero-content-length', 'response-too-large');
-
-	private static function failureCodes($source)
-	{
-		// Read the full failure expression: a ternary may name either outcome.
-		preg_match_all('~(?:fail\(\s*\$failure,\s*|\$failure\s*=\s*|readFailure\([^;]*?\$failure,\s*)([^;]+)~',
-			$source, $expressions);
-		$codes = array();
-		foreach ($expressions[1] as $expression) {
-			preg_match_all("~'([a-z-]+)'~", $expression, $matches);
-			$codes = array_merge($codes, $matches[1]);
-		}
-		$codes = array_values(array_unique($codes));
-		sort($codes);
-		return($codes);
-	}
+		'malformed-content-length', 'zero-content-length', 'response-too-large'];
 
 	public function testTheTransportListPartitionsEveryScgiFailureCode()
 	{
@@ -43,7 +28,7 @@ class BoundedReadTest extends TestCase
 		$noAnswer = array_values(array_intersect($codes, RetrackersBoundedRead::TRANSPORT_FAILURES));
 		$classified = array_merge($noAnswer, self::PROTOCOL);
 		sort($classified);
-		$this->assertTrue($classified === $codes && array_intersect(self::PROTOCOL, RetrackersBoundedRead::TRANSPORT_FAILURES) === array(),
+		$this->assertTrue($classified === $codes && array_intersect(self::PROTOCOL, RetrackersBoundedRead::TRANSPORT_FAILURES) === [],
 			'every rSCGITransport code is either no answer or a wrong answer: ' .
 			implode(',', array_diff($codes, $classified)));
 	}
@@ -73,7 +58,7 @@ class BoundedReadTest extends TestCase
 			$reads++;
 			$failure = $reads < 4 ? 'long' : 'short';
 			return(false);
-		}, $failure, function ($reason) { return($reason === 'short' ? 0.0 : 0.5); }, array('short', 'long'));
+		}, $failure, function ($reason) { return($reason === 'short' ? 0.0 : 0.5); }, ['short', 'long']);
 		$this->assertTrue($reads === 4 && microtime(true) - $started < 0.5,
 			'a per-reason budget is measured from the first read and follows the current reason');
 	}
@@ -93,8 +78,8 @@ class BoundedReadTest extends TestCase
 				retrackersBoundedFailureReason($code) === $code,
 				$code . ' keeps its transport wait interval and classified diagnostic');
 		}
-		foreach (self::PROTOCOL as $code)
-			$this->assertTrue(RetrackersQueueRetry::category($code) === 'preflight-refused', $code . ' is a counted refusal');
+		foreach (self::PROTOCOL as $code) {
+			$this->assertTrue(RetrackersQueueRetry::category($code) === 'preflight-refused', $code . ' is a counted refusal'); }
 	}
 
 	public function testSourceSnapshotsKeepCompleteWrongFramesOutOfTransportRetries()
@@ -102,12 +87,12 @@ class BoundedReadTest extends TestCase
 		global $scgi_host, $scgi_port;
 		$hash = str_repeat('A', 40);
 		$handoff = 'v2:original:0:' . str_repeat('B', 40) . ':' . str_repeat('c', 64) . ':' . str_repeat('d', 32);
-		foreach (array(
+		foreach ([
 			'missing-content-length' => "Status: 200 OK\r\nContent-Type: text/xml\r\n\r\nwrong",
 			'malformed-content-length' => "Status: 200 OK\r\nContent-Length: nope\r\n\r\nwrong",
 			'duplicate-content-length' => "Status: 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nwrong",
-		) as $code => $frame) {
-			foreach (array('direct', 'capture', 'observe') as $operation) {
+		] as $code => $frame) {
+			foreach (['direct', 'capture', 'observe'] as $operation) {
 				$peer = SCGITransportFixture::start($frame);
 				$scgi_host = $peer->host(); $scgi_port = $peer->port();
 				try {
@@ -126,7 +111,7 @@ class BoundedReadTest extends TestCase
 						};
 						if ($operation === 'capture') {
 							$method = new ReflectionMethod('RetrackersRecoveryCoordinator', 'captureBeforeMutation');
-							if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
+							if (PHP_VERSION_ID < 80100) { $method->setAccessible(true); }
 							$result = $method->invoke(null, $snapshot, $hash, $handoff, new RetrackersWorkerRpcAdapter());
 						} else {
 							$result = $snapshot->observe($hash);
@@ -151,22 +136,22 @@ class BoundedReadTest extends TestCase
 		$globals = GlobalSettingsFixture::scgi();
 		$adapter = new class extends RetrackersDirectRpcAdapter {
 			public function exchange(&$failure) {
-				return $this->send('<request/>', array('mode' => 'direct-scalar', 'type' => 'string'), $failure);
+				return $this->send('<request/>', ['mode' => 'direct-scalar', 'type' => 'string'], $failure);
 			}
 		};
 		$body = '<?xml version="1.0"?><methodResponse><params><param><value><string>kept</string></value></param></params></methodResponse>';
 		$frame = "Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: ".strlen($body)."\r\n\r\n".$body;
 		try {
-			foreach (array(array(0, 1, 4096, null), array(0.3, 0.05, 4096, 'read-timeout'),
-				array(0, 1, strlen($body) - 1, 'response-too-large'), array(0, 1, '64M', 'invalid-response-limit')) as $case) {
-				$peer = SCGITransportFixture::startChunks(array(array($case[0], $frame)));
+			foreach ([[0, 1, 4096, null], [0.3, 0.05, 4096, 'read-timeout'],
+				[0, 1, strlen($body) - 1, 'response-too-large'], [0, 1, '64M', 'invalid-response-limit']] as $case) {
+				$peer = SCGITransportFixture::startChunks([[$case[0], $frame]]);
 				try {
 					$GLOBALS['scgi_host'] = $peer->host(); $GLOBALS['scgi_port'] = $peer->port();
 					$GLOBALS['rpcTransferTimeOut'] = $case[1]; $GLOBALS['rpcMaxResponseBytes'] = $case[2];
 					$failure = 'stale';
 					$decoded = $adapter->exchange($failure);
 					if ($case[3] === null) {
-						$this->assertTrue($decoded === array('ok' => true, 'family' => 2, 'value' => 'kept') && $failure === null,
+						$this->assertTrue($decoded === ['ok' => true, 'family' => 2, 'value' => 'kept'] && $failure === null,
 							'the real adapter receives the exact framed RAW response for its restricted decoder');
 						$request = $peer->request();
 						$this->assertTrue($request['payload'] === '<request/>' &&
@@ -175,8 +160,8 @@ class BoundedReadTest extends TestCase
 					} else {
 						$this->assertTrue($decoded === false && $failure === $case[3],
 							'the real adapter forwards the configured timeout and response cap: '.$case[3]);
-						if ($case[3] === 'invalid-response-limit')
-							$this->assertTrue(!$peer->accepted(), 'an invalid response limit makes no daemon connection');
+						if ($case[3] === 'invalid-response-limit') {
+							$this->assertTrue(!$peer->accepted(), 'an invalid response limit makes no daemon connection'); }
 					}
 				} finally { $peer->close(); }
 			}
@@ -194,15 +179,30 @@ class BoundedReadTest extends TestCase
 		};
 		$snapshot = new RetrackersStableSourceSnapshot($adapter);
 		foreach (array_merge(RetrackersBoundedRead::TRANSPORT_FAILURES, self::PROTOCOL,
-			array('malformed-response', 'invalid-request', 'target-absent', 'rpc-fault', null, 'unknown-class')) as $code) {
+			['malformed-response', 'invalid-request', 'target-absent', 'rpc-fault', null, 'unknown-class']) as $code) {
 			$adapter->reason = $code;
 			$result = $snapshot->capture(str_repeat('A', 40), 'v2:original:0:' . str_repeat('B', 40) . ':' .
 				str_repeat('c', 64) . ':' . str_repeat('d', 32));
 			$expected = $code === 'target-absent' ? 'initial-absent' :
 				($code === 'rpc-fault' ? 'initial-fault' :
 					(in_array($code, RetrackersBoundedRead::TRANSPORT_FAILURES, true) ? 'initial-transport' : 'initial-malformed'));
-			$this->assertTrue($result === array('ok' => false, 'failure' => $expected),
+			$this->assertTrue($result === ['ok' => false, 'failure' => $expected],
 				'the source snapshot maps ' . var_export($code, true) . ' to ' . $expected);
 		}
+	}
+
+	private static function failureCodes($source)
+	{
+		// Read the full failure expression: a ternary may name either outcome.
+		preg_match_all('~(?:fail\(\s*\$failure,\s*|\$failure\s*=\s*|readFailure\([^;]*?\$failure,\s*)([^;]+)~',
+			$source, $expressions);
+		$codes = [];
+		foreach ($expressions[1] as $expression) {
+			preg_match_all("~'([a-z-]+)'~", $expression, $matches);
+			$codes = array_merge($codes, $matches[1]);
+		}
+		$codes = array_values(array_unique($codes));
+		sort($codes);
+		return($codes);
 	}
 }

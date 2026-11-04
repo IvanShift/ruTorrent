@@ -20,8 +20,8 @@ final class RequestsPublicURLTest extends TestCase
         ini_set('error_log', sys_get_temp_dir().'/public-url-'.getmypid().'.log');
         putenv('RU_PUBLIC_URL');
         $publicURL = '';
-        $_SERVER = array('HTTP_HOST' => 'public.test:8443', 'HTTPS' => 'off',
-            'SCRIPT_NAME' => '/app/plugins/feeds/action.php');
+        $_SERVER = ['HTTP_HOST' => 'public.test:8443', 'HTTPS' => 'off',
+            'SCRIPT_NAME' => '/app/plugins/feeds/action.php'];
     }
 
     public function tearDown()
@@ -80,9 +80,9 @@ final class RequestsPublicURLTest extends TestCase
     public function testInvalidExplicitBaseIsVisibleAndNeverFallsBackToInternalHost()
     {
         global $publicURL;
-        foreach (array('https://user:secret@public.test/app/', 'https://public.test/app/?a=b',
+        foreach (['https://user:secret@public.test/app/', 'https://public.test/app/?a=b',
             'https://public.test/app/#anchor', 'ftp://public.test/', '//public.test/app/',
-            "https://public.test/\r\nInjected: value", 'https://public.test\\trap/', array('https://public.test/')) as $bad) {
+            "https://public.test/\r\nInjected: value", 'https://public.test\\trap/', ['https://public.test/']] as $bad) {
             $publicURL = $bad;
             $this->assertSame(false, Requests::publicBaseURL('/plugins/feeds/action.php'),
                 'invalid public configuration is refused without exposing its contents');
@@ -100,24 +100,15 @@ final class RequestsPublicURLTest extends TestCase
     public function testInvalidDirectAuthorityOrScriptIsRefused()
     {
         $valid = $_SERVER;
-        foreach (array(array('HTTP_HOST' => 'user@trap.test'), array('HTTP_HOST' => 'public.test/path'),
-            array('HTTP_HOST' => "public.test\r\nHeader: x"),
-            array('SCRIPT_NAME' => '/app/plugins/feeds/action.php/extra')) as $bad) {
+        foreach ([['HTTP_HOST' => 'user@trap.test'], ['HTTP_HOST' => 'public.test/path'],
+            ['HTTP_HOST' => "public.test\r\nHeader: x"],
+            ['SCRIPT_NAME' => '/app/plugins/feeds/action.php/extra']] as $bad) {
             $_SERVER = array_merge($valid, $bad);
             $this->assertSame(false, Requests::publicBaseURL('/plugins/feeds/action.php'),
                 'malformed request metadata cannot manufacture a public base');
         }
         $_SERVER = $valid;
         $this->assertSame(false, Requests::publicBaseURL(''), 'an empty endpoint suffix is refused');
-    }
-
-    private function resetRequest()
-    {
-        global $publicURL;
-        putenv('RU_PUBLIC_URL');
-        $publicURL = '';
-        $_SERVER = array('HTTP_HOST' => 'public.test:8443', 'HTTPS' => 'off',
-            'SCRIPT_NAME' => '/app/plugins/feeds/action.php');
     }
 
     /**
@@ -164,19 +155,19 @@ final class RequestsPublicURLTest extends TestCase
         $this->assertTrue(Requests::publicBaseURL('/plugins/feeds/action.php') === 'http://public.test:8443/app/',
             'A plain request with nothing forwarded is HTTP');
         $this->resetRequest();
-        $_SERVER['HTTPS'] = array('on');
-        $_SERVER['REQUEST_SCHEME'] = array('https');
-        $_SERVER['HTTP_X_FORWARDED_PROTO'] = array('https');
+        $_SERVER['HTTPS'] = ['on'];
+        $_SERVER['REQUEST_SCHEME'] = ['https'];
+        $_SERVER['HTTP_X_FORWARDED_PROTO'] = ['https'];
         $this->assertTrue(Requests::publicBaseURL('/plugins/feeds/action.php') === 'http://public.test:8443/app/',
             'Metadata that is not a string at all names no scheme, and is not fatal to the feed');
-        $_SERVER['HTTP_HOST'] = array('public.test');
+        $_SERVER['HTTP_HOST'] = ['public.test'];
         $this->assertTrue(Requests::publicBaseURL('/plugins/feeds/action.php') === false,
             'Nor does it name a host');
     }
 
     public function testPublicSchemeFallbackDoesNotAuthorizeAjax()
     {
-        foreach (array('https,http', 'ftp', '') as $scheme) {
+        foreach (['https,http', 'ftp', ''] as $scheme) {
             $this->resetRequest();
             $_SERVER['HTTP_X_FORWARDED_PROTO'] = $scheme;
             $_SERVER['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest';
@@ -185,5 +176,14 @@ final class RequestsPublicURLTest extends TestCase
             $this->assertSame(false, Requests::isSameOriginAjaxRequest(),
                 'malformed or ambiguous forwarded metadata cannot grant headerless AJAX');
         }
+    }
+
+    private function resetRequest()
+    {
+        global $publicURL;
+        putenv('RU_PUBLIC_URL');
+        $publicURL = '';
+        $_SERVER = ['HTTP_HOST' => 'public.test:8443', 'HTTPS' => 'off',
+            'SCRIPT_NAME' => '/app/plugins/feeds/action.php'];
     }
 }

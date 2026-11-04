@@ -21,16 +21,16 @@ require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
 
 function retireAssert($condition, $message)
 {
-    if (!$condition) throw new RuntimeException($message);
+    if (!$condition) { throw new RuntimeException($message); }
 }
 
 function retireRemoveTree($path)
 {
     if (!is_dir($path) || is_link($path)) {
-        if (file_exists($path) || is_link($path)) unlink($path);
+        if (file_exists($path) || is_link($path)) { unlink($path); }
         return;
     }
-    foreach (array_diff(scandir($path), array('.', '..')) as $name) retireRemoveTree($path . '/' . $name);
+    foreach (array_diff(scandir($path), ['.', '..']) as $name) { retireRemoveTree($path . '/' . $name); }
     rmdir($path);
 }
 
@@ -41,16 +41,16 @@ class RetireClient extends Snoopy
     public function sessionForRequest()
     {
         $header = new ReflectionMethod('Snoopy', 'cookieHeaderForRequest');
-        if (PHP_VERSION_ID < 80100) $header->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) { $header->setAccessible(true); }
         return $header->invoke($this, 'https://tracker.example/');
     }
 }
 
 function retireCookie($name)
 {
-    return array('name' => 'sid', 'value' => 'session-' . $name,
+    return ['name' => 'sid', 'value' => 'session-' . $name,
         'domain' => 'tracker.example', 'hostOnly' => true, 'path' => '/',
-        'secure' => true, 'expires' => null);
+        'secure' => true, 'expires' => null];
 }
 
 // Persistence and session removal stay real. Only the scheduled job is
@@ -65,11 +65,11 @@ class RetireManager extends accountManager
 function retireManager($class = 'RetireManager')
 {
     $manager = new $class();
-    foreach (array('Alpha', 'Beta') as $name) {
-        $manager->accounts[$name] = array('name' => $name, 'login' => 'old-' . $name,
+    foreach (['Alpha', 'Beta'] as $name) {
+        $manager->accounts[$name] = ['name' => $name, 'login' => 'old-' . $name,
             'password' => 'saved-value', 'enabled' => 1, 'auto' => 0,
             'path' => dirname(__DIR__, 3) . '/plugins/loginmgr/accounts/RUTracker.php',
-            'object' => 'ruTrackerAccount');
+            'object' => 'ruTrackerAccount'];
     }
     return $manager;
 }
@@ -86,7 +86,7 @@ function retireSeed()
     retireAssert($manager->store() === true, 'The credentials are saved through the real cache');
     foreach (array_keys($manager->accounts) as $name) {
         $session = new privateData($name);
-        $session->scopedCookies = array(retireCookie($name));
+        $session->scopedCookies = [retireCookie($name)];
         retireAssert((new rCache('/accounts'))->set($session) === true, 'The session is saved for ' . $name);
         retireAssert(is_file($directory . '/accounts/' . $name . '.dat.lock'),
             'The session cache keeps its lock sidecar for ' . $name);
@@ -119,7 +119,7 @@ function retireAction($check)
     file_put_contents($settings . '/loginmgr.dat', serialize($manager));
     foreach (array_keys($manager->accounts) as $name) {
         $session = new privateData($name);
-        $session->scopedCookies = array(retireCookie($name));
+        $session->scopedCookies = [retireCookie($name)];
         file_put_contents($settings . '/accounts/' . $name . '.dat', serialize($session));
         touch($settings . '/accounts/' . $name . '.dat.lock');
     }
@@ -135,17 +135,17 @@ function retireAction($check)
     retireAssert($listener !== false, 'The HTTP fixture reserves an address: ' . $error);
     $address = stream_socket_get_name($listener, false);
     fclose($listener);
-    $process = proc_open(array(PHP_BINARY, '-c', $root . '/tests/php-test.ini', '-S', $address,
-        $directory . '/router.php'), array(0 => array('file', '/dev/null', 'r'),
-        1 => array('file', $directory . '/server.log', 'a'),
-        2 => array('file', $directory . '/server.log', 'a')), $pipes, $root . '/plugins/loginmgr');
+    $process = proc_open([PHP_BINARY, '-c', $root . '/tests/php-test.ini', '-S', $address,
+        $directory . '/router.php'], [0 => ['file', '/dev/null', 'r'],
+        1 => ['file', $directory . '/server.log', 'a'],
+        2 => ['file', $directory . '/server.log', 'a']], $pipes, $root . '/plugins/loginmgr');
     retireAssert(is_resource($process), 'The HTTP fixture starts without a shell');
     try {
         $ready = false;
         for ($attempt = 0; $attempt < 100; ++$attempt) {
             $peer = @stream_socket_client('tcp://' . $address, $errno, $error, 0.05);
             if ($peer !== false) { fclose($peer); $ready = true; break; }
-            if (!proc_get_status($process)['running']) break;
+            if (!proc_get_status($process)['running']) { break; }
             usleep(10000);
         }
         retireAssert($ready, 'The HTTP fixture is ready: ' . file_get_contents($directory . '/server.log'));
@@ -153,7 +153,7 @@ function retireAction($check)
         retireAssert($peer !== false, 'The settings request connects');
         try {
             stream_set_timeout($peer, 3);
-            $form = http_build_query(array('mode' => 'set', 'Alpha_login' => 'new-user'));
+            $form = http_build_query(['mode' => 'set', 'Alpha_login' => 'new-user']);
             fwrite($peer, "POST / HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\n"
                 . 'Content-Length: ' . strlen($form) . "\r\nConnection: close\r\n\r\n" . $form);
             $response = stream_get_contents($peer);
@@ -171,7 +171,7 @@ function retireAction($check)
     }
 }
 
-$tests = array(
+$tests = [
     'a session the cache will not discard is named to the caller' => function () {
         global $retireBase;
         $manager = retireSeed();
@@ -180,8 +180,8 @@ $tests = array(
         // its parent still commits and the removals below cannot.
         chmod($directory . '/accounts', 0500);
         try {
-            $_POST = array('Alpha_login' => 'new-user');
-            $notRetired = array();
+            $_POST = ['Alpha_login' => 'new-user'];
+            $notRetired = [];
             $saved = $manager->set($notRetired);
             retireAssert($saved === true, 'The credential write commits');
             $stored = new RetireManager();
@@ -189,7 +189,7 @@ $tests = array(
                 'The durable credentials are the new ones');
             retireAssert(retireSessionOf('Alpha') === 'Cookie: sid=session-Alpha',
                 'A client is still handed the session made with the replaced credentials');
-            retireAssert($notRetired === array('Alpha', 'Beta'),
+            retireAssert($notRetired === ['Alpha', 'Beta'],
                 'Every session that survived the write is named');
             retireAssert(strpos(file_get_contents($retireBase . '/application.log'), 'Alpha, Beta') !== false,
                 'The surviving sessions are named in the log');
@@ -200,10 +200,10 @@ $tests = array(
     },
     'a save that discards every session reports none' => function () {
         $manager = retireSeed();
-        $_POST = array('Alpha_login' => 'new-user');
-        $notRetired = array();
+        $_POST = ['Alpha_login' => 'new-user'];
+        $notRetired = [];
         retireAssert($manager->set($notRetired) === true, 'The save succeeds');
-        retireAssert($notRetired === array(), 'Nothing is named when every session was discarded');
+        retireAssert($notRetired === [], 'Nothing is named when every session was discarded');
         retireAssert(retireSessionOf('Alpha') === null && retireSessionOf('Beta') === null,
             'No session is handed to a client afterwards');
     },
@@ -233,7 +233,7 @@ $tests = array(
             retireAssert(is_file($settings . '/accounts/Alpha.dat'), 'The session the report names is still there');
         });
     },
-);
+];
 
 $failures = 0;
 try {
@@ -245,7 +245,7 @@ try {
             ++$failures;
             echo 'not ok - ', $name, ': ', $error->getMessage(), "\n";
         } finally {
-            $_POST = array();
+            $_POST = [];
         }
     }
 } finally {

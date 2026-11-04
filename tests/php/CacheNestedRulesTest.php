@@ -17,7 +17,7 @@ class CacheNestedRulesTest extends TestCase
     public function tearDown()
     {
         $settings = FileUtil::getSettingsPath();
-        foreach (array('ratiorules.dat', 'urlrewriterules.dat') as $name) {
+        foreach (['ratiorules.dat', 'urlrewriterules.dat'] as $name) {
             @unlink($settings . '/' . $name);
             @unlink($settings . '/' . $name . '.lock');
         }

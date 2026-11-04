@@ -5,10 +5,6 @@
  */
 class XMLRPCPathResolver
 {
-	private static function normalizeResolvedPath($path)
-	{
-		return $path === '/' ? '/' : rtrim($path, '/');
-	}
 
 	/**
 	 * Resolve a path through its deepest existing ancestor and retain its missing tail.
@@ -19,18 +15,18 @@ class XMLRPCPathResolver
 	public static function deepestExistingAncestor($path)
 	{
 		$real = @realpath($path);
-		if($real !== false)
-			return $real;
+		if($real !== false) {
+			return $real; }
 
 		$parts = explode('/', trim($path, '/'));
-		$tail = array();
+		$tail = [];
 		while(count($parts) > 0)
 		{
 			array_unshift($tail, array_pop($parts));
 			$base = '/'.implode('/', $parts);
 			$real = @realpath(($base === '') ? '/' : $base);
-			if($real !== false)
-				return rtrim($real, '/').'/'.implode('/', $tail);
+			if($real !== false) {
+				return rtrim($real, '/').'/'.implode('/', $tail); }
 		}
 		return '';
 	}
@@ -49,32 +45,36 @@ class XMLRPCPathResolver
 	public static function filesystemIdentity($path)
 	{
 		if(!is_string($path) || $path === '' || $path[0] !== '/'
-			|| strpos($path, "\0") !== false)
-			return false;
+			|| strpos($path, "\0") !== false) {
+			return false; }
 		clearstatcache(true, $path);
 		$exists = file_exists($path) || is_link($path);
 		if(!$exists)
 		{
 			$resolved = self::deepestExistingAncestor($path);
-			if($resolved === '') return false;
-			return array(
+			if($resolved === '') { return false; }
+			return [
 				'exists' => false,
 				'path' => self::normalizeResolvedPath($resolved),
 				'lstat' => null,
 				'stat' => null,
-			);
+			];
 		}
 
 		$lstat = @lstat($path);
 		$stat = @stat($path);
 		$resolved = @realpath($path);
-		if(!is_array($lstat) || !is_array($stat) || $resolved === false)
-			return false;
-		return array(
+		if(!is_array($lstat) || !is_array($stat) || $resolved === false) {
+			return false; }
+		return [
 			'exists' => true,
 			'path' => self::normalizeResolvedPath($resolved),
-			'lstat' => array('dev'=>$lstat['dev'], 'ino'=>$lstat['ino']),
-			'stat' => array('dev'=>$stat['dev'], 'ino'=>$stat['ino']),
-		);
+			'lstat' => ['dev'=>$lstat['dev'], 'ino'=>$lstat['ino']],
+			'stat' => ['dev'=>$stat['dev'], 'ino'=>$stat['ino']],
+		];
+	}
+	private static function normalizeResolvedPath($path)
+	{
+		return $path === '/' ? '/' : rtrim($path, '/');
 	}
 }

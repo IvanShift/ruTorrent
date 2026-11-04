@@ -11,7 +11,7 @@ class RatioInitializationTest extends TestCase
     private $daemon;
     private $property;
     private $previousSettings;
-    private $globalsBefore = array();
+    private $globalsBefore = [];
 
     public function setUp()
     {
@@ -21,10 +21,10 @@ class RatioInitializationTest extends TestCase
         $this->previousSettings = $this->property->getValue();
         $settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
         $settings->iVersion = 0x1019;
-        $settings->aliases = array();
+        $settings->aliases = [];
         $this->property->setValue(null, $settings);
-        foreach(array('scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file') as $name)
-            $this->globalsBefore[$name] = $GLOBALS[$name] ?? null;
+        foreach(['scgi_host', 'scgi_port', 'rpcTimeOut', 'rpcLogCalls', 'rpcLogFaults', 'log_file'] as $name) {
+            $this->globalsBefore[$name] = $GLOBALS[$name] ?? null; }
         $GLOBALS['scgi_host'] = '127.0.0.1';
         $GLOBALS['rpcTimeOut'] = 2;
         $GLOBALS['rpcLogCalls'] = false;
@@ -34,22 +34,22 @@ class RatioInitializationTest extends TestCase
 
     public function tearDown()
     {
-        if($this->daemon !== null) $this->daemon->stop();
+        if($this->daemon !== null) { $this->daemon->stop(); }
         $this->daemon = null;
         $this->property->setValue(null, $this->previousSettings);
         foreach($this->globalsBefore as $name => $value)
         {
-            if($value === null) unset($GLOBALS[$name]);
-            else $GLOBALS[$name] = $value;
+            if($value === null) { unset($GLOBALS[$name]); }
+            else { $GLOBALS[$name] = $value; }
         }
-        foreach(glob($this->base.'/*') ?: array() as $file) unlink($file);
+        foreach(glob($this->base.'/*') ?: [] as $file) { unlink($file); }
         rmdir($this->base);
     }
 
     public function testConcurrentViewInsertIsExpectedAndKeepsTheRatioCallback()
     {
-        $this->daemon = new FakeRtorrentDaemon(array(array(),
-            FakeRtorrentDaemon::fault('View with same name already inserted.', -501), array(0)), $this->base.'/calls');
+        $this->daemon = new FakeRtorrentDaemon([[],
+            FakeRtorrentDaemon::fault('View with same name already inserted.', -501), [0]], $this->base.'/calls');
         $GLOBALS['scgi_port'] = $this->daemon->port();
         $ratio = new rRatio();
         $ratio->fillArray();
@@ -66,9 +66,9 @@ class RatioInitializationTest extends TestCase
 
     public function testThrottleRuleUsesOneQuotedAdditionArgument()
     {
-        $views = array();
-        for($i = 0; $i < MAX_RATIO; $i++) $views[] = 'rat_'.$i;
-        $this->daemon = new FakeRtorrentDaemon(array($views, array(0)), $this->base.'/calls');
+        $views = [];
+        for($i = 0; $i < MAX_RATIO; $i++) { $views[] = 'rat_'.$i; }
+        $this->daemon = new FakeRtorrentDaemon([$views, [0]], $this->base.'/calls');
         $GLOBALS['scgi_port'] = $this->daemon->port();
         $ratio = new rRatio();
         $ratio->fillArray();

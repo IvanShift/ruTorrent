@@ -21,7 +21,7 @@ retrackersTestRtorrentDouble();
 if (!class_exists('FileUtil', false)) {
 	class FileUtil
 	{
-		public static $messages = array();
+		public static $messages = [];
 
 		public static function toLog($message)
 		{
@@ -37,7 +37,7 @@ class RetrackersMemoryCache
 
 	public function get(&$state)
 	{
-		if ($this->state === null) return(false);
+		if ($this->state === null) { return(false); }
 		$state = clone $this->state;
 		return(true);
 	}

@@ -147,569 +147,6 @@ class NNMClubCheckImpl
      */
     private const TARGET_COUNTERS = ['complete', 'downloaded', 'incomplete'];
 
-    private static function log($message)
-    {
-        ruTrackerChecker::logDebug('[NNMClub] ' . $message);
-    }
-
-    // fetch() (not fetchComplex()) deliberately bypasses loginmgr: this handler
-    // works as a guest, and a Cloudflare-blocked login would poison the check.
-    private static function makeGuestClient()
-    {
-        $client = new Snoopy();
-        $client->read_timeout = 5;
-        $client->_fp_timeout = 5;
-        $client->agent = ruTrackerChecker::USER_AGENT;
-        return $client;
-    }
-
-    // No $method/$contentType/$body: every call site is a plain GET, and the
-    // three arguments only ever carried Snoopy's own defaults through.
-    private static function guestFetch($client, $url)
-    {
-        @$client->fetch($url);
-        // Socket errors are negative; the https path stores curl's exit code,
-        // which is below any real HTTP status.
-        if ($client->status < 100) {
-            $host = @parse_url($url, PHP_URL_HOST);
-            // Snoopy's own sentence, classified rather than echoed: the transport
-            // detail alone cannot separate the several conditions that all arrive
-            // as status 0 (see ruTrackerChecker::transportFailureDetail()), and a
-            // token cannot carry a passkey whatever a later merge teaches the
-            // vendored Snoopy to write. The rule is shared with
-            // ruTrackerChecker::makeClient() through fetcherror.php, so one grep
-            // for `error=` reads the field wherever this plugin writes it and the
-            // same message cannot mean two tokens. An absent field means Snoopy
-            // wrote no message, which is evidence in its own right: the header
-            // loops set $status without writing one. The early URI bail is not
-            // such a case -- it writes 'Invalid protocol' (php/Snoopy.class.inc)
-            // and so arrives here classified.
-            $reason = RuTrackerFetchError::classify(isset($client->error) ? $client->error : null);
-            self::log('Guest fetch failed: host=' . (is_string($host) ? $host : 'unknown')
-                . ' ' . ruTrackerChecker::transportFailureDetail($client->status)
-                . ($reason === '' ? '' : ' error=' . $reason));
-        }
-    }
-
-    // Only HTTP-200 topic pages without a download link reach this predicate.
-    // Recognised challenge/captcha pages are retryable (CANT_REACH); other unreadable
-    // pages are ERROR. Non-200 responses are rejected earlier. Endpoint routing
-    // instead uses RuTrackerFetchError::isChallenge()'s narrower evidence.
-    private static function looksLikeChallengePage($html)
-    {
-        return is_string($html)
-            && $html !== ''
-            && (bool) preg_match('/cf-chl|turnstile|captcha|cloudflare|just a moment|challenge-platform/i', $html);
-    }
-
-    /**
-     * Parse and normalize an NNMClub viewtopic URL (?p=... or ?t=...).
-     *
-     * @return array|null ['host' => string, 'query' => string]
-     */
-    private static function parseTopicRef($url)
-    {
-        if (!is_string($url) || $url === '') return null;
-
-        $parts = @parse_url(trim($url));
-        if (!is_array($parts)) return null;
-
-        if (isset($parts['scheme']) && !preg_match('`^https?$`i', $parts['scheme'])) {
-            return null;
-        }
-
-        $hostOnly = isset($parts['host']) ? UrlHost::normalize($parts['host']) : self::SITE_DOMAIN;
-        if (!self::isAllowedTopicHost($hostOnly)) {
-            return null;
-        }
-        $host = $hostOnly;
-
-        if (isset($parts['port'])) {
-            $port = (int) $parts['port'];
-            if ($port < 1 || $port > 65535) return null;
-            $host .= ':' . $port;
-        }
-
-        $path = isset($parts['path']) ? $parts['path'] : '';
-        if (!preg_match('`^/forum/viewtopic\.php/?$`i', $path)) {
-            return null;
-        }
-
-        $query = [];
-        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
-
-        foreach (['p', 't'] as $param) {
-            if (array_key_exists($param, $query)
-                && is_scalar($query[$param])
-                && ctype_digit((string) $query[$param])) {
-                return [
-                    'host' => $host,
-                    'query' => $param . '=' . $query[$param],
-                ];
-            }
-        }
-
-        return null;
-    }
-
-    private static function isAllowedTopicHost($host)
-    {
-        $normalized = preg_replace('/^www\./', '', UrlHost::normalize($host));
-        return in_array($normalized, self::TOPIC_HOSTS, true);
-    }
-
-    private static function isAllowedTrackerHost($host)
-    {
-        return UrlHost::isExactlyOneOf($host, self::TRACKER_HOSTS);
-    }
-
-    /**
-     * Parse one announce URL into a typed credential descriptor. `mode` names
-     * the URL form the passkey was found in: `path` (/PASSKEY/announce, the
-     * form in currently served .torrents) or `query` (announce?uk=PASSKEY,
-     * the form in older downloads). Both forms carry the same account
-     * passkey; when a URL carries both, the query value wins.
-     *
-     * @return array|null ['mode' => 'path'|'query', 'token' => string, 'announceUrl' => string]
-     */
-    private static function parseAuthUrl($url)
-    {
-        if (!is_string($url) || $url === '') return null;
-
-        $url = trim($url);
-        $parts = @parse_url($url);
-        if (!is_array($parts)
-            || !isset($parts['scheme'], $parts['host'])
-            || !preg_match('/^https?$/i', $parts['scheme'])
-            || !self::isAllowedTrackerHost($parts['host'])) {
-            return null;
-        }
-        $path = isset($parts['path']) ? $parts['path'] : '';
-        if (!preg_match(self::ANNOUNCE_PATH_RE, $path, $match)) return null;
-
-        $query = array();
-        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
-        if (isset($query['uk'])
-            && is_scalar($query['uk'])
-            && preg_match(self::TOKEN_RE, (string) $query['uk'])
-            && !preg_match(self::DUMMY_PASSKEY_RE, (string) $query['uk'])) {
-            return array(
-                'mode' => 'query',
-                'token' => (string) $query['uk'],
-                'announceUrl' => $url,
-            );
-        }
-
-        if (isset($match[2]) && $match[2] !== ''
-            && !preg_match(self::DUMMY_PASSKEY_RE, $match[2])) {
-            return array(
-                'mode' => 'path',
-                'token' => $match[2],
-                'announceUrl' => $url,
-            );
-        }
-        return null;
-    }
-
-    /**
-     * Extract a typed credential from announce metadata.
-     *
-     * @param  string|array|null $announce
-     * @param  string            $requiredMode `path` or `query` filter
-     * @return array|null
-     */
-    private static function extractAuth($announce, $requiredMode)
-    {
-        if ($announce === null) return null;
-
-        if (is_array($announce)) {
-            foreach ($announce as $value) {
-                $auth = self::extractAuth($value, $requiredMode);
-                if ($auth !== null) return $auth;
-            }
-            return null;
-        }
-        if (!is_string($announce)) return null;
-
-        $auth = self::parseAuthUrl($announce);
-        if ($auth !== null && $auth['mode'] === $requiredMode) {
-            return $auth;
-        }
-        return null;
-    }
-
-    private static function rebuildTrackerUrl($parts, $path, $query)
-    {
-        $url = strtolower($parts['scheme']) . '://' . UrlHost::normalize($parts['host']);
-        if (isset($parts['port'])) $url .= ':' . (int) $parts['port'];
-        $url .= $path;
-        if (count($query)) {
-            $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
-        }
-        return $url;
-    }
-
-    /**
-     * Patch every NNMClub announce URL in a torrent with the account passkey.
-     *
-     * @return bool True when the torrent carries at least one NNMClub
-     *              announce URL; each such URL now holds the passkey, whether
-     *              or not its text needed changing.
-     */
-    private static function patchAuthInTorrent($torrent, $auth)
-    {
-        if (!is_array($auth)
-            || !isset($auth['token'])
-            || !preg_match(self::TOKEN_RE, (string) $auth['token'])) {
-            return false;
-        }
-        $token = (string) $auth['token'];
-        $found = false;
-
-        // Read BEFORE the setters below; put back after them. This is a real
-        // .torrent NNMClub served, so 'created by' and 'creation date' belong
-        // to whoever made the release: writing the account passkey into an
-        // announce URL is not an act of authorship, and a rewritten date
-        // travels out to the "Created On" column and to the history plugin as
-        // fact.
-        //
-        // On this fork the restore is a no-op today: Torrent::touch() returns
-        // without writing anything unless the class built the torrent itself,
-        // and this one was decoded from the bytes NNMClub served. It is kept
-        // because plugins/rutracker_check is proposed to upstream
-        // Novik/ruTorrent separately from php/Torrent.php (AGENTS.md,
-        // "Upstream PR Handoff"), and upstream's touch() still stamps both
-        // keys from every setter. Without the snapshot this handler would
-        // reinstate the data loss on any install carrying the plugin without
-        // the class fix. Same reason metafetch.php keeps its own.
-        $authored = array(
-            'created by' => $torrent->meta('created by'),
-            'creation date' => $torrent->meta('creation date'),
-        );
-
-        $announce = $torrent->announce();
-        if (is_string($announce) && $announce !== '') {
-            $patched = self::injectAuthIntoUrl($announce, $token);
-            if ($patched !== null) {
-                $found = true;
-                if ($patched !== $announce) {
-                    $torrent->announce($patched);
-                }
-            }
-        }
-
-        $list = $torrent->announce_list();
-        if (is_array($list)) {
-            $newList = [];
-            $listChanged = false;
-            foreach ($list as $tier) {
-                $newTier = [];
-                $urls = is_array($tier) ? $tier : [$tier];
-                foreach ($urls as $url) {
-                    $patchedUrl = is_string($url)
-                        ? self::injectAuthIntoUrl($url, $token)
-                        : null;
-                    if ($patchedUrl !== null) {
-                        $found = true;
-                        if ($patchedUrl !== $url) {
-                            $listChanged = true;
-                            $url = $patchedUrl;
-                        }
-                    }
-                    $newTier[] = $url;
-                }
-                $newList[] = $newTier;
-            }
-            if ($listChanged) {
-                $torrent->announce_list($newList);
-            }
-        }
-
-        // Restore what the served bytes said, where absent is also a value.
-        // Clearing unconditionally would be the mirror image of the bug: a
-        // caller destroying a real author's field because it assumed one could
-        // not be there.
-        foreach ($authored as $key => $value) {
-            if ($value === null) $torrent->clearMeta($key);
-            else $torrent->setMeta($key, $value);
-        }
-
-        return $found;
-    }
-
-    /**
-     * Write the account passkey into an NNMClub announce URL. Every form the
-     * URL already carries is updated in place -- the tracker serves both forms
-     * and they hold the same value -- and a URL with no passkey at all gets
-     * the query form: the only form this handler wrote before, and torrents
-     * carrying it announce successfully on the live fleet.
-     *
-     * @param  string $token Passkey already validated against TOKEN_RE
-     * @return string|null Patched URL (possibly identical to the input), or
-     *                     null when the URL is not an NNMClub announce URL
-     */
-    private static function injectAuthIntoUrl($url, $token)
-    {
-        if (!is_string($url)) return null;
-        $parts = @parse_url($url);
-        if (!is_array($parts)
-            || !isset($parts['scheme'], $parts['host'], $parts['path'])
-            || !preg_match('/^https?$/i', $parts['scheme'])
-            || !self::isAllowedTrackerHost($parts['host'])
-            || !preg_match(self::ANNOUNCE_PATH_RE, $parts['path'], $match)) {
-            return null;
-        }
-
-        $query = array();
-        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
-
-        if (isset($match[2]) && $match[2] !== '') {
-            $path = $match[1] . '/' . $token . '/announce';
-            if (isset($query['uk'])) {
-                $query['uk'] = $token;
-            }
-        } else {
-            $path = $match[1] . '/announce';
-            $query['uk'] = $token;
-        }
-        return self::rebuildTrackerUrl($parts, $path, $query);
-    }
-
-    /**
-     * Decide what a scrape answer says about ONE info hash.
-     *
-     * The grammar work belongs to `RuTrackerBencode` (plugins/rutracker_check/
-     * bencode.php); this reads the typed tree it returns. The three verdicts
-     * are deliberately distinct, and the distinction is what keeps a bad
-     * answer from deleting a torrent:
-     *
-     *   UPTODATE  the hash is a direct key of the top-level `files`
-     *             dictionary and its row carries at least one valid counter
-     *   NOT_FOUND the document is valid and `files` simply does not list it
-     *   FAILED    anything else -- malformed bencode, no `files` dictionary,
-     *             or a target row that holds no counter at all. The caller
-     *             turns this into SCRAPE_RESULT_UNREADABLE when the host that
-     *             produced it answered at all; it must never be read as "the
-     *             tracker forgot it".
-     *
-     * @param  string $payload    Scrape response body
-     * @param  string $binaryHash Raw 20-byte hash
-     * @return int One of SCRAPE_RESULT_* constants
-     */
-    private static function parseScrapeResult($payload, $binaryHash)
-    {
-        if (!is_string($binaryHash) || strlen($binaryHash) !== 20) {
-            return self::SCRAPE_RESULT_FAILED;
-        }
-
-        $root = RuTrackerBencode::decode($payload, self::BENCODE_LIMITS);
-        if ($root === false || $root['type'] !== 'dictionary') {
-            return self::SCRAPE_RESULT_FAILED;
-        }
-
-        // Only a DIRECT top-level `files` dictionary counts. The hash is 20
-        // arbitrary bytes and a tracker answer may echo it anywhere -- in a
-        // failure reason, in another row's peer list -- so a search that did
-        // not care where it found the key would read an error page as proof
-        // the torrent is alive.
-        $files = RuTrackerBencode::entry($root, 'files');
-        if (!is_array($files) || $files['type'] !== 'dictionary') {
-            return self::SCRAPE_RESULT_FAILED;
-        }
-
-        $target = RuTrackerBencode::entry($files, $binaryHash);
-        if ($target === null) {
-            return self::SCRAPE_RESULT_NOT_FOUND;
-        }
-
-        return self::hasValidTargetStats($target)
-            ? self::SCRAPE_RESULT_UPTODATE
-            : self::SCRAPE_RESULT_FAILED;
-    }
-
-    /**
-     * Whether a `files` row is a real scrape row for the hash it is keyed by.
-     *
-     * A present-but-malformed row is the dangerous case: it is a positive
-     * answer with nothing behind it, so it is refused rather than becoming
-     * either "up to date" or "deleted". A scalar or empty row is exactly that
-     * case, and refusing it is why remediation item F07 was written.
-     *
-     * No individual counter is mandatory -- only that the row carries at least
-     * one, which is what separates a tracker answering about this hash from an
-     * empty dictionary that says nothing. Demanding all three of complete,
-     * downloaded and incomplete was a regression: the live NNMClub trackers
-     * (bt02.nnm-club.cc and bt.searchtor.to, captured 2026-08-26) answer in 67
-     * bytes with complete and incomplete and no downloaded key at all,
-     * opentracker-derived trackers commonly omit it, and BEP-48 does not
-     * oblige one. The effect was worse than a missed optimisation: an
-     * unambiguous "159 seeders hold this" became SCRAPE_RESULT_FAILED, which
-     * download_torrent() reported as a tracker it could not reach, so every
-     * NNMClub torrent silently stopped being checked -- visible only with
-     * $rutrackerCheckDebug on.
-     *
-     * Provenance, so this is not reinstated: the three-counter mandate came
-     * from F07, whose wording was derived from the BEP and never checked
-     * against an answer this tracker sends. Owner decision D009 amends it.
-     * Rejecting a scalar or empty row is the part that was right and is kept;
-     * demanding all three was not.
-     *
-     * This is the same shape the announce layer has always had:
-     * RuTrackerAnnounce::hasValidSuccessSchema() in announce.php requires
-     * only what the protocol guarantees and validates each optional counter
-     * that IS present. Keep the two in step.
-     *
-     * Relaxed is WHICH keys must appear, not how a key that appears is read:
-     * type, canonicity and sign are still enforced on every counter the row
-     * does carry, a duplicate key was already refused by the grammar, and
-     * unknown extra fields are ignored the way the tracker's own extensions
-     * require.
-     */
-    private static function hasValidTargetStats($target)
-    {
-        if (!is_array($target) || $target['type'] !== 'dictionary') return false;
-
-        $seen = 0;
-        foreach (self::TARGET_COUNTERS as $counter) {
-            $node = RuTrackerBencode::entry($target, $counter);
-            if ($node === null) continue;
-            if (!is_array($node)
-                || $node['type'] !== 'integer'
-                || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['value'])) {
-                return false;
-            }
-            $seen++;
-        }
-        return $seen > 0;
-    }
-
-    /**
-     * The scheme the credential's own announce URL uses, lowercased.
-     *
-     * Only https is ever carried across; anything else -- including an
-     * announceUrl that cannot be parsed -- answers http. parseAuthUrl() has
-     * already limited the scheme to http or https, so this is a downgrade
-     * guard and not a parser.
-     */
-    private static function credentialScheme($auth)
-    {
-        $parts = isset($auth['announceUrl']) ? @parse_url((string) $auth['announceUrl']) : null;
-        $scheme = is_array($parts) && isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
-        return $scheme === 'https' ? 'https' : 'http';
-    }
-
-    /** Derive a scrape URL without changing the credential's meaning or case. */
-    private static function buildScrapeUrl($auth, $binaryHash)
-    {
-        if (!is_array($auth) || !isset($auth['mode'], $auth['token'], $auth['announceUrl'])) {
-            return null;
-        }
-        $parts = @parse_url($auth['announceUrl']);
-        if (!is_array($parts)
-            || !isset($parts['scheme'], $parts['host'], $parts['path'])
-            || !self::isAllowedTrackerHost($parts['host'])) {
-            return null;
-        }
-
-        $path = preg_replace('`/announce/?$`', '/scrape', $parts['path'], 1, $count);
-        if ($count !== 1 || $path === null) return null;
-
-        $query = array();
-        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
-        unset($query['info_hash']);
-        if ($auth['mode'] === 'query') {
-            $query['uk'] = $auth['token'];
-        } elseif ($auth['mode'] !== 'path') {
-            return null;
-        }
-
-        $url = self::rebuildTrackerUrl($parts, $path, $query);
-        return $url . (count($query) ? '&' : '?') . 'info_hash=' . rawurlencode($binaryHash);
-    }
-
-    /**
-     * Scrape the tracker endpoint associated with a typed credential. The
-     * passkey is the account's key in either form, so when the credential's
-     * own host fails the current official IPv4 endpoint is consulted too, in
-     * the same form the credential already uses.
-     *
-     * @return int One of SCRAPE_RESULT_* constants
-     */
-    private static function checkViaScrape($auth, $hash)
-    {
-        if (!is_string($hash) || !preg_match('/^[0-9A-F]{40}$/i', $hash)) {
-            self::log("Scrape skipped: invalid info hash format {$hash}");
-            return self::SCRAPE_RESULT_FAILED;
-        }
-        $binary = pack('H*', $hash);
-
-        $urls = array();
-        $primary = self::buildScrapeUrl($auth, $binary);
-        if ($primary !== null) $urls[] = $primary;
-        $mode = isset($auth['mode']) ? $auth['mode'] : null;
-        if (isset($auth['token']) && ($mode === 'query' || $mode === 'path')) {
-            // The fallback is a DIFFERENT host carrying the SAME account
-            // passkey, so it inherits the credential URL's own scheme rather
-            // than a hard-coded one. Hard-coding http:// downgraded an https
-            // credential to cleartext on every check whose primary host did
-            // not answer up to date -- exactly the cycles when something is
-            // already wrong. Whether bt.searchtor.to serves https has NOT been
-            // verified: if it does not, an https credential has no working
-            // fallback left, and when its own host is silent too this whole
-            // scrape ends as SCRAPE_RESULT_FAILED. download_torrent() answers
-            // that by going on to the ordinary guest download, which carries
-            // no credential at all -- see the SCRAPE_RESULT_FAILED branch
-            // there for what that does and does not still guarantee. The
-            // deliberate trade: a lost fast path costs forum requests, a
-            // leaked passkey is not recoverable.
-            $scheme = self::credentialScheme($auth);
-            $fallback = self::buildScrapeUrl(array(
-                'mode' => $mode,
-                'token' => $auth['token'],
-                'announceUrl' => $mode === 'query'
-                    ? $scheme . '://bt.searchtor.to/announce?uk=' . rawurlencode($auth['token'])
-                    : $scheme . '://bt.searchtor.to/' . rawurlencode($auth['token']) . '/announce',
-            ), $binary);
-            if ($fallback !== null && !in_array($fallback, $urls, true)) $urls[] = $fallback;
-        }
-        if (!count($urls)) return self::SCRAPE_RESULT_FAILED;
-
-        $sawNotFound = false;
-        $sawUnreadable = false;
-
-        foreach ($urls as $url) {
-            $host = @parse_url($url, PHP_URL_HOST);
-            $host = is_string($host) ? $host : 'unknown';
-
-            $client = ruTrackerChecker::makeClient($url);
-
-            if ($client->status == 200
-                && is_string($client->results)
-                && $client->results !== '') {
-                $scrapeResult = self::parseScrapeResult($client->results, $binary);
-                if ($scrapeResult === self::SCRAPE_RESULT_UPTODATE) {
-                    return self::SCRAPE_RESULT_UPTODATE;
-                }
-                if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
-                    self::log("Scrape response OK on {$host}, hash {$hash} not found");
-                    $sawNotFound = true;
-                    continue;
-                }
-                self::log("Scrape response malformed on {$host}");
-                $sawUnreadable = true;
-                continue;
-            }
-            self::log("Scrape failed on {$host}: "
-                . ruTrackerChecker::fetchStatusDetail($client->status));
-        }
-
-        // Precedence: a host that answered readably outranks one that did not,
-        // and any answer at all outranks a transport failure.
-        if ($sawNotFound) return self::SCRAPE_RESULT_NOT_FOUND;
-        if ($sawUnreadable) return self::SCRAPE_RESULT_UNREADABLE;
-        return self::SCRAPE_RESULT_FAILED;
-    }
-
     /**
      * Check whether an NNMClub torrent needs updating.
      *
@@ -737,10 +174,10 @@ class NNMClubCheckImpl
         // $url is dispatcher input: depending on how the handler matched it,
         // it may be a comment or another free-form string. Credentials are
         // accepted only from Torrent's typed announce metadata.
-        $announces = array();
+        $announces = [];
         if (is_object($old_torrent)) {
-            if (method_exists($old_torrent, 'announce')) $announces[] = $old_torrent->announce();
-            if (method_exists($old_torrent, 'announce_list')) $announces[] = $old_torrent->announce_list();
+            if (method_exists($old_torrent, 'announce')) { $announces[] = $old_torrent->announce(); }
+            if (method_exists($old_torrent, 'announce_list')) { $announces[] = $old_torrent->announce_list(); }
         }
         // The passkey this torrent itself announces with is the account's own
         // key (see the file header), so one credential serves both the scrape
@@ -892,6 +329,569 @@ class NNMClubCheckImpl
         self::log("createTorrent result for {$hash}: " . var_export($replaceResult, true));
         return $replaceResult;
     }
+
+    private static function log($message)
+    {
+        ruTrackerChecker::logDebug('[NNMClub] ' . $message);
+    }
+
+    // fetch() (not fetchComplex()) deliberately bypasses loginmgr: this handler
+    // works as a guest, and a Cloudflare-blocked login would poison the check.
+    private static function makeGuestClient()
+    {
+        $client = new Snoopy();
+        $client->read_timeout = 5;
+        $client->_fp_timeout = 5;
+        $client->agent = ruTrackerChecker::USER_AGENT;
+        return $client;
+    }
+
+    // No $method/$contentType/$body: every call site is a plain GET, and the
+    // three arguments only ever carried Snoopy's own defaults through.
+    private static function guestFetch($client, $url)
+    {
+        @$client->fetch($url);
+        // Socket errors are negative; the https path stores curl's exit code,
+        // which is below any real HTTP status.
+        if ($client->status < 100) {
+            $host = @parse_url($url, PHP_URL_HOST);
+            // Snoopy's own sentence, classified rather than echoed: the transport
+            // detail alone cannot separate the several conditions that all arrive
+            // as status 0 (see ruTrackerChecker::transportFailureDetail()), and a
+            // token cannot carry a passkey whatever a later merge teaches the
+            // vendored Snoopy to write. The rule is shared with
+            // ruTrackerChecker::makeClient() through fetcherror.php, so one grep
+            // for `error=` reads the field wherever this plugin writes it and the
+            // same message cannot mean two tokens. An absent field means Snoopy
+            // wrote no message, which is evidence in its own right: the header
+            // loops set $status without writing one. The early URI bail is not
+            // such a case -- it writes 'Invalid protocol' (php/Snoopy.class.inc)
+            // and so arrives here classified.
+            $reason = RuTrackerFetchError::classify(isset($client->error) ? $client->error : null);
+            self::log('Guest fetch failed: host=' . (is_string($host) ? $host : 'unknown')
+                . ' ' . ruTrackerChecker::transportFailureDetail($client->status)
+                . ($reason === '' ? '' : ' error=' . $reason));
+        }
+    }
+
+    // Only HTTP-200 topic pages without a download link reach this predicate.
+    // Recognised challenge/captcha pages are retryable (CANT_REACH); other unreadable
+    // pages are ERROR. Non-200 responses are rejected earlier. Endpoint routing
+    // instead uses RuTrackerFetchError::isChallenge()'s narrower evidence.
+    private static function looksLikeChallengePage($html)
+    {
+        return is_string($html)
+            && $html !== ''
+            && (bool) preg_match('/cf-chl|turnstile|captcha|cloudflare|just a moment|challenge-platform/i', $html);
+    }
+
+    /**
+     * Parse and normalize an NNMClub viewtopic URL (?p=... or ?t=...).
+     *
+     * @return array|null ['host' => string, 'query' => string]
+     */
+    private static function parseTopicRef($url)
+    {
+        if (!is_string($url) || $url === '') { return null; }
+
+        $parts = @parse_url(trim($url));
+        if (!is_array($parts)) { return null; }
+
+        if (isset($parts['scheme']) && !preg_match('`^https?$`i', $parts['scheme'])) {
+            return null;
+        }
+
+        $hostOnly = isset($parts['host']) ? UrlHost::normalize($parts['host']) : self::SITE_DOMAIN;
+        if (!self::isAllowedTopicHost($hostOnly)) {
+            return null;
+        }
+        $host = $hostOnly;
+
+        if (isset($parts['port'])) {
+            $port = (int) $parts['port'];
+            if ($port < 1 || $port > 65535) { return null; }
+            $host .= ':' . $port;
+        }
+
+        $path = isset($parts['path']) ? $parts['path'] : '';
+        if (!preg_match('`^/forum/viewtopic\.php/?$`i', $path)) {
+            return null;
+        }
+
+        $query = [];
+        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
+
+        foreach (['p', 't'] as $param) {
+            if (array_key_exists($param, $query)
+                && is_scalar($query[$param])
+                && ctype_digit((string) $query[$param])) {
+                return [
+                    'host' => $host,
+                    'query' => $param . '=' . $query[$param],
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    private static function isAllowedTopicHost($host)
+    {
+        $normalized = preg_replace('/^www\./', '', UrlHost::normalize($host));
+        return in_array($normalized, self::TOPIC_HOSTS, true);
+    }
+
+    private static function isAllowedTrackerHost($host)
+    {
+        return UrlHost::isExactlyOneOf($host, self::TRACKER_HOSTS);
+    }
+
+    /**
+     * Parse one announce URL into a typed credential descriptor. `mode` names
+     * the URL form the passkey was found in: `path` (/PASSKEY/announce, the
+     * form in currently served .torrents) or `query` (announce?uk=PASSKEY,
+     * the form in older downloads). Both forms carry the same account
+     * passkey; when a URL carries both, the query value wins.
+     *
+     * @return array|null ['mode' => 'path'|'query', 'token' => string, 'announceUrl' => string]
+     */
+    private static function parseAuthUrl($url)
+    {
+        if (!is_string($url) || $url === '') { return null; }
+
+        $url = trim($url);
+        $parts = @parse_url($url);
+        if (!is_array($parts)
+            || !isset($parts['scheme'], $parts['host'])
+            || !preg_match('/^https?$/i', $parts['scheme'])
+            || !self::isAllowedTrackerHost($parts['host'])) {
+            return null;
+        }
+        $path = isset($parts['path']) ? $parts['path'] : '';
+        if (!preg_match(self::ANNOUNCE_PATH_RE, $path, $match)) { return null; }
+
+        $query = [];
+        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
+        if (isset($query['uk'])
+            && is_scalar($query['uk'])
+            && preg_match(self::TOKEN_RE, (string) $query['uk'])
+            && !preg_match(self::DUMMY_PASSKEY_RE, (string) $query['uk'])) {
+            return [
+                'mode' => 'query',
+                'token' => (string) $query['uk'],
+                'announceUrl' => $url,
+            ];
+        }
+
+        if (isset($match[2]) && $match[2] !== ''
+            && !preg_match(self::DUMMY_PASSKEY_RE, $match[2])) {
+            return [
+                'mode' => 'path',
+                'token' => $match[2],
+                'announceUrl' => $url,
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * Extract a typed credential from announce metadata.
+     *
+     * @param  string|array|null $announce
+     * @param  string            $requiredMode `path` or `query` filter
+     * @return array|null
+     */
+    private static function extractAuth($announce, $requiredMode)
+    {
+        if ($announce === null) { return null; }
+
+        if (is_array($announce)) {
+            foreach ($announce as $value) {
+                $auth = self::extractAuth($value, $requiredMode);
+                if ($auth !== null) { return $auth; }
+            }
+            return null;
+        }
+        if (!is_string($announce)) { return null; }
+
+        $auth = self::parseAuthUrl($announce);
+        if ($auth !== null && $auth['mode'] === $requiredMode) {
+            return $auth;
+        }
+        return null;
+    }
+
+    private static function rebuildTrackerUrl($parts, $path, $query)
+    {
+        $url = strtolower($parts['scheme']) . '://' . UrlHost::normalize($parts['host']);
+        if (isset($parts['port'])) { $url .= ':' . (int) $parts['port']; }
+        $url .= $path;
+        if (count($query)) {
+            $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+        }
+        return $url;
+    }
+
+    /**
+     * Patch every NNMClub announce URL in a torrent with the account passkey.
+     *
+     * @return bool True when the torrent carries at least one NNMClub
+     *              announce URL; each such URL now holds the passkey, whether
+     *              or not its text needed changing.
+     */
+    private static function patchAuthInTorrent($torrent, $auth)
+    {
+        if (!is_array($auth)
+            || !isset($auth['token'])
+            || !preg_match(self::TOKEN_RE, (string) $auth['token'])) {
+            return false;
+        }
+        $token = (string) $auth['token'];
+        $found = false;
+
+        // Read BEFORE the setters below; put back after them. This is a real
+        // .torrent NNMClub served, so 'created by' and 'creation date' belong
+        // to whoever made the release: writing the account passkey into an
+        // announce URL is not an act of authorship, and a rewritten date
+        // travels out to the "Created On" column and to the history plugin as
+        // fact.
+        //
+        // On this fork the restore is a no-op today: Torrent::touch() returns
+        // without writing anything unless the class built the torrent itself,
+        // and this one was decoded from the bytes NNMClub served. It is kept
+        // because plugins/rutracker_check is proposed to upstream
+        // Novik/ruTorrent separately from php/Torrent.php (AGENTS.md,
+        // "Upstream PR Handoff"), and upstream's touch() still stamps both
+        // keys from every setter. Without the snapshot this handler would
+        // reinstate the data loss on any install carrying the plugin without
+        // the class fix. Same reason metafetch.php keeps its own.
+        $authored = [
+            'created by' => $torrent->meta('created by'),
+            'creation date' => $torrent->meta('creation date'),
+        ];
+
+        $announce = $torrent->announce();
+        if (is_string($announce) && $announce !== '') {
+            $patched = self::injectAuthIntoUrl($announce, $token);
+            if ($patched !== null) {
+                $found = true;
+                if ($patched !== $announce) {
+                    $torrent->announce($patched);
+                }
+            }
+        }
+
+        $list = $torrent->announce_list();
+        if (is_array($list)) {
+            $newList = [];
+            $listChanged = false;
+            foreach ($list as $tier) {
+                $newTier = [];
+                $urls = is_array($tier) ? $tier : [$tier];
+                foreach ($urls as $url) {
+                    $patchedUrl = is_string($url)
+                        ? self::injectAuthIntoUrl($url, $token)
+                        : null;
+                    if ($patchedUrl !== null) {
+                        $found = true;
+                        if ($patchedUrl !== $url) {
+                            $listChanged = true;
+                            $url = $patchedUrl;
+                        }
+                    }
+                    $newTier[] = $url;
+                }
+                $newList[] = $newTier;
+            }
+            if ($listChanged) {
+                $torrent->announce_list($newList);
+            }
+        }
+
+        // Restore what the served bytes said, where absent is also a value.
+        // Clearing unconditionally would be the mirror image of the bug: a
+        // caller destroying a real author's field because it assumed one could
+        // not be there.
+        foreach ($authored as $key => $value) {
+            if ($value === null) { $torrent->clearMeta($key); }
+            else { $torrent->setMeta($key, $value); }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Write the account passkey into an NNMClub announce URL. Every form the
+     * URL already carries is updated in place -- the tracker serves both forms
+     * and they hold the same value -- and a URL with no passkey at all gets
+     * the query form: the only form this handler wrote before, and torrents
+     * carrying it announce successfully on the live fleet.
+     *
+     * @param  string $token Passkey already validated against TOKEN_RE
+     * @return string|null Patched URL (possibly identical to the input), or
+     *                     null when the URL is not an NNMClub announce URL
+     */
+    private static function injectAuthIntoUrl($url, $token)
+    {
+        if (!is_string($url)) { return null; }
+        $parts = @parse_url($url);
+        if (!is_array($parts)
+            || !isset($parts['scheme'], $parts['host'], $parts['path'])
+            || !preg_match('/^https?$/i', $parts['scheme'])
+            || !self::isAllowedTrackerHost($parts['host'])
+            || !preg_match(self::ANNOUNCE_PATH_RE, $parts['path'], $match)) {
+            return null;
+        }
+
+        $query = [];
+        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
+
+        if (isset($match[2]) && $match[2] !== '') {
+            $path = $match[1] . '/' . $token . '/announce';
+            if (isset($query['uk'])) {
+                $query['uk'] = $token;
+            }
+        } else {
+            $path = $match[1] . '/announce';
+            $query['uk'] = $token;
+        }
+        return self::rebuildTrackerUrl($parts, $path, $query);
+    }
+
+    /**
+     * Decide what a scrape answer says about ONE info hash.
+     *
+     * The grammar work belongs to `RuTrackerBencode` (plugins/rutracker_check/
+     * bencode.php); this reads the typed tree it returns. The three verdicts
+     * are deliberately distinct, and the distinction is what keeps a bad
+     * answer from deleting a torrent:
+     *
+     *   UPTODATE  the hash is a direct key of the top-level `files`
+     *             dictionary and its row carries at least one valid counter
+     *   NOT_FOUND the document is valid and `files` simply does not list it
+     *   FAILED    anything else -- malformed bencode, no `files` dictionary,
+     *             or a target row that holds no counter at all. The caller
+     *             turns this into SCRAPE_RESULT_UNREADABLE when the host that
+     *             produced it answered at all; it must never be read as "the
+     *             tracker forgot it".
+     *
+     * @param  string $payload    Scrape response body
+     * @param  string $binaryHash Raw 20-byte hash
+     * @return int One of SCRAPE_RESULT_* constants
+     */
+    private static function parseScrapeResult($payload, $binaryHash)
+    {
+        if (!is_string($binaryHash) || strlen($binaryHash) !== 20) {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        $root = RuTrackerBencode::decode($payload, self::BENCODE_LIMITS);
+        if ($root === false || $root['type'] !== 'dictionary') {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        // Only a DIRECT top-level `files` dictionary counts. The hash is 20
+        // arbitrary bytes and a tracker answer may echo it anywhere -- in a
+        // failure reason, in another row's peer list -- so a search that did
+        // not care where it found the key would read an error page as proof
+        // the torrent is alive.
+        $files = RuTrackerBencode::entry($root, 'files');
+        if (!is_array($files) || $files['type'] !== 'dictionary') {
+            return self::SCRAPE_RESULT_FAILED;
+        }
+
+        $target = RuTrackerBencode::entry($files, $binaryHash);
+        if ($target === null) {
+            return self::SCRAPE_RESULT_NOT_FOUND;
+        }
+
+        return self::hasValidTargetStats($target)
+            ? self::SCRAPE_RESULT_UPTODATE
+            : self::SCRAPE_RESULT_FAILED;
+    }
+
+    /**
+     * Whether a `files` row is a real scrape row for the hash it is keyed by.
+     *
+     * A present-but-malformed row is the dangerous case: it is a positive
+     * answer with nothing behind it, so it is refused rather than becoming
+     * either "up to date" or "deleted". A scalar or empty row is exactly that
+     * case, and refusing it is why remediation item F07 was written.
+     *
+     * No individual counter is mandatory -- only that the row carries at least
+     * one, which is what separates a tracker answering about this hash from an
+     * empty dictionary that says nothing. Demanding all three of complete,
+     * downloaded and incomplete was a regression: the live NNMClub trackers
+     * (bt02.nnm-club.cc and bt.searchtor.to, captured 2026-08-26) answer in 67
+     * bytes with complete and incomplete and no downloaded key at all,
+     * opentracker-derived trackers commonly omit it, and BEP-48 does not
+     * oblige one. The effect was worse than a missed optimisation: an
+     * unambiguous "159 seeders hold this" became SCRAPE_RESULT_FAILED, which
+     * download_torrent() reported as a tracker it could not reach, so every
+     * NNMClub torrent silently stopped being checked -- visible only with
+     * $rutrackerCheckDebug on.
+     *
+     * Provenance, so this is not reinstated: the three-counter mandate came
+     * from F07, whose wording was derived from the BEP and never checked
+     * against an answer this tracker sends. Owner decision D009 amends it.
+     * Rejecting a scalar or empty row is the part that was right and is kept;
+     * demanding all three was not.
+     *
+     * This is the same shape the announce layer has always had:
+     * RuTrackerAnnounce::hasValidSuccessSchema() in announce.php requires
+     * only what the protocol guarantees and validates each optional counter
+     * that IS present. Keep the two in step.
+     *
+     * Relaxed is WHICH keys must appear, not how a key that appears is read:
+     * type, canonicity and sign are still enforced on every counter the row
+     * does carry, a duplicate key was already refused by the grammar, and
+     * unknown extra fields are ignored the way the tracker's own extensions
+     * require.
+     */
+    private static function hasValidTargetStats($target)
+    {
+        if (!is_array($target) || $target['type'] !== 'dictionary') { return false; }
+
+        $seen = 0;
+        foreach (self::TARGET_COUNTERS as $counter) {
+            $node = RuTrackerBencode::entry($target, $counter);
+            if ($node === null) { continue; }
+            if (!is_array($node)
+                || $node['type'] !== 'integer'
+                || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $node['value'])) {
+                return false;
+            }
+            $seen++;
+        }
+        return $seen > 0;
+    }
+
+    /**
+     * The scheme the credential's own announce URL uses, lowercased.
+     *
+     * Only https is ever carried across; anything else -- including an
+     * announceUrl that cannot be parsed -- answers http. parseAuthUrl() has
+     * already limited the scheme to http or https, so this is a downgrade
+     * guard and not a parser.
+     */
+    private static function credentialScheme($auth)
+    {
+        $parts = isset($auth['announceUrl']) ? @parse_url((string) $auth['announceUrl']) : null;
+        $scheme = is_array($parts) && isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
+        return $scheme === 'https' ? 'https' : 'http';
+    }
+
+    /** Derive a scrape URL without changing the credential's meaning or case. */
+    private static function buildScrapeUrl($auth, $binaryHash)
+    {
+        if (!is_array($auth) || !isset($auth['mode'], $auth['token'], $auth['announceUrl'])) {
+            return null;
+        }
+        $parts = @parse_url($auth['announceUrl']);
+        if (!is_array($parts)
+            || !isset($parts['scheme'], $parts['host'], $parts['path'])
+            || !self::isAllowedTrackerHost($parts['host'])) {
+            return null;
+        }
+
+        $path = preg_replace('`/announce/?$`', '/scrape', $parts['path'], 1, $count);
+        if ($count !== 1 || $path === null) { return null; }
+
+        $query = [];
+        parse_str(isset($parts['query']) ? $parts['query'] : '', $query);
+        unset($query['info_hash']);
+        if ($auth['mode'] === 'query') {
+            $query['uk'] = $auth['token'];
+        } elseif ($auth['mode'] !== 'path') {
+            return null;
+        }
+
+        $url = self::rebuildTrackerUrl($parts, $path, $query);
+        return $url . (count($query) ? '&' : '?') . 'info_hash=' . rawurlencode($binaryHash);
+    }
+
+    /**
+     * Scrape the tracker endpoint associated with a typed credential. The
+     * passkey is the account's key in either form, so when the credential's
+     * own host fails the current official IPv4 endpoint is consulted too, in
+     * the same form the credential already uses.
+     *
+     * @return int One of SCRAPE_RESULT_* constants
+     */
+    private static function checkViaScrape($auth, $hash)
+    {
+        if (!is_string($hash) || !preg_match('/^[0-9A-F]{40}$/i', $hash)) {
+            self::log("Scrape skipped: invalid info hash format {$hash}");
+            return self::SCRAPE_RESULT_FAILED;
+        }
+        $binary = pack('H*', $hash);
+
+        $urls = [];
+        $primary = self::buildScrapeUrl($auth, $binary);
+        if ($primary !== null) { $urls[] = $primary; }
+        $mode = isset($auth['mode']) ? $auth['mode'] : null;
+        if (isset($auth['token']) && ($mode === 'query' || $mode === 'path')) {
+            // The fallback is a DIFFERENT host carrying the SAME account
+            // passkey, so it inherits the credential URL's own scheme rather
+            // than a hard-coded one. Hard-coding http:// downgraded an https
+            // credential to cleartext on every check whose primary host did
+            // not answer up to date -- exactly the cycles when something is
+            // already wrong. Whether bt.searchtor.to serves https has NOT been
+            // verified: if it does not, an https credential has no working
+            // fallback left, and when its own host is silent too this whole
+            // scrape ends as SCRAPE_RESULT_FAILED. download_torrent() answers
+            // that by going on to the ordinary guest download, which carries
+            // no credential at all -- see the SCRAPE_RESULT_FAILED branch
+            // there for what that does and does not still guarantee. The
+            // deliberate trade: a lost fast path costs forum requests, a
+            // leaked passkey is not recoverable.
+            $scheme = self::credentialScheme($auth);
+            $fallback = self::buildScrapeUrl([
+                'mode' => $mode,
+                'token' => $auth['token'],
+                'announceUrl' => $mode === 'query'
+                    ? $scheme . '://bt.searchtor.to/announce?uk=' . rawurlencode($auth['token'])
+                    : $scheme . '://bt.searchtor.to/' . rawurlencode($auth['token']) . '/announce',
+            ], $binary);
+            if ($fallback !== null && !in_array($fallback, $urls, true)) { $urls[] = $fallback; }
+        }
+        if (!count($urls)) { return self::SCRAPE_RESULT_FAILED; }
+
+        $sawNotFound = false;
+        $sawUnreadable = false;
+
+        foreach ($urls as $url) {
+            $host = @parse_url($url, PHP_URL_HOST);
+            $host = is_string($host) ? $host : 'unknown';
+
+            $client = ruTrackerChecker::makeClient($url);
+
+            if ($client->status == 200
+                && is_string($client->results)
+                && $client->results !== '') {
+                $scrapeResult = self::parseScrapeResult($client->results, $binary);
+                if ($scrapeResult === self::SCRAPE_RESULT_UPTODATE) {
+                    return self::SCRAPE_RESULT_UPTODATE;
+                }
+                if ($scrapeResult === self::SCRAPE_RESULT_NOT_FOUND) {
+                    self::log("Scrape response OK on {$host}, hash {$hash} not found");
+                    $sawNotFound = true;
+                    continue;
+                }
+                self::log("Scrape response malformed on {$host}");
+                $sawUnreadable = true;
+                continue;
+            }
+            self::log("Scrape failed on {$host}: "
+                . ruTrackerChecker::fetchStatusDetail($client->status));
+        }
+
+        // Precedence: a host that answered readably outranks one that did not,
+        // and any answer at all outranks a transport failure.
+        if ($sawNotFound) { return self::SCRAPE_RESULT_NOT_FOUND; }
+        if ($sawUnreadable) { return self::SCRAPE_RESULT_UNREADABLE; }
+        return self::SCRAPE_RESULT_FAILED;
+    }
 }
 
 // Register this tracker handler with ruTrackerChecker.
@@ -900,5 +900,5 @@ class NNMClubCheckImpl
 ruTrackerChecker::registerTracker(
     "/(nnm-club|nnmclub)\./",
     "/(?:nnm-club|nnmclub)\.|(?:ipv6\.)?bt\.searchtor\.to/i",
-    "NNMClubCheckImpl::download_torrent"
+    "NNMClubCheckImpl::download_torrent",
 );

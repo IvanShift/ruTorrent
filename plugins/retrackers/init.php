@@ -38,5 +38,5 @@ if($ok || $failure === 'recovery-in-flight')
 	$jResult.=RetrackersRetryReset::sessionNotice($retrackersAdapter, $user);
 	$jResult.=RetrackersApplyExisting::sessionNotice($retrackersAdapter, $user);
 }
-else
-	$jResult .= "plugin.disable(); noty('retrackers: '+theUILang.pluginCantStart,'error');";
+else {
+	$jResult .= "plugin.disable(); noty('retrackers: '+theUILang.pluginCantStart,'error');"; }

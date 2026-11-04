@@ -25,15 +25,15 @@ $httpBlockPrivateNetworks = false;
 class KinozalSessionFixture
 {
     // The default doors: A is the first, where the automatic refresh logs in.
-    const A = 'https://kinozal.jumpingcrab.com';
-    const B = 'https://kinozal.cloudns.nz';
-    const DETAILS = '/details.php?id=1';
+    public const A = 'https://kinozal.jumpingcrab.com';
+    public const B = 'https://kinozal.cloudns.nz';
+    public const DETAILS = '/details.php?id=1';
     // Form portion of the anonymous 2026-08-07 login.php capture.
-    const FORM = '<form method=post action="/takelogin.php" name=upt">'
+    public const FORM = '<form method=post action="/takelogin.php" name=upt">'
         . '<input type=text size=35 id="username" name="username" value="">'
         . '<input type=password size=35 id="password" name="password" value=""></form>';
     // The registration link that marks a guest page.
-    const GUEST = '<a href="/signup.php">guest</a>';
+    public const GUEST = '<a href="/signup.php">guest</a>';
 
     public $curl;
     private $root;
@@ -50,13 +50,13 @@ class KinozalSessionFixture
         KinozalResponse::resetCycle();
         testAssertSame(true, (new rCache('/accounts'))->remove(new privateData('KinozalTV')),
             'The session document of the previous case is removed');
-        foreach (array('arm', 'fired', 'out', 'status') as $name) {
+        foreach (['arm', 'fired', 'out', 'status'] as $name) {
             @unlink($this->root . '/interleave.' . $name);
         }
-        $this->plan(array());
+        $this->plan([]);
     }
 
-    public static function reply($origin, $path, $status, $body = '', $headers = array(), $method = 'GET')
+    public static function reply($origin, $path, $status, $body = '', $headers = [], $method = 'GET')
     {
         return ScriptedCurlFixture::reply($method, $origin . $path, $status, $body, $headers);
     }
@@ -80,20 +80,20 @@ class KinozalSessionFixture
     // A login that succeeds and sets $cookies (Set-Cookie values).
     public static function login($origin, $cookies)
     {
-        $headers = array();
+        $headers = [];
         foreach ((array) $cookies as $cookie) {
             $headers[] = 'Set-Cookie: ' . $cookie;
         }
-        return array(
+        return [
             self::reply($origin, '/login.php', 200, self::FORM),
             self::reply($origin, '/takelogin.php', 200, '<a href="/logout.php">signed in</a>', $headers, 'POST'),
-        );
+        ];
     }
 
     // A guest answer to the stored session, a fresh login and the answer.
     public static function relogin($origin, $cookies)
     {
-        return array_merge(array(self::guest($origin)), self::login($origin, $cookies), array(self::details($origin)));
+        return array_merge([self::guest($origin)], self::login($origin, $cookies), [self::details($origin)]);
     }
 
     public function plan($replies)
@@ -104,7 +104,7 @@ class KinozalSessionFixture
     public function requests()
     {
         $requests = $this->curl->requests();
-        testAssertSame(array(), $this->curl->remaining(),
+        testAssertSame([], $this->curl->remaining(),
             'Every planned offline reply was consumed; requests made: ' . json_encode(self::lines($requests)));
         return $requests;
     }
@@ -119,7 +119,7 @@ class KinozalSessionFixture
     public function fetch($url)
     {
         $client = new Snoopy();
-        return array($client->fetchComplex($url), $client);
+        return [$client->fetchComplex($url), $client];
     }
 
     // Each origin logs in through a real public fetch, in order: the first
@@ -128,7 +128,7 @@ class KinozalSessionFixture
     {
         foreach ($sessions as $origin => $cookies) {
             $this->plan($this->documentExists() ? self::relogin($origin, $cookies)
-                : array_merge(self::login($origin, $cookies), array(self::details($origin))));
+                : array_merge(self::login($origin, $cookies), [self::details($origin)]));
             list($ok) = $this->fetch($origin . self::DETAILS);
             testAssertSame(true, $ok, 'A real public fetch saves the ' . parse_url($origin, PHP_URL_HOST) . ' session');
             $this->requests();
@@ -156,7 +156,7 @@ class KinozalSessionFixture
     // The values the document holds for $name, scoped to $origin's host.
     public function storedValues($origin, $name = 'sid')
     {
-        $values = array();
+        $values = [];
         foreach ((array) $this->cached()->scopedCookies as $entry) {
             if ($entry['domain'] === parse_url($origin, PHP_URL_HOST) && $entry['name'] === $name) {
                 $values[] = $entry['value'];
@@ -185,7 +185,7 @@ class KinozalSessionFixture
 
     public function assertWarmFetch($origin, $cookie)
     {
-        $this->plan(array(self::details($origin)));
+        $this->plan([self::details($origin)]);
         list($ok) = $this->fetch($origin . self::DETAILS);
         testAssertSame(true, $ok, 'A fresh client uses the stored session without logging in');
         $requests = $this->requests();
@@ -197,11 +197,11 @@ class KinozalSessionFixture
     // A later guest answer on $origin renews its session; returns the wire.
     public function renewAfterGuest($origin, $value)
     {
-        $this->plan(self::relogin($origin, array(self::session($value))));
+        $this->plan(self::relogin($origin, [self::session($value)]));
         list($ok) = $this->fetch($origin . self::DETAILS);
         testAssertSame(true, $ok, 'A later guest answer renews the session');
         $requests = $this->requests();
-        testAssertSame(array('GET', 'GET', 'POST', 'GET'), array_column($requests, 'method'),
+        testAssertSame(['GET', 'GET', 'POST', 'GET'], array_column($requests, 'method'),
             'The renewal is one login exchange between two details requests');
         testAssertSame('Cookie: sid=' . $value, $requests[3]['cookie'], 'The final details request uses the renewed session');
         return $requests;
@@ -287,91 +287,91 @@ try {
     $fixture->curl->install();
     rTorrentSettings::get()->registerPlugin('loginmgr');
     $manager = new accountManager();
-    $manager->accounts['KinozalTV'] = array('enabled' => 1, 'auto' => 0,
+    $manager->accounts['KinozalTV'] = ['enabled' => 1, 'auto' => 0,
         'path' => realpath(__DIR__ . '/../../../plugins/loginmgr/accounts/KinozalTV.php'),
-        'object' => 'KinozalTVAccount', 'login' => 'fixture-user', 'password' => 'fixture-password');
+        'object' => 'KinozalTVAccount', 'login' => 'fixture-user', 'password' => 'fixture-password'];
     testAssertSame(true, $manager->store(), 'Account selection fixture was saved');
     $A = KinozalSessionFixture::A;
     $B = KinozalSessionFixture::B;
     $details = KinozalSessionFixture::DETAILS;
     $dl = 'https://dl.kinozal.cloudns.nz';
 
-    $tests = array(
+    $tests = [
         'the automatic refresh logs in without the stored session, renews A, keeps B and purges a cookie retired from A'
         => function () use ($fixture, $A, $B) {
-            $fixture->seed(array(
-                $A => array(KinozalSessionFixture::session('session-0'), 'old=retired; Path=/; Secure'),
-                $B => array(KinozalSessionFixture::session('session-1')),
-            ));
-            testAssertSame(array('retired'), $fixture->storedValues($A, 'old'), 'A stored a second cookie');
-            $fixture->plan(KinozalSessionFixture::login($A, array(KinozalSessionFixture::session('renewed-A'))));
+            $fixture->seed([
+                $A => [KinozalSessionFixture::session('session-0'), 'old=retired; Path=/; Secure'],
+                $B => [KinozalSessionFixture::session('session-1')],
+            ]);
+            testAssertSame(['retired'], $fixture->storedValues($A, 'old'), 'A stored a second cookie');
+            $fixture->plan(KinozalSessionFixture::login($A, [KinozalSessionFixture::session('renewed-A')]));
             (new KinozalTVAccount())->check(new Snoopy(), 'fixture-user', 'fixture-password', 0);
             $requests = $fixture->requests();
-            testAssertSame(array('GET ' . $A . '/login.php', 'POST ' . $A . '/takelogin.php'),
+            testAssertSame(['GET ' . $A . '/login.php', 'POST ' . $A . '/takelogin.php'],
                 KinozalSessionFixture::lines($requests), 'The refresh is one login exchange on the first door');
-            testAssertSame(array('', ''), array_column($requests, 'cookie'),
+            testAssertSame(['', ''], array_column($requests, 'cookie'),
                 'Neither the login form GET nor the credential POST carries a stored cookie');
             testAssertSame('username=fixture-user&password=fixture-password', $requests[1]['body'],
                 'The refresh posts the account credentials');
-            testAssertSame(array('renewed-A'), $fixture->storedValues($A), 'The refresh renews A');
-            testAssertSame(array(), $fixture->storedValues($A, 'old'),
+            testAssertSame(['renewed-A'], $fixture->storedValues($A), 'The refresh renews A');
+            testAssertSame([], $fixture->storedValues($A, 'old'),
                 'A cookie the fresh login no longer sets leaves with the session it belonged to');
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'B keeps its own session');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'B keeps its own session');
             $fixture->assertWarmFetch($A, 'Cookie: sid=renewed-A');
             $fixture->assertWarmFetch($B, 'Cookie: sid=session-1');
         },
         'a guest answer on B with an unavailable login form drops B and keeps A' => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array(
-                $A => array(KinozalSessionFixture::session('session-0')),
-                $B => array(KinozalSessionFixture::session('session-1')),
-            ));
-            $fixture->plan(array(
+            $fixture->seed([
+                $A => [KinozalSessionFixture::session('session-0')],
+                $B => [KinozalSessionFixture::session('session-1')],
+            ]);
+            $fixture->plan([
                 KinozalSessionFixture::guest($B),
                 KinozalSessionFixture::reply($B, '/login.php', 503, 'login unavailable'),
-            ));
+            ]);
             list($ok) = $fixture->fetch($B . $details);
             testAssertSame(false, $ok, 'The failed B login is not authenticated');
             $requests = $fixture->requests();
-            testAssertSame(array('GET', 'GET'), array_column($requests, 'method'),
+            testAssertSame(['GET', 'GET'], array_column($requests, 'method'),
                 'An unavailable login form never receives credentials');
             testAssertSame('Cookie: sid=session-1', $requests[0]['cookie'], 'The guest answer came to the stored B session');
-            testAssertSame(array(), $fixture->storedValues($B), 'The session proven dead on B is dropped');
-            testAssertSame(array('session-0'), $fixture->storedValues($A), 'A keeps its session');
+            testAssertSame([], $fixture->storedValues($B), 'The session proven dead on B is dropped');
+            testAssertSame(['session-0'], $fixture->storedValues($A), 'A keeps its session');
             $fixture->assertWarmFetch($A, 'Cookie: sid=session-0');
             $requests = $fixture->renewAfterGuest($B, 'renewed-B');
             testAssertSame('', $requests[0]['cookie'], 'The next request to B carries no cookie');
-            testAssertSame(array('renewed-B'), $fixture->storedValues($B), 'B stores its renewed session');
-            testAssertSame(array('session-0'), $fixture->storedValues($A), 'Renewing B leaves A alone');
+            testAssertSame(['renewed-B'], $fixture->storedValues($B), 'B stores its renewed session');
+            testAssertSame(['session-0'], $fixture->storedValues($A), 'Renewing B leaves A alone');
         },
         'a refused credential POST on B keeps A, drops B and leaves its status on the client'
         => function () use ($fixture, $A, $B, $details) {
-            foreach (array(403, 500) as $status) {
+            foreach ([403, 500] as $status) {
                 $fixture->reset();
-                $fixture->seed(array(
-                    $A => array(KinozalSessionFixture::session('session-0')),
-                    $B => array(KinozalSessionFixture::session('session-1')),
-                ));
-                $fixture->plan(array(
+                $fixture->seed([
+                    $A => [KinozalSessionFixture::session('session-0')],
+                    $B => [KinozalSessionFixture::session('session-1')],
+                ]);
+                $fixture->plan([
                     KinozalSessionFixture::guest($B),
                     KinozalSessionFixture::reply($B, '/login.php', 200, KinozalSessionFixture::FORM),
-                    KinozalSessionFixture::reply($B, '/takelogin.php', $status, 'login refused', array(), 'POST'),
-                ));
+                    KinozalSessionFixture::reply($B, '/takelogin.php', $status, 'login refused', [], 'POST'),
+                ]);
                 list($ok, $client) = $fixture->fetch($B . $details);
                 testAssertSame(false, $ok, 'HTTP ' . $status . ' credential POST is refused');
                 testAssertSame($status, (int) $client->status, 'The actual credential POST status remains visible');
-                testAssertSame(array('GET', 'GET', 'POST'), array_column($fixture->requests(), 'method'),
+                testAssertSame(['GET', 'GET', 'POST'], array_column($fixture->requests(), 'method'),
                     'A refused credential POST is the final request');
-                testAssertSame(array(), $fixture->storedValues($B), 'HTTP ' . $status . ': the dead B session is dropped');
-                testAssertSame(array('session-0'), $fixture->storedValues($A), 'HTTP ' . $status . ': A keeps its session');
+                testAssertSame([], $fixture->storedValues($B), 'HTTP ' . $status . ': the dead B session is dropped');
+                testAssertSame(['session-0'], $fixture->storedValues($A), 'HTTP ' . $status . ': A keeps its session');
                 $fixture->assertWarmFetch($A, 'Cookie: sid=session-0');
             }
         },
         'a single mirror\'s failed login removes the whole document' => function () use ($fixture, $B, $details) {
-            $fixture->seed(array($B => array(KinozalSessionFixture::session('session-0'))));
-            $fixture->plan(array(
+            $fixture->seed([$B => [KinozalSessionFixture::session('session-0')]]);
+            $fixture->plan([
                 KinozalSessionFixture::guest($B),
                 KinozalSessionFixture::reply($B, '/login.php', 503, 'login unavailable'),
-            ));
+            ]);
             list($ok) = $fixture->fetch($B . $details);
             testAssertSame(false, $ok, 'The single mirror login fails');
             testAssertSame('Cookie: sid=session-0', $fixture->requests()[0]['cookie'], 'The dead session was sent');
@@ -380,11 +380,11 @@ try {
         },
         'a Domain cookie covering the requested subdomain is dropped by that failure'
         => function () use ($fixture, $A, $B, $details, $dl) {
-            $failure = array(
+            $failure = [
                 KinozalSessionFixture::reply($dl, $details, 200, KinozalSessionFixture::GUEST),
                 KinozalSessionFixture::reply($B, '/login.php', 503, 'login unavailable'),
-            );
-            $fixture->seed(array($B => array(KinozalSessionFixture::session('session-0', 'kinozal.cloudns.nz'))));
+            ];
+            $fixture->seed([$B => [KinozalSessionFixture::session('session-0', 'kinozal.cloudns.nz')]]);
             $fixture->plan($failure);
             list($ok) = $fixture->fetch($dl . $details);
             testAssertSame(false, $ok, 'The failed subdomain login is refused');
@@ -394,29 +394,29 @@ try {
 
             // Next to a host-only session of another mirror, only the Domain one goes.
             $fixture->reset();
-            $fixture->seed(array(
-                $A => array(KinozalSessionFixture::session('session-0')),
-                $B => array(KinozalSessionFixture::session('session-1', 'kinozal.cloudns.nz')),
-            ));
+            $fixture->seed([
+                $A => [KinozalSessionFixture::session('session-0')],
+                $B => [KinozalSessionFixture::session('session-1', 'kinozal.cloudns.nz')],
+            ]);
             $fixture->plan($failure);
             list($ok) = $fixture->fetch($dl . $details);
             testAssertSame(false, $ok, 'The failed subdomain login is refused again');
             testAssertSame('Cookie: sid=session-1', $fixture->requests()[0]['cookie'],
                 'Only the Domain session went to the subdomain');
-            testAssertSame(array(), $fixture->storedValues($B), 'The Domain session proven dead is dropped');
-            testAssertSame(array('session-0'), $fixture->storedValues($A), 'The other mirror keeps its session');
+            testAssertSame([], $fixture->storedValues($B), 'The Domain session proven dead is dropped');
+            testAssertSame(['session-0'], $fixture->storedValues($A), 'The other mirror keeps its session');
         },
         'an expired cookie of another host no longer keeps a session proven stale on A'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array(
-                $A => array(KinozalSessionFixture::session('session-0')),
-                $B => array(KinozalSessionFixture::session('session-1') . '; Max-Age=3600'),
-            ));
+            $fixture->seed([
+                $A => [KinozalSessionFixture::session('session-0')],
+                $B => [KinozalSessionFixture::session('session-1') . '; Max-Age=3600'],
+            ]);
             $fixture->age($B, 'sid', time() - 60);
-            $fixture->plan(array(
+            $fixture->plan([
                 KinozalSessionFixture::guest($A),
                 KinozalSessionFixture::reply($A, '/login.php', 503, 'login unavailable'),
-            ));
+            ]);
             list($ok) = $fixture->fetch($A . $details);
             testAssertSame(false, $ok, 'The failed A login is not authenticated');
             testAssertSame('Cookie: sid=session-0', $fixture->requests()[0]['cookie'],
@@ -426,20 +426,20 @@ try {
         },
         'in one process: B stored by another request while this one renews A survives the renewal'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array($A => array(KinozalSessionFixture::session('session-0'))));
+            $fixture->seed([$A => [KinozalSessionFixture::session('session-0')]]);
             $client = new Snoopy();
             $data = $client->withAccountCookieScope('KinozalTV', function () use ($client) {
                 return privateData::load('KinozalTV', $client);
             });
             testAssertSame(true, $data->loaded, 'This request loaded the document holding A');
-            $fixture->plan(KinozalSessionFixture::relogin($B, array(KinozalSessionFixture::session('session-1'))));
+            $fixture->plan(KinozalSessionFixture::relogin($B, [KinozalSessionFixture::session('session-1')]));
             list($ok) = $fixture->fetch($B . $details);
             testAssertSame(true, $ok, 'Another request logs in on B meanwhile');
             $fixture->requests();
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'The other request stored B');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'The other request stored B');
             // This request's own login on A answers with a renewed session.
-            $fixture->plan(array(KinozalSessionFixture::reply($A, '/takelogin.php', 200, 'signed in',
-                array('Set-Cookie: ' . KinozalSessionFixture::session('renewed-A')), 'POST')));
+            $fixture->plan([KinozalSessionFixture::reply($A, '/takelogin.php', 200, 'signed in',
+                ['Set-Cookie: ' . KinozalSessionFixture::session('renewed-A')], 'POST')]);
             $stored = $client->withAccountCookieScope('KinozalTV', function () use ($client, $data, $A) {
                 $client->fetch($A . '/takelogin.php', 'POST', 'application/x-www-form-urlencoded',
                     'username=fixture-user&password=fixture-password');
@@ -448,106 +448,106 @@ try {
             testAssertSame('Cookie: sid=session-0', $fixture->requests()[0]['cookie'],
                 'This request still held the A session it loaded');
             testAssertSame(true, $stored, 'This request stores its renewed session');
-            testAssertSame(array('renewed-A'), $fixture->storedValues($A), 'A is renewed');
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'B, stored after this request loaded, survives');
+            testAssertSame(['renewed-A'], $fixture->storedValues($A), 'A is renewed');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'B, stored after this request loaded, survives');
         },
         'in one process: B stored by another request while this one forgets A survives the failure'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array($A => array(KinozalSessionFixture::session('session-0'))));
+            $fixture->seed([$A => [KinozalSessionFixture::session('session-0')]]);
             $client = new Snoopy();
             $data = $client->withAccountCookieScope('KinozalTV', function () use ($client) {
                 return privateData::load('KinozalTV', $client);
             });
-            $fixture->plan(KinozalSessionFixture::relogin($B, array(KinozalSessionFixture::session('session-1'))));
+            $fixture->plan(KinozalSessionFixture::relogin($B, [KinozalSessionFixture::session('session-1')]));
             list($ok) = $fixture->fetch($B . $details);
             testAssertSame(true, $ok, 'Another request logs in on B meanwhile');
             $fixture->requests();
             testAssertSame(true, $data->forget($A . $details), 'This request forgets the A session its login failed to renew');
-            testAssertSame(array(), $fixture->storedValues($A), 'The session this request proved dead is dropped');
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'B, stored after this request loaded, survives');
+            testAssertSame([], $fixture->storedValues($A), 'The session this request proved dead is dropped');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'B, stored after this request loaded, survives');
         },
         'a session another process stores for B while a login on A renews A survives that login'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array($A => array(KinozalSessionFixture::session('session-0'))));
+            $fixture->seed([$A => [KinozalSessionFixture::session('session-0')]]);
             $fixture->plan(array_merge(
-                KinozalSessionFixture::relogin($B, array(KinozalSessionFixture::session('session-1'))),
-                KinozalSessionFixture::relogin($A, array(KinozalSessionFixture::session('renewed-A')))));
+                KinozalSessionFixture::relogin($B, [KinozalSessionFixture::session('session-1')]),
+                KinozalSessionFixture::relogin($A, [KinozalSessionFixture::session('renewed-A')])));
             list($ok) = $fixture->interleave($B . $details, 'done', function () use ($fixture, $A, $details) {
                 return $fixture->fetch($A . $details);
             });
             testAssertSame(true, $ok, 'This request renews A');
             $requests = $fixture->requests();
-            testAssertSame(array(
+            testAssertSame([
                 'GET ' . $B . $details, 'GET ' . $B . '/login.php', 'POST ' . $B . '/takelogin.php', 'GET ' . $B . $details,
                 'GET ' . $A . $details, 'GET ' . $A . '/login.php', 'POST ' . $A . '/takelogin.php', 'GET ' . $A . $details,
-            ), KinozalSessionFixture::lines($requests), 'The other process ran before this request read its first answer');
+            ], KinozalSessionFixture::lines($requests), 'The other process ran before this request read its first answer');
             testAssertSame('Cookie: sid=session-0', $requests[4]['cookie'], 'This request sent the A session it had loaded');
-            testAssertSame(array('renewed-A'), $fixture->storedValues($A), 'A is renewed');
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'B, stored by the other process, survives');
+            testAssertSame(['renewed-A'], $fixture->storedValues($A), 'A is renewed');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'B, stored by the other process, survives');
             $fixture->assertWarmFetch($B, 'Cookie: sid=session-1');
         },
         'a session another process stores for B while a login on A fails survives that failure'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array($A => array(KinozalSessionFixture::session('session-0'))));
+            $fixture->seed([$A => [KinozalSessionFixture::session('session-0')]]);
             $fixture->plan(array_merge(
-                KinozalSessionFixture::relogin($B, array(KinozalSessionFixture::session('session-1'))),
-                array(
+                KinozalSessionFixture::relogin($B, [KinozalSessionFixture::session('session-1')]),
+                [
                     KinozalSessionFixture::guest($A),
                     KinozalSessionFixture::reply($A, '/login.php', 503, 'login unavailable'),
-                )));
+                ]));
             list($ok) = $fixture->interleave($B . $details, 'done', function () use ($fixture, $A, $details) {
                 return $fixture->fetch($A . $details);
             });
             testAssertSame(false, $ok, 'The A login fails');
-            testAssertSame(array(
+            testAssertSame([
                 'GET ' . $B . $details, 'GET ' . $B . '/login.php', 'POST ' . $B . '/takelogin.php', 'GET ' . $B . $details,
                 'GET ' . $A . $details, 'GET ' . $A . '/login.php',
-            ), KinozalSessionFixture::lines($fixture->requests()), 'The other process ran before this request read its first answer');
-            testAssertSame(array(), $fixture->storedValues($A), 'The session this request proved dead is dropped');
-            testAssertSame(array('session-1'), $fixture->storedValues($B), 'B, stored by the other process, survives');
+            ], KinozalSessionFixture::lines($fixture->requests()), 'The other process ran before this request read its first answer');
+            testAssertSame([], $fixture->storedValues($A), 'The session this request proved dead is dropped');
+            testAssertSame(['session-1'], $fixture->storedValues($B), 'B, stored by the other process, survives');
             $fixture->assertWarmFetch($B, 'Cookie: sid=session-1');
         },
         'a session another process forgets, removing the document, does not come back with a login on A'
         => function () use ($fixture, $A, $B, $details) {
-            $fixture->seed(array($B => array(KinozalSessionFixture::session('session-1'))));
+            $fixture->seed([$B => [KinozalSessionFixture::session('session-1')]]);
             $fixture->plan(array_merge(
-                array(
+                [
                     KinozalSessionFixture::guest($B),
                     KinozalSessionFixture::reply($B, '/login.php', 503, 'login unavailable'),
-                ),
-                KinozalSessionFixture::relogin($A, array(KinozalSessionFixture::session('renewed-A')))));
+                ],
+                KinozalSessionFixture::relogin($A, [KinozalSessionFixture::session('renewed-A')])));
             list($ok) = $fixture->interleave($B . $details, 'refused', function () use ($fixture, $A, $details) {
                 return $fixture->fetch($A . $details);
             });
             testAssertSame(true, $ok, 'This request logs in on A');
             $requests = $fixture->requests();
-            testAssertSame(array(
+            testAssertSame([
                 'GET ' . $B . $details, 'GET ' . $B . '/login.php',
                 'GET ' . $A . $details, 'GET ' . $A . '/login.php', 'POST ' . $A . '/takelogin.php', 'GET ' . $A . $details,
-            ), KinozalSessionFixture::lines($requests), 'The other process ran before this request read its first answer');
+            ], KinozalSessionFixture::lines($requests), 'The other process ran before this request read its first answer');
             testAssertSame('Cookie: sid=session-1', $requests[0]['cookie'], 'The other process found B\'s session dead');
-            testAssertSame(array('renewed-A'), $fixture->storedValues($A), 'A is stored');
-            testAssertSame(array(), $fixture->storedValues($B),
+            testAssertSame(['renewed-A'], $fixture->storedValues($A), 'A is stored');
+            testAssertSame([], $fixture->storedValues($B),
                 'The B session this request only read stays forgotten');
             $requests = $fixture->renewAfterGuest($B, 'renewed-B');
             testAssertSame('', $requests[0]['cookie'], 'The next request to B carries no cookie');
         },
         'a session Settings -> Save forgets while a request holds it is not stored back by that request'
         => function () use ($fixture, $A, $details) {
-            $fixture->seed(array($A => array(KinozalSessionFixture::session('session-0'))));
+            $fixture->seed([$A => [KinozalSessionFixture::session('session-0')]]);
             // The live answer sets one more cookie, so this request stores.
-            $fixture->plan(array(KinozalSessionFixture::reply($A, $details, 200, 'authenticated details',
-                array('Set-Cookie: lang=ru; Path=/; Secure'))));
+            $fixture->plan([KinozalSessionFixture::reply($A, $details, 200, 'authenticated details',
+                ['Set-Cookie: lang=ru; Path=/; Secure'])]);
             list($ok) = $fixture->interleave('save-accounts', 'done', function () use ($fixture, $A, $details) {
                 return $fixture->fetch($A . $details);
             });
             testAssertSame(true, $ok, 'The live answer reaches the caller');
             testAssertSame('Cookie: sid=session-0', $fixture->requests()[0]['cookie'],
                 'This request had loaded the session before it was forgotten');
-            testAssertSame(array(), $fixture->storedValues($A), 'The forgotten session is not stored back');
-            testAssertSame(array('ru'), $fixture->storedValues($A, 'lang'), 'Only what this request changed is stored');
+            testAssertSame([], $fixture->storedValues($A), 'The forgotten session is not stored back');
+            testAssertSame(['ru'], $fixture->storedValues($A, 'lang'), 'Only what this request changed is stored');
         },
-    );
+    ];
     $status = testRunCases($tests, function () use ($fixture) { $fixture->reset(); });
 } finally {
     if ($fixture !== null) {

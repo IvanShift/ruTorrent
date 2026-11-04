@@ -21,17 +21,17 @@ $hash = isset($argv[1]) ? $argv[1] : "";
 $force = isset($argv[2]) ? $argv[2] : null;
 $user = isset($argv[3]) ? $argv[3] : "";
 
-if(!preg_match('/^[0-9A-Fa-f]{40}$/', $hash))
-	exit(1);
+if(!preg_match('/^[0-9A-Fa-f]{40}$/', $hash)) {
+	exit(1); }
 require_once( dirname(__FILE__)."/manifest.php" );
 // The wire boundary: an argv word is a string and can be nothing else, so this
 // is where the decimal spelling becomes the integer force the plugin speaks
 // everywhere below. An unreadable force refuses the run; it is never coerced.
 $normalizedForce = ErasedataManifestCodec::normalizeForce($force);
-if(is_null($normalizedForce))
-	exit(1);
-if($user !== "")
-	$_SERVER['REMOTE_USER'] = $user;
+if(is_null($normalizedForce)) {
+	exit(1); }
+if($user !== "") {
+	$_SERVER['REMOTE_USER'] = $user; }
 
 require_once( dirname(__FILE__)."/../../php/xmlrpc.php" );
 require_once( dirname(__FILE__)."/removewithdata.php" );
@@ -43,4 +43,4 @@ require_once( dirname(__FILE__)."/removewithdata.php" );
 // torrent that happens to share this infohash carries a different generation
 // and so cannot suppress this request, which is exactly why the queue can now
 // be wired here at all.
-exit((erasedataAdmitRemoval(array($hash), $normalizedForce) === false) ? 1 : 0);
+exit((erasedataAdmitRemoval([$hash], $normalizedForce) === false) ? 1 : 0);

@@ -3,7 +3,7 @@ require_once( 'unpack.php' );
 
 ignore_user_abort(true);
 set_time_limit(0);
-$ret = array();
+$ret = [];
 
 $input = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' ? $_POST : $_GET;
 if(isset($input['cmd']))
@@ -24,10 +24,10 @@ if(isset($input['cmd']))
 			Requests::requirePost();
 			$up = rUnpack::load();
 			$directory = isset($input['dir']) ? FileUtil::requestPath($input['dir']) : null;
-			if(($directory !== null) || !isset($input['dir']))
-				$ret = $up->startTask( $input['hash'], $directory, $input['mode'], $input['no'] );
-			else
-				$ret = array('no' => -1, 'pid' => 0, 'status' => 255, 'log' => array(), 'errors' => array('Invalid directory.'));
+			if(($directory !== null) || !isset($input['dir'])) {
+				$ret = $up->startTask( $input['hash'], $directory, $input['mode'], $input['no'] ); }
+			else {
+				$ret = ['no' => -1, 'pid' => 0, 'status' => 255, 'log' => [], 'errors' => ['Invalid directory.']]; }
 			break;
 		}
 	}

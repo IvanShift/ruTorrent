@@ -17,12 +17,12 @@ require_once(__DIR__ . '/RealParserDriver.php');
  */
 class OutcomeParserTest extends TestCase
 {
-	const HASH = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
+	public const HASH = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
 	// A directory and a file name with a quote, a backslash, a backslash-quote
 	// and a backslash-backslash (bytes: /data/dl/say \"hi\" \\there,
 	// odd "name" \\x \"y\").
-	const DIRECTORY = '/data/dl/say \\"hi\\" \\\\there';
-	const NAME = 'odd "name" \\\\x \\"y\\"';
+	public const DIRECTORY = '/data/dl/say \\"hi\\" \\\\there';
+	public const NAME = 'odd "name" \\\\x \\"y\\"';
 
 	private $base;
 	private $driver;
@@ -40,17 +40,58 @@ class OutcomeParserTest extends TestCase
 		$this->remove($this->base);
 	}
 
+	public function testAKeptOutcomeIsListedThroughTheRealParser()
+	{
+		$outcome = $this->repoRoot() . '/plugins/erasedata/outcome.php';
+		// record(): the directory, the custom key with d.message, the save.
+		$recorded = $this->drive([[self::DIRECTORY], [0, 0], [0]],
+			'require_once(' . var_export($outcome, true) . ");\n"
+			. 'echo json_encode(array("recorded" => FileOperationOutcome::record("autotools", '
+			. var_export(self::HASH, true) . ', "lab", "autotools: say \"no\"\\\\now")));');
+		$this->assertSame(true, $recorded['recorded'], 'the daemon confirmed the outcome');
+		$written = null;
+		foreach ($this->driver->daemon()->bodies() as $request) {
+			if (strpos($request, 'x-autotools-outcome') !== false
+				&& preg_match('~<value><string>x-autotools-outcome</string></value>\s*<value><string>([^<]*)</string>~', $request, $match)) {
+				$written = html_entity_decode($match[1], ENT_QUOTES, 'UTF-8'); } }
+		$this->assertTrue(is_string($written) && $written !== '', 'the kept value was sent to the daemon');
+		$this->assertSame(false, strpbrk((string) $written, "\"\\") !== false,
+			'the kept value is URL-encoded, with no quote or backslash in it: ' . $written);
+		$kept = json_decode(rawurldecode((string) $written), true);
+		$this->assertSame(2, $kept['version'], 'the outcome declares the byte-preserving representation');
+		$this->assertSame('base64', $kept['directory_encoding'], 'the directory encoding is explicit');
+		$this->assertSame(base64_encode(self::DIRECTORY), $kept['directory'],
+			'the directory is kept as the canonical encoding of the daemon\'s own bytes');
+		// A session lists it: the daemon answers the stored bytes, as 0.9.8 does.
+		$notice = $this->drive([[self::HASH, self::NAME, self::DIRECTORY, 0, (string) $written]],
+			'require_once(' . var_export($outcome, true) . ");\n"
+			. 'echo json_encode(array("notice" => FileOperationOutcome::sessionNotice("autotools")));');
+		$this->assertSame('noty(' . json_encode('AutoTools: ' . self::NAME . ' (' . self::HASH
+			. '): autotools: say "no"\\now', JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) . ",'error');\n",
+			$notice['notice'], 'the session notice names the download in its own bytes');
+	}
+
+	public function testClaimedDaemonPathsAreTheDaemonsOwnBytes()
+	{
+		$file = self::DIRECTORY . '/' . self::NAME;
+		$claims = $this->drive([[self::DIRECTORY, self::NAME, $file]],
+			'require_once(' . var_export($this->repoRoot() . '/plugins/erasedata/removewithdata.php', true) . ");\n"
+			. 'echo json_encode(erasedataCleanupDaemonClaims(' . var_export(self::HASH, true) . '));');
+		$this->assertSame(['files' => [$file]], $claims,
+			'the stored and the frozen path name the same file, as the daemon spelled it');
+	}
+
 	// The driver's profile directory lives under the base as well.
 	private function remove($path)
 	{
 		if (is_dir($path) && !is_link($path))
 		{
-			foreach (array_diff(scandir($path), array('.', '..')) as $entry)
-				$this->remove($path . '/' . $entry);
+			foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+				$this->remove($path . '/' . $entry); }
 			@rmdir($path);
 		}
-		else
-			@unlink($path);
+		else {
+			@unlink($path); }
 	}
 
 	private function repoRoot()
@@ -63,46 +104,5 @@ class OutcomeParserTest extends TestCase
 	private function drive(array $replies, $body)
 	{
 		return $this->driver->drive($replies, $body);
-	}
-
-	public function testAKeptOutcomeIsListedThroughTheRealParser()
-	{
-		$outcome = $this->repoRoot() . '/plugins/erasedata/outcome.php';
-		// record(): the directory, the custom key with d.message, the save.
-		$recorded = $this->drive(array(array(self::DIRECTORY), array(0, 0), array(0)),
-			'require_once(' . var_export($outcome, true) . ");\n"
-			. 'echo json_encode(array("recorded" => FileOperationOutcome::record("autotools", '
-			. var_export(self::HASH, true) . ', "lab", "autotools: say \"no\"\\\\now")));');
-		$this->assertSame(true, $recorded['recorded'], 'the daemon confirmed the outcome');
-		$written = null;
-		foreach ($this->driver->daemon()->bodies() as $request)
-			if (strpos($request, 'x-autotools-outcome') !== false
-				&& preg_match('~<value><string>x-autotools-outcome</string></value>\s*<value><string>([^<]*)</string>~', $request, $match))
-				$written = html_entity_decode($match[1], ENT_QUOTES, 'UTF-8');
-		$this->assertTrue(is_string($written) && $written !== '', 'the kept value was sent to the daemon');
-		$this->assertSame(false, strpbrk((string) $written, "\"\\") !== false,
-			'the kept value is URL-encoded, with no quote or backslash in it: ' . $written);
-		$kept = json_decode(rawurldecode((string) $written), true);
-		$this->assertSame(2, $kept['version'], 'the outcome declares the byte-preserving representation');
-		$this->assertSame('base64', $kept['directory_encoding'], 'the directory encoding is explicit');
-		$this->assertSame(base64_encode(self::DIRECTORY), $kept['directory'],
-			'the directory is kept as the canonical encoding of the daemon\'s own bytes');
-		// A session lists it: the daemon answers the stored bytes, as 0.9.8 does.
-		$notice = $this->drive(array(array(self::HASH, self::NAME, self::DIRECTORY, 0, (string) $written)),
-			'require_once(' . var_export($outcome, true) . ");\n"
-			. 'echo json_encode(array("notice" => FileOperationOutcome::sessionNotice("autotools")));');
-		$this->assertSame('noty(' . json_encode('AutoTools: ' . self::NAME . ' (' . self::HASH
-			. '): autotools: say "no"\\now', JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) . ",'error');\n",
-			$notice['notice'], 'the session notice names the download in its own bytes');
-	}
-
-	public function testClaimedDaemonPathsAreTheDaemonsOwnBytes()
-	{
-		$file = self::DIRECTORY . '/' . self::NAME;
-		$claims = $this->drive(array(array(self::DIRECTORY, self::NAME, $file)),
-			'require_once(' . var_export($this->repoRoot() . '/plugins/erasedata/removewithdata.php', true) . ");\n"
-			. 'echo json_encode(erasedataCleanupDaemonClaims(' . var_export(self::HASH, true) . '));');
-		$this->assertSame(array('files' => array($file)), $claims,
-			'the stored and the frozen path name the same file, as the daemon spelled it');
 	}
 }

@@ -2,21 +2,21 @@
 
 class ExtsearchHistoryProbeCursor
 {
-	const PROBES_PER_REQUEST = 4;
-	const CACHE_KEY = 'extsearch_history_probe_cursor.dat';
+	public const PROBES_PER_REQUEST = 4;
+	public const CACHE_KEY = 'extsearch_history_probe_cursor.dat';
 	public $hash = self::CACHE_KEY;
 	public $next = 0;
-	public $last = array();
-	public $selected = array();
-	private $candidates = array();
-	private $active = array();
+	public $last = [];
+	public $selected = [];
+	private $candidates = [];
+	private $active = [];
 	private $limit = self::PROBES_PER_REQUEST;
 	private static $remaining = self::PROBES_PER_REQUEST;
-	private static $probed = array();
+	private static $probed = [];
 
 	public function __sleep()
 	{
-		return array('hash', 'next', 'last');
+		return ['hash', 'next', 'last'];
 	}
 
 	public function reserve($candidates, $active, $limit = self::PROBES_PER_REQUEST)
@@ -38,21 +38,21 @@ class ExtsearchHistoryProbeCursor
 	public static function resetRequestBudget()
 	{
 		self::$remaining = self::PROBES_PER_REQUEST;
-		self::$probed = array();
+		self::$probed = [];
 	}
 
 	public static function reconcile($history, $urls)
 	{
-		if(self::$remaining <= 0) return;
-		$pending = array();
-		foreach($urls as $url)
-			if($history->isPending($url) && !isset(self::$probed[$url]))
-				$pending[$url] = true;
-		if(empty($pending)) return;
-		$active = array();
-		foreach($history->lst as $url=>$entry)
-			if(is_array($entry) && array_key_exists('receipt', $entry))
-				$active[$url] = true;
+		if(self::$remaining <= 0) { return; }
+		$pending = [];
+		foreach($urls as $url) {
+			if($history->isPending($url) && !isset(self::$probed[$url])) {
+				$pending[$url] = true; } }
+		if(empty($pending)) { return; }
+		$active = [];
+		foreach($history->lst as $url=>$entry) {
+			if(is_array($entry) && array_key_exists('receipt', $entry)) {
+				$active[$url] = true; } }
 		$cursor = new self();
 		$cache = new rCache();
 		$cache->get($cursor);
@@ -63,7 +63,7 @@ class ExtsearchHistoryProbeCursor
 			return;
 		}
 		self::$remaining -= count($cursor->selected);
-		foreach($cursor->selected as $url) self::$probed[$url] = true;
+		foreach($cursor->selected as $url) { self::$probed[$url] = true; }
 		global $rpcTimeOut, $rpcTransferTimeOut;
 		$oldConnect = $rpcTimeOut ?? null;
 		$oldReply = $rpcTransferTimeOut ?? null;
@@ -72,8 +72,8 @@ class ExtsearchHistoryProbeCursor
 		$rpcTransferTimeOut = 1.0;
 		try
 		{
-			foreach($cursor->selected as $url)
-				$history->reconcile($url);
+			foreach($cursor->selected as $url) {
+				$history->reconcile($url); }
 		}
 		finally
 		{
@@ -89,9 +89,9 @@ class ExtsearchHistoryProbeCursor
 		if($valid)
 		{
 			$this->last = array_intersect_key($this->last, $this->active);
-			foreach($this->last as $sequence)
-				if(!is_int($sequence) || $sequence < 1 || $sequence > $this->next)
-					$valid = false;
+			foreach($this->last as $sequence) {
+				if(!is_int($sequence) || $sequence < 1 || $sequence > $this->next) {
+					$valid = false; } }
 		}
 		if(!$valid)
 		{
@@ -99,20 +99,20 @@ class ExtsearchHistoryProbeCursor
 				.self::CACHE_KEY.'; invalid scheduling state; pending checks resumed');
 			$this->hash = self::CACHE_KEY;
 			$this->next = 0;
-			$this->last = array();
+			$this->last = [];
 		}
 		if($this->next > PHP_INT_MAX - $this->limit)
 		{
 			$this->next = 0;
-			$this->last = array();
+			$this->last = [];
 		}
-		$rank = array();
-		foreach($this->candidates as $url)
-			$rank[$url] = $this->last[$url] ?? 0;
+		$rank = [];
+		foreach($this->candidates as $url) {
+			$rank[$url] = $this->last[$url] ?? 0; }
 		asort($rank, SORT_NUMERIC);
 		$this->selected = array_slice(array_keys($rank), 0, $this->limit);
-		foreach($this->selected as $url)
-			$this->last[$url] = ++$this->next;
+		foreach($this->selected as $url) {
+			$this->last[$url] = ++$this->next; }
 		return true;
 	}
 }

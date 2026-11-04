@@ -2,8 +2,8 @@
 
 class PirateBayEngine extends commonEngine
 {
-	public $defaults = array( "public"=>true, "page_size"=>30 );
-	public $categories = array( 'all'=>'100,200,300,400,500,600', 'Audio'=>'100', 'Video'=>'200', 'Applications'=>'300', 'Games'=>'400', 'Porn'=>'500', 'Other'=>'600' );
+	public $defaults = [ "public"=>true, "page_size"=>30 ];
+	public $categories = [ 'all'=>'100,200,300,400,500,600', 'Audio'=>'100', 'Video'=>'200', 'Applications'=>'300', 'Games'=>'400', 'Porn'=>'500', 'Other'=>'600' ];
 
 	public function makeClient($url)
 	{
@@ -30,18 +30,18 @@ class PirateBayEngine extends commonEngine
 		}
 		else
 		{
-			if(preg_match('/\A([0-9]+) mins? ago\z/i', $tms, $match))
-				$tms = '-' . $match[1] . ' minute';
-			elseif(preg_match('/\A[0-9]/', $tms))
-				return(false);
+			if(preg_match('/\A([0-9]+) mins? ago\z/i', $tms, $match)) {
+				$tms = '-' . $match[1] . ' minute'; }
+			elseif(preg_match('/\A[0-9]/', $tms)) {
+				return(false); }
 			return(strtotime(str_replace('Y-day', '-1 day', $tms)));
 		}
-		if(($hour > 23) || ($minute > 59) || !checkdate((int)$match[1], (int)$match[2], $year))
-			return(false);
+		if(($hour > 23) || ($minute > 59) || !checkdate((int)$match[1], (int)$match[2], $year)) {
+			return(false); }
 		// Retain mktime's choice of occurrence in a DST fold. Only years
 		// 1..100 need setDate(), because mktime() remaps them to 19xx/20xx.
-		if($year > 100)
-			return(mktime($hour, $minute, 0, (int)$match[1], (int)$match[2], $year));
+		if($year > 100) {
+			return(mktime($hour, $minute, 0, (int)$match[1], (int)$match[2], $year)); }
 		$at = new DateTime();
 		$at->setDate($year, (int)$match[1], (int)$match[2]);
 		$at->setTime($hour, $minute, 0);
@@ -52,20 +52,20 @@ class PirateBayEngine extends commonEngine
 	{
 		$added = 0;
 		$url = 'https://thepiratebay.org';
-		if($useGlobalCats)
-			$categories = array( 'all'=>'100,200,300,400,500,600', 'movies'=>'200', 'tv'=>'205', 'music'=>'100', 'games'=>'400', 'anime'=>'0', 'software'=>'300', 'pictures'=>'603', 'books'=>'601' );
-		else
-			$categories = &$this->categories;
-		if(!array_key_exists($cat,$categories))
-			$cat = $categories['all'];
-		else
-			$cat = $categories[$cat];
+		if($useGlobalCats) {
+			$categories = [ 'all'=>'100,200,300,400,500,600', 'movies'=>'200', 'tv'=>'205', 'music'=>'100', 'games'=>'400', 'anime'=>'0', 'software'=>'300', 'pictures'=>'603', 'books'=>'601' ]; }
+		else {
+			$categories = &$this->categories; }
+		if(!array_key_exists($cat,$categories)) {
+			$cat = $categories['all']; }
+		else {
+			$cat = $categories[$cat]; }
 		$maxPage = 10;
 		for($pg = 0; $pg<$maxPage; $pg++)
 		{
 			$cli = $this->fetch( $url . '/search/' . $what . '/' . $pg . '/7/' . $cat );
-			if(($cli==false) || (strpos($cli->results, "</span>&nbsp;No hits.")!==false))
-				break;
+			if(($cli==false) || (strpos($cli->results, "</span>&nbsp;No hits.")!==false)) {
+				break; }
 			$res = preg_match_all('`<td class="vertTh">.*'.
 				'<a .*>(?P<cat>.*)</a>.*<a .*>(?P<subcat>.*)</a>.*'.
 				'<a href="(?P<desc>.*)" .*>(?P<name>.*)</a>.*'.
@@ -89,17 +89,17 @@ class PirateBayEngine extends commonEngine
 						$item["peers"] = intval(self::removeTags($matches["leech"][$i]));
 
 						$tm = self::uploadedTime(self::removeTags($matches["date"][$i]));
-						if($tm!==false)
-							$item["time"] = $tm;
+						if($tm!==false) {
+							$item["time"] = $tm; }
 						$ret[$link] = $item;
 						$added++;
-						if($added>=$limit)
-							return;
+						if($added>=$limit) {
+							return; }
 					}
 				}
 			}
-			else
-				break;
+			else {
+				break; }
 		}
 	}
 }

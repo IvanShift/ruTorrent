@@ -8,12 +8,12 @@
 // presence. datadir loads this file alone, without the removal machinery in
 // removewithdata.php. The caller loads php/xmlrpc.php.
 require_once(dirname(__FILE__).'/../../php/utility/hashfault.php');
-if(!defined('ERASEDATA_TORRENT_PRESENT'))
-	define('ERASEDATA_TORRENT_PRESENT', HashFault::PRESENT);
-if(!defined('ERASEDATA_TORRENT_ABSENT'))
-	define('ERASEDATA_TORRENT_ABSENT', HashFault::ABSENT);
-if(!defined('ERASEDATA_TORRENT_UNKNOWN'))
-	define('ERASEDATA_TORRENT_UNKNOWN', HashFault::UNKNOWN);
+if(!defined('ERASEDATA_TORRENT_PRESENT')) {
+	define('ERASEDATA_TORRENT_PRESENT', HashFault::PRESENT); }
+if(!defined('ERASEDATA_TORRENT_ABSENT')) {
+	define('ERASEDATA_TORRENT_ABSENT', HashFault::ABSENT); }
+if(!defined('ERASEDATA_TORRENT_UNKNOWN')) {
+	define('ERASEDATA_TORRENT_UNKNOWN', HashFault::UNKNOWN); }
 
 if(!function_exists('erasedataTorrentPresence'))
 {

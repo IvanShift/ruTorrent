@@ -3,11 +3,11 @@ require_once dirname(__DIR__, 2).'/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
-if( !chdir( dirname( __FILE__) ) )
-	exit();
+if( !chdir( dirname( __FILE__) ) ) {
+	exit(); }
 
-if( count( $argv ) > 1 )
-	$_SERVER['REMOTE_USER'] = $argv[1];
+if( count( $argv ) > 1 ) {
+	$_SERVER['REMOTE_USER'] = $argv[1]; }
 
 require_once( "cli_log.php" );
 RuTrackerCliLog::install("update");
@@ -50,7 +50,7 @@ RuTrackerUpdatePass::sweepReplacements(time());
 ruTrackerChecker::sweepOrphanClaims();
 
 $req =  new rXMLRPCRequest(
-		new rXMLRPCCommand("d.multicall",array("seeding",
+		new rXMLRPCCommand("d.multicall",["seeding",
 			getCmd("d.get_hash="),
 			getCmd("d.get_custom=")."chk-state",
 			getCmd("d.get_custom=")."chk-time",
@@ -63,19 +63,19 @@ $req =  new rXMLRPCRequest(
 				.getCmd("t.is_enabled=").",".getCmd("cat=|").","
 				.getCmd("t.failed_counter=").",".getCmd("cat=|").","
 				.getCmd("t.success_counter=").",".getCmd("cat=#").'"',
-			getCmd("d.get_local_id=")
-		))
+			getCmd("d.get_local_id="),
+		]),
 	);
 if($req->success())
 {
 	// Only rows carrying a supported tracker go on to the update pass, same
 	// as before -- but a torrent's tracker list can start with dht:// or any
 	// other row, so every row is checked, not just the first.
-	$rows = array();
+	$rows = [];
 	$supported = ruTrackerChecker::supportedTrackers();
-	foreach(RuTrackerUpdatePass::parseMulticall($req->val) as $row)
-		if(RuTrackerUpdatePass::isTrackerSupported($row['trackers'], $supported))
-			$rows[] = $row;
+	foreach(RuTrackerUpdatePass::parseMulticall($req->val) as $row) {
+		if(RuTrackerUpdatePass::isTrackerSupported($row['trackers'], $supported)) {
+			$rows[] = $row; } }
 
 	$forumChanged = RuTrackerUpdatePass::pollFeed();
 	$result = RuTrackerUpdatePass::run($rows, $forumChanged);
@@ -85,10 +85,10 @@ if($req->success())
 
 	RuTrackerUpdatePass::logCycleSummary($result);
 }
-else
+else {
 	// The one outcome that used to be completely silent: every statement above,
 	// the summary included, hangs off this request succeeding, so a daemon that
 	// is down, busy or refusing the call produced an empty log and looked exactly
 	// like a plugin with diagnostics switched off.
 	ruTrackerChecker::logUnrepairable('update: aborted, seeding multicall '
-		. ($req->fault ? 'rpc-fault' : 'transport-failed'));
+		. ($req->fault ? 'rpc-fault' : 'transport-failed')); }

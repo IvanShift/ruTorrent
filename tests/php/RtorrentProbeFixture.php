@@ -25,13 +25,13 @@ require_once(__DIR__ . '/TestTree.php');
  */
 class RtorrentProbeFixture
 {
-	const VERSION = '0.16.20';
-	const INVALID_TARGET = 'invalid parameters: invalid target';
-	const SOURCE = __FILE__;
+	public const VERSION = '0.16.20';
+	public const INVALID_TARGET = 'invalid parameters: invalid target';
+	public const SOURCE = __FILE__;
 
 	public static function replyClassFiles()
 	{
-		return array(self::SOURCE);
+		return [self::SOURCE];
 	}
 
 	/** The method names one request asks for, in order. */
@@ -39,13 +39,13 @@ class RtorrentProbeFixture
 	{
 		if (preg_match('|<methodName>(.*)</methodName>|Us', $body, $outer) &&
 			($outer[1] !== 'system.multicall')) {
-			return array($outer[1]);
+			return [$outer[1]];
 		}
 		if (preg_match_all(
 			'|<name>methodName</name><value><string>(.*)</string></value>|Us', $body, $inner)) {
 			return $inner[1];
 		}
-		return array();
+		return [];
 	}
 
 	/** The first command's first parameter, or null. */
@@ -55,15 +55,15 @@ class RtorrentProbeFixture
 			$body, $m)) {
 			return $m[1];
 		}
-		if(preg_match('|<name>params</name>\s*<value><array><data>\s*<value><string>(.*?)</string>|s', $body, $m))
-			return $m[1];
+		if(preg_match('|<name>params</name>\s*<value><array><data>\s*<value><string>(.*?)</string>|s', $body, $m)) {
+			return $m[1]; }
 		return null;
 	}
 
 	/** One d.multicall row: the hash, then a value per remaining command. */
 	public static function row($hash, $columns)
 	{
-		$row = array($hash);
+		$row = [$hash];
 		for ($i = 1; $i < $columns; $i++) {
 			$row[] = '0';
 		}
@@ -94,6 +94,17 @@ class RtorrentProbeFixture
 		return file_put_contents($profilePath . '/settings/rtorrent.dat', $cache) !== false;
 	}
 
+	public static function responder($hash = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+	{
+		return new RtorrentProbeResponder($hash);
+	}
+
+	/** A daemon that accepts every connection and answers an empty list. */
+	public static function silent()
+	{
+		return new RtorrentProbeResponder(null, true);
+	}
+
 	private static function probeForCache()
 	{
 		$base = sys_get_temp_dir() . '/rutorrent-probe-fixture-' . getmypid();
@@ -113,7 +124,7 @@ class RtorrentProbeFixture
 			if (file_put_contents($driver, $source) !== strlen($source)) {
 				return false;
 			}
-			$ignored = array();
+			$ignored = [];
 			exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
 				escapeshellarg($driver) . ' 2>&1', $ignored);
 			return @file_get_contents($base . '/settings/rtorrent.dat');
@@ -123,17 +134,6 @@ class RtorrentProbeFixture
 			}
 			TestTree::remove($base);
 		}
-	}
-
-	public static function responder($hash = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
-	{
-		return new RtorrentProbeResponder($hash);
-	}
-
-	/** A daemon that accepts every connection and answers an empty list. */
-	public static function silent()
-	{
-		return new RtorrentProbeResponder(null, true);
 	}
 }
 
@@ -157,11 +157,11 @@ class RtorrentProbeResponder
 	public function __invoke($body, $methods = null)
 	{
 		if ($this->silent) {
-			return array();
+			return [];
 		}
 		$names = RtorrentProbeFixture::methodNames($body);
-		if($this->listFault !== null && in_array('d.multicall', $names, true))
-			return FakeRtorrentDaemon::fault($this->listFault);
+		if($this->listFault !== null && in_array('d.multicall', $names, true)) {
+			return FakeRtorrentDaemon::fault($this->listFault); }
 		$single = (count($names) === 1) ? $names[0] : '';
 		if ($single === 'd.multicall') {
 			if (RtorrentProbeFixture::firstParameter($body) !== '') {
@@ -169,22 +169,22 @@ class RtorrentProbeResponder
 			}
 			// The httprpc list mode asks for 36 columns. Fork: its reader
 			// takes the answer as rtorrent writes it, one array per torrent.
-			return HttprpcListFixture::reply(array(RtorrentProbeFixture::row($this->hash, 36)));
+			return HttprpcListFixture::reply([RtorrentProbeFixture::row($this->hash, 36)]);
 		}
 		switch ($single) {
 			case 'system.client_version':
-				if(strpos($body, '<methodName>system.client_version</methodName>') !== false)
-					return new FakeRtorrentDirectStringReply(RtorrentProbeFixture::VERSION);
-				return array(RtorrentProbeFixture::VERSION);
+				if(strpos($body, '<methodName>system.client_version</methodName>') !== false) {
+					return new FakeRtorrentDirectStringReply(RtorrentProbeFixture::VERSION); }
+				return [RtorrentProbeFixture::VERSION];
 			case 'system.api_version':
-				return array('11');
+				return ['11'];
 			case 'convert.kb':
-				return array('1');
+				return ['1'];
 			case 'network.listen.port':
-				return array('6890');
+				return ['6890'];
 			case 'execute.capture':
 				// uid, group list, home -- the three lines obtain() reads.
-				return array("1000\n1000 1001\n/home/rtorrent\n");
+				return ["1000\n1000 1001\n/home/rtorrent\n"];
 		}
 		// The settings batch: directory, session, library version, name,
 		// port range, bind address, local address. Every one of these
@@ -192,8 +192,8 @@ class RtorrentProbeResponder
 		// carries unprobed, so that warmSettingsCache() changes what a
 		// script knows about the daemon's commands and nothing else.
 		if (count($names) === 7) {
-			return array('/tmp', '', RtorrentProbeFixture::VERSION, '',
-				'6890-6999', '0.0.0.0', '0.0.0.0');
+			return ['/tmp', '', RtorrentProbeFixture::VERSION, '',
+				'6890-6999', '0.0.0.0', '0.0.0.0'];
 		}
 		return array_fill(0, max(1, count($names)), '0');
 	}

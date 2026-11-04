@@ -8,8 +8,8 @@ define('RUTORRENT_SYNCHRONOUS_HOOK', true);
 	$path = dirname(realpath($argv[0]));
 	if(chdir($path))
 	{
-		if( count( $argv ) > 4 )
-			$_SERVER['REMOTE_USER'] = $argv[4];
+		if( count( $argv ) > 4 ) {
+			$_SERVER['REMOTE_USER'] = $argv[4]; }
 		require_once( './rules.php' );
 		$mngr = rRatioRulesList::load();
 		try
@@ -18,8 +18,8 @@ define('RUTORRENT_SYNCHRONOUS_HOOK', true);
 		}
 		catch(RuntimeException $failure)
 		{
-			if($failure->getMessage() !== 'settings-cache-unavailable-in-synchronous-hook')
-				throw $failure;
+			if($failure->getMessage() !== 'settings-cache-unavailable-in-synchronous-hook') {
+				throw $failure; }
 			// The settings owner already logged the classified refusal. Never
 			// return a PHP diagnostic as the captured ratio or throttle name.
 			exit(1);
@@ -27,7 +27,7 @@ define('RUTORRENT_SYNCHRONOUS_HOOK', true);
 		if($rule)
 		{
 			$val = $rule->{$argv[3]};
-			if($val!='')
-				echo $val;
+			if($val!='') {
+				echo $val; }
 		}
 	}

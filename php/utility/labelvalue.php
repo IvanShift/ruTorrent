@@ -17,8 +17,8 @@ class LabelValue
 		} catch(Throwable $error) {
 			return null;
 		}
-		if(!is_string($key))
-			return null;
-		return UTF::isValid($value) ? $value : array('name' => UTF::display($value), 'labelKey' => $key);
+		if(!is_string($key)) {
+			return null; }
+		return UTF::isValid($value) ? $value : ['name' => UTF::display($value), 'labelKey' => $key];
 	}
 }

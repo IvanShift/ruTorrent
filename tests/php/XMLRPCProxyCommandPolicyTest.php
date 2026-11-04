@@ -10,29 +10,13 @@ require_once(__DIR__ . '/../../php/xmlrpc_proxy.php');
  */
 class XMLRPCProxyCommandPolicyTest extends TestCase
 {
-	private $safe = array('d.custom1.set', 'd.directory.set');
+	private $safe = ['d.custom1.set', 'd.directory.set'];
 	private $opts;
 
 	public function setUp()
 	{
-		$this->opts = array('directory' => array('root' => '/', 'resolve' => null),
-			'rtorrentVersion' => 0x1018);
-	}
-
-	private function decide($xml)
-	{
-		return XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $this->opts);
-	}
-
-	private function call($method, $params = array())
-	{
-		$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method
-			. '</methodName><params>';
-		foreach($params as $p)
-			$xml .= '<param><value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
-				. '</string></value></param>';
-		$xml .= '</params></methodCall>';
-		return $xml;
+		$this->opts = ['directory' => ['root' => '/', 'resolve' => null],
+			'rtorrentVersion' => 0x1018];
 	}
 
 	// --- load aliases and command tails ---
@@ -41,11 +25,11 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 	{
 		$uri = 'http://example.invalid/a.torrent';
 		$bad = $this->decide($this->call('load.start_verbose',
-			array('', $uri, 'execute=/bin/id')));
+			['', $uri, 'execute=/bin/id']));
 		$this->assertTrue($bad['action'] === 'reject' && $bad['payload'] === '',
 			'load.start_verbose refuses an executable command tail');
 		$good = $this->decide($this->call('load.start_verbose',
-			array('', $uri, 'd.custom1.set=label')));
+			['', $uri, 'd.custom1.set=label']));
 		$this->assertTrue($good['action'] === 'send' && $good['trusted'],
 			'load.start_verbose still accepts a safe tail');
 		$this->assertTrue(strpos($good['payload'], 'd.custom1.set="label"') !== false,
@@ -57,7 +41,7 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 		// load.verbose reads parameter 1 as a URI exactly as load.normal does,
 		// and a value that is not a network URI is a path on rtorrent's own
 		// filesystem, which becomes the download's tied file.
-		$xml = $this->call('load.verbose', array('', '/etc/passwd'));
+		$xml = $this->call('load.verbose', ['', '/etc/passwd']);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'reject',
@@ -66,10 +50,10 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 
 	public function testEveryLoadSpellingRtorrentRegistersIsRebuilt()
 	{
-		$spellings = array(
+		$spellings = [
 			'load.normal', 'load.start', 'load.verbose', 'load.start_verbose',
 			'load.raw', 'load.raw_start', 'load.raw_verbose', 'load.raw_start_verbose',
-		);
+		];
 		foreach($spellings as $method)
 		{
 			$raw = strpos($method, 'load.raw') === 0;
@@ -109,8 +93,8 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 
 	public function testAnAllowedStringCommandStillGetsThrough()
 	{
-		$xml = $this->call('load.start', array('',
-			'http://example.invalid/a.torrent', 'd.custom1.set=label'));
+		$xml = $this->call('load.start', ['',
+			'http://example.invalid/a.torrent', 'd.custom1.set=label']);
 		$d = $this->decide($xml);
 		$this->assertTrue($d['action'] === 'send' && $d['trusted'],
 			'a safe string command tail is forwarded trusted');
@@ -124,7 +108,7 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 	{
 		// A nested dispatcher is never allowed as a result expression.
 		$xml = $this->call('d.multicall',
-			array('', 'main', 'd.multicall=main,execute=/bin/id'));
+			['', 'main', 'd.multicall=main,execute=/bin/id']);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'reject',
@@ -137,7 +121,7 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 	public function testADollarIntroducedCommandIsRefused()
 	{
 		// A dollar introduces another command name in rTorrent syntax.
-		$xml = $this->call('d.multicall', array('', 'main', '$execute=/bin/id'));
+		$xml = $this->call('d.multicall', ['', 'main', '$execute=/bin/id']);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'reject',
@@ -210,7 +194,7 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 
 	public function testAnOrdinaryReadMulticallIsStillForwarded()
 	{
-		$xml = $this->call('d.multicall', array('', 'main', 'd.name=', 'd.custom=seedingtime'));
+		$xml = $this->call('d.multicall', ['', 'main', 'd.name=', 'd.custom=seedingtime']);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'send',
@@ -222,7 +206,7 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 		// "scheduled" begins with the refused prefix "schedule", but it stands
 		// where a command's argument stands, not where a command stands. What
 		// follows '=' inside one element is argument text and is not a name.
-		$xml = $this->call('d.multicall', array('', 'main', 'd.custom=scheduled'));
+		$xml = $this->call('d.multicall', ['', 'main', 'd.custom=scheduled']);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'send',
@@ -233,10 +217,26 @@ class XMLRPCProxyCommandPolicyTest extends TestCase
 	{
 		// The bundled plugin maps its legacy names to this canonical expression.
 		$expression = 'cat="$t.multicall=d.hash=,t.scrape_complete=,cat={#}"';
-		$xml = $this->call('d.multicall', array('', 'main', $expression));
+		$xml = $this->call('d.multicall', ['', 'main', $expression]);
 		$d = $this->decide($xml);
 
 		$this->assertTrue($d['action'] === 'send',
 			'the shipped nested tracker-column expression is still forwarded');
+	}
+
+	private function decide($xml)
+	{
+		return XMLRPCProxy::decide($xml, 'sanitize', $this->safe, false, $this->opts);
+	}
+
+	private function call($method, $params = [])
+	{
+		$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method
+			. '</methodName><params>';
+		foreach($params as $p) {
+			$xml .= '<param><value><string>' . htmlspecialchars($p, ENT_NOQUOTES)
+				. '</string></value></param>'; }
+		$xml .= '</params></methodCall>';
+		return $xml;
 	}
 }

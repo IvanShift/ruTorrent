@@ -45,4 +45,4 @@ foreach (get_declared_classes() as $cls) {
 }
 define('RUTORRENT_TESTCASE_RUNNER_FINISHED', true);
 echo "TestCase runner finished: {$classes} classes, {$methods} methods\n";
-if ($failures > 0) exit(1);
+if ($failures > 0) { exit(1); }

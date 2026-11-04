@@ -2,8 +2,8 @@
 require_once( '../../php/rtorrent.php' );
 require_once( '../../php/torrentfilenames.php' );
 
-if(isset($_REQUEST['result']))
-	CachedEcho::send('noty(theUILang.cantAccessData,"error");',"text/html");
+if(isset($_REQUEST['result'])) {
+	CachedEcho::send('noty(theUILang.cantAccessData,"error");',"text/html"); }
 
 if(isset($_REQUEST['hash']) && isset($_REQUEST['no']))
 {
@@ -24,13 +24,13 @@ if(isset($_REQUEST['hash']) && isset($_REQUEST['no']))
 		{
 			// The default name stays.
 		}
-		if(SendFile::send($filename, null, $displayName))
-			exit;
+		if(SendFile::send($filename, null, $displayName)) {
+			exit; }
 	}
 }
 
-if(isset($_REQUEST['readable']))
-	CachedEcho::send("Can't retrieve such a large file, sorry","text/html");
+if(isset($_REQUEST['readable'])) {
+	CachedEcho::send("Can't retrieve such a large file, sorry","text/html"); }
 else
 {
 	header("HTTP/1.0 302 Moved Temporarily");

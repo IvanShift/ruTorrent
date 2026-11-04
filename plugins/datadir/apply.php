@@ -9,11 +9,11 @@
 // trust of the destination's existing ancestor. Returns '' or a refusal.
 function rtDataDirRequestRefusal($hash, &$destPath)
 {
-    if (!is_string($hash) || preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1)
-        return 'invalid-arguments';
+    if (!is_string($hash) || preg_match('/^[0-9A-Fa-f]{40}$/D', $hash) !== 1) {
+        return 'invalid-arguments'; }
     if (!is_string($destPath) || $destPath === ''
-        || !rTorrentSettings::get()->correctDirectory($destPath, true))
-        return 'destination-invalid';
+        || !rTorrentSettings::get()->correctDirectory($destPath, true)) {
+        return 'destination-invalid'; }
     return DataDirMoveIntent::destinationReason($destPath);
 }
 
@@ -34,8 +34,8 @@ function rtDataDirApply($hash, $destPath, $addPath, $moveFiles, $fastResume, $db
 {
     $failure = null;
     $warning = '';
-    if (!rtMkDir($destPath, 0755)) $failure = 'destination-create-failed';
-    elseif (!rTorrentSettings::get()->correctDirectory($destPath, true)) $failure = 'destination-invalid';
+    if (!rtMkDir($destPath, 0755)) { $failure = 'destination-create-failed'; }
+    elseif (!rTorrentSettings::get()->correctDirectory($destPath, true)) { $failure = 'destination-invalid'; }
     if ($failure !== null) {
         FileUtil::toLog('datadir: change refused hash=' . strtoupper($hash) . ' reason=' . $failure);
         return false;
@@ -55,8 +55,8 @@ function rtDataDirApplyLocked($hash, $destPath, $addPath, $moveFiles, $fastResum
     $warning = '';
     try {
         $lock = rtDataDirLock($web);
-        if ($lock === false)
-            $failure = 'datadir-busy';
+        if ($lock === false) {
+            $failure = 'datadir-busy'; }
     } catch (RuntimeException $e) {
         $failure = $e->getMessage();
     }

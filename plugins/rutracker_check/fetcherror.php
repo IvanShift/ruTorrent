@@ -34,7 +34,7 @@ class RuTrackerFetchError
 	 * challenge-platform are retryable; other unreadable pages are errors.
 	 * Non-200 responses are rejected before that predicate runs.
 	 */
-	static public function isChallenge( $headers, $body )
+	public static function isChallenge( $headers, $body )
 	{
 		return KinozalResponse::isChallenge($headers, $body);
 	}
@@ -64,16 +64,16 @@ class RuTrackerFetchError
 	 * @return string One of the fixed tokens, 'unclassified', or '' when
 	 *                Snoopy wrote no message
 	 */
-	static public function classify( $error )
+	public static function classify( $error )
 	{
-		if(!is_string($error)) return('');
+		if(!is_string($error)) { return(''); }
 		$error = trim(preg_replace('/\s+/', ' ', $error));
-		if($error === '') return('');
+		if($error === '') { return(''); }
 		// Classify Snoopy's own errors. A refused credential redirect
 		// retains the redirect response status, so plugin consumers that log only
 		// status < 100 do not emit redirect-refused; the class remains available
 		// to callers that inspect the error field directly.
-		$classes = array(
+		$classes = [
 			'invalid-url' => '/^invalid-url$/i',
 			'invalid-protocol' => '/^Invalid[ -]protocol\b/i',
 			'refused-unresolvable-host' => '/^Refusing to fetch: cannot resolve host\b/i',
@@ -98,9 +98,9 @@ class RuTrackerFetchError
 			'request-throttled' => '/^request-throttled$/i',
 			'credential-post-failed' => '/^credential-post-failed$/i',
 			'login-paused' => '/^login-paused$/i',
-		);
-		foreach($classes as $token => $pattern)
-			if(preg_match($pattern, $error)) return($token);
+		];
+		foreach($classes as $token => $pattern) {
+			if(preg_match($pattern, $error)) { return($token); } }
 		return('unclassified');
 	}
 }

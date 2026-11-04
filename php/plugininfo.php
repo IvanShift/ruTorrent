@@ -5,31 +5,31 @@ final class PluginInfo
 {
     public static function parse(array $lines, array $info)
     {
-        $aliases = array(
+        $aliases = [
             'author' => 'plugin.author',
             'description' => 'plugin.description',
             'remote' => 'rtorrent.remote',
             'need_rtorrent' => 'rtorrent.need',
             'version' => 'plugin.version',
             'runlevel' => 'plugin.runlevel',
-        );
-        $strings = array('plugin.help', 'plugin.author', 'plugin.description',
-            'rtorrent.remote');
-        $integers = array('plugin.may_be_shutdowned', 'plugin.may_be_launched',
-            'rtorrent.need');
-        $floats = array('plugin.version', 'plugin.runlevel');
-        $versions = array('rtorrent.version', 'php.version');
-        $lists = array('plugin.dependencies', 'rtorrent.external.warning',
+        ];
+        $strings = ['plugin.help', 'plugin.author', 'plugin.description',
+            'rtorrent.remote'];
+        $integers = ['plugin.may_be_shutdowned', 'plugin.may_be_launched',
+            'rtorrent.need'];
+        $floats = ['plugin.version', 'plugin.runlevel'];
+        $versions = ['rtorrent.version', 'php.version'];
+        $lists = ['plugin.dependencies', 'rtorrent.external.warning',
             'rtorrent.external.error', 'rtorrent.script.error',
             'rtorrent.php.error', 'web.external.warning', 'web.external.error',
-            'php.extensions.warning', 'php.extensions.error');
+            'php.extensions.warning', 'php.extensions.error'];
 
         foreach ($lines as $line) {
             $fields = explode(':', $line, 2);
-            if (count($fields) !== 2) continue;
+            if (count($fields) !== 2) { continue; }
             $field = trim($fields[0]);
-            if (isset($aliases[$field])) $field = $aliases[$field];
-            if ($field !== 'plugin.version' && !array_key_exists($field, $info)) continue;
+            if (isset($aliases[$field])) { $field = $aliases[$field]; }
+            if ($field !== 'plugin.version' && !array_key_exists($field, $info)) { continue; }
             $value = addcslashes(trim($fields[1]), "\\'\"\n\r\t");
             if (in_array($field, $strings, true)) {
                 $info[$field] = $value;
@@ -54,8 +54,8 @@ final class PluginInfo
     {
         $leftLevel = (float)$leftLevel;
         $rightLevel = (float)$rightLevel;
-        if ($leftLevel > $rightLevel) return(1);
-        if ($leftLevel < $rightLevel) return(-1);
+        if ($leftLevel > $rightLevel) { return(1); }
+        if ($leftLevel < $rightLevel) { return(-1); }
         return(strcmp($leftName, $rightName));
     }
 }

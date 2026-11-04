@@ -9,6 +9,124 @@ require_once(__DIR__ . '/../../php/TestCase.php');
  */
 class HttprpcSettingsEntrypointTest extends TestCase
 {
+
+	public function testForgedSizeSetterIsRefusedBeforeRpcConstruction()
+	{
+		$result = $this->runRequest('mode=setsettings&s=nxmlrpc_size_limit&v=1');
+		$this->assertEquals(0, $result['status'], 'the isolated door returns a refusal');
+		$this->assertEquals('403|Refused: unsupported setting.', $result['output'],
+			'the size bypass is refused before an RPC request exists');
+		$this->assertEquals('', $result['error'], 'the refusal has no PHP diagnostic');
+	}
+
+	public function testOtherForgedNamesAndMalformedBatchesAreRefused()
+	{
+		foreach(['mode=setsettings&s=nexecute&v=1',
+			'mode=setsettings&s=nmax_open_files'] as $body)
+		{
+			$result = $this->runRequest($body);
+			$this->assertEquals(0, $result['status'], 'invalid form returns a refusal');
+			$this->assertEquals('403|Refused: unsupported setting.', $result['output'],
+				'invalid form cannot construct an RPC request');
+		}
+	}
+
+	public function testDangerousCmdValuesAreRefusedByRealFormEntrypoint()
+	{
+		foreach(['list', 'ttl', 'prp'] as $mode) {
+			foreach(['import=/tmp/commands.rc',
+				'method.insert=x,simple,"d.name="', 'system.shutdown'] as $command)
+			{
+				// Keep mode after cmd: action.php must finish parsing before choosing policy.
+				$body = 'cmd='.rawurlencode($command).'&mode='.$mode
+					.'&hash='.str_repeat('a', 40);
+				$result = $this->runRequest($body);
+				$this->assertEquals(0, $result['status'], $mode.' refuses '.$command);
+				$this->assertTrue(strpos($result['output'], '403|Refused: this server does not allow ') === 0,
+					$mode.' returns HTTP 403 without constructing an RPC request');
+				$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
+			} }
+	}
+
+	public function testCommandExtensionsServeReviewed1626And1627Daemons()
+	{
+		// Every mode=...&cmd=... answered 503 on a 0.16.26 daemon before it was reviewed.
+		foreach(['0.16.24', '0.16.26', '0.16.27'] as $version)
+		{
+			$result = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, $version);
+			$this->assertEquals(72, $result['status'], 'a native list extension reaches the RPC boundary on '.$version);
+			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
+				'the version check admits the extension on '.$version);
+			$this->assertEquals('', $result['error'], 'the extension has no PHP diagnostic on '.$version);
+			$this->assertEquals('PRM[d.name=""];', $result['trace'],
+				'the extension is rebuilt by the shared slot policy on '.$version);
+		}
+		$refused = $this->runRequest('cmd='.rawurlencode('execute.capture=,id').'&mode=list', null, '0.16.26');
+		$this->assertEquals(0, $refused['status'], 'a refused extension is answered on 0.16.26');
+		$this->assertEquals('403|Refused: this server does not allow execute.capture on this connection.',
+			$refused['output'], 'the refused extension is named without constructing an RPC request');
+		$next = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, '0.16.28');
+		$this->assertEquals(0, $next['status'], 'an unreviewed release is answered, not crashed');
+		$this->assertEquals('503|Could not verify the rTorrent version. rTorrent 0.16.28 is not a supported '
+			.'version (supported: 0.9.8 and 0.16.0 to 0.16.27).', $next['output'],
+			'the extension refusal names the unreviewed release');
+	}
+
+	public function testOrdinaryModesStillReachTheStubbedRpcBoundary()
+	{
+		foreach(['list', 'ttl', 'prp'] as $mode)
+		{
+			$result = $this->runRequest('mode='.$mode.'&hash='.str_repeat('a', 40));
+			$this->assertEquals(72, $result['status'], $mode.' reaches the fake RPC boundary');
+			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
+				$mode.' remains available without a real RPC connection');
+			$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
+		}
+	}
+
+	public function testListModeExplainsHeaderlessEofButKeepsConnectFailureMessage()
+	{
+		$closed = $this->runRequest('mode=list', 'closed-before-headers');
+		$this->assertEquals(0, $closed['status'], 'list mode returns a classified error');
+		$this->assertEquals('500|rTorrent closed the SCGI connection before sending response headers. '
+			.'A long-running request may have hit the daemon\'s SCGI timeout.', $closed['output'],
+			'list mode explains an accepted connection that closed before headers');
+		$this->assertEquals('', $closed['error'], 'headerless EOF emits no PHP diagnostic');
+
+		$connect = $this->runRequest('mode=list', 'connect-failed');
+		$this->assertEquals(0, $connect['status'], 'connect failure still returns an error');
+		$this->assertEquals('500|Could not reach rTorrent over XMLRPC. Is rTorrent running?',
+			$connect['output'], 'a refused connection keeps its established message');
+	}
+
+	public function testRejectedSocketTransactionRestoresItsSnapshot()
+	{
+		$result = $this->runRequest('mode=setsettings&s=nmax_open_files&v=100000', 'socket-rollback');
+		$this->assertEquals(0, $result['status'], 'the real action.php completes its refusal path');
+		$this->assertEquals('', $result['error'], 'the rollback fixture raises no PHP diagnostic');
+		preg_match_all('/RPC\[([^]]+)\];/', $result['trace'], $calls);
+		$this->assertEquals([
+			'system.sockets.files.min_alloc,system.sockets.files.max_alloc',
+			'get_max_open_files',
+			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
+			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
+			'get_max_open_files',
+		], $calls[1], 'a failed allocation is followed by one restore and read-back');
+		$this->assertTrue(strpos($result['output'], '500|over budget') !== false,
+			'the original rTorrent refusal reaches the caller after rollback');
+	}
+
+	public function testOrdinarySettingReachesTheStubbedRpcBoundary()
+	{
+		foreach(['mode=setsettings&s=nmax_open_files&v=20000',
+			'mode=setsettings&s=ndht&v=1'] as $body)
+		{
+			$result = $this->runRequest($body);
+			$this->assertEquals(72, $result['status'], 'allowed setting reaches the fake RPC boundary');
+			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
+				'the allowed path remains available without a real RPC connection');
+		}
+	}
 	private function runRequest($body, $rpcFailure = null, $daemonVersion = '0.16.24')
 	{
 		$root = sys_get_temp_dir().'/httprpc-settings-'.getmypid().'-'.bin2hex(random_bytes(6));
@@ -92,14 +210,14 @@ class rXMLRPCRequest {
 		file_put_contents($root.'/plugins/httprpc/rpccache.php', '<?php');
 
 		$script = '$HTTP_RAW_POST_DATA = '.var_export($body, true).'; include "action.php";';
-		$process = proc_open(array(PHP_BINARY, '-r', $script),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+		$process = proc_open([PHP_BINARY, '-r', $script],
+			[0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
 			$pipes, $root.'/plugins/httprpc',
-			array_merge($_ENV, array('HTTPRPC_TEST_FAILURE' => (string)$rpcFailure,
+			array_merge($_ENV, ['HTTPRPC_TEST_FAILURE' => (string)$rpcFailure,
 				'HTTPRPC_TEST_TRACE' => $root.'/trace',
-				'HTTPRPC_TEST_DAEMON_VERSION' => $daemonVersion)));
-		if(!is_resource($process))
-			throw new Exception('could not start isolated action.php fixture');
+				'HTTPRPC_TEST_DAEMON_VERSION' => $daemonVersion]));
+		if(!is_resource($process)) {
+			throw new Exception('could not start isolated action.php fixture'); }
 		fclose($pipes[0]);
 		$output = stream_get_contents($pipes[1]);
 		$error = stream_get_contents($pipes[2]);
@@ -107,137 +225,19 @@ class rXMLRPCRequest {
 		fclose($pipes[2]);
 		$status = proc_close($process);
 		$trace = is_file($root.'/trace') ? file_get_contents($root.'/trace') : '';
-		if(is_file($root.'/trace'))
-			unlink($root.'/trace');
+		if(is_file($root.'/trace')) {
+			unlink($root.'/trace'); }
 
-		foreach(array('plugins/httprpc/action.php', 'plugins/httprpc/settingspolicy.php',
+		foreach(['plugins/httprpc/action.php', 'plugins/httprpc/settingspolicy.php',
 			'plugins/httprpc/rpccache.php', 'php/xmlrpc.php', 'php/xmlrpc_proxy.php',
 			'php/xmlrpc_proxy_native.php',
-			'php/xmlrpc_path.php') as $file)
-			unlink($root.'/'.$file);
+			'php/xmlrpc_path.php'] as $file) {
+			unlink($root.'/'.$file); }
 		rmdir($root.'/plugins/httprpc');
 		rmdir($root.'/plugins');
 		rmdir($root.'/php');
 		rmdir($root);
-		return array('status' => $status, 'output' => $output,
-			'error' => $error, 'trace' => $trace);
-	}
-
-	public function testForgedSizeSetterIsRefusedBeforeRpcConstruction()
-	{
-		$result = $this->runRequest('mode=setsettings&s=nxmlrpc_size_limit&v=1');
-		$this->assertEquals(0, $result['status'], 'the isolated door returns a refusal');
-		$this->assertEquals('403|Refused: unsupported setting.', $result['output'],
-			'the size bypass is refused before an RPC request exists');
-		$this->assertEquals('', $result['error'], 'the refusal has no PHP diagnostic');
-	}
-
-	public function testOtherForgedNamesAndMalformedBatchesAreRefused()
-	{
-		foreach(array('mode=setsettings&s=nexecute&v=1',
-			'mode=setsettings&s=nmax_open_files') as $body)
-		{
-			$result = $this->runRequest($body);
-			$this->assertEquals(0, $result['status'], 'invalid form returns a refusal');
-			$this->assertEquals('403|Refused: unsupported setting.', $result['output'],
-				'invalid form cannot construct an RPC request');
-		}
-	}
-
-	public function testDangerousCmdValuesAreRefusedByRealFormEntrypoint()
-	{
-		foreach(array('list', 'ttl', 'prp') as $mode)
-			foreach(array('import=/tmp/commands.rc',
-				'method.insert=x,simple,"d.name="', 'system.shutdown') as $command)
-			{
-				// Keep mode after cmd: action.php must finish parsing before choosing policy.
-				$body = 'cmd='.rawurlencode($command).'&mode='.$mode
-					.'&hash='.str_repeat('a', 40);
-				$result = $this->runRequest($body);
-				$this->assertEquals(0, $result['status'], $mode.' refuses '.$command);
-				$this->assertTrue(strpos($result['output'], '403|Refused: this server does not allow ') === 0,
-					$mode.' returns HTTP 403 without constructing an RPC request');
-				$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
-			}
-	}
-
-	public function testCommandExtensionsServeReviewed1626And1627Daemons()
-	{
-		// Every mode=...&cmd=... answered 503 on a 0.16.26 daemon before it was reviewed.
-		foreach(array('0.16.24', '0.16.26', '0.16.27') as $version)
-		{
-			$result = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, $version);
-			$this->assertEquals(72, $result['status'], 'a native list extension reaches the RPC boundary on '.$version);
-			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
-				'the version check admits the extension on '.$version);
-			$this->assertEquals('', $result['error'], 'the extension has no PHP diagnostic on '.$version);
-			$this->assertEquals('PRM[d.name=""];', $result['trace'],
-				'the extension is rebuilt by the shared slot policy on '.$version);
-		}
-		$refused = $this->runRequest('cmd='.rawurlencode('execute.capture=,id').'&mode=list', null, '0.16.26');
-		$this->assertEquals(0, $refused['status'], 'a refused extension is answered on 0.16.26');
-		$this->assertEquals('403|Refused: this server does not allow execute.capture on this connection.',
-			$refused['output'], 'the refused extension is named without constructing an RPC request');
-		$next = $this->runRequest('cmd='.rawurlencode('d.name=').'&mode=list', null, '0.16.28');
-		$this->assertEquals(0, $next['status'], 'an unreviewed release is answered, not crashed');
-		$this->assertEquals('503|Could not verify the rTorrent version. rTorrent 0.16.28 is not a supported '
-			.'version (supported: 0.9.8 and 0.16.0 to 0.16.27).', $next['output'],
-			'the extension refusal names the unreviewed release');
-	}
-
-	public function testOrdinaryModesStillReachTheStubbedRpcBoundary()
-	{
-		foreach(array('list', 'ttl', 'prp') as $mode)
-		{
-			$result = $this->runRequest('mode='.$mode.'&hash='.str_repeat('a', 40));
-			$this->assertEquals(72, $result['status'], $mode.' reaches the fake RPC boundary');
-			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
-				$mode.' remains available without a real RPC connection');
-			$this->assertEquals('', $result['error'], $mode.' has no PHP diagnostic');
-		}
-	}
-
-	public function testListModeExplainsHeaderlessEofButKeepsConnectFailureMessage()
-	{
-		$closed = $this->runRequest('mode=list', 'closed-before-headers');
-		$this->assertEquals(0, $closed['status'], 'list mode returns a classified error');
-		$this->assertEquals('500|rTorrent closed the SCGI connection before sending response headers. '
-			.'A long-running request may have hit the daemon\'s SCGI timeout.', $closed['output'],
-			'list mode explains an accepted connection that closed before headers');
-		$this->assertEquals('', $closed['error'], 'headerless EOF emits no PHP diagnostic');
-
-		$connect = $this->runRequest('mode=list', 'connect-failed');
-		$this->assertEquals(0, $connect['status'], 'connect failure still returns an error');
-		$this->assertEquals('500|Could not reach rTorrent over XMLRPC. Is rTorrent running?',
-			$connect['output'], 'a refused connection keeps its established message');
-	}
-
-	public function testRejectedSocketTransactionRestoresItsSnapshot()
-	{
-		$result = $this->runRequest('mode=setsettings&s=nmax_open_files&v=100000', 'socket-rollback');
-		$this->assertEquals(0, $result['status'], 'the real action.php completes its refusal path');
-		$this->assertEquals('', $result['error'], 'the rollback fixture raises no PHP diagnostic');
-		preg_match_all('/RPC\[([^]]+)\];/', $result['trace'], $calls);
-		$this->assertEquals(array(
-			'system.sockets.files.min_alloc,system.sockets.files.max_alloc',
-			'get_max_open_files',
-			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
-			'system.sockets.files.min_alloc.set,system.sockets.files.max_alloc.set,system.sockets.adjust_alloc',
-			'get_max_open_files',
-		), $calls[1], 'a failed allocation is followed by one restore and read-back');
-		$this->assertTrue(strpos($result['output'], '500|over budget') !== false,
-			'the original rTorrent refusal reaches the caller after rollback');
-	}
-
-	public function testOrdinarySettingReachesTheStubbedRpcBoundary()
-	{
-		foreach(array('mode=setsettings&s=nmax_open_files&v=20000',
-			'mode=setsettings&s=ndht&v=1') as $body)
-		{
-			$result = $this->runRequest($body);
-			$this->assertEquals(72, $result['status'], 'allowed setting reaches the fake RPC boundary');
-			$this->assertEquals('RPC-CONSTRUCTED', $result['output'],
-				'the allowed path remains available without a real RPC connection');
-		}
+		return ['status' => $status, 'output' => $output,
+			'error' => $error, 'trace' => $trace];
 	}
 }

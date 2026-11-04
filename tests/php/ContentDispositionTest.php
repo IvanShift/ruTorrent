@@ -6,7 +6,7 @@ require_once(__DIR__ . '/TestHttpServer.php');
 /** Download headers are checked through the real senders and a loopback HTTP server. */
 class ContentDispositionTest extends TestCase
 {
-	const NAME = 'aud "q" \\b \'a\' &c';
+	public const NAME = 'aud "q" \\b \'a\' &c';
 
 	private $base;
 
@@ -23,20 +23,106 @@ class ContentDispositionTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	public function testBothSendersOfferTheExactNameInAWellFormedHeader()
+	{
+		$values = $this->served(['/file', '/torrent']);
+		foreach (['/file' => self::NAME . '.bin', '/torrent' => self::NAME . '.torrent'] as $path => $name) {
+			$value = $values[$path] ?? null;
+			$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed disposition: '
+				. var_export($value, true));
+			$this->same($name, self::chosenName($value), $path . ' offers the name with its quote and backslash');
+			$this->assertTrue(is_string($value) && strpos($value, 'filename="aud \\"q\\" \\\\b') !== false,
+				$path . ' keeps an ASCII fallback with the quote and backslash escaped');
+		}
+	}
+
+	public function testExplicitUtf8NamesAndLegacyMsieKeepTheirDownloadNames()
+	{
+		$name = "Фильм \"q\" \\b.bin";
+		$paths = ['/file?name=' . rawurlencode($name), '/torrent?name=' . rawurlencode($name)];
+		foreach ([null, 'Mozilla/4.0 (compatible; MSIE 8.0)'] as $userAgent) {
+			foreach ($this->served($paths, $userAgent) as $path => $value) {
+				$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed explicit name');
+				$this->same($name, self::chosenName($value), $path . ' preserves the explicit UTF-8 name');
+				if ($userAgent !== null) {
+					$this->assertTrue(strpos($value, 'filename="' . rawurlencode($name) . '"') !== false,
+						$path . ' preserves the MSIE percent-encoded fallback');
+				}
+			}
+		}
+	}
+
+	public function testTheHelperKeepsEveryNameExactAndItsFallbackPrintable()
+	{
+		$path = __DIR__ . '/../../php/utility/contentdisposition.php';
+		$this->assertTrue(is_file($path), 'the shared helper exists');
+		if (!is_file($path)) {
+			return;
+		}
+		require_once($path);
+		$names = ['plain.torrent', self::NAME, "Фильм \"x\".mkv", "a\r\nX-Injected: 1", 'pct%41 ;=,.bin'];
+		foreach ($names as $name) {
+			$value = ContentDisposition::attachment($name);
+			$this->assertTrue(self::wellFormed($value), 'well-formed for ' . json_encode($name) . ': ' . $value);
+			$this->same($name, self::chosenName($value), 'exact for ' . json_encode($name));
+		}
+		$this->same('attachment; filename="plain.torrent"; filename*=UTF-8\'\'plain.torrent',
+			ContentDisposition::attachment('plain.torrent'), 'a plain name keeps its familiar header');
+		$value = ContentDisposition::attachment("cp1251 \xD4\xE8\xEB\xFC\xEC.avi");
+		$this->same('cp1251 \\xD4\\xE8\\xEB\\xFC\\xEC.avi', self::chosenName($value),
+			'unknown name bytes stay visible in the offered Unicode name');
+		$this->same('attachment; filename="a%22b"; filename*=UTF-8\'\'a%22b',
+			ContentDisposition::attachment('a"b', 'Mozilla/4.0 (compatible; MSIE 8.0)'),
+			'an old MSIE still gets the percent-encoded filename it decodes');
+	}
+
+	public function testLegacyFilePathsKeepTheirPayloadAndOfferVisibleBytes()
+	{
+		$raw = "cp1251 \xD4\xE8\xEB\xFC\xEC.bin";
+		$value = $this->served(['/file'], null, ['file'=>$raw])['/file'];
+		$this->assertTrue(self::wellFormed($value), 'raw legacy filesystem names produce a valid HTTP header');
+		$this->same('cp1251 \\xD4\\xE8\\xEB\\xFC\\xEC.bin', self::chosenName($value),
+			'unknown filesystem bytes receive an explicit label without changing the read path');
+	}
+
+	public function testTorrentSourceDownloadsPreferTheirOwnUtf8NameAlias()
+	{
+		$raw = "episode \xF1\xE5\xF0\xE8\xFF";
+		$value = $this->served(['/torrent'], null, ['name'=>$raw, 'alias'=>'episode серия'])['/torrent'];
+		$this->same('episode серия.torrent', self::chosenName($value), 'source metadata supplies the torrent download label');
+		$valid = $this->served(['/torrent'], null, ['name'=>'中文 🙂 %41', 'alias'=>'different', 'noHash'=>true])['/torrent'];
+		$this->same('中文 🙂 %41.torrent', self::chosenName($valid), 'valid Unicode source names remain unchanged even with an alternative');
+		$unavailable = $this->served(['/torrent'], null, ['name'=>$raw, 'alias'=>'episode серия', 'noHash'=>true])['/torrent'];
+		$this->same('episode \\xF1\\xE5\\xF0\\xE8\\xFF.torrent', self::chosenName($unavailable),
+			'an unavailable optional metadata hash cannot prevent serving the original torrent');
+	}
+
+	public function testExplicitLegacyAndControlNamesCannotChangeHeadersOrPayload()
+	{
+		foreach(["cp\xFF \"q\" \\b %41.bin"=>'cp\\xFF "q" \\\\b %41.bin',
+			"name\r\nX-Forged: yes\t%41.bin"=>"name\r\nX-Forged: yes\t%41.bin"] as $raw=>$expected) {
+			$paths = ['/file?name='.rawurlencode($raw), '/torrent?name='.rawurlencode($raw)];
+			foreach($this->served($paths) as $value) {
+				$this->assertTrue(self::wellFormed($value), 'download labels remain one well-formed header');
+				$this->same($expected, self::chosenName($value), 'literal quotes, backslashes and percent sequences are encoded once');
+			}
+		}
+	}
+
 	private function removeTree($path)
 	{
 		if (!is_dir($path) || is_link($path)) {
 			@unlink($path);
 			return;
 		}
-		foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
+		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
 			$this->removeTree($path . '/' . $entry);
 		}
 		@rmdir($path);
 	}
 
 	/** The Content-Disposition values a browser receives for each request path. */
-	private function served(array $paths, $userAgent = null, $fixture = array())
+	private function served(array $paths, $userAgent = null, $fixture = [])
 	{
 		$root = realpath(__DIR__ . '/../..');
 		$file = $this->base . '/' . ($fixture['file'] ?? self::NAME . '.bin');
@@ -59,9 +145,9 @@ class ContentDispositionTest extends TestCase
 			. '  (new ' . (!empty($fixture['noHash']) ? 'ContentDispositionNoHashTorrent' : 'Torrent')
 			. '(' . var_export($torrent, true) . '))->send($_GET[\'name\'] ?? null);' . "\n"
 			. "}\n");
-		$server = TestHttpServer::start($this->base . '/www', array(), array(), $this->base . '/www/router.php');
+		$server = TestHttpServer::start($this->base . '/www', [], [], $this->base . '/www/router.php');
 		$address = '127.0.0.1:' . $server->port();
-		$values = array();
+		$values = [];
 		try {
 			foreach ($paths as $path) {
 				$socket = stream_socket_client('tcp://' . $address, $errno, $error, 5);
@@ -113,91 +199,5 @@ class ContentDispositionTest extends TestCase
 	{
 		$this->assertTrue($expected === $actual, $what
 			. ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
-	}
-
-	public function testBothSendersOfferTheExactNameInAWellFormedHeader()
-	{
-		$values = $this->served(array('/file', '/torrent'));
-		foreach (array('/file' => self::NAME . '.bin', '/torrent' => self::NAME . '.torrent') as $path => $name) {
-			$value = $values[$path] ?? null;
-			$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed disposition: '
-				. var_export($value, true));
-			$this->same($name, self::chosenName($value), $path . ' offers the name with its quote and backslash');
-			$this->assertTrue(is_string($value) && strpos($value, 'filename="aud \\"q\\" \\\\b') !== false,
-				$path . ' keeps an ASCII fallback with the quote and backslash escaped');
-		}
-	}
-
-	public function testExplicitUtf8NamesAndLegacyMsieKeepTheirDownloadNames()
-	{
-		$name = "Фильм \"q\" \\b.bin";
-		$paths = array('/file?name=' . rawurlencode($name), '/torrent?name=' . rawurlencode($name));
-		foreach (array(null, 'Mozilla/4.0 (compatible; MSIE 8.0)') as $userAgent) {
-			foreach ($this->served($paths, $userAgent) as $path => $value) {
-				$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed explicit name');
-				$this->same($name, self::chosenName($value), $path . ' preserves the explicit UTF-8 name');
-				if ($userAgent !== null) {
-					$this->assertTrue(strpos($value, 'filename="' . rawurlencode($name) . '"') !== false,
-						$path . ' preserves the MSIE percent-encoded fallback');
-				}
-			}
-		}
-	}
-
-	public function testTheHelperKeepsEveryNameExactAndItsFallbackPrintable()
-	{
-		$path = __DIR__ . '/../../php/utility/contentdisposition.php';
-		$this->assertTrue(is_file($path), 'the shared helper exists');
-		if (!is_file($path)) {
-			return;
-		}
-		require_once($path);
-		$names = array('plain.torrent', self::NAME, "Фильм \"x\".mkv", "a\r\nX-Injected: 1", 'pct%41 ;=,.bin');
-		foreach ($names as $name) {
-			$value = ContentDisposition::attachment($name);
-			$this->assertTrue(self::wellFormed($value), 'well-formed for ' . json_encode($name) . ': ' . $value);
-			$this->same($name, self::chosenName($value), 'exact for ' . json_encode($name));
-		}
-		$this->same('attachment; filename="plain.torrent"; filename*=UTF-8\'\'plain.torrent',
-			ContentDisposition::attachment('plain.torrent'), 'a plain name keeps its familiar header');
-		$value = ContentDisposition::attachment("cp1251 \xD4\xE8\xEB\xFC\xEC.avi");
-		$this->same('cp1251 \\xD4\\xE8\\xEB\\xFC\\xEC.avi', self::chosenName($value),
-			'unknown name bytes stay visible in the offered Unicode name');
-		$this->same('attachment; filename="a%22b"; filename*=UTF-8\'\'a%22b',
-			ContentDisposition::attachment('a"b', 'Mozilla/4.0 (compatible; MSIE 8.0)'),
-			'an old MSIE still gets the percent-encoded filename it decodes');
-	}
-
-	public function testLegacyFilePathsKeepTheirPayloadAndOfferVisibleBytes()
-	{
-		$raw = "cp1251 \xD4\xE8\xEB\xFC\xEC.bin";
-		$value = $this->served(array('/file'), null, array('file'=>$raw))['/file'];
-		$this->assertTrue(self::wellFormed($value), 'raw legacy filesystem names produce a valid HTTP header');
-		$this->same('cp1251 \\xD4\\xE8\\xEB\\xFC\\xEC.bin', self::chosenName($value),
-			'unknown filesystem bytes receive an explicit label without changing the read path');
-	}
-
-	public function testTorrentSourceDownloadsPreferTheirOwnUtf8NameAlias()
-	{
-		$raw = "episode \xF1\xE5\xF0\xE8\xFF";
-		$value = $this->served(array('/torrent'), null, array('name'=>$raw, 'alias'=>'episode серия'))['/torrent'];
-		$this->same('episode серия.torrent', self::chosenName($value), 'source metadata supplies the torrent download label');
-		$valid = $this->served(array('/torrent'), null, array('name'=>'中文 🙂 %41', 'alias'=>'different', 'noHash'=>true))['/torrent'];
-		$this->same('中文 🙂 %41.torrent', self::chosenName($valid), 'valid Unicode source names remain unchanged even with an alternative');
-		$unavailable = $this->served(array('/torrent'), null, array('name'=>$raw, 'alias'=>'episode серия', 'noHash'=>true))['/torrent'];
-		$this->same('episode \\xF1\\xE5\\xF0\\xE8\\xFF.torrent', self::chosenName($unavailable),
-			'an unavailable optional metadata hash cannot prevent serving the original torrent');
-	}
-
-	public function testExplicitLegacyAndControlNamesCannotChangeHeadersOrPayload()
-	{
-		foreach(array("cp\xFF \"q\" \\b %41.bin"=>'cp\\xFF "q" \\\\b %41.bin',
-			"name\r\nX-Forged: yes\t%41.bin"=>"name\r\nX-Forged: yes\t%41.bin") as $raw=>$expected) {
-			$paths = array('/file?name='.rawurlencode($raw), '/torrent?name='.rawurlencode($raw));
-			foreach($this->served($paths) as $value) {
-				$this->assertTrue(self::wellFormed($value), 'download labels remain one well-formed header');
-				$this->same($expected, self::chosenName($value), 'literal quotes, backslashes and percent sequences are encoded once');
-			}
-		}
 	}
 }

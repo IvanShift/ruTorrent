@@ -14,12 +14,12 @@ require_once(__DIR__ . '/../../../plugins/history/history.php');
 // going through add(), which would try to write the cache file.
 function historyRecord($key, $actionTime, $action = 1)
 {
-    return array(
+    return [
         'action' => $action,
         'name' => 'torrent-' . $key,
         'action_time' => $actionTime,
         'hash' => $key,
-    );
+    ];
 }
 
 // A history object holding exactly $records, with no pending changes: this is
@@ -38,7 +38,7 @@ function historyRecordAddition($object, $record, $limit)
 {
     $object->data[$record['hash']] = $record;
     historySetProtected($object, 'ownAdditions',
-        historyGetProtected($object, 'ownAdditions') + array($record['hash'] => $record));
+        historyGetProtected($object, 'ownAdditions') + [$record['hash'] => $record]);
     historySetProtected($object, 'limit', $limit);
 }
 
@@ -46,7 +46,7 @@ function historyRecordRemoval($object, $key)
 {
     unset($object->data[$key]);
     historySetProtected($object, 'ownRemovals',
-        historyGetProtected($object, 'ownRemovals') + array($key => true));
+        historyGetProtected($object, 'ownRemovals') + [$key => true]);
 }
 
 function historyGetProtected($object, $property)
@@ -67,44 +67,44 @@ function historySetProtected($object, $property, $value)
     $reflection->setValue($object, $value);
 }
 
-$tests = array(
+$tests = [
     // The live failure: three events land in the same second when a torrent is
     // replaced, each in its own process, and the last writer used to publish a
     // file without the rows the others had added.
     'a row another process added while this one was writing survives' => function () {
-        $ours = historyLoaded(array('a' => historyRecord('a', 100)));
+        $ours = historyLoaded(['a' => historyRecord('a', 100)]);
         historyRecordAddition($ours, historyRecord('b', 101), 500);
 
         // Meanwhile a second process recorded its own event and stored it.
-        $onDisk = historyLoaded(array(
+        $onDisk = historyLoaded([
             'a' => historyRecord('a', 100),
             'c' => historyRecord('c', 102),
-        ));
+        ]);
 
         testAssertSame(true, $ours->merge($onDisk, null), 'merge reports success');
-        testAssertSame(array('c', 'b', 'a'), array_keys($ours->data),
+        testAssertSame(['c', 'b', 'a'], array_keys($ours->data),
             'both writers keep their row, newest first');
     },
 
     'a row this process deleted does not come back from the fresher copy' => function () {
-        $ours = historyLoaded(array(
+        $ours = historyLoaded([
             'a' => historyRecord('a', 100),
             'b' => historyRecord('b', 101),
-        ));
+        ]);
         historyRecordRemoval($ours, 'b');
 
-        $onDisk = historyLoaded(array(
+        $onDisk = historyLoaded([
             'a' => historyRecord('a', 100),
             'b' => historyRecord('b', 101),
-        ));
+        ]);
 
         $ours->merge($onDisk, null);
-        testAssertSame(array('a'), array_keys($ours->data),
+        testAssertSame(['a'], array_keys($ours->data),
             'the deletion is replayed on top of the fresher copy');
     },
 
     'a delete never trims a history longer than the default cap' => function () {
-        $records = array();
+        $records = [];
         for ($i = 0; $i < 600; $i++) {
             $records['k' . $i] = historyRecord('k' . $i, 1000 + $i);
         }
@@ -117,7 +117,7 @@ $tests = array(
     },
 
     'a recorded event still applies the configured cap' => function () {
-        $records = array();
+        $records = [];
         for ($i = 0; $i < 10; $i++) {
             $records['k' . $i] = historyRecord('k' . $i, 1000 + $i);
         }
@@ -136,15 +136,15 @@ $tests = array(
     // the letters and anchored on both ends: only a name that IS a placeholder
     // qualifies, never one that merely looks related.
     'magnet placeholders are recognised, real downloads are not' => function () {
-        $placeholders = array(
+        $placeholders = [
             'an uppercase placeholder' => str_repeat('A', 40) . '.meta',
             'a lowercase placeholder' => str_repeat('b', 40) . '.meta',
             'a mixed-case placeholder' => str_repeat('cD', 20) . '.meta',
-        );
-        foreach ($placeholders as $label => $name)
-            testAssertSame(true, rHistoryData::isMagnetPlaceholder($name), $label . ' must be recognised');
+        ];
+        foreach ($placeholders as $label => $name) {
+            testAssertSame(true, rHistoryData::isMagnetPlaceholder($name), $label . ' must be recognised'); }
 
-        $real = array(
+        $real = [
             'a normal download' => 'Some Release 1080p',
             'a name that merely ends in .meta' => 'metadata.meta',
             'a hash-named file with another extension' => str_repeat('A', 40) . '.mkv',
@@ -152,9 +152,9 @@ $tests = array(
             'a placeholder name with something appended' => str_repeat('A', 40) . '.meta.part',
             'a name one character short of a hash' => str_repeat('A', 39) . '.meta',
             'a name with a non-hex character' => str_repeat('A', 39) . 'Z.meta',
-        );
-        foreach ($real as $label => $name)
-            testAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept');
+        ];
+        foreach ($real as $label => $name) {
+            testAssertSame(false, rHistoryData::isMagnetPlaceholder($name), $label . ' must be kept'); }
     },
 
     // The metadata fetcher marks its own download with an exact service label;
@@ -162,61 +162,61 @@ $tests = array(
     // as added, then deleted a cycle later under the same name as the real
     // torrent, so a single replacement read as two deletions.
     'service marker distinguishes the stub from a user label' => function () {
-        $service = array(
-            'a marked service download' => array('Some Release 1080p', '.chk-meta', str_repeat('A', 40)),
-            'a placeholder that is also labelled' => array(str_repeat('C', 40) . '.meta', '.chk-meta'),
-            'a placeholder with no label' => array(str_repeat('A', 40) . '.meta', ''),
-        );
-        foreach ($service as $label => $row)
-            testAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be recognised');
+        $service = [
+            'a marked service download' => ['Some Release 1080p', '.chk-meta', str_repeat('A', 40)],
+            'a placeholder that is also labelled' => [str_repeat('C', 40) . '.meta', '.chk-meta'],
+            'a placeholder with no label' => [str_repeat('A', 40) . '.meta', ''],
+        ];
+        foreach ($service as $label => $row) {
+            testAssertSame(true, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be recognised'); }
 
-        $real = array(
-            'a normal download' => array('Some Release 1080p', 'Video/Movies'),
-            'an unlabelled download' => array('Some Release 1080p', ''),
-            'a label that merely contains a dot' => array('Some Release', 'Video/4K.HDR'),
-            'a private user label' => array('Some Release', '.private'),
-            'an unmarked user torrent with the exact service label' => array('Some Release', '.chk-meta'),
-            'a malformed service marker' => array('Some Release', '.chk-meta', str_repeat('A', 39)),
-            'a marker on a user label' => array('Some Release', '.private', str_repeat('A', 40)),
-            'a similar prefix' => array('Some Release', '.chk-meta-extra'),
-        );
-        foreach ($real as $label => $row)
-            testAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be kept');
+        $real = [
+            'a normal download' => ['Some Release 1080p', 'Video/Movies'],
+            'an unlabelled download' => ['Some Release 1080p', ''],
+            'a label that merely contains a dot' => ['Some Release', 'Video/4K.HDR'],
+            'a private user label' => ['Some Release', '.private'],
+            'an unmarked user torrent with the exact service label' => ['Some Release', '.chk-meta'],
+            'a malformed service marker' => ['Some Release', '.chk-meta', str_repeat('A', 39)],
+            'a marker on a user label' => ['Some Release', '.private', str_repeat('A', 40)],
+            'a similar prefix' => ['Some Release', '.chk-meta-extra'],
+        ];
+        foreach ($real as $label => $row) {
+            testAssertSame(false, rHistoryData::isServiceEntry($row[0], $row[1], isset($row[2]) ? $row[2] : ''), $label . ' must be kept'); }
     },
 
     'update.php records a private-label addition and deletion but skips the service stub' => function () {
         $scratch = sys_get_temp_dir() . '/history-label-' . bin2hex(random_bytes(6));
-        if (!mkdir($scratch, 0700))
-            throw new RuntimeException('Cannot create isolated history profile');
+        if (!mkdir($scratch, 0700)) {
+            throw new RuntimeException('Cannot create isolated history profile'); }
         $update = realpath(__DIR__ . '/../../../plugins/history/update.php');
         $runner = '$_ENV["RU_PROFILE_PATH"]=$argv[1]; $script=$argv[2]; $argv=array_slice($argv,2); include $script; echo json_encode(array("rows"=>array_values(rHistoryData::load()->data),"user"=>isset($_SERVER["REMOTE_USER"])?$_SERVER["REMOTE_USER"]:null));';
         $invoke = function ($action, $label, $marker = '', $name = 'A real release', $legacy = false) use ($scratch, $update, $runner) {
-            $args = array(
+            $args = [
                 PHP_BINARY, '-c', __DIR__ . '/../../php-test.ini', '-r', $runner, '--',
                 $scratch, $update, (string) $action, $name, '100', '0', '0',
                 '0', '1', '2', '3', 'https://tracker.test/announce',
                 rawurlencode($label), '1', $marker, 'u:historytest',
-            );
+            ];
             if ($legacy) {
                 array_splice($args, -2, 1);
                 $args[count($args) - 1] = 'historytest';
             }
-            $process = proc_open($args, array(
-                0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'),
-            ), $pipes);
-            if (!is_resource($process))
-                throw new RuntimeException('Cannot run history update.php');
+            $process = proc_open($args, [
+                0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w'],
+            ], $pipes);
+            if (!is_resource($process)) {
+                throw new RuntimeException('Cannot run history update.php'); }
             fclose($pipes[0]);
             $output = stream_get_contents($pipes[1]);
             $errors = stream_get_contents($pipes[2]);
             fclose($pipes[1]);
             fclose($pipes[2]);
             $exit = proc_close($process);
-            if ($exit !== 0 || $errors !== '')
-                throw new RuntimeException('history update.php failed: ' . $errors);
+            if ($exit !== 0 || $errors !== '') {
+                throw new RuntimeException('history update.php failed: ' . $errors); }
             $payload = json_decode($output, true);
-            if (!is_array($payload) || !isset($payload['rows']) || !is_array($payload['rows']))
-                throw new RuntimeException('history update.php returned invalid rows: ' . $output);
+            if (!is_array($payload) || !isset($payload['rows']) || !is_array($payload['rows'])) {
+                throw new RuntimeException('history update.php returned invalid rows: ' . $output); }
             testAssertSame('historytest', $payload['user'], 'tagged hook user is decoded');
             return $payload['rows'];
         };
@@ -227,7 +227,7 @@ $tests = array(
             testAssertSame(2, count($rows), 'the user-labelled deletion is recorded');
             $actions = array_column($rows, 'action');
             sort($actions);
-            testAssertSame(array(1, 3), $actions,
+            testAssertSame([1, 3], $actions,
                 'both distinct user events reach the history cache');
             $rows = $invoke(1, '.chk-meta');
             testAssertSame(3, count($rows), 'an unmarked user torrent may use the exact service label');
@@ -245,17 +245,17 @@ $tests = array(
     },
 
     'the stored format carries nothing but what it always carried' => function () {
-        $ours = historyLoaded(array('a' => historyRecord('a', 100)));
+        $ours = historyLoaded(['a' => historyRecord('a', 100)]);
         historyRecordAddition($ours, historyRecord('b', 101), 500);
 
         $restored = unserialize(serialize($ours));
-        testAssertSame(array('hash', 'modified', 'data'), $ours->__sleep(),
+        testAssertSame(['hash', 'modified', 'data'], $ours->__sleep(),
             'only the three long-standing properties are serialised');
-        testAssertSame(array('a', 'b'), array_keys($restored->data),
+        testAssertSame(['a', 'b'], array_keys($restored->data),
             'the records survive a round trip');
-        testAssertSame(array(), historyGetProtected($restored, 'ownAdditions'),
+        testAssertSame([], historyGetProtected($restored, 'ownAdditions'),
             'bookkeeping does not outlive the process that did the writing');
     },
-);
+];
 
 exit(testRunCases($tests));

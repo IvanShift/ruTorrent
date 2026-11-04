@@ -24,12 +24,12 @@ eval(loadClassDefinition(testFindRepoRoot() . '/plugins/rutracker_check/state.ph
 $suite = new StrictTestSuite();
 $suite->test('a concurrent clear can retire the whole map before this clear gets its lock', function () {
     $hash = str_repeat('A', 40);
-    foreach (array(array(), array('replacement_backoff' => 'damaged'),
-        array('replacement_backoff' => array('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' => 'damaged')),
-        array('replacement_backoff' => array('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' => array('keep' => true)))) as $newer) {
-        RuTrackerState::$readSnapshot = array('replacement_backoff' => array('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' => array(
-            $hash => array('until' => 1800003600, 'length' => 3600),
-        )));
+    foreach ([[], ['replacement_backoff' => 'damaged'],
+        ['replacement_backoff' => ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' => 'damaged']],
+        ['replacement_backoff' => ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' => ['keep' => true]]]] as $newer) {
+        RuTrackerState::$readSnapshot = ['replacement_backoff' => ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' => [
+            $hash => ['until' => 1800003600, 'length' => 3600],
+        ]]];
         RuTrackerState::$lockedSnapshot = $newer;
         strictAssertSame(false, RuTrackerReplacementBackoff::clear($hash, 1800000000),
             'no matching refusal remains under the lock');

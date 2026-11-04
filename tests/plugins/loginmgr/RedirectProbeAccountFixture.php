@@ -3,6 +3,10 @@
 class RedirectProbeAccount extends commonAccount
 {
     public static $loginCalls = 0;
+    public function test($url)
+    {
+        return UrlHost::urlIsOneOf($url, ['tracker.example'], 'https', '/file');
+    }
     protected function isOK($client) { return true; }
     protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
     {
@@ -11,9 +15,5 @@ class RedirectProbeAccount extends commonAccount
         $client->results = 'authenticated login';
         $client->cookies['loginmgr_marker'] = 'session-value';
         return true;
-    }
-    public function test($url)
-    {
-        return UrlHost::urlIsOneOf($url, array('tracker.example'), 'https', '/file');
     }
 }

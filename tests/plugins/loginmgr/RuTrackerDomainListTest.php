@@ -35,7 +35,7 @@ function rtdForumHosts()
     $hosts = $account->hasConstant('FORUM_HOSTS') ? $account->getConstant('FORUM_HOSTS') : null;
     if (!is_array($hosts) || count($hosts) === 0) {
         throw new RuntimeException(
-            'ruTrackerAccount::FORUM_HOSTS must be the single list of the mirrors this account claims'
+            'ruTrackerAccount::FORUM_HOSTS must be the single list of the mirrors this account claims',
         );
     }
     return $hosts;
@@ -57,15 +57,15 @@ function rtdDownloadId($url)
     return $probe->downloadId($url);
 }
 
-$tests = array(
+$tests = [
     'the list is exactly the four forum mirrors' => function () {
         // Written down so that adding a fifth is a decision rather than an
         // edit: whoever adds one has to come here, read why rutracker.cc and
         // t-ru.org are absent, and say the same about the new host.
         testAssertSame(
-            array('rutracker.org', 'rutracker.cr', 'rutracker.net', 'rutracker.nl'),
+            ['rutracker.org', 'rutracker.cr', 'rutracker.net', 'rutracker.nl'],
             rtdForumHosts(),
-            'ruTrackerAccount::FORUM_HOSTS changed'
+            'ruTrackerAccount::FORUM_HOSTS changed',
         );
     },
 
@@ -101,7 +101,7 @@ $tests = array(
         // and rutracker.cc appears in this codebase only as
         // api.rutracker.cc/v1/static/ and feed.rutracker.cc/atom/
         // (plugins/rutracker_check/forumindex.php), URLs no account claims.
-        foreach (array('rutracker.cc', 'api.rutracker.cc', 'bt.t-ru.org') as $host) {
+        foreach (['rutracker.cc', 'api.rutracker.cc', 'bt.t-ru.org'] as $host) {
             testAssertSame(true, RuTrackerDetector::isTrackerHost($host),
                 $host . ' is one rutracker_check calls RuTracker\'s');
             testAssertSame(false, (bool) (new ruTrackerAccount())->test('https://' . $host . '/forum/dl.php?t=1'),
@@ -118,6 +118,6 @@ $tests = array(
                 $host . ' must also be RuTracker\'s to rutracker_check');
         }
     },
-);
+];
 
 exit(testRunCases($tests));

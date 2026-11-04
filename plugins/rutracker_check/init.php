@@ -24,11 +24,11 @@ if( !strlen($session) || !@file_exists(FileUtil::addslash($session).'.') )
 }
 else
 {
-	$commands = array();
+	$commands = [];
 	$checkerScheduleReady = true;
 	$queueReady = erasedataInitializationQueueReady();
-	if($queueReady)
-		$commands[] = erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval);
+	if($queueReady) {
+		$commands[] = erasedataCollectorScheduleCommand($theSettings, $garbageCheckInterval); }
 	if($updateInterval)
 	{
 		// getScheduleCommand, not getAbsScheduleCommand: this file runs on every
@@ -40,9 +40,9 @@ else
 		// This form uses a stable interval slot derived from the scheduler
 		// key instead of restarting a countdown on each reload. Same choice
 		// as plugins/trafic; the interval is in minutes, not seconds.
-		$capability = rpcMethodCapability(array('execute.raw.bg'));
+		$capability = rpcMethodCapability(['execute.raw.bg']);
 		$checkerCommand = RuTrackerDetachedPhp::scheduleCommand(Utility::getPHP(),
-			__DIR__.'/update.php', array(User::getUser()), $capability);
+			__DIR__.'/update.php', [User::getUser()], $capability);
 		$checkerScheduleReady = $checkerCommand !== false;
 		if($checkerScheduleReady)
 		{
@@ -50,9 +50,9 @@ else
 			$commands[] = $theSettings->getScheduleCommand('rutracker_check',$updateInterval,
 				$checkerCommand,$checkerStart,null,true);
 		}
-		else
+		else {
 			FileUtil::toLog('rutracker_check: checker schedule refused reason='
-				. ($capability === 'unconfirmed' ? 'rpc-unknown' : 'unrepresentable-argv'));
+				. ($capability === 'unconfirmed' ? 'rpc-unknown' : 'unrepresentable-argv')); }
 	}
 	else
 	{
@@ -61,11 +61,11 @@ else
 	$req = count($commands) ? new rXMLRPCRequest($commands) : null;
 	// The cleanup drain is independent of the ordinary collector and survives
 	// a daemon restart through its durable state, even with erasedata disabled.
-	if($queueReady)
-		erasedataRearmDrainSchedule();
+	if($queueReady) {
+		erasedataRearmDrainSchedule(); }
 	$requestSucceeded = $req === null || $req->success();
-	if($checkerScheduleReady && $requestSucceeded)
-		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
-	else
-		$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');";
+	if($checkerScheduleReady && $requestSucceeded) {
+		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]); }
+	else {
+		$jResult .= "plugin.disable(); noty('rutracker_check: '+theUILang.pluginCantStart, 'error');"; }
 }

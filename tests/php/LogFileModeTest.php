@@ -19,20 +19,10 @@ class LogFileModeStream
 		clearstatcache(true, 'rutorrent-log-test://sink');
 		self::$fileType = $fileType;
 		self::$exists = $exists;
-		self::$metadataCalls = array();
-		self::$openModes = array();
+		self::$metadataCalls = [];
+		self::$openModes = [];
 		self::$body = '';
 		self::$refuseOpen = false;
-	}
-
-	private static function statResult()
-	{
-		$mode = self::$fileType | 0600;
-		$size = strlen(self::$body);
-		return array(
-			2 => $mode, 7 => $size,
-			'mode' => $mode, 'size' => $size,
-		);
 	}
 
 	public function url_stat($path, $flags)
@@ -62,6 +52,16 @@ class LogFileModeStream
 		self::$metadataCalls[] = $option;
 		return true;
 	}
+
+	private static function statResult()
+	{
+		$mode = self::$fileType | 0600;
+		$size = strlen(self::$body);
+		return [
+			2 => $mode, 7 => $size,
+			'mode' => $mode, 'size' => $size,
+		];
+	}
 }
 
 /**
@@ -82,7 +82,7 @@ class LogFileModeTest extends TestCase
 	// Logs one line with the plain-file wrapper replaced, keeping a thrown error
 	// alive the way an error handler or a debugger may, and reports the wrapper's
 	// calls, what was thrown and whether the lock is free while it is kept.
-	const WRAPPED_CHILD = 'require $argv[1]; require $argv[2]; $GLOBALS["log_file"] = $argv[3];
+	public const WRAPPED_CHILD = 'require $argv[1]; require $argv[2]; $GLOBALS["log_file"] = $argv[3];
 LogFileWrapperFixture::install(json_decode($argv[4], true));
 $caught = ""; $kept = null;
 $started = microtime(true);
@@ -119,35 +119,6 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		}
 	}
 
-	private function clean()
-	{
-		foreach (glob($this->dir . '/*') as $path) {
-			unlink($path);
-		}
-	}
-
-	// toLog() only creates and chmods when the file is absent, so every case
-	// starts from a path that does not exist yet.
-	private function logAfterFirstWrite($mask, $name)
-	{
-		$this->clean();
-		$GLOBALS['log_file'] = $this->dir . '/' . $name;
-		if (is_null($mask)) {
-			unset($GLOBALS['profileMask']);
-		} else {
-			$GLOBALS['profileMask'] = $mask;
-		}
-		FileUtil::toLog('probe');
-		clearstatcache();
-		return $GLOBALS['log_file'];
-	}
-
-	private function modeOf($file)
-	{
-		clearstatcache(true, $file);
-		return fileperms($file) & 0777;
-	}
-
 	// Passes both before and after the change: the default must not move, or
 	// every install where rtorrent runs as its own user loses its log.
 	public function testDefaultMaskStillCreatesTheLogWorldWritable()
@@ -157,7 +128,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0666,
 			$this->modeOf($log),
-			'At the 0777 default the log is created 0666, exactly as before'
+			'At the 0777 default the log is created 0666, exactly as before',
 		);
 	}
 
@@ -168,7 +139,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0660,
 			$this->modeOf($log),
-			'A 0770 mask creates the log 0660, so the group still writes it and the world does not'
+			'A 0770 mask creates the log 0660, so the group still writes it and the world does not',
 		);
 	}
 
@@ -179,7 +150,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0600,
 			$this->modeOf($log),
-			'A 0700 mask creates the log 0600'
+			'A 0700 mask creates the log 0600',
 		);
 	}
 
@@ -200,7 +171,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0444,
 			$this->modeOf($log),
-			'A 0444 mask cannot be widened to 0666'
+			'A 0444 mask cannot be widened to 0666',
 		);
 	}
 
@@ -213,7 +184,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0666,
 			$this->modeOf($log),
-			'With no $profileMask set the log is created 0666'
+			'With no $profileMask set the log is created 0666',
 		);
 	}
 
@@ -228,7 +199,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0640,
 			$this->modeOf($log),
-			'An existing log keeps the mode it already had'
+			'An existing log keeps the mode it already had',
 		);
 	}
 
@@ -240,7 +211,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$body = file_get_contents($log);
 		$this->assertTrue(
 			strpos($body, 'probe') !== false && strpos($body, 'second line') !== false,
-			'Both lines are appended to the log'
+			'Both lines are appended to the log',
 		);
 	}
 
@@ -268,7 +239,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals('', $response, 'An unwritable log emits no response output');
 		$this->assertTrue(
 			strpos($errors, 'fopen(/proc/version)') !== false,
-			'An unwritable log remains visible in the PHP error log'
+			'An unwritable log remains visible in the PHP error log',
 		);
 	}
 
@@ -279,9 +250,9 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$GLOBALS['profileMask'] = 0777;
 		FileUtil::toLog('probe');
 		$this->assertEquals(
-			array(),
+			[],
 			LogFileModeStream::$metadataCalls,
-			'An existing non-regular log keeps its operator-assigned permissions'
+			'An existing non-regular log keeps its operator-assigned permissions',
 		);
 	}
 
@@ -304,7 +275,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0700,
 			$mode,
-			'An existing non-regular filesystem target keeps its operator-assigned permissions'
+			'An existing non-regular filesystem target keeps its operator-assigned permissions',
 		);
 	}
 
@@ -314,9 +285,9 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$GLOBALS['log_file'] = 'rutorrent-log-test://sink';
 		FileUtil::toLog('probe');
 		$this->assertEquals(
-			array('ab'),
+			['ab'],
 			LogFileModeStream::$openModes,
-			'A regular log does not require read permission just to append a line'
+			'A regular log does not require read permission just to append a line',
 		);
 	}
 
@@ -351,7 +322,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		}
 		$this->assertTrue(
 			strpos($body, "first\n") === 0 && strpos($body, 'second user') !== false,
-			'A log owned by another user in a sticky directory gets the line appended'
+			'A log owned by another user in a sticky directory gets the line appended',
 		);
 	}
 
@@ -365,7 +336,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$body = file_get_contents($log);
 		$this->assertTrue(
 			strpos($body, 'probe') !== false && strpos($body, 'second line') !== false,
-			'A write-only log gets the line appended'
+			'A write-only log gets the line appended',
 		);
 	}
 
@@ -379,7 +350,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$writers = 4;
 		$lines = 200;
 		$log = $this->logAfterFirstWrite(0777, 'concurrent.log');
-		$children = array();
+		$children = [];
 		for ($i = 0; $i < $writers; $i++) {
 			$pid = pcntl_fork();
 			if ($pid === 0) {
@@ -398,41 +369,8 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			1 + $writers * $lines,
 			count($whole),
-			'Every line from concurrent writers is kept whole'
+			'Every line from concurrent writers is kept whole',
 		);
-	}
-
-	private function seededLog($name)
-	{
-		$log = $this->dir . '/' . $name;
-		file_put_contents($log, "seed\n");
-		return $log;
-	}
-
-	// Runs WRAPPED_CHILD. A failure of the child itself is not a verdict on
-	// toLog(), so it fails here, with what the child said.
-	private function logThroughWrapper($log, $options, $ini = array())
-	{
-		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
-			array('-d', 'display_errors=0', '-d', 'log_errors=1', '-d', 'error_log=',
-				'-d', 'zend.exception_ignore_args=0', '-d', 'xdebug.mode=off'), $ini,
-			array('-r', self::WRAPPED_CHILD, realpath(__DIR__ . '/../../php/utility/fileutil.php'),
-				__DIR__ . '/LogFileWrapperFixture.php', $log, json_encode((object)$options))),
-			array('timeout' => 30));
-		$report = json_decode($result['out'], true);
-		$this->assertTrue(!$result['timedOut'] && $result['code'] === 0 && is_array($report),
-			'The wrapped child reports: ' . json_encode($result));
-		// Startup diagnostics ("in Unknown on line 0") belong to the PHP build.
-		$report['err'] = implode("\n", preg_grep('/ in Unknown on line 0\s*$/',
-			explode("\n", trim($result['err'])), PREG_GREP_INVERT));
-		return $report;
-	}
-
-	private function assertLogHoldsTheLineAfter($before, $log, $label)
-	{
-		$body = file_get_contents($log);
-		$this->assertTrue(preg_match('/^' . $before . '\[[0-9-]+ [0-9:]+\] the line\n$/', $body) === 1,
-			$label . ': ' . json_encode($body));
 	}
 
 	// Between the open and the write another process appends a line. With
@@ -441,8 +379,8 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	public function testAnOrdinaryLogKeepsOAppend()
 	{
 		$log = $this->seededLog('o-append.log');
-		$report = $this->logThroughWrapper($log, array('beforeWrite' => "other writer\n"));
-		$this->assertEquals(array('open ab', 'write', 'close'), $report['calls'], 'An ordinary log is opened ab, once');
+		$report = $this->logThroughWrapper($log, ['beforeWrite' => "other writer\n"]);
+		$this->assertEquals(['open ab', 'write', 'close'], $report['calls'], 'An ordinary log is opened ab, once');
 		$this->assertLogHoldsTheLineAfter("seed\nother writer\n", $log, 'A line written between the open and the write survives');
 	}
 
@@ -452,19 +390,19 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$holder = fopen($log, 'rb');
 		flock($holder, LOCK_EX);
 		try {
-			$report = $this->logThroughWrapper($log, array());
+			$report = $this->logThroughWrapper($log, []);
 		} finally {
 			fclose($holder);
 		}
-		$this->assertEquals(array('open ab', 'write', 'close'), $report['calls'], 'An ordinary log asks for no lock');
+		$this->assertEquals(['open ab', 'write', 'close'], $report['calls'], 'An ordinary log asks for no lock');
 		$this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line is written past the held lock');
 	}
 
 	public function testARefusedAppendWritesAtTheEndUnderTheLock()
 	{
 		$log = $this->seededLog('refused.log');
-		$report = $this->logThroughWrapper($log, array('refuse' => array('ab')));
-		$this->assertEquals(array('open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'), $report['calls'],
+		$report = $this->logThroughWrapper($log, ['refuse' => ['ab']]);
+		$this->assertEquals(['open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'], $report['calls'],
 			'A refused append is written at the end, under the lock');
 		$this->assertEquals('', $report['err'], 'A log the fallback can write reports no failure');
 		$this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line follows what the log held');
@@ -473,8 +411,8 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	public function testALogRefusedBothWaysFailsVisibly()
 	{
 		$log = $this->seededLog('refused-twice.log');
-		$report = $this->logThroughWrapper($log, array('refuse' => array('ab', 'r+b')));
-		$this->assertEquals(array('open ab', 'open r+b', 'open ab'), $report['calls'],
+		$report = $this->logThroughWrapper($log, ['refuse' => ['ab', 'r+b']]);
+		$this->assertEquals(['open ab', 'open r+b', 'open ab'], $report['calls'],
 			'After both silent opens the original open runs');
 		$this->assertEquals(1, substr_count($report['err'], 'fopen('),
 			'The failure reaches the PHP error log once: ' . $report['err']);
@@ -489,13 +427,13 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$holder = fopen($log, 'rb');
 		flock($holder, LOCK_EX);
 		try {
-			$report = $this->logThroughWrapper($log, array('refuse' => array('ab')));
+			$report = $this->logThroughWrapper($log, ['refuse' => ['ab']]);
 		} finally {
 			fclose($holder);
 		}
 		$counts = array_count_values($report['calls']);
 		$this->assertEquals(100, $counts['lock'], 'The lock is asked for a bounded number of times');
-		$this->assertEquals(array(LOCK_EX | LOCK_NB), array_values(array_unique($report['lockOperations'])),
+		$this->assertEquals([LOCK_EX | LOCK_NB], array_values(array_unique($report['lockOperations'])),
 			'Every attempt asks for the exclusive lock without blocking');
 		// A sleep cannot run short, so a busy host cannot fail this lower bound.
 		$this->assertTrue($report['wall'] >= 0.9, 'The writer waits between its attempts: ' . $report['wall']);
@@ -507,8 +445,8 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	public function testALockThatCannotBeTakenIsNotWaitedFor()
 	{
 		$log = $this->seededLog('lock-fails.log');
-		$report = $this->logThroughWrapper($log, array('refuse' => array('ab'), 'lockFails' => true));
-		$this->assertEquals(array('open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'), $report['calls'],
+		$report = $this->logThroughWrapper($log, ['refuse' => ['ab'], 'lockFails' => true]);
+		$this->assertEquals(['open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'], $report['calls'],
 			'Only another holder is worth waiting for');
 		$this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line is written without the lock');
 	}
@@ -516,12 +454,12 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	// Each case holds the lock for real: only a contended lock reaches usleep().
 	public function testAnOrdinaryLogNeedsNoFunctionOfTheLock()
 	{
-		foreach (array('flock', 'fseek', 'usleep') as $function) {
+		foreach (['flock', 'fseek', 'usleep'] as $function) {
 			$log = $this->seededLog('ordinary-without-' . $function . '.log');
 			$holder = fopen($log, 'rb');
 			flock($holder, LOCK_EX);
 			try {
-				$report = $this->logThroughWrapper($log, array(), array('-d', 'disable_functions=' . $function));
+				$report = $this->logThroughWrapper($log, [], ['-d', 'disable_functions=' . $function]);
 			} finally {
 				fclose($holder);
 			}
@@ -539,18 +477,18 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	 */
 	public function testARefusedAppendWithoutAFunctionOfTheLockFailsVisibly()
 	{
-		foreach (array('flock', 'fseek', 'usleep') as $function) {
+		foreach (['flock', 'fseek', 'usleep'] as $function) {
 			$log = $this->seededLog('refused-without-' . $function . '.log');
 			$holder = fopen($log, 'rb');
 			flock($holder, LOCK_EX);
 			try {
-				$report = $this->logThroughWrapper($log, array('refuse' => array('ab')),
-					array('-d', 'disable_functions=' . $function));
+				$report = $this->logThroughWrapper($log, ['refuse' => ['ab']],
+					['-d', 'disable_functions=' . $function]);
 			} finally {
 				fclose($holder);
 			}
 			$this->assertEquals('', $report['caught'], 'Without ' . $function . '() nothing is thrown');
-			$this->assertEquals(array('open ab', 'open ab'), $report['calls'], 'Without ' . $function . '() no r+b is opened');
+			$this->assertEquals(['open ab', 'open ab'], $report['calls'], 'Without ' . $function . '() no r+b is opened');
 			$this->assertTrue(strpos($report['err'], 'fopen(') !== false,
 				'Without ' . $function . '() the failure reaches the PHP error log: ' . $report['err']);
 			$this->assertEquals("seed\n", file_get_contents($log), 'Without ' . $function . '() the log is unchanged');
@@ -562,7 +500,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	public function testAThrowingWriteReleasesTheLock()
 	{
 		$log = $this->seededLog('throwing-write.log');
-		$report = $this->logThroughWrapper($log, array('refuse' => array('ab'), 'throwOnWrite' => true));
+		$report = $this->logThroughWrapper($log, ['refuse' => ['ab'], 'throwOnWrite' => true]);
 		$this->assertEquals('RuntimeException', $report['caught'], 'The write threw');
 		$this->assertTrue($report['lockFree'], 'The lock is released while the error is alive');
 	}
@@ -570,8 +508,8 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 	public function testAFifoOnTheFilesystemKeepsTheOldMode()
 	{
 		$log = $this->seededLog('fifo.log');
-		$report = $this->logThroughWrapper($log, array('fifo' => true));
-		$this->assertEquals(array('open ab+', 'write', 'close'), $report['calls'],
+		$report = $this->logThroughWrapper($log, ['fifo' => true]);
+		$this->assertEquals(['open ab+', 'write', 'close'], $report['calls'],
 			'A write-only open of a FIFO would block until a reader appears');
 	}
 
@@ -587,7 +525,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		} finally {
 			restore_error_handler();
 		}
-		$this->assertEquals(array('ab'), LogFileModeStream::$openModes, 'A refused stream gets one open');
+		$this->assertEquals(['ab'], LogFileModeStream::$openModes, 'A refused stream gets one open');
 	}
 
 	public function testANonRegularLogKeepsTheNonBlockingReadWriteMode()
@@ -596,9 +534,9 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$GLOBALS['log_file'] = 'rutorrent-log-test://sink';
 		FileUtil::toLog('probe');
 		$this->assertEquals(
-			array('ab+'),
+			['ab+'],
 			LogFileModeStream::$openModes,
-			'A non-regular log keeps the mode that does not wait forever for a FIFO reader'
+			'A non-regular log keeps the mode that does not wait forever for a FIFO reader',
 		);
 	}
 
@@ -621,11 +559,11 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		}
 		$this->assertTrue(
 			!file_exists($this->dir . '/relative.log'),
-			'A relative log path cannot create different files from different entry-point directories'
+			'A relative log path cannot create different files from different entry-point directories',
 		);
 		$this->assertTrue(
 			strpos($warning, '$log_file must be an absolute path') !== false,
-			'An invalid $log_file names the configuration error and its consequence'
+			'An invalid $log_file names the configuration error and its consequence',
 		);
 	}
 
@@ -635,14 +573,14 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$GLOBALS['log_file'] = 'rutorrent-log-test://sink';
 		FileUtil::toLog('probe');
 		$this->assertEquals(
-			array(),
+			[],
 			LogFileModeStream::$metadataCalls,
-			'A stream URI is not touched or chmodded like a filesystem path'
+			'A stream URI is not touched or chmodded like a filesystem path',
 		);
 		$this->assertEquals(
-			array('ab'),
+			['ab'],
 			LogFileModeStream::$openModes,
-			'A stream URI only needs write access to append a line'
+			'A stream URI only needs write access to append a line',
 		);
 	}
 
@@ -677,7 +615,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		$this->assertEquals(
 			0600,
 			$this->modeOf($target),
-			'A file URI obeys the same profile mask as a plain filesystem path'
+			'A file URI obeys the same profile mask as a plain filesystem path',
 		);
 	}
 
@@ -712,7 +650,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		}
 		$this->assertTrue(
 			strpos($warning, '$log_file must be an absolute path') !== false,
-			'A relative file URI is visibly rejected by the runtime parser'
+			'A relative file URI is visibly rejected by the runtime parser',
 		);
 	}
 
@@ -734,7 +672,69 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
 		}
 		$this->assertTrue(
 			!file_exists($this->dir . '/C:\\logs\\rutorrent.log'),
-			'A Windows drive path cannot become a relative filename on Unix'
+			'A Windows drive path cannot become a relative filename on Unix',
 		);
+	}
+
+	private function clean()
+	{
+		foreach (glob($this->dir . '/*') as $path) {
+			unlink($path);
+		}
+	}
+
+	// toLog() only creates and chmods when the file is absent, so every case
+	// starts from a path that does not exist yet.
+	private function logAfterFirstWrite($mask, $name)
+	{
+		$this->clean();
+		$GLOBALS['log_file'] = $this->dir . '/' . $name;
+		if (is_null($mask)) {
+			unset($GLOBALS['profileMask']);
+		} else {
+			$GLOBALS['profileMask'] = $mask;
+		}
+		FileUtil::toLog('probe');
+		clearstatcache();
+		return $GLOBALS['log_file'];
+	}
+
+	private function modeOf($file)
+	{
+		clearstatcache(true, $file);
+		return fileperms($file) & 0777;
+	}
+
+	private function seededLog($name)
+	{
+		$log = $this->dir . '/' . $name;
+		file_put_contents($log, "seed\n");
+		return $log;
+	}
+
+	// Runs WRAPPED_CHILD. A failure of the child itself is not a verdict on
+	// toLog(), so it fails here, with what the child said.
+	private function logThroughWrapper($log, $options, $ini = [])
+	{
+		$result = PhpProcess::run(array_merge(PhpProcess::sameIni(),
+			['-d', 'display_errors=0', '-d', 'log_errors=1', '-d', 'error_log=',
+				'-d', 'zend.exception_ignore_args=0', '-d', 'xdebug.mode=off'], $ini,
+			['-r', self::WRAPPED_CHILD, realpath(__DIR__ . '/../../php/utility/fileutil.php'),
+				__DIR__ . '/LogFileWrapperFixture.php', $log, json_encode((object)$options)]),
+			['timeout' => 30]);
+		$report = json_decode($result['out'], true);
+		$this->assertTrue(!$result['timedOut'] && $result['code'] === 0 && is_array($report),
+			'The wrapped child reports: ' . json_encode($result));
+		// Startup diagnostics ("in Unknown on line 0") belong to the PHP build.
+		$report['err'] = implode("\n", preg_grep('/ in Unknown on line 0\s*$/',
+			explode("\n", trim($result['err'])), PREG_GREP_INVERT));
+		return $report;
+	}
+
+	private function assertLogHoldsTheLineAfter($before, $log, $label)
+	{
+		$body = file_get_contents($log);
+		$this->assertTrue(preg_match('/^' . $before . '\[[0-9-]+ [0-9:]+\] the line\n$/', $body) === 1,
+			$label . ': ' . json_encode($body));
 	}
 }

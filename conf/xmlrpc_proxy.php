@@ -56,8 +56,8 @@
 	// The shared policy loader provides XMLRPCProxy before this file is included.
 	// A persisted conf/ volume may be read by an older proxy after rollback.
 	// Leave its earlier implicit policy in place when this method is absent.
-	if(method_exists('XMLRPCProxy', 'defaultSafeParams'))
-		$XMLRPCProxySafeParams = XMLRPCProxy::defaultSafeParams();
+	if(method_exists('XMLRPCProxy', 'defaultSafeParams')) {
+		$XMLRPCProxySafeParams = XMLRPCProxy::defaultSafeParams(); }
 
 	// Let a caller name a path on rtorrent's own filesystem in load.start or
 	// load.normal (default: false).

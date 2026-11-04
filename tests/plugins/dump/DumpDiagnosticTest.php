@@ -35,7 +35,7 @@ class DumpDiagnosticTest extends TestCase
 	public function testAFailedRequestStartsNoTask()
 	{
 		$this->newCase();
-		$run = $this->runDump(array(FakeRtorrentDaemon::fault('no such command')));
+		$run = $this->runDump([FakeRtorrentDaemon::fault('no such command')]);
 
 		$this->assertTrue($this->isPluginError($run),
 			'a daemon fault is answered by the plugin, not by a started task: '
@@ -71,7 +71,7 @@ class DumpDiagnosticTest extends TestCase
 	{
 		$this->newCase();
 		$this->writeSessionCopy(0644);
-		$run = $this->runDump(array(array($this->sessionDir(), '')));
+		$run = $this->runDump([[$this->sessionDir(), '']]);
 
 		$this->assertTrue(!$this->isPluginError($run),
 			'a readable session copy is dumped rather than refused: ' . $this->describe($run));
@@ -86,7 +86,7 @@ class DumpDiagnosticTest extends TestCase
 	{
 		$this->newCase();
 		$this->writeSessionCopy(0000);
-		$run = $this->runDump(array(array($this->sessionDir(), '')));
+		$run = $this->runDump([[$this->sessionDir(), '']]);
 
 		$this->assertTrue($this->isPluginError($run),
 			'an unreadable session copy is refused: ' . $this->describe($run));
@@ -109,7 +109,7 @@ class DumpDiagnosticTest extends TestCase
 		$this->newCase();
 		@mkdir($this->sessionDir(), 0700, true);
 		$tied = $this->writeTiedFile(0000);
-		$run = $this->runDump(array(array($this->sessionDir(), $tied)));
+		$run = $this->runDump([[$this->sessionDir(), $tied]]);
 
 		$this->assertEquals('dumpErrorUnreadable', $this->reason($run),
 			'an unreadable tied file is reported as unreadable: ' . $this->describe($run));
@@ -122,7 +122,7 @@ class DumpDiagnosticTest extends TestCase
 	{
 		$this->newCase();
 		@mkdir($this->sessionDir(), 0700, true);
-		$run = $this->runDump(array(array($this->sessionDir(), '')));
+		$run = $this->runDump([[$this->sessionDir(), '']]);
 
 		$this->assertEquals('dumpErrorNoFile', $this->reason($run),
 			'a missing session copy is reported as missing: ' . $this->describe($run));
@@ -136,7 +136,7 @@ class DumpDiagnosticTest extends TestCase
 	public function testAnEmptySessionPathIsNamedAsSuch()
 	{
 		$this->newCase();
-		$run = $this->runDump(array(array('', '')));
+		$run = $this->runDump([['', '']]);
 
 		$this->assertEquals('dumpErrorNoSessionDirectory', $this->reason($run),
 			'an empty session path is reported as such: ' . $this->describe($run));
@@ -145,7 +145,7 @@ class DumpDiagnosticTest extends TestCase
 	public function testAMissingNonUtf8TiedFileKeepsItsBytesVisible()
 	{
 		$this->newCase();
-		$run = $this->runDump(array(array('', $this->caseDir . "/missing-\xFF.torrent")));
+		$run = $this->runDump([['', $this->caseDir . "/missing-\xFF.torrent"]]);
 		$this->assertEquals('dumpErrorNoFile', $this->reason($run),
 			'the missing raw-byte file is refused before starting a task');
 		$this->assertEquals($this->caseDir . '/missing-\\xFF.torrent', $this->field($run, 'file'),
@@ -169,24 +169,24 @@ class DumpDiagnosticTest extends TestCase
 	 */
 	public function testEveryFailureHasItsOwnReason()
 	{
-		$reasons = array();
+		$reasons = [];
 
 		$this->newCase();
 		$reasons['daemon fault'] = $this->reason(
-			$this->runDump(array(FakeRtorrentDaemon::fault('no such command'))));
+			$this->runDump([FakeRtorrentDaemon::fault('no such command')]));
 
 		$this->newCase();
-		$reasons['no session directory'] = $this->reason($this->runDump(array(array('', ''))));
+		$reasons['no session directory'] = $this->reason($this->runDump([['', '']]));
 
 		$this->newCase();
 		@mkdir($this->sessionDir(), 0700, true);
 		$reasons['no session copy'] = $this->reason(
-			$this->runDump(array(array($this->sessionDir(), ''))));
+			$this->runDump([[$this->sessionDir(), '']]));
 
 		$this->newCase();
 		$this->writeSessionCopy(0000);
 		$reasons['unreadable session copy'] = $this->reason(
-			$this->runDump(array(array($this->sessionDir(), ''))));
+			$this->runDump([[$this->sessionDir(), '']]));
 
 		$this->newCase();
 		$reasons['no hash'] = $this->reason($this->runDumpWithoutHash());
@@ -214,7 +214,7 @@ class DumpDiagnosticTest extends TestCase
 		$this->newCase();
 		$this->writeSessionCopy(0000);
 		$tied = $this->writeTiedFile(0644);
-		$run = $this->runDump(array(array($this->sessionDir(), $tied)));
+		$run = $this->runDump([[$this->sessionDir(), $tied]]);
 
 		$this->assertTrue(!$this->isPluginError($run),
 			'the tied file is dumped when the session copy cannot be read: '
@@ -234,7 +234,7 @@ class DumpDiagnosticTest extends TestCase
 		$this->newCase();
 		$this->writeSessionCopy(0644);
 		$tied = $this->writeTiedFile(0644);
-		$run = $this->runDump(array(array($this->sessionDir(), $tied)));
+		$run = $this->runDump([[$this->sessionDir(), $tied]]);
 		$command = $this->dumpCommand($run);
 
 		$this->assertTrue(!$this->isPluginError($run),
@@ -258,7 +258,7 @@ class DumpDiagnosticTest extends TestCase
 		$stub = $this->caseDir . '/' . $hash . '.meta';
 		file_put_contents($stub, $info);
 		$this->stopDaemon();
-		$this->daemon = new FakeRtorrentDaemon(array(array('', $stub), array('', $stub), array('0'), array('0')),
+		$this->daemon = new FakeRtorrentDaemon([['', $stub], ['', $stub], ['0'], ['0']],
 			$this->caseDir . '/calls.log');
 		$run = $this->drive($this->daemon->port(), $hash);
 

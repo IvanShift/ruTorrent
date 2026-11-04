@@ -21,17 +21,17 @@ final class ScgiToolPeer
 		$root = dirname(__DIR__, 2);
 		$config = $dir . '/rutorrent/app/conf/config.php';
 		$tool = $withCliGuard ? $dir . '/tools/retrackers-clear-markers.php' : $dir . '/tool.php';
-		foreach (array(dirname($config), dirname($tool)) as $directory)
-			if (!is_dir($directory)) mkdir($directory, 0700, true);
+		foreach ([dirname($config), dirname($tool)] as $directory) {
+			if (!is_dir($directory)) { mkdir($directory, 0700, true); } }
 		if ($withCliGuard) {
-			if (!is_dir($dir . '/php')) mkdir($dir . '/php', 0700);
-			if (!copy($root . '/php/cli-only.php', $dir . '/php/cli-only.php'))
-				throw new RuntimeException('cannot stage php/cli-only.php');
+			if (!is_dir($dir . '/php')) { mkdir($dir . '/php', 0700); }
+			if (!copy($root . '/php/cli-only.php', $dir . '/php/cli-only.php')) {
+				throw new RuntimeException('cannot stage php/cli-only.php'); }
 		}
 		file_put_contents($config, "<?php\n\$scgi_host = 'unix://" . $socket . "';\n\$scgi_port = 0;\n");
 		$source = file_get_contents($root . '/tools/retrackers-clear-markers.php');
-		if (!is_string($source) || substr_count($source, '/rutorrent/app/conf/config.php') < 1)
-			throw new RuntimeException('the clear-markers tool no longer reads /rutorrent/app/conf/config.php');
+		if (!is_string($source) || substr_count($source, '/rutorrent/app/conf/config.php') < 1) {
+			throw new RuntimeException('the clear-markers tool no longer reads /rutorrent/app/conf/config.php'); }
 		file_put_contents($tool, str_replace('/rutorrent/app/conf/config.php', $config, $source));
 		return($tool);
 	}
@@ -39,8 +39,8 @@ final class ScgiToolPeer
 	/** Files and directories stageClearMarkersTool() created under $dir, deepest first. */
 	public static function stagedEntries()
 	{
-		return(array('/rutorrent/app/conf/config.php', '/rutorrent/app/conf', '/rutorrent/app', '/rutorrent',
-			'/tools/retrackers-clear-markers.php', '/tools', '/tool.php', '/php/cli-only.php', '/php'));
+		return(['/rutorrent/app/conf/config.php', '/rutorrent/app/conf', '/rutorrent/app', '/rutorrent',
+			'/tools/retrackers-clear-markers.php', '/tools', '/tool.php', '/php/cli-only.php', '/php']);
 	}
 
 	/**
@@ -50,23 +50,23 @@ final class ScgiToolPeer
 	 * clear-markers tool reads; otherwise $respond returns the raw SCGI answer
 	 * that rSCGITransport reads, rTorrent's own "Status: 200 OK" form.
 	 */
-	public static function run($socket, $script, array $args, callable $respond, array $env = array(), $framed = true)
+	public static function run($socket, $script, array $args, callable $respond, array $env = [], $framed = true)
 	{
 		// A UNIX socket leaves its node behind, and a second bind on the same
 		// path fails with "Address already in use".
 		@unlink($socket);
 		$server = @stream_socket_server('unix://' . $socket, $errno, $error);
-		if (!is_resource($server)) throw new RuntimeException('the fake SCGI peer cannot listen: ' . $error);
+		if (!is_resource($server)) { throw new RuntimeException('the fake SCGI peer cannot listen: ' . $error); }
 		// exec: proc_open's /bin/sh must not stay between us and the tool.
 		$process = proc_open('exec ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) .
 			($args ? ' ' . implode(' ', array_map('escapeshellarg', $args)) : ''),
-			array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null,
+			[1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null,
 			$env ? array_merge(getenv(), $env) : null);
 		if (!is_resource($process)) {
 			fclose($server);
 			throw new RuntimeException('the tool does not start');
 		}
-		$requests = array();
+		$requests = [];
 		$exited = null;
 		$deadline = time() + 20;
 		while (time() < $deadline) {
@@ -87,12 +87,12 @@ final class ScgiToolPeer
 			$request = '';
 			while (strpos($request, '</methodCall>') === false && !feof($client)) {
 				$chunk = @fread($client, 65536);
-				if ($chunk === false || ($chunk === '' && stream_get_meta_data($client)['timed_out'])) break;
+				if ($chunk === false || ($chunk === '' && stream_get_meta_data($client)['timed_out'])) { break; }
 				$request .= $chunk;
 			}
 			$body = $respond($request, count($requests));
 			$requests[] = $request;
-			if (is_string($body)) @fwrite($client, $framed ? strlen($body) . ':' . $body : $body);
+			if (is_string($body)) { @fwrite($client, $framed ? strlen($body) . ':' . $body : $body); }
 			@fclose($client);
 		}
 		$out = stream_get_contents($pipes[1]);
@@ -100,10 +100,10 @@ final class ScgiToolPeer
 		fclose($pipes[1]);
 		fclose($pipes[2]);
 		$code = proc_close($process);
-		if ($code === -1 && $exited !== null) $code = $exited;
+		if ($code === -1 && $exited !== null) { $code = $exited; }
 		fclose($server);
 		@unlink($socket);
-		return(array($code, $out, $err, $requests, array_map(array(__CLASS__, 'method'), $requests)));
+		return([$code, $out, $err, $requests, array_map([__CLASS__, 'method'], $requests)]);
 	}
 
 	/** rTorrent 0.16's raw SCGI answer around one TinyXML2 result value. */
@@ -139,7 +139,7 @@ final class ScgiToolPeer
 		$cells = '';
 		foreach ($rows as $row) {
 			$cells .= '<value><array><data>';
-			foreach ($row as $cell) $cells .= '<value><string>' . htmlspecialchars($cell, ENT_XML1) . '</string></value>';
+			foreach ($row as $cell) { $cells .= '<value><string>' . htmlspecialchars($cell, ENT_XML1) . '</string></value>'; }
 			$cells .= '</data></array></value>';
 		}
 		return(self::response('<array><data>' . $cells . '</data></array>'));

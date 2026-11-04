@@ -21,8 +21,8 @@ require_once(__DIR__ . '/../../php/Torrent.php');
  */
 class AddTorrentDuplicateTest extends TestCase
 {
-	const LOADED = '1111111111111111111111111111111111111111';
-	const FRESH = '2222222222222222222222222222222222222222';
+	public const LOADED = '1111111111111111111111111111111111111111';
+	public const FRESH = '2222222222222222222222222222222222222222';
 
 	private $server = null;
 	private $daemon = null;
@@ -32,12 +32,207 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->stop();
 	}
 
+	public function testFailedSnapshotRefusesTheWholeAddBeforeAnyLoad()
+	{
+		$magnet = 'magnet:?xt=urn:btih:' . self::FRESH;
+		$results = $this->add([], 'application/x-www-form-urlencoded',
+			'url=' . rawurlencode($magnet), [], true);
+		$this->assertEquals(['Failed'], $results,
+			'failed download_list is visible as a failed add');
+		$this->assertTrue(in_array('download_list', $this->daemon->calls(), true),
+			'the snapshot was attempted');
+		$this->assertTrue(count(array_filter($this->daemon->calls(), function($method) {
+			return strpos($method, 'load_') === 0 || strpos($method, 'load.') === 0;
+		})) === 0, 'no load is sent after the failed snapshot');
+	}
+
+	public function testAMagnetAlreadyLoadedIsADuplicateNotAnAddition()
+	{
+		$urls = 'magnet:?xt=urn:btih:' . self::LOADED . '&dn=loaded' . "\n"
+			. 'magnet:?xt=urn:btih:' . self::FRESH . "\n"
+			. 'magnet:?xt=urn:btih:' . strtolower(self::FRESH);
+		$results = $this->add([self::LOADED], 'application/x-www-form-urlencoded',
+			'url=' . rawurlencode($urls));
+		$this->assertEquals(['Duplicate', 'Success', 'Duplicate'], $results,
+			'the loaded magnet and the second copy of the new one are duplicates: ' . json_encode($results));
+		$this->assertEquals(3, $this->loadCalls(), 'each magnet was still sent');
+	}
+
+	public function testAnUploadedTorrentAlreadyLoadedIsADuplicateWithoutALoad()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([self::LOADED, $hash], ['one.torrent' => $torrent],
+			['one.torrent'], []);
+		$this->assertEquals(['Duplicate'], $results,
+			'a torrent the daemon already holds is answered as a duplicate: ' . json_encode($results));
+		$this->assertEquals(0, $this->loadCalls(),
+			'no load is sent that rtorrent would drop before its proof could run');
+		$this->assertEquals(0, $this->proofReads(), 'so no settle window is waited out');
+		$this->assertEquals(1, $this->presenceReads(), 'one d.hash read confirmed the torrent is still there');
+		$this->assertEquals([], $this->kept(), 'the uploaded copy of a duplicate is not kept');
+	}
+
+	public function testRandomizingLeavesAPrivateTorrentsHashAlone()
+	{
+		$torrent = $this->torrent($hash, "\x01", true);
+		$results = $this->upload([self::LOADED, $hash], ['one.torrent' => $torrent],
+			['one.torrent'], [], [], ['randomize_hash' => '1']);
+		$this->assertEquals(['Duplicate'], $results,
+			'the private torrent keeps its own hash, so a loaded one is still a duplicate: ' . json_encode($results));
+		$this->assertEquals(0, $this->loadCalls(), 'and no load is sent for it');
+		$this->assertEquals(1, $this->presenceReads(), 'the d.hash read asked for its own hash');
+	}
+
+	public function testRandomizingStillGivesAPublicTorrentANewHash()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([self::LOADED, $hash], ['one.torrent' => $torrent],
+			['one.torrent'], [true], [], ['randomize_hash' => '1']);
+		$sent = $this->sentHash();
+		$this->assertTrue(($sent !== null) && ($sent !== $hash),
+			'rtorrent was sent the public torrent with a new hash: ' . json_encode($sent));
+		$this->assertEquals(['Success'], $results,
+			'so a loaded one is added as a new torrent: ' . json_encode($results));
+	}
+
+	/**
+	 * The snapshot is read when the request starts; the torrent can leave
+	 * the session before its upload is reached (R4-CORE-01 a).
+	 */
+	public function testASnapshotHashThatLeftTheSessionIsLoadedAgain()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([self::LOADED, $hash], ['one.torrent' => $torrent],
+			['one.torrent'], [true], ['absent' => [$hash]]);
+		$this->assertEquals(['Success'], $results,
+			'a torrent the snapshot listed but rTorrent no longer holds is added: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'its load was sent');
+		$this->assertEquals(['one.torrent'], $this->kept(), 'and its confirmed source is kept');
+	}
+
+	public function testAnUnknownPresenceIsNotAnsweredAsADuplicate()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([$hash], ['one.torrent' => $torrent],
+			['one.torrent'], [true], ['unknown' => [$hash]]);
+		$this->assertEquals(['Success'], $results,
+			'only a d.hash that names the torrent skips its load: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the load was sent and confirmed by its proof');
+	}
+
+	public function testTheSecondCopyInOneUploadIsADuplicate()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([self::LOADED],
+			['one.torrent' => $torrent, 'two.torrent' => $torrent],
+			['one.torrent', 'two.torrent'], [true]);
+		$this->assertEquals(['Success', 'Duplicate'], $results,
+			'the confirmed first copy makes the second a duplicate: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'only the first copy was sent');
+		$this->assertEquals(1, $this->proofReads(), 'and confirmed by its deferred proof');
+		$this->assertEquals(['one.torrent'], $this->kept(),
+			'the confirmed source remains and the duplicate copy does not: ' . json_encode($this->kept()));
+	}
+
+	public function testANewTorrentNextToADuplicateStillNeedsItsProof()
+	{
+		$loaded = $this->torrent($loadedHash);
+		$fresh = $this->torrent($freshHash, "\x02");
+		$results = $this->upload([self::LOADED, $loadedHash],
+			['a.torrent' => $loaded, 'b.torrent' => $fresh],
+			['a.torrent', 'b.torrent'], [false]);
+		$this->assertEquals(['Duplicate', 'Pending'], $results,
+			'a hash outside the snapshot without its proof stays Pending: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'only the new torrent was sent');
+		$this->assertTrue($this->proofReads() > 1,
+			'the new load was given the whole settle window: ' . $this->proofReads());
+		$this->assertEquals(['b.torrent'], $this->kept(),
+			'the unconfirmed new source remains for recovery: ' . json_encode($this->kept()));
+	}
+
+	/** rTorrent drops some magnets without a stub; sendMagnet() answers their hash anyway (O-1). */
+	public function testADroppedMagnetIsPendingNotSuccess()
+	{
+		$results = $this->addUrls([], ['magnet:?xt=urn:btih:' . self::FRESH . '&dn'],
+			[], ['dropMagnets' => [self::FRESH]]);
+		$this->assertEquals(['Pending'], $results,
+			'a magnet whose stub never shows is not reported as added: ' . json_encode($results));
+		$this->assertTrue($this->presenceReads() > 1, 'its stub was looked for through the settle window');
+		$this->assertTrue(strpos($this->server->applicationLog(),
+			'addtorrent: magnet unconfirmed: ' . self::FRESH) !== false,
+			'the unconfirmed magnet is logged: ' . $this->server->applicationLog());
+	}
+
+	public function testAMagnetWhoseStubShowsLateIsStillASuccess()
+	{
+		$results = $this->addUrls([], ['magnet:?xt=urn:btih:' . self::FRESH],
+			[], ['stubAfter' => 3]);
+		$this->assertEquals(['Success'], $results,
+			'a stub that shows within the settle window confirms the magnet: ' . json_encode($results));
+		$this->assertEquals(4, $this->presenceReads(), 'three misses, then the stub');
+	}
+
+	/**
+	 * A dropped magnet's hash must not make the torrent of the same hash,
+	 * later in the batch, a duplicate that is never loaded (R4-CORE-01 b).
+	 */
+	public function testADroppedMagnetDoesNotMakeItsTorrentADuplicate()
+	{
+		$torrent = $this->torrent($hash);
+		$root = sys_get_temp_dir() . '/addtorrent-duplicate-source-' . getmypid();
+		@mkdir($root, 0700, true);
+		file_put_contents($root . '/same.torrent', $torrent);
+		$source = AddTorrentHttpHarness::forDocumentRoot($root);
+		try {
+			$results = $this->addUrls([self::LOADED],
+				['magnet:?xt=urn:btih:' . $hash . '&dn', $source->url('/same.torrent')],
+				[false, true], ['dropMagnets' => [$hash]]);
+		} finally {
+			$source->close();
+			@unlink($root . '/same.torrent');
+			@rmdir($root);
+		}
+		$this->assertEquals(['Pending', 'Success'], $results,
+			'the dropped magnet stays unconfirmed and its torrent is loaded: ' . json_encode($results));
+		$this->assertEquals(2, $this->loadCalls(), 'both the magnet and the torrent were sent');
+	}
+
+	public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
+	{
+		$torrent = $this->torrent($hash);
+		$results = $this->upload([], ['one.torrent' => $torrent], ['one.torrent'],
+			[], ['loadFault' => FakeRtorrentDaemon::fault('Could not create download')]);
+		$this->assertEquals(['Failed'], $results,
+			'a load rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the upload was sent');
+		$this->assertEquals([], $this->kept(), 'the refused copy is not kept');
+	}
+
+	public function testAMagnetRtorrentRefusesIsFailed()
+	{
+		$results = $this->addUrls([], ['magnet:?xt=urn:btih:' . self::FRESH], [],
+			['loadFault' => FakeRtorrentDaemon::fault('Could not create download')]);
+		$this->assertEquals(['Failed'], $results,
+			'a magnet rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the magnet was sent');
+	}
+
+	public function testTheResultPageShowsADuplicateAsAnAlert()
+	{
+		$this->server = AddTorrentHttpHarness::forAddTorrent(
+			new FakeRtorrentAddTorrentReplies([], [], false));
+		$response = $this->server->request('GET',
+			'/php/addtorrent.php?result[]=Duplicate&name[]=x.torrent');
+		$this->assertEquals('noty("x.torrent - "+theUILang["addTorrent"+"Duplicate"],"alert");', $response['body'],
+			'a duplicate is named with its own wording in the alert style');
+	}
+
 	private function stop()
 	{
 		if ($this->server !== null) {
 			$diagnostics = $this->server->phpDiagnostics();
 			$this->server->close();
-			$this->assertSame(array(), $diagnostics,
+			$this->assertSame([], $diagnostics,
 				'the requests were served without a PHP diagnostic: ' . implode(' | ', $diagnostics));
 		}
 		$this->server = null;
@@ -61,27 +256,27 @@ class AddTorrentDuplicateTest extends TestCase
 	 * Sends one request to addtorrent.php. The daemon reports existing hashes
 	 * and confirms only the loads selected by $proofs, in load order.
 	 */
-	private function add($loaded, $contentType, $body, $proofs = array(), $snapshotFails = false,
-		$daemon = array())
+	private function add($loaded, $contentType, $body, $proofs = [], $snapshotFails = false,
+		$daemon = [])
 	{
 		$this->stop();
 		$this->server = AddTorrentHttpHarness::forAddTorrent(
 			new FakeRtorrentAddTorrentReplies($loaded, $proofs, $snapshotFails, $daemon),
-			array('globals' => array('rpcTimeOut' => 10, 'rpcLogCalls' => false,
-				'saveUploadedTorrents' => true),
+			['globals' => ['rpcTimeOut' => 10, 'rpcLogCalls' => false,
+				'saveUploadedTorrents' => true],
 				// The settle window is a courtesy to the daemon; the fake daemon
 				// shows a late stub by read count, so 20 ms polls keep its fourth
 				// read far inside a 0.8 s window.
-				'preamble' => "define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);"));
+				'preamble' => "define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);"]);
 		$this->daemon = $this->server->daemon();
 		$response = $this->server->request('POST', '/php/addtorrent.php', $body,
-			array('Content-Type' => $contentType));
+			['Content-Type' => $contentType]);
 		$location = $response['headers']['location'] ?? null;
 		if ($location === null || !preg_match('`^[^?]*\?(.*)$`', $location, $query)) {
-			return array('no redirect: ' . $response['raw']);
+			return ['no redirect: ' . $response['raw']];
 		}
 		parse_str($query[1], $fields);
-		return isset($fields['result']) ? $fields['result'] : array();
+		return isset($fields['result']) ? $fields['result'] : [];
 	}
 
 	private function loadCalls()
@@ -89,12 +284,12 @@ class AddTorrentDuplicateTest extends TestCase
 		$calls = $this->daemon->calls();
 		$listPos = array_search('download_list', $calls, true);
 		$firstLoad = null;
-		foreach($calls as $position=>$call)
+		foreach($calls as $position=>$call) {
 			if(strpos($call, 'load_') === 0 || strpos($call, 'load.') === 0)
 			{
 				$firstLoad = $position;
 				break;
-			}
+			} }
 		$this->assertTrue($listPos !== false && ($firstLoad === null || $listPos < $firstLoad),
 			'the loaded hashes are read before any load: ' . implode(', ', $calls));
 		return count(array_filter($calls, function($call) {
@@ -118,65 +313,25 @@ class AddTorrentDuplicateTest extends TestCase
 		}));
 	}
 
-	public function testFailedSnapshotRefusesTheWholeAddBeforeAnyLoad()
-	{
-		$magnet = 'magnet:?xt=urn:btih:' . self::FRESH;
-		$results = $this->add(array(), 'application/x-www-form-urlencoded',
-			'url=' . rawurlencode($magnet), array(), true);
-		$this->assertEquals(array('Failed'), $results,
-			'failed download_list is visible as a failed add');
-		$this->assertTrue(in_array('download_list', $this->daemon->calls(), true),
-			'the snapshot was attempted');
-		$this->assertTrue(count(array_filter($this->daemon->calls(), function($method) {
-			return strpos($method, 'load_') === 0 || strpos($method, 'load.') === 0;
-		})) === 0, 'no load is sent after the failed snapshot');
-	}
-
-	public function testAMagnetAlreadyLoadedIsADuplicateNotAnAddition()
-	{
-		$urls = 'magnet:?xt=urn:btih:' . self::LOADED . '&dn=loaded' . "\n"
-			. 'magnet:?xt=urn:btih:' . self::FRESH . "\n"
-			. 'magnet:?xt=urn:btih:' . strtolower(self::FRESH);
-		$results = $this->add(array(self::LOADED), 'application/x-www-form-urlencoded',
-			'url=' . rawurlencode($urls));
-		$this->assertEquals(array('Duplicate', 'Success', 'Duplicate'), $results,
-			'the loaded magnet and the second copy of the new one are duplicates: ' . json_encode($results));
-		$this->assertEquals(3, $this->loadCalls(), 'each magnet was still sent');
-	}
-
 	/**
 	 * Uploads one file per name, each with the torrent its name maps to in
 	 * $torrents (name => torrent bytes), to a daemon holding $loaded, after
 	 * the plain form $fields (name => value).
 	 */
-	private function upload($loaded, $torrents, $names, $proofs, $daemon = array(), $fields = array())
+	private function upload($loaded, $torrents, $names, $proofs, $daemon = [], $fields = [])
 	{
-		$parts = array();
-		foreach ($fields as $field => $value)
-			$parts[] = array('name' => $field, 'content' => $value);
-		foreach ($names as $name)
-			$parts = array_merge($parts, AddTorrentHttpHarness::torrentFiles(array($name), $torrents[$name]));
+		$parts = [];
+		foreach ($fields as $field => $value) {
+			$parts[] = ['name' => $field, 'content' => $value]; }
+		foreach ($names as $name) {
+			$parts = array_merge($parts, AddTorrentHttpHarness::torrentFiles([$name], $torrents[$name])); }
 		list($contentType, $body) = AddTorrentHttpHarness::multipart($parts);
 		return $this->add($loaded, $contentType, $body, $proofs, false, $daemon);
 	}
 
 	private function kept()
 	{
-		return array_values(array_diff(scandir($this->server->profile() . '/torrents'), array('.', '..')));
-	}
-
-	public function testAnUploadedTorrentAlreadyLoadedIsADuplicateWithoutALoad()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
-			array('one.torrent'), array());
-		$this->assertEquals(array('Duplicate'), $results,
-			'a torrent the daemon already holds is answered as a duplicate: ' . json_encode($results));
-		$this->assertEquals(0, $this->loadCalls(),
-			'no load is sent that rtorrent would drop before its proof could run');
-		$this->assertEquals(0, $this->proofReads(), 'so no settle window is waited out');
-		$this->assertEquals(1, $this->presenceReads(), 'one d.hash read confirmed the torrent is still there');
-		$this->assertEquals(array(), $this->kept(), 'the uploaded copy of a duplicate is not kept');
+		return array_values(array_diff(scandir($this->server->profile() . '/torrents'), ['.', '..']));
 	}
 
 	/** The info hash of the torrent rtorrent was sent: the load is the only call with a base64 value. */
@@ -191,165 +346,10 @@ class AddTorrentDuplicateTest extends TestCase
 		return null;
 	}
 
-	public function testRandomizingLeavesAPrivateTorrentsHashAlone()
-	{
-		$torrent = $this->torrent($hash, "\x01", true);
-		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
-			array('one.torrent'), array(), array(), array('randomize_hash' => '1'));
-		$this->assertEquals(array('Duplicate'), $results,
-			'the private torrent keeps its own hash, so a loaded one is still a duplicate: ' . json_encode($results));
-		$this->assertEquals(0, $this->loadCalls(), 'and no load is sent for it');
-		$this->assertEquals(1, $this->presenceReads(), 'the d.hash read asked for its own hash');
-	}
-
-	public function testRandomizingStillGivesAPublicTorrentANewHash()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
-			array('one.torrent'), array(true), array(), array('randomize_hash' => '1'));
-		$sent = $this->sentHash();
-		$this->assertTrue(($sent !== null) && ($sent !== $hash),
-			'rtorrent was sent the public torrent with a new hash: ' . json_encode($sent));
-		$this->assertEquals(array('Success'), $results,
-			'so a loaded one is added as a new torrent: ' . json_encode($results));
-	}
-
-	/**
-	 * The snapshot is read when the request starts; the torrent can leave
-	 * the session before its upload is reached (R4-CORE-01 a).
-	 */
-	public function testASnapshotHashThatLeftTheSessionIsLoadedAgain()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array(self::LOADED, $hash), array('one.torrent' => $torrent),
-			array('one.torrent'), array(true), array('absent' => array($hash)));
-		$this->assertEquals(array('Success'), $results,
-			'a torrent the snapshot listed but rTorrent no longer holds is added: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'its load was sent');
-		$this->assertEquals(array('one.torrent'), $this->kept(), 'and its confirmed source is kept');
-	}
-
-	public function testAnUnknownPresenceIsNotAnsweredAsADuplicate()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array($hash), array('one.torrent' => $torrent),
-			array('one.torrent'), array(true), array('unknown' => array($hash)));
-		$this->assertEquals(array('Success'), $results,
-			'only a d.hash that names the torrent skips its load: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the load was sent and confirmed by its proof');
-	}
-
-	public function testTheSecondCopyInOneUploadIsADuplicate()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array(self::LOADED),
-			array('one.torrent' => $torrent, 'two.torrent' => $torrent),
-			array('one.torrent', 'two.torrent'), array(true));
-		$this->assertEquals(array('Success', 'Duplicate'), $results,
-			'the confirmed first copy makes the second a duplicate: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'only the first copy was sent');
-		$this->assertEquals(1, $this->proofReads(), 'and confirmed by its deferred proof');
-		$this->assertEquals(array('one.torrent'), $this->kept(),
-			'the confirmed source remains and the duplicate copy does not: ' . json_encode($this->kept()));
-	}
-
-	public function testANewTorrentNextToADuplicateStillNeedsItsProof()
-	{
-		$loaded = $this->torrent($loadedHash);
-		$fresh = $this->torrent($freshHash, "\x02");
-		$results = $this->upload(array(self::LOADED, $loadedHash),
-			array('a.torrent' => $loaded, 'b.torrent' => $fresh),
-			array('a.torrent', 'b.torrent'), array(false));
-		$this->assertEquals(array('Duplicate', 'Pending'), $results,
-			'a hash outside the snapshot without its proof stays Pending: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'only the new torrent was sent');
-		$this->assertTrue($this->proofReads() > 1,
-			'the new load was given the whole settle window: ' . $this->proofReads());
-		$this->assertEquals(array('b.torrent'), $this->kept(),
-			'the unconfirmed new source remains for recovery: ' . json_encode($this->kept()));
-	}
-
 	/** A URL batch, sent like the URL box of the add dialog. */
 	private function addUrls($loaded, $urls, $proofs, $daemon)
 	{
 		return $this->add($loaded, 'application/x-www-form-urlencoded',
 			'url=' . rawurlencode(implode("\n", $urls)), $proofs, false, $daemon);
-	}
-
-	/** rTorrent drops some magnets without a stub; sendMagnet() answers their hash anyway (O-1). */
-	public function testADroppedMagnetIsPendingNotSuccess()
-	{
-		$results = $this->addUrls(array(), array('magnet:?xt=urn:btih:' . self::FRESH . '&dn'),
-			array(), array('dropMagnets' => array(self::FRESH)));
-		$this->assertEquals(array('Pending'), $results,
-			'a magnet whose stub never shows is not reported as added: ' . json_encode($results));
-		$this->assertTrue($this->presenceReads() > 1, 'its stub was looked for through the settle window');
-		$this->assertTrue(strpos($this->server->applicationLog(),
-			'addtorrent: magnet unconfirmed: ' . self::FRESH) !== false,
-			'the unconfirmed magnet is logged: ' . $this->server->applicationLog());
-	}
-
-	public function testAMagnetWhoseStubShowsLateIsStillASuccess()
-	{
-		$results = $this->addUrls(array(), array('magnet:?xt=urn:btih:' . self::FRESH),
-			array(), array('stubAfter' => 3));
-		$this->assertEquals(array('Success'), $results,
-			'a stub that shows within the settle window confirms the magnet: ' . json_encode($results));
-		$this->assertEquals(4, $this->presenceReads(), 'three misses, then the stub');
-	}
-
-	/**
-	 * A dropped magnet's hash must not make the torrent of the same hash,
-	 * later in the batch, a duplicate that is never loaded (R4-CORE-01 b).
-	 */
-	public function testADroppedMagnetDoesNotMakeItsTorrentADuplicate()
-	{
-		$torrent = $this->torrent($hash);
-		$root = sys_get_temp_dir() . '/addtorrent-duplicate-source-' . getmypid();
-		@mkdir($root, 0700, true);
-		file_put_contents($root . '/same.torrent', $torrent);
-		$source = AddTorrentHttpHarness::forDocumentRoot($root);
-		try {
-			$results = $this->addUrls(array(self::LOADED),
-				array('magnet:?xt=urn:btih:' . $hash . '&dn', $source->url('/same.torrent')),
-				array(false, true), array('dropMagnets' => array($hash)));
-		} finally {
-			$source->close();
-			@unlink($root . '/same.torrent');
-			@rmdir($root);
-		}
-		$this->assertEquals(array('Pending', 'Success'), $results,
-			'the dropped magnet stays unconfirmed and its torrent is loaded: ' . json_encode($results));
-		$this->assertEquals(2, $this->loadCalls(), 'both the magnet and the torrent were sent');
-	}
-
-	public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
-	{
-		$torrent = $this->torrent($hash);
-		$results = $this->upload(array(), array('one.torrent' => $torrent), array('one.torrent'),
-			array(), array('loadFault' => FakeRtorrentDaemon::fault('Could not create download')));
-		$this->assertEquals(array('Failed'), $results,
-			'a load rtorrent refused is a failure: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the upload was sent');
-		$this->assertEquals(array(), $this->kept(), 'the refused copy is not kept');
-	}
-
-	public function testAMagnetRtorrentRefusesIsFailed()
-	{
-		$results = $this->addUrls(array(), array('magnet:?xt=urn:btih:' . self::FRESH), array(),
-			array('loadFault' => FakeRtorrentDaemon::fault('Could not create download')));
-		$this->assertEquals(array('Failed'), $results,
-			'a magnet rtorrent refused is a failure: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the magnet was sent');
-	}
-
-	public function testTheResultPageShowsADuplicateAsAnAlert()
-	{
-		$this->server = AddTorrentHttpHarness::forAddTorrent(
-			new FakeRtorrentAddTorrentReplies(array(), array(), false));
-		$response = $this->server->request('GET',
-			'/php/addtorrent.php?result[]=Duplicate&name[]=x.torrent');
-		$this->assertEquals('noty("x.torrent - "+theUILang["addTorrent"+"Duplicate"],"alert");', $response['body'],
-			'a duplicate is named with its own wording in the alert style');
 	}
 }

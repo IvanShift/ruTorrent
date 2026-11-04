@@ -17,10 +17,10 @@ class rXmpp
 	public $useEncryption = 1;
 	public $advancedSettings = 0;
 	public $jabberFor = "";
-	protected $message_templ = "Torrent '{TORRENT}' has been downloaded.";
 	public $message = "";
+	protected $message_templ = "Torrent '{TORRENT}' has been downloaded.";
 
-	static public function load()
+	public static function load()
 	{
 		$cache = new rCache();
 		$at = new rXmpp();
@@ -37,8 +37,8 @@ class rXmpp
 	// php://input and so cannot be handed to this from a test.
 	public function set($rawPostData = null)
 	{
-		if( !isset( $HTTP_RAW_POST_DATA ) )
-			$HTTP_RAW_POST_DATA = is_null($rawPostData) ? file_get_contents( "php://input" ) : $rawPostData;
+		if( !isset( $HTTP_RAW_POST_DATA ) ) {
+			$HTTP_RAW_POST_DATA = is_null($rawPostData) ? file_get_contents( "php://input" ) : $rawPostData; }
 		if( isset( $HTTP_RAW_POST_DATA ) )
 		{
 			$vars = explode( '&', $HTTP_RAW_POST_DATA );
@@ -74,17 +74,17 @@ class rXmpp
 				$parts = explode( "=", $var, 2 );
 				$name = $parts[0];
 				$value = "";
-				if( isset($parts[1]) )
-					$value = $escaped ? rawurldecode($parts[1]) : $parts[1];
+				if( isset($parts[1]) ) {
+					$value = $escaped ? rawurldecode($parts[1]) : $parts[1]; }
 				if( $name == "jabberHost" )
 				{
 					$jabberHost = $value;
 				}
-				else if( $name == "jabberPort" )
+				elseif( $name == "jabberPort" )
 				{
 					$jabberPort = $value;
 				}
-				else if( $name == "jabberJid" )
+				elseif( $name == "jabberJid" )
 				{
 					// One field on the wire, so it is unescaped before it
 					// is split, and at the first "@" only: the localpart
@@ -94,24 +94,24 @@ class rXmpp
 					$this->jabberLogin = $jid[0];
 					$this->jabberServer = count($jid) > 1 ? $jid[1] : "";
 				}
-				else if( $name == "jabberPasswd" )
+				elseif( $name == "jabberPasswd" )
 				{
 					$passwdWasSent = true;
 					$this->jabberPasswd = $value;
 				}
-				else if( $name == "useEncryption" )
+				elseif( $name == "useEncryption" )
 				{
 					$useEncryption = $value;
 				}
-				else if( $name == "advancedSettings" )
+				elseif( $name == "advancedSettings" )
 				{
 					$this->advancedSettings = $value;
 				}
-				else if ( $name == "jabberFor" )
+				elseif ( $name == "jabberFor" )
 				{
 					$this->jabberFor = $value;
 				}
-				else if ( $name == "message" )
+				elseif ( $name == "message" )
 				{
 					if ($value)
 					{
@@ -147,7 +147,7 @@ class rXmpp
 		{
 		    $jid = $this->jabberLogin."@".$this->jabberServer;
 		}
-		return "theWebUI.xmpp = ".JSON::jsValue(array(
+		return "theWebUI.xmpp = ".JSON::jsValue([
 			"JabberHost" => strval($this->jabberHost),
 			"JabberPort" => intval($this->jabberPort),
 			"JabberJID" => $jid,
@@ -159,8 +159,8 @@ class rXmpp
 			"UseEncryption" => intval($this->useEncryption),
 			"AdvancedSettings" => intval($this->advancedSettings),
 			"JabberFor" => strval($this->jabberFor),
-			"Message" => strval($this->message ? $this->message : $this->message_templ)
-		)).";\n";
+			"Message" => strval($this->message ? $this->message : $this->message_templ),
+		]).";\n";
 	}
 
 	public function notificationMessage($name, $hash = '', $knownPaths = false)
@@ -184,12 +184,12 @@ class rXmpp
 		$req = new rXMLRPCRequest();
 		if ( $this->message !== '' && isset($this->jabberServer) && isset($this->jabberLogin) && isset($this->jabberPasswd) && isset($this->jabberFor))
 		{
-		    $cmd = $theSettings->getOnFinishedCommand(array('xmpp'.User::getUser(),
-			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($pathToXmpp.'/notify.php').',"$'.getCmd('d.name').'=",'.rTorrent::quoteCommandArg(User::getUser()).',"$'.getCmd('d.get_hash').'=","$'.getCmd('get_session').'=","$'.getCmd('d.get_tied_to_file').'="}'
-			    ));
+		    $cmd = $theSettings->getOnFinishedCommand(['xmpp'.User::getUser(),
+			    getCmd('execute.nothrow').'={sh,-c,\"$0\" \"$@\" </dev/null >/dev/null 2>&1 &,'.rTorrent::quoteCommandArg(Utility::getPHP()).','.rTorrent::quoteCommandArg($pathToXmpp.'/notify.php').',"$'.getCmd('d.name').'=",'.rTorrent::quoteCommandArg(User::getUser()).',"$'.getCmd('d.get_hash').'=","$'.getCmd('get_session').'=","$'.getCmd('d.get_tied_to_file').'="}',
+			    ]);
 		}
-		else
-		    $cmd = $theSettings->getOnFinishedCommand(array('xmpp'.User::getUser(), getCmd('cat=')));
+		else {
+		    $cmd = $theSettings->getOnFinishedCommand(['xmpp'.User::getUser(), getCmd('cat=')]); }
 		$req->addCommand($cmd);
 		return($req->success());
 	}

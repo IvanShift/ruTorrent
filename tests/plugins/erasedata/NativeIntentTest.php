@@ -9,7 +9,7 @@ class ErasedataNativeIntentTest extends TestCase
 	{
 		$dir = sys_get_temp_dir().'/ed-reader-'.bin2hex(random_bytes(6));
 		mkdir($dir, 0700);
-		$diagnostics = array();
+		$diagnostics = [];
 		set_error_handler(function($severity, $message) use (&$diagnostics) {
 			$diagnostics[] = $message;
 			return(true);
@@ -18,7 +18,7 @@ class ErasedataNativeIntentTest extends TestCase
 		{
 			$this->assertEquals(false, ErasedataManifestCodec::readBoundedFile($dir),
 				'a directory descriptor is refused as a manifest file');
-			$this->assertEquals(array(), $diagnostics,
+			$this->assertEquals([], $diagnostics,
 				'the file reader refuses a non-regular descriptor before fread');
 			file_put_contents($dir.'/manifest', 'regular bytes');
 			$this->assertEquals('regular bytes', ErasedataManifestCodec::readBoundedFile($dir.'/manifest'),
@@ -33,22 +33,9 @@ class ErasedataNativeIntentTest extends TestCase
 		finally
 		{
 			restore_error_handler();
-			if(is_file($dir.'/manifest')) unlink($dir.'/manifest');
+			if(is_file($dir.'/manifest')) { unlink($dir.'/manifest'); }
 			rmdir($dir);
 		}
-	}
-
-	private function paths()
-	{
-		return(array('base' => '/data/kept', 'multi' => true,
-			'files' => array('/data/kept/one.bin', "/data/kept/line\nnon-utf8-\xff.bin")));
-	}
-
-	private function intent($payload)
-	{
-		return(array('incarnation' => str_repeat('a', 32),
-			'nonce' => str_repeat('b', 32), 'generation' => '0000000000000001',
-			'user' => '', 'digest' => hash('sha256', $payload)));
 	}
 
 	public function testDeletionHelperRetainsTheSameLeaseAfterItsPHPParentDies()
@@ -71,14 +58,14 @@ class ErasedataNativeIntentTest extends TestCase
 			.'@$method->setAccessible(true);'
 			.'$method->invoke(null,array(PHP_BINARY,$argv[1],$argv[2],$argv[3]),$argv[2]);');
 		file_put_contents($lockPath, '');
-		$descriptors = array(0 => array('file', '/dev/null', 'r'),
-			1 => array('file', '/dev/null', 'w'), 2 => array('file', $dir.'/stderr', 'w'));
-		$child = proc_open(array(PHP_BINARY, $actor, $helper, $ready, $release), $descriptors, $pipes);
+		$descriptors = [0 => ['file', '/dev/null', 'r'],
+			1 => ['file', '/dev/null', 'w'], 2 => ['file', $dir.'/stderr', 'w']];
+		$child = proc_open([PHP_BINARY, $actor, $helper, $ready, $release], $descriptors, $pipes);
 		$contender = fopen($lockPath, 'r+');
 		try
 		{
 			$end = microtime(true) + 3;
-			while(!is_file($ready) && microtime(true) < $end) usleep(10000);
+			while(!is_file($ready) && microtime(true) < $end) { usleep(10000); }
 			$this->assertTrue(is_file($ready), 'the real helper starts before its PHP parent is killed');
 			proc_terminate($child, 9);
 			proc_close($child);
@@ -86,21 +73,21 @@ class ErasedataNativeIntentTest extends TestCase
 			$acquired = flock($contender, LOCK_EX | LOCK_NB);
 			$this->assertEquals(false, $acquired,
 				'a surviving filesystem helper still holds the exact inherited deletion lease');
-			if($acquired) flock($contender, LOCK_UN);
+			if($acquired) { flock($contender, LOCK_UN); }
 			file_put_contents($release, 'release');
 			$end = microtime(true) + 3;
 			$acquired = false;
-			while(!($acquired = flock($contender, LOCK_EX | LOCK_NB)) && microtime(true) < $end)
-				usleep(10000);
+			while(!($acquired = flock($contender, LOCK_EX | LOCK_NB)) && microtime(true) < $end) {
+				usleep(10000); }
 			$this->assertTrue($acquired, 'the lease becomes available after the last helper exits');
-			if($acquired) flock($contender, LOCK_UN);
+			if($acquired) { flock($contender, LOCK_UN); }
 		}
 		finally
 		{
 			file_put_contents($release, 'release');
 			if(is_resource($child)) { proc_terminate($child, 9); proc_close($child); }
 			fclose($contender);
-			foreach(glob($dir.'/*') as $file) unlink($file);
+			foreach(glob($dir.'/*') as $file) { unlink($file); }
 			rmdir($dir);
 		}
 	}
@@ -109,7 +96,7 @@ class ErasedataNativeIntentTest extends TestCase
 	{
 		$this->assertTrue(method_exists('ErasedataManifestCodec', 'encodeBound'),
 			'the native-bound payload writer is available');
-		if(!method_exists('ErasedataManifestCodec', 'encodeBound')) return;
+		if(!method_exists('ErasedataManifestCodec', 'encodeBound')) { return; }
 		$hash = str_repeat('A', 40);
 		$paths = $this->paths();
 		$payload = ErasedataManifestCodec::encode($hash, $paths, 1);
@@ -129,16 +116,16 @@ class ErasedataNativeIntentTest extends TestCase
 	{
 		$this->assertTrue(method_exists('ErasedataManifestCodec', 'encodeBound'),
 			'the native-bound payload writer is available');
-		if(!method_exists('ErasedataManifestCodec', 'encodeBound')) return;
+		if(!method_exists('ErasedataManifestCodec', 'encodeBound')) { return; }
 		$hash = str_repeat('A', 40);
 		$paths = $this->paths();
 		$payload = ErasedataManifestCodec::encode($hash, $paths, 1);
 		$intent = $this->intent($payload);
 		$bytes = ErasedataManifestCodec::encodeBound($hash, $paths, 1, $intent);
 		$json = json_decode($bytes, true);
-		foreach(array('incarnation' => str_repeat('A', 32), 'nonce' => str_repeat('b', 31),
+		foreach(['incarnation' => str_repeat('A', 32), 'nonce' => str_repeat('b', 31),
 			'generation' => '0000000000000000', 'user' => '../foreign',
-			'digest' => str_repeat('c', 64), 'extra' => 'unowned') as $key => $value)
+			'digest' => str_repeat('c', 64), 'extra' => 'unowned'] as $key => $value)
 		{
 			$bad = $intent;
 			$bad[$key] = $value;
@@ -155,5 +142,18 @@ class ErasedataNativeIntentTest extends TestCase
 		$this->assertEquals(false, ErasedataManifestCodec::decodeBytes(
 			str_replace('"version":4', '"version":2,"version":4', $bytes), $hash),
 			'duplicate serialized members cannot manufacture native authority');
+	}
+
+	private function paths()
+	{
+		return(['base' => '/data/kept', 'multi' => true,
+			'files' => ['/data/kept/one.bin', "/data/kept/line\nnon-utf8-\xff.bin"]]);
+	}
+
+	private function intent($payload)
+	{
+		return(['incarnation' => str_repeat('a', 32),
+			'nonce' => str_repeat('b', 32), 'generation' => '0000000000000001',
+			'user' => '', 'digest' => hash('sha256', $payload)]);
 	}
 }

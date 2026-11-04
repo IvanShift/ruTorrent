@@ -19,7 +19,7 @@ class rXMLRPCCommand
 {
     public $command;
     public $params;
-    public function __construct($command, $params = array())
+    public function __construct($command, $params = [])
     {
         $this->command = $command;
         $this->params = $params;
@@ -29,17 +29,17 @@ class rXMLRPCCommand
 class rXMLRPCRequest
 {
     public static $reply = 4096;
-    public static $calls = array();
+    public static $calls = [];
     public $important = true;
-    public $val = array();
+    public $val = [];
     private $command;
 
     public function __construct($command) { $this->command = $command; }
     public function success()
     {
-        self::$calls[] = array($this->command->command, $this->command->params);
-        if (self::$reply === false) return false;
-        $this->val = array(self::$reply);
+        self::$calls[] = [$this->command->command, $this->command->params];
+        if (self::$reply === false) { return false; }
+        $this->val = [self::$reply];
         return true;
     }
 }
@@ -52,13 +52,13 @@ class WorkerCapTest extends TestCase
     public function testWorkerUsesMeasuredDaemonCapBeforeCommit()
     {
         $adapter = new RetrackersWorkerRpcAdapter();
-        rXMLRPCRequest::$calls = array();
+        rXMLRPCRequest::$calls = [];
         rXMLRPCRequest::$reply = 4096;
         $failure = null;
         $this->assertEquals(4096, $adapter->maxContentSize($failure),
             'a lowered live XMLRPC limit bounds the commit wire below the API cap');
         $this->assertEquals(null, $failure, 'a valid measured cap is accepted');
-        $this->assertEquals(array(array('get_xmlrpc_size_limit', array())), rXMLRPCRequest::$calls,
+        $this->assertEquals([['get_xmlrpc_size_limit', []]], rXMLRPCRequest::$calls,
             'the worker reads the daemon limit with one standalone getter');
         rXMLRPCRequest::$reply = '4096';
         $this->assertEquals(4096, $adapter->maxContentSize($failure),
@@ -71,7 +71,7 @@ class WorkerCapTest extends TestCase
     public function testUnreadableOrMalformedDaemonCapRefusesCommit()
     {
         $adapter = new RetrackersWorkerRpcAdapter();
-        foreach (array(false, '4096garbage', '04096', 0) as $reply) {
+        foreach ([false, '4096garbage', '04096', 0] as $reply) {
             rXMLRPCRequest::$reply = $reply;
             $failure = null;
             $this->assertEquals(false, $adapter->maxContentSize($failure),

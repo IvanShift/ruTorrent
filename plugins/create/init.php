@@ -15,14 +15,14 @@ if($useExternal!==false)
 	}
 	else
 	{
-		if($useExternal === "transmissioncreate")
-			$jResult.="plugin.hidePieceSize = true;";
+		if($useExternal === "transmissioncreate") {
+			$jResult.="plugin.hidePieceSize = true;"; }
 
-		if (($useExternal !== "torrenttools") && ($useInternalHybrid==false))
-			$jResult.="plugin.hideHybrid = true;";
+		if (($useExternal !== "torrenttools") && ($useInternalHybrid==false)) {
+			$jResult.="plugin.hideHybrid = true;"; }
 
 		$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
 	}
 }
-else
-	$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]);
+else {
+	$theSettings->registerPlugin($plugin["name"],$pInfo["perms"]); }

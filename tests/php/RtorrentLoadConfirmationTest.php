@@ -6,7 +6,7 @@ require_once(__DIR__ . '/RtorrentLoadConfirmationFixture.php');
 // The settle window is a courtesy to the daemon. The fixture confirms a late
 // proof by query count, not by time, so 20 ms polls leave its third query far
 // inside a 0.8 s window and spare each unconfirmed load 1.2 s of waiting.
-if (!defined('RTORRENT_LOAD_WAIT_DELAY_US')) define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);
+if (!defined('RTORRENT_LOAD_WAIT_DELAY_US')) { define('RTORRENT_LOAD_WAIT_DELAY_US', 20000); }
 require_once(__DIR__ . '/../../php/rtorrent.php');
 require_once(__DIR__ . '/../../plugins/rss/rss.php');
 
@@ -39,10 +39,10 @@ class RtorrentLoadConfirmationTest extends TestCase
 		$settings = (new ReflectionClass('RtorrentLoadConfirmationSettings'))
 			->newInstanceWithoutConstructor();
 		$settings->iVersion = 0x1016;
-		$settings->aliases = array();
+		$settings->aliases = [];
 		$settings->loadLegacyAliases();
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$this->settingsBefore = $property->getValue();
 		$property->setValue(null, $settings);
 
@@ -65,30 +65,12 @@ class RtorrentLoadConfirmationTest extends TestCase
 	public function tearDown()
 	{
 		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		if (PHP_VERSION_ID < 80100) $property->setAccessible(true);
+		if (PHP_VERSION_ID < 80100) { $property->setAccessible(true); }
 		$property->setValue(null, $this->settingsBefore);
 		@unlink($this->torrentFile);
-		if ($this->logBefore === null) unset($GLOBALS['log_file']);
-		else $GLOBALS['log_file'] = $this->logBefore;
+		if ($this->logBefore === null) { unset($GLOBALS['log_file']); }
+		else { $GLOBALS['log_file'] = $this->logBefore; }
 		@unlink($this->log);
-	}
-
-	private function withPeer($mode, $callback)
-	{
-		$fixture = RtorrentLoadConfirmationFixture::start($mode);
-		$oldHost = isset($GLOBALS['scgi_host']) ? $GLOBALS['scgi_host'] : null;
-		$oldPort = isset($GLOBALS['scgi_port']) ? $GLOBALS['scgi_port'] : null;
-		$GLOBALS['scgi_host'] = '127.0.0.1';
-		$GLOBALS['scgi_port'] = $fixture->port();
-		try {
-			return $callback($fixture);
-		} finally {
-			if ($oldHost === null) unset($GLOBALS['scgi_host']);
-			else $GLOBALS['scgi_host'] = $oldHost;
-			if ($oldPort === null) unset($GLOBALS['scgi_port']);
-			else $GLOBALS['scgi_port'] = $oldPort;
-			$fixture->close();
-		}
 	}
 
 	public function testLegacyAliasMapProvidesBothProofCommands()
@@ -101,14 +83,14 @@ class RtorrentLoadConfirmationTest extends TestCase
 
 	public function testUnknownRpcAnswersWriteClassifiedReasonsOnly()
 	{
-		$receipt = array('hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$receipt = ['hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
 		$oldLog = $GLOBALS['log_file'] ?? null;
 		$oldRpcLog = $GLOBALS['rpcLogCalls'] ?? null;
 		$GLOBALS['rpcLogCalls'] = false;
 		try {
-			foreach (array('absent' => 'rpc-fault',
-				'malformed-response' => 'unusable-response') as $mode => $reason) {
+			foreach (['absent' => 'rpc-fault',
+				'malformed-response' => 'unusable-response'] as $mode => $reason) {
 				$path = tempnam(sys_get_temp_dir(), 'rtlc-log-');
 				$GLOBALS['log_file'] = $path;
 				try {
@@ -134,17 +116,17 @@ class RtorrentLoadConfirmationTest extends TestCase
 				}
 			}
 		} finally {
-			if ($oldLog === null) unset($GLOBALS['log_file']);
-			else $GLOBALS['log_file'] = $oldLog;
-			if ($oldRpcLog === null) unset($GLOBALS['rpcLogCalls']);
-			else $GLOBALS['rpcLogCalls'] = $oldRpcLog;
+			if ($oldLog === null) { unset($GLOBALS['log_file']); }
+			else { $GLOBALS['log_file'] = $oldLog; }
+			if ($oldRpcLog === null) { unset($GLOBALS['rpcLogCalls']); }
+			else { $GLOBALS['rpcLogCalls'] = $oldRpcLog; }
 		}
 	}
 
 	public function testNilResultCannotProveForeignOwnership()
 	{
-		$receipt = array('hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$receipt = ['hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
 		$this->withPeer('nil-response', function () use ($receipt) {
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
 				'a nil result cannot prove a foreign load');
@@ -153,14 +135,14 @@ class RtorrentLoadConfirmationTest extends TestCase
 
 	public function testOnlyCapturedAbsentHashFaultsProveMissing()
 	{
-		$receipt = array('hash' => $this->hash,
-			'key' => 'ru-load-proof-' . str_repeat('a', 32));
+		$receipt = ['hash' => $this->hash,
+			'key' => 'ru-load-proof-' . str_repeat('a', 32)];
 		// Exact fault strings captured from current 0.16.24 and legacy 0.9.8.
-		foreach (array('missing-current', 'missing-legacy') as $mode)
+		foreach (['missing-current', 'missing-legacy'] as $mode) {
 			$this->withPeer($mode, function () use ($receipt, $mode) {
 				$this->assertSame('missing', rTorrent::pendingLoadStatus($receipt),
 					$mode . ' positively proves the hash is absent');
-			});
+			}); }
 		$this->withPeer('absent', function () use ($receipt) {
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
 				'other daemon faults cannot prove that the hash is absent');
@@ -180,8 +162,8 @@ class RtorrentLoadConfirmationTest extends TestCase
 			. '/rutorrent-load-absent-' . bin2hex(random_bytes(8)) . '.sock';
 		$GLOBALS['scgi_port'] = 0;
 		try {
-			$receipt = array('hash' => $this->hash,
-				'key' => 'ru-load-proof-' . str_repeat('a', 32));
+			$receipt = ['hash' => $this->hash,
+				'key' => 'ru-load-proof-' . str_repeat('a', 32)];
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
 				'connect-failed means the receipt remains unresolved');
 			$this->assertSame('unknown', rTorrent::pendingLoadStatus($receipt),
@@ -197,15 +179,15 @@ class RtorrentLoadConfirmationTest extends TestCase
 			$this->assertTrue(strpos(implode("\n", $lines), 'rXMLRPCRequest: connect-failed') === false,
 				'the ordinary core connection refusal adds no duplicate polling log line');
 		} finally {
-			if ($oldLog === null) unset($GLOBALS['log_file']);
-			else $GLOBALS['log_file'] = $oldLog;
-			if ($oldRpcLog === null) unset($GLOBALS['rpcLogCalls']);
-			else $GLOBALS['rpcLogCalls'] = $oldRpcLog;
+			if ($oldLog === null) { unset($GLOBALS['log_file']); }
+			else { $GLOBALS['log_file'] = $oldLog; }
+			if ($oldRpcLog === null) { unset($GLOBALS['rpcLogCalls']); }
+			else { $GLOBALS['rpcLogCalls'] = $oldRpcLog; }
 			@unlink($path);
-			if ($oldHost === null) unset($GLOBALS['scgi_host']);
-			else $GLOBALS['scgi_host'] = $oldHost;
-			if ($oldPort === null) unset($GLOBALS['scgi_port']);
-			else $GLOBALS['scgi_port'] = $oldPort;
+			if ($oldHost === null) { unset($GLOBALS['scgi_host']); }
+			else { $GLOBALS['scgi_host'] = $oldHost; }
+			if ($oldPort === null) { unset($GLOBALS['scgi_port']); }
+			else { $GLOBALS['scgi_port'] = $oldPort; }
 		}
 	}
 
@@ -358,7 +340,7 @@ class RtorrentLoadConfirmationTest extends TestCase
 					public function getTorrent($href) { return $this->source; }
 				};
 				$feed->source = $source;
-				$feed->items[$href] = array('timestamp' => 100, 'guid' => 'fb3-item');
+				$feed->items[$href] = ['timestamp' => 100, 'guid' => 'fb3-item'];
 				$manager = (new ReflectionClass(rRSSManager::class))->newInstanceWithoutConstructor();
 				$manager->rssList = new rRSSMetaList();
 				$manager->history = new rRSSHistory();
@@ -372,8 +354,8 @@ class RtorrentLoadConfirmationTest extends TestCase
 				$this->assertTrue(!file_exists($source),
 					'RSS removes its disposable download while the receipt remains');
 			} finally {
-				if($previousSave === null) unset($GLOBALS['saveUploadedTorrents']);
-				else $GLOBALS['saveUploadedTorrents'] = $previousSave;
+				if($previousSave === null) { unset($GLOBALS['saveUploadedTorrents']); }
+				else { $GLOBALS['saveUploadedTorrents'] = $previousSave; }
 				@unlink($source);
 			}
 		});
@@ -389,5 +371,23 @@ class RtorrentLoadConfirmationTest extends TestCase
 			$this->assertTrue(count($fixture->requests()) === 1,
 				'a faulted RPC is not polled without a callback');
 		});
+	}
+
+	private function withPeer($mode, $callback)
+	{
+		$fixture = RtorrentLoadConfirmationFixture::start($mode);
+		$oldHost = isset($GLOBALS['scgi_host']) ? $GLOBALS['scgi_host'] : null;
+		$oldPort = isset($GLOBALS['scgi_port']) ? $GLOBALS['scgi_port'] : null;
+		$GLOBALS['scgi_host'] = '127.0.0.1';
+		$GLOBALS['scgi_port'] = $fixture->port();
+		try {
+			return $callback($fixture);
+		} finally {
+			if ($oldHost === null) { unset($GLOBALS['scgi_host']); }
+			else { $GLOBALS['scgi_host'] = $oldHost; }
+			if ($oldPort === null) { unset($GLOBALS['scgi_port']); }
+			else { $GLOBALS['scgi_port'] = $oldPort; }
+			$fixture->close();
+		}
 	}
 }

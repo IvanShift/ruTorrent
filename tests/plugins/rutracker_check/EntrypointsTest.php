@@ -17,22 +17,22 @@ function epCalls($file)
     $path = EP_DIR . '/' . $file;
     strictAssertTrue(is_file($path), $file . ' exists');
     $tokens = token_get_all(file_get_contents($path));
-    $calls = array();
+    $calls = [];
     $count = count($tokens);
     for ($i = 0; $i < $count; $i++) {
-        if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_DOUBLE_COLON) continue;
+        if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_DOUBLE_COLON) { continue; }
         // <name> :: <name>, and a '(' after it to make it a call rather than a
         // constant reference.
         $class = null;
         for ($b = $i - 1; $b >= 0; $b--) {
-            if (is_array($tokens[$b]) && $tokens[$b][0] === T_WHITESPACE) continue;
-            if (is_array($tokens[$b]) && $tokens[$b][0] === T_STRING) $class = $tokens[$b][1];
+            if (is_array($tokens[$b]) && $tokens[$b][0] === T_WHITESPACE) { continue; }
+            if (is_array($tokens[$b]) && $tokens[$b][0] === T_STRING) { $class = $tokens[$b][1]; }
             break;
         }
         $method = null;
         $paren = false;
         for ($f = $i + 1; $f < $count; $f++) {
-            if (is_array($tokens[$f]) && $tokens[$f][0] === T_WHITESPACE) continue;
+            if (is_array($tokens[$f]) && $tokens[$f][0] === T_WHITESPACE) { continue; }
             if ($method === null && is_array($tokens[$f]) && $tokens[$f][0] === T_STRING) {
                 $method = $tokens[$f][1];
                 continue;
@@ -40,7 +40,7 @@ function epCalls($file)
             $paren = ($tokens[$f] === '(');
             break;
         }
-        if ($class !== null && $method !== null && $paren) $calls[] = $class . '::' . $method;
+        if ($class !== null && $method !== null && $paren) { $calls[] = $class . '::' . $method; }
     }
     return $calls;
 }
@@ -64,39 +64,39 @@ function epAssertOrder($calls, $before, $after, $why)
 function epNamedFunctionCallIndices($path, $name)
 {
     $tokens = token_get_all(file_get_contents($path));
-    $indices = array();
+    $indices = [];
     foreach ($tokens as $index => $token) {
-        if (!is_array($token) || $token[0] !== T_STRING || $token[1] !== $name) continue;
+        if (!is_array($token) || $token[0] !== T_STRING || $token[1] !== $name) { continue; }
         $previous = $index - 1;
         while ($previous >= 0 && is_array($tokens[$previous])
-            && in_array($tokens[$previous][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $previous--;
-        if ($previous >= 0 && is_array($tokens[$previous]) && $tokens[$previous][0] === T_FUNCTION) continue;
+            && in_array($tokens[$previous][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { $previous--; }
+        if ($previous >= 0 && is_array($tokens[$previous]) && $tokens[$previous][0] === T_FUNCTION) { continue; }
         $next = $index + 1;
         while ($next < count($tokens) && is_array($tokens[$next])
-            && in_array($tokens[$next][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $next++;
-        if ($next < count($tokens) && $tokens[$next] === '(') $indices[] = $index;
+            && in_array($tokens[$next][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { $next++; }
+        if ($next < count($tokens) && $tokens[$next] === '(') { $indices[] = $index; }
     }
-    return array($tokens, $indices);
+    return [$tokens, $indices];
 }
 
 function epFunctionCallArguments($path, $name)
 {
     list($tokens, $indices) = epNamedFunctionCallIndices($path, $name);
-    $arguments = array();
+    $arguments = [];
     foreach ($indices as $index) {
-        while ($tokens[$index] !== '(') $index++;
+        while ($tokens[$index] !== '(') { $index++; }
         $depth = 1;
         $text = '';
         for ($index++; $index < count($tokens) && $depth > 0; $index++) {
             $token = $tokens[$index];
-            if ($token === '(') $depth++;
+            if ($token === '(') { $depth++; }
             elseif ($token === ')') {
                 $depth--;
-                if ($depth === 0) break;
+                if ($depth === 0) { break; }
             }
             if ($depth > 0) {
                 if (is_array($token)) {
-                    if (in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) continue;
+                    if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { continue; }
                     $text .= $token[1];
                 } else {
                     $text .= $token;
@@ -111,33 +111,33 @@ function epFunctionCallArguments($path, $name)
 function epCallIsInsideIfVariable($path, $function, $variable)
 {
     list($tokens, $calls) = epNamedFunctionCallIndices($path, $function);
-    if (count($calls) !== 1) return null;
+    if (count($calls) !== 1) { return null; }
     $call = $calls[0];
     foreach ($tokens as $index => $token) {
-        if (!is_array($token) || $token[0] !== T_IF) continue;
+        if (!is_array($token) || $token[0] !== T_IF) { continue; }
         $cursor = $index + 1;
-        while ($cursor < count($tokens) && $tokens[$cursor] !== '(') $cursor++;
-        if ($cursor >= count($tokens)) continue;
+        while ($cursor < count($tokens) && $tokens[$cursor] !== '(') { $cursor++; }
+        if ($cursor >= count($tokens)) { continue; }
         $conditionDepth = 1;
         $mentionsVariable = false;
         for ($cursor++; $cursor < count($tokens) && $conditionDepth > 0; $cursor++) {
-            if ($tokens[$cursor] === '(') $conditionDepth++;
-            elseif ($tokens[$cursor] === ')') $conditionDepth--;
+            if ($tokens[$cursor] === '(') { $conditionDepth++; }
+            elseif ($tokens[$cursor] === ')') { $conditionDepth--; }
             elseif (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_VARIABLE
-                && $tokens[$cursor][1] === $variable) $mentionsVariable = true;
+                && $tokens[$cursor][1] === $variable) { $mentionsVariable = true; }
         }
-        if (!$mentionsVariable) continue;
+        if (!$mentionsVariable) { continue; }
         while ($cursor < count($tokens) && is_array($tokens[$cursor])
-            && in_array($tokens[$cursor][0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) $cursor++;
-        if ($cursor >= count($tokens) || $tokens[$cursor] !== '{') continue;
+            && in_array($tokens[$cursor][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { $cursor++; }
+        if ($cursor >= count($tokens) || $tokens[$cursor] !== '{') { continue; }
         $bodyStart = $cursor;
         $bodyDepth = 1;
         for ($cursor++; $cursor < count($tokens) && $bodyDepth > 0; $cursor++) {
-            if ($tokens[$cursor] === '{') $bodyDepth++;
-            elseif ($tokens[$cursor] === '}') $bodyDepth--;
+            if ($tokens[$cursor] === '{') { $bodyDepth++; }
+            elseif ($tokens[$cursor] === '}') { $bodyDepth--; }
         }
         $bodyEnd = $cursor - 1;
-        if ($call > $bodyStart && $call < $bodyEnd) return true;
+        if ($call > $bodyStart && $call < $bodyEnd) { return true; }
     }
     return false;
 }
@@ -147,25 +147,25 @@ function epFunctionBodyCalls($path, $function, $called)
     $tokens = token_get_all(file_get_contents($path));
     $start = null;
     for ($index = 0; $index < count($tokens); $index++) {
-        if (!is_array($tokens[$index]) || $tokens[$index][0] !== T_FUNCTION) continue;
+        if (!is_array($tokens[$index]) || $tokens[$index][0] !== T_FUNCTION) { continue; }
         for ($cursor = $index + 1; $cursor < count($tokens); $cursor++) {
-            if (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_WHITESPACE) continue;
+            if (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_WHITESPACE) { continue; }
             if (is_array($tokens[$cursor]) && $tokens[$cursor][0] === T_STRING
-                && $tokens[$cursor][1] === $function) $start = $cursor;
+                && $tokens[$cursor][1] === $function) { $start = $cursor; }
             break;
         }
-        if ($start !== null) break;
+        if ($start !== null) { break; }
     }
-    if ($start === null) return array();
-    while ($start < count($tokens) && $tokens[$start] !== '{') $start++;
-    if ($start >= count($tokens)) return array();
+    if ($start === null) { return []; }
+    while ($start < count($tokens) && $tokens[$start] !== '{') { $start++; }
+    if ($start >= count($tokens)) { return []; }
     $depth = 1;
-    $calls = array();
+    $calls = [];
     for ($index = $start + 1; $index < count($tokens) && $depth > 0; $index++) {
-        if ($tokens[$index] === '{') $depth++;
-        elseif ($tokens[$index] === '}') $depth--;
+        if ($tokens[$index] === '{') { $depth++; }
+        elseif ($tokens[$index] === '}') { $depth--; }
         elseif (is_array($tokens[$index]) && $tokens[$index][0] === T_STRING
-            && $tokens[$index][1] === $called) $calls[] = $called;
+            && $tokens[$index][1] === $called) { $calls[] = $called; }
     }
     return $calls;
 }
@@ -195,8 +195,8 @@ function epPostAction($port, $body, $username = null)
     $request = "POST /plugins/rutracker_check/action.php HTTP/1.0\r\n"
         . "Host: 127.0.0.1\r\n"
         . "Content-Type: application/x-www-form-urlencoded\r\n";
-    if($username !== null)
-        $request .= 'Authorization: Basic ' . base64_encode($username . ':fixture-password') . "\r\n";
+    if($username !== null) {
+        $request .= 'Authorization: Basic ' . base64_encode($username . ':fixture-password') . "\r\n"; }
     $request .= 'Content-Length: ' . strlen($body) . "\r\n"
         . "Connection: close\r\n\r\n"
         . $body;
@@ -220,12 +220,12 @@ function epPostAction($port, $body, $username = null)
     if (count($parts) !== 2 || !preg_match('/^HTTP\/1\.[01] ([0-9]{3})/D', strtok($parts[0], "\r\n"), $match)) {
         throw new RuntimeException('malformed action-test response: ' . $response);
     }
-    return array(
+    return [
         'status' => (int) $match[1],
         'headers' => $parts[0],
         'body' => $parts[1],
         'json' => json_decode($parts[1], true),
-    );
+    ];
 }
 
 function epWaitForActionInvocations($recordDirectory, $expectedCount, $timeoutSeconds = 3.0)
@@ -236,7 +236,7 @@ function epWaitForActionInvocations($recordDirectory, $expectedCount, $timeoutSe
         clearstatcache();
         $recordPaths = glob($recordDirectory . '/invocation-*');
         sort($recordPaths, SORT_STRING);
-        $records = array();
+        $records = [];
         $allComplete = count($recordPaths) > 0;
         foreach($recordPaths as $recordPath) {
             $raw = file_get_contents($recordPath);
@@ -246,11 +246,11 @@ function epWaitForActionInvocations($recordDirectory, $expectedCount, $timeoutSe
             }
             $argumentBytes = substr($raw, 0, -strlen($completeMarker));
             $arguments = explode("\0", $argumentBytes);
-            if(end($arguments) === '') array_pop($arguments);
+            if(end($arguments) === '') { array_pop($arguments); }
             $records[] = $arguments;
         }
-        if($allComplete && count($records) >= $expectedCount)
-            return $records;
+        if($allComplete && count($records) >= $expectedCount) {
+            return $records; }
         usleep(10000);
     } while(microtime(true) < $deadline);
 
@@ -263,7 +263,7 @@ function epWaitForActionServerStop($port, $timeoutSeconds = 1.0)
     $deadline = microtime(true) + $timeoutSeconds;
     do {
         $probe = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
-        if($probe === false) return;
+        if($probe === false) { return; }
         fclose($probe);
         usleep(10000);
     } while(microtime(true) < $deadline);
@@ -307,11 +307,11 @@ function epWithActionServer($callback, $dispatchMode = 'refuse')
     $command = 'exec ' . escapeshellarg(PHP_BINARY)
         . ' -d display_errors=1 -d variables_order=EGPCS -S 127.0.0.1:' . $port
         . ' -t ' . escapeshellarg($root);
-    $spec = array(
-        0 => array('pipe', 'r'),
-        1 => array('pipe', 'w'),
-        2 => array('pipe', 'w'),
-    );
+    $spec = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
     $environment = getenv();
     $environment['PATH'] = $customPath;
     $environment['RU_TEMP_DIRECTORY'] = $temp;
@@ -336,7 +336,7 @@ function epWithActionServer($callback, $dispatchMode = 'refuse')
                 break;
             }
             $status = proc_get_status($process);
-            if (!$status['running']) break;
+            if (!$status['running']) { break; }
             usleep(20000);
         }
         if (!$ready) {
@@ -363,9 +363,9 @@ $suite->test('loading check.php registers the seven expected tracker handlers', 
         . '$registry = (new ReflectionClass("ruTrackerChecker"))->getStaticProperties()["TRACKERS"]; '
         . 'echo json_encode(array_column($registry, "handler"));';
     $process = proc_open(
-        array(PHP_BINARY, '-c', testFindRepoRoot() . '/tests/php-test.ini', '-r', $code),
-        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-        $pipes, EP_DIR
+        [PHP_BINARY, '-c', testFindRepoRoot() . '/tests/php-test.ini', '-r', $code],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes, EP_DIR,
     );
     strictAssertTrue(is_resource($process), 'the checker loader child starts');
     fclose($pipes[0]);
@@ -378,7 +378,7 @@ $suite->test('loading check.php registers the seven expected tracker handlers', 
     strictAssertSame('', $errors, 'the checker loader emits no diagnostics');
     $trackers = json_decode($output, true);
     strictAssertTrue(is_array($trackers), 'the real checker reports its registered handlers');
-    strictAssertSame(array(
+    strictAssertSame([
         'RuTrackerCheckImpl::download_torrent',
         'AniDUBCheckImpl::download_torrent',
         'KinozalCheckImpl::download_torrent',
@@ -386,7 +386,7 @@ $suite->test('loading check.php registers the seven expected tracker handlers', 
         'TapochekNetCheckImpl::download_torrent',
         'TfileCheckImpl::download_torrent',
         'tolokaCheckImpl::download_torrent',
-    ), $trackers, 'the loader registers each expected handler once in dispatch order');
+    ], $trackers, 'the loader registers each expected handler once in dispatch order');
 });
 
 $suite->test('erasedata and rutracker_check register one identical collector schedule', function () {
@@ -395,7 +395,7 @@ $suite->test('erasedata and rutracker_check register one identical collector sch
     $erasedataCalls = epFunctionCallArguments($erasedataInit, 'erasedataCollectorScheduleCommand');
     $rutrackerCalls = epFunctionCallArguments($rutrackerInit, 'erasedataCollectorScheduleCommand');
 
-    strictAssertSame(array('$theSettings,$garbageCheckInterval'), $erasedataCalls,
+    strictAssertSame(['$theSettings,$garbageCheckInterval'], $erasedataCalls,
         'erasedata registers exactly one collector schedule through the shared helper');
     strictAssertSame($erasedataCalls, $rutrackerCalls,
         'rutracker_check registers the identical key, interval, user, and collector command');
@@ -434,10 +434,10 @@ $suite->test('checker schedule keeps its aligned interval and user argv', functi
 
 $suite->test('targeted kick and scheduled retry execute the same collector entrypoint', function () {
     $helper = dirname(EP_DIR) . '/erasedata/removewithdata.php';
-    strictAssertSame(array('erasedataCollectorCommand'),
+    strictAssertSame(['erasedataCollectorCommand'],
         epFunctionBodyCalls($helper, 'erasedataKickCollector', 'erasedataCollectorCommand'),
         'the targeted kick delegates shell construction to the shared collector builder');
-    strictAssertSame(array('erasedataCollectorCommand'),
+    strictAssertSame(['erasedataCollectorCommand'],
         epFunctionBodyCalls($helper, 'erasedataCollectorScheduleCommand', 'erasedataCollectorCommand'),
         'the scheduled retry delegates to that same builder without a second entrypoint');
 });
@@ -445,7 +445,7 @@ $suite->test('targeted kick and scheduled retry execute the same collector entry
 $suite->test('update.php still composes the whole cycle, in the order the cycle depends on', function () {
     $calls = epCalls('update.php');
 
-    foreach (array(
+    foreach ([
         'RuTrackerState::acquireCycleLock',
         'RuTrackerUpdatePass::sweepReplacements',
         'ruTrackerChecker::sweepOrphanClaims',
@@ -455,8 +455,8 @@ $suite->test('update.php still composes the whole cycle, in the order the cycle 
         'RuTrackerUpdatePass::run',
         'RuTrackerUpdatePass::reapOrphans',
         'RuTrackerForumIndex::spawnCrawl',
-    ) as $call)
-        strictAssertTrue(epAt($calls, $call) >= 0, $call . ' is part of the cycle');
+    ] as $call) {
+        strictAssertTrue(epAt($calls, $call) >= 0, $call . ' is part of the cycle'); }
 
     // The fatal logger must cover bootstrap and lock acquisition; the lock
     // still precedes every cycle operation that can touch a torrent.
@@ -570,10 +570,10 @@ $suite->test('the configured announce budget reaches the budget through its clam
     // out first; anything left over is a use that reached past the clamp.
     $source = file_get_contents(EP_DIR . '/trackers/rutracker.php');
     $body = preg_replace('/\bglobal\s+[^;]*;/', '', $source);
-    foreach (array(
+    foreach ([
         '$rutrackerAnnounceCap' => '/probeCap\(\s*\$rutrackerAnnounceCap\b/',
         '$rutrackerAnnouncePause' => '/(?:probeSleepSeconds|probePause)\(\s*\$rutrackerAnnouncePause\b/',
-    ) as $global => $clamped) {
+    ] as $global => $clamped) {
         $reads = preg_match_all('/' . preg_quote($global, '/') . '\b/', $body);
         $guarded = preg_match_all($clamped, $body);
         strictAssertTrue($reads > 0, $global . ' is still read by the layer it configures');
@@ -598,16 +598,16 @@ $suite->test('the manual action rejects empty or all-invalid body in its 2xx JSO
         $emptyResponse = epPostAction($port, 'cmd=check');
         strictAssertSame(200, $emptyResponse['status'],
             'empty selection stays 2xx so the shared callback does not report rTorrent stopped');
-        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $emptyResponse['json'],
+        strictAssertSame(['status' => 'rejected', 'accepted' => 0], $emptyResponse['json'],
             'empty body is rejected with 0 accepted');
 
         $invalidResponse = epPostAction($port, 'cmd=check&hash=short&hash=123');
         strictAssertSame(200, $invalidResponse['status'],
             'all-invalid selection also stays 2xx');
-        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $invalidResponse['json'],
+        strictAssertSame(['status' => 'rejected', 'accepted' => 0], $invalidResponse['json'],
             'all-invalid body is rejected with 0 accepted');
 
-        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'), 'no dispatch artifact created on empty/invalid batch');
+        strictAssertSame([], glob($temp . '/rutorrent-prm-*'), 'no dispatch artifact created on empty/invalid batch');
         strictAssertTrue(!is_file($log), 'no dispatch logged on empty/invalid batch');
     });
 });
@@ -618,9 +618,9 @@ $suite->test('the manual action reports a refused dispatch without claiming rTor
 
         strictAssertSame(200, $response['status'],
             'a launch refusal stays 2xx so the shared callback does not report rTorrent stopped');
-        strictAssertSame(array('status' => 'refused', 'accepted' => 0), $response['json'],
+        strictAssertSame(['status' => 'refused', 'accepted' => 0], $response['json'],
             'the action exposes the failed dispatch as refused');
-        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
+        strictAssertSame([], glob($temp . '/rutorrent-prm-*'),
             'the failed dispatch leaves no child handover behind');
         strictAssertTrue(is_file($log), 'the intentional launch refusal uses the fixture-local log');
         strictAssertTrue(strpos((string) file_get_contents($log),
@@ -638,23 +638,23 @@ $suite->test('the manual action returns queued after one exact detached handover
         $response = epPostAction($port, $body, 'Endpoint User');
 
         strictAssertSame(200, $response['status'], 'accepted dispatch returns a handled 2xx answer');
-        strictAssertSame(array('status' => 'queued', 'accepted' => 2), $response['json'],
+        strictAssertSame(['status' => 'queued', 'accepted' => 2], $response['json'],
             'accepted dispatch returns queued with count of unique valid hashes');
 
         $handovers = glob($temp . '/rutorrent-prm-*');
         strictAssertSame(1, count($handovers), 'accepted endpoint creates exactly one handover path');
-        strictAssertSame(array($h1, $h2),
-            unserialize(file_get_contents($handovers[0]), array('allowed_classes' => false)),
+        strictAssertSame([$h1, $h2],
+            unserialize(file_get_contents($handovers[0]), ['allowed_classes' => false]),
             'handover payload contains the exact unique normalized hash set in first-seen order');
 
         $records = epWaitForActionInvocations($recordDirectory, 1);
         strictAssertSame(1, count($records), 'accepted endpoint launches the detached boundary exactly once');
-        strictAssertSame(array(
+        strictAssertSame([
             '-f',
             realpath(EP_DIR . '/batch_check.php'),
             $handovers[0],
             'endpoint_user',
-        ), $records[0], 'fake PHP receives only -f, exact worker, exact handover, and normalized user');
+        ], $records[0], 'fake PHP receives only -f, exact worker, exact handover, and normalized user');
         strictAssertTrue(is_file($handovers[0]),
             'the harmless detached boundary leaves the queued handover untouched for the real worker');
         strictAssertTrue(!is_file($log),
@@ -671,9 +671,9 @@ $suite->test('the manual action rejects MAX_BODY_BYTES plus one in its bounded 2
 
         strictAssertSame(200, $response['status'],
             'the over-limit refusal stays 2xx so the shared callback does not report rTorrent stopped');
-        strictAssertSame(array('status' => 'rejected', 'accepted' => 0), $response['json'],
+        strictAssertSame(['status' => 'rejected', 'accepted' => 0], $response['json'],
             'the over-limit response rejects the whole selection');
-        strictAssertSame(array(), glob($temp . '/rutorrent-prm-*'),
+        strictAssertSame([], glob($temp . '/rutorrent-prm-*'),
             'an over-limit body cannot launch or leave a handover');
         strictAssertTrue(is_file($log), 'the over-limit request writes a classified refusal log');
     });
@@ -704,10 +704,10 @@ $suite->test('the cycle asks for exactly the columns parseMulticall reads, in th
     // Every accessor the multicall asks for, in source order: a getCmd() name,
     // plus the custom field where one is concatenated onto d.get_custom=.
     preg_match_all('/getCmd\("([a-z0-9_.=-]+)"\)(?:\s*\.\s*"([a-z-]+)")?/i', $block, $m, PREG_SET_ORDER);
-    $columns = array();
+    $columns = [];
     foreach ($m as $hit) {
         $name = $hit[0 + 1];
-        if (strpos($name, 't.') === 0 || strpos($name, 'cat') === 0) continue;  // inside the blob
+        if (strpos($name, 't.') === 0 || strpos($name, 'cat') === 0) { continue; }  // inside the blob
         $columns[] = isset($hit[2]) && $hit[2] !== '' ? $hit[2] : rtrim($name, '=');
     }
 
@@ -719,8 +719,8 @@ $suite->test('the cycle asks for exactly the columns parseMulticall reads, in th
     strictAssertSame((int) $c[1], count($columns),
         'the wire asks for exactly as many columns as parseMulticall reads: ' . implode(', ', $columns));
     strictAssertSame(
-        array('d.get_hash', 'chk-state', 'chk-time', 'd.get_custom1', 'd.get_message',
-              'chk-del', 'chk-msg', 'tracker-blob', 'd.get_local_id'),
+        ['d.get_hash', 'chk-state', 'chk-time', 'd.get_custom1', 'd.get_message',
+              'chk-del', 'chk-msg', 'tracker-blob', 'd.get_local_id'],
         $columns,
         'and in the order parseMulticall indexes them');
 });
@@ -730,8 +730,8 @@ require_once(EP_DIR . '/batch_check.php');
 $suite->test('the default detached launcher refuses a PHP executable that cannot be resolved', function () {
     strictAssertSame(
         true,
-        strictInvoke('RuTrackerDetachedPhp', 'executableExists', array(PHP_BINARY)),
-        'an executable supplied as a path resolves directly'
+        strictInvoke('RuTrackerDetachedPhp', 'executableExists', [PHP_BINARY]),
+        'an executable supplied as a path resolves directly',
     );
 
     $savedPath = getenv('PATH');
@@ -739,19 +739,19 @@ $suite->test('the default detached launcher refuses a PHP executable that cannot
         putenv('PATH=' . dirname(PHP_BINARY));
         strictAssertSame(
             true,
-            strictInvoke('RuTrackerDetachedPhp', 'executableExists', array(basename(PHP_BINARY))),
-            'a bare executable resolves by scanning PATH without a shell'
+            strictInvoke('RuTrackerDetachedPhp', 'executableExists', [basename(PHP_BINARY)]),
+            'a bare executable resolves by scanning PATH without a shell',
         );
         strictAssertSame(
             false,
-            strictInvoke('RuTrackerDetachedPhp', 'executableExists', array(
-                'rutorrent-php-definitely-missing-' . getmypid()
-            )),
-            'a missing bare executable is not guessed from shell behavior'
+            strictInvoke('RuTrackerDetachedPhp', 'executableExists', [
+                'rutorrent-php-definitely-missing-' . getmypid(),
+            ]),
+            'a missing bare executable is not guessed from shell behavior',
         );
     } finally {
-        if ($savedPath === false) putenv('PATH');
-        else putenv('PATH=' . $savedPath);
+        if ($savedPath === false) { putenv('PATH'); }
+        else { putenv('PATH=' . $savedPath); }
     }
 
     $notExecutable = tempnam(sys_get_temp_dir(), 'rt-php-noexec-');
@@ -761,8 +761,8 @@ $suite->test('the default detached launcher refuses a PHP executable that cannot
     try {
         strictAssertSame(
             false,
-            strictInvoke('RuTrackerDetachedPhp', 'executableExists', array($notExecutable)),
-            'an existing file without an executable bit is refused'
+            strictInvoke('RuTrackerDetachedPhp', 'executableExists', [$notExecutable]),
+            'an existing file without an executable bit is refused',
         );
     } finally {
         @unlink($notExecutable);
@@ -772,9 +772,9 @@ $suite->test('the default detached launcher refuses a PHP executable that cannot
         false,
         RuTrackerDetachedPhp::launch(
             '/definitely/missing/rutorrent-php-' . getmypid(),
-            EP_DIR . '/batch_check.php'
+            EP_DIR . '/batch_check.php',
         ),
-        'a known-missing executable is rejected before an asynchronous shell can hide command-not-found'
+        'a known-missing executable is rejected before an asynchronous shell can hide command-not-found',
     );
 });
 
@@ -783,14 +783,14 @@ $suite->test('the default detached launcher refuses a missing PHP script', funct
         false,
         RuTrackerDetachedPhp::launch(
             PHP_BINARY,
-            '/definitely/missing/rutorrent-script-' . getmypid() . '.php'
+            '/definitely/missing/rutorrent-script-' . getmypid() . '.php',
         ),
-        'a known-missing script is rejected before the shell accepts a child that cannot run it'
+        'a known-missing script is rejected before the shell accepts a child that cannot run it',
     );
     strictAssertSame(
         false,
         RuTrackerDetachedPhp::launch(PHP_BINARY, EP_DIR),
-        'a readable directory is not accepted in place of a regular PHP script'
+        'a readable directory is not accepted in place of a regular PHP script',
     );
 
     $readableScript = tempnam(sys_get_temp_dir(), 'rt-readable-script-');
@@ -801,7 +801,7 @@ $suite->test('the default detached launcher refuses a missing PHP script', funct
         strictAssertSame(
             true,
             RuTrackerDetachedPhp::launch(PHP_BINARY, $readableScript),
-            'a readable regular script reaches the documented shell-acceptance step'
+            'a readable regular script reaches the documented shell-acceptance step',
         );
     } finally {
         @unlink($readableScript);
@@ -814,8 +814,8 @@ $suite->test('manual batch dispatch quotes every detached PHP component and leav
     $php = "/opt/PHP tools/php's";
     $script = "/opt/ruTorrent plugins/rutracker_check/batch_check.php";
     $user = 'User Name';
-    $hashes = array('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-    $commands = array();
+    $hashes = ['AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'];
+    $commands = [];
 
     try {
         $accepted = RuTrackerBatchDispatch::dispatch(
@@ -827,14 +827,14 @@ $suite->test('manual batch dispatch quotes every detached PHP component and leav
             function ($command) use (&$commands) {
                 $commands[] = $command;
                 return true;
-            }
+            },
         );
 
         strictAssertSame(true, $accepted, 'the injected shell acceptance result is returned');
         strictAssertSame(1, count($commands), 'the detached command is attempted once');
         $handovers = glob($tmpDir . '/rutorrent-prm-*');
         strictAssertSame(1, count($handovers), 'one unpredictable handover is left for the accepted child');
-        strictAssertSame($hashes, unserialize(file_get_contents($handovers[0]), array('allowed_classes' => false)),
+        strictAssertSame($hashes, unserialize(file_get_contents($handovers[0]), ['allowed_classes' => false]),
             'the handover contains exactly the selected hashes');
         $expected = escapeshellarg($php) . ' -f ' . escapeshellarg($script)
             . ' ' . escapeshellarg($handovers[0]) . ' ' . escapeshellarg($user)
@@ -848,22 +848,22 @@ $suite->test('manual batch dispatch quotes every detached PHP component and leav
 $suite->test('manual batch dispatch removes its handover and logs safely when the shell refuses it', function () {
     $tmpDir = sys_get_temp_dir() . '/rt-manual-dispatch-refused-' . getmypid() . '-' . mt_rand();
     mkdir($tmpDir, 0700, true);
-    $logs = array();
+    $logs = [];
     $hash = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
     try {
         $accepted = RuTrackerBatchDispatch::dispatch(
-            array($hash),
+            [$hash],
             $tmpDir,
             '/usr/bin/php',
             '/opt/rutorrent/batch_check.php',
             'user',
             function ($command) { return false; },
-            function ($message) use (&$logs) { $logs[] = $message; }
+            function ($message) use (&$logs) { $logs[] = $message; },
         );
 
         strictAssertSame(false, $accepted, 'a shell refusal is returned to the web action');
-        strictAssertSame(array(), glob($tmpDir . '/rutorrent-prm-*'),
+        strictAssertSame([], glob($tmpDir . '/rutorrent-prm-*'),
             'the rejected child cannot consume the handover, so the parent removes it');
         strictAssertSame(1, count($logs), 'the refusal emits one actionable diagnostic');
         strictAssertTrue(strpos($logs[0], 'manual batch worker was not accepted by the shell') !== false,
@@ -877,10 +877,10 @@ $suite->test('manual batch dispatch removes its handover and logs safely when th
 
 $suite->test('runHandover checks all hashes, tolerates thrown exceptions, and removes handover file in finally', function () {
     $tmp = tempnam(sys_get_temp_dir(), 'rt-batch-test-');
-    $hashes = array('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC');
+    $hashes = ['AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'];
     file_put_contents($tmp, serialize($hashes));
 
-    $checked = array();
+    $checked = [];
     $crawlerRan = false;
     ruTrackerBatchCheck::runHandover(
         $tmp,
@@ -892,7 +892,7 @@ $suite->test('runHandover checks all hashes, tolerates thrown exceptions, and re
         },
         function () use (&$crawlerRan) {
             $crawlerRan = true;
-        }
+        },
     );
 
     strictAssertSame($hashes, $checked, 'all hashes are processed even if an earlier hash threw');
@@ -905,9 +905,9 @@ $suite->test('each manual batch resets Kinozal once and keeps the latch between 
     require_once(EP_DIR . '/trackers/kinozal.php');
     $handlerState = (new ReflectionClass('KinozalCheckImpl'))->getStaticProperties();
     $responseState = (new ReflectionClass('KinozalResponse'))->getStaticProperties();
-    $handovers = array();
-    $seen = array();
-    $hashes = array(str_repeat('A', 40), str_repeat('B', 40));
+    $handovers = [];
+    $seen = [];
+    $hashes = [str_repeat('A', 40), str_repeat('B', 40)];
     try {
         strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
         strictSetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers', 1);
@@ -917,30 +917,30 @@ $suite->test('each manual batch resets Kinozal once and keeps the latch between 
             $handovers[] = $handover;
             file_put_contents($handover, serialize($hashes));
             ruTrackerBatchCheck::runHandover($handover, function($hash) use (&$seen) {
-                $seen[] = array($hash,
+                $seen[] = [$hash,
                     strictGetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned'),
                     strictGetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers'),
-                    strictGetPrivateStatic('KinozalResponse', 'failureLogged'));
+                    strictGetPrivateStatic('KinozalResponse', 'failureLogged')];
                 strictSetPrivateStatic('KinozalCheckImpl', 'cycleAbandoned', true);
                 strictSetPrivateStatic('KinozalCheckImpl', 'detailsGuestAnswers', 1);
                 strictSetPrivateStatic('KinozalResponse', 'failureLogged', true);
             }, function() {});
             strictAssertTrue(!file_exists($handover), 'each completed batch removes its handover');
         }
-        strictAssertSame(array(
-            array($hashes[0], false, 0, false), array($hashes[1], true, 1, true),
-            array($hashes[0], false, 0, false), array($hashes[1], true, 1, true),
-        ), $seen, 'each batch starts fresh while its second hash retains the first hash\'s latch and session count');
+        strictAssertSame([
+            [$hashes[0], false, 0, false], [$hashes[1], true, 1, true],
+            [$hashes[0], false, 0, false], [$hashes[1], true, 1, true],
+        ], $seen, 'each batch starts fresh while its second hash retains the first hash\'s latch and session count');
     } finally {
-        foreach ($handovers as $handover) @unlink($handover);
-        foreach ($handlerState as $property => $value) strictSetPrivateStatic('KinozalCheckImpl', $property, $value);
-        foreach ($responseState as $property => $value) strictSetPrivateStatic('KinozalResponse', $property, $value);
+        foreach ($handovers as $handover) { @unlink($handover); }
+        foreach ($handlerState as $property => $value) { strictSetPrivateStatic('KinozalCheckImpl', $property, $value); }
+        foreach ($responseState as $property => $value) { strictSetPrivateStatic('KinozalResponse', $property, $value); }
     }
 });
 
 $suite->test('runHandover handles invalid or missing handover files safely', function () {
     $crawlerRan = false;
-    $checked = array();
+    $checked = [];
     ruTrackerBatchCheck::runHandover(
         '/nonexistent/path/for/handover',
         function ($hash) use (&$checked) {
@@ -948,15 +948,15 @@ $suite->test('runHandover handles invalid or missing handover files safely', fun
         },
         function () use (&$crawlerRan) {
             $crawlerRan = true;
-        }
+        },
     );
-    strictAssertSame(array(), $checked, 'a missing handover cannot dispatch a checker call');
+    strictAssertSame([], $checked, 'a missing handover cannot dispatch a checker call');
     strictAssertTrue($crawlerRan, 'crawler still runs even if handover file is nonexistent');
 
     $tmp = tempnam(sys_get_temp_dir(), 'rt-batch-test-');
     file_put_contents($tmp, 'not-serialized-data');
     $crawlerRan = false;
-    $checked = array();
+    $checked = [];
     ruTrackerBatchCheck::runHandover(
         $tmp,
         function ($hash) use (&$checked) {
@@ -964,17 +964,17 @@ $suite->test('runHandover handles invalid or missing handover files safely', fun
         },
         function () use (&$crawlerRan) {
             $crawlerRan = true;
-        }
+        },
     );
-    strictAssertSame(array(), $checked, 'a corrupt handover cannot dispatch a checker call');
+    strictAssertSame([], $checked, 'a corrupt handover cannot dispatch a checker call');
     strictAssertTrue($crawlerRan, 'crawler still runs on corrupt handover');
     strictAssertTrue(!file_exists($tmp), 'corrupt handover file is unlinked');
 });
 
 $suite->test('runHandover reports a failed handover unlink and still attempts the crawl', function () {
     $tmp = tempnam(sys_get_temp_dir(), 'rt-batch-unlink-fail-');
-    file_put_contents($tmp, serialize(array('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC')));
-    $logs = array();
+    file_put_contents($tmp, serialize(['CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC']));
+    $logs = [];
     $crawlerRan = false;
 
     try {
@@ -983,7 +983,7 @@ $suite->test('runHandover reports a failed handover unlink and still attempts th
             function ($hash) {},
             function () use (&$crawlerRan) { $crawlerRan = true; },
             function ($path) { return false; },
-            function ($message) use (&$logs) { $logs[] = $message; }
+            function ($message) use (&$logs) { $logs[] = $message; },
         );
 
         strictAssertTrue($crawlerRan, 'cleanup failure does not suppress the final crawl attempt');
@@ -1006,37 +1006,37 @@ $suite->test('RuTrackerBatchRequest::parseHashes parses, normalizes, deduplicate
     // Basic ordering, uppercase conversion, deduplication, extra fields ignored
     $body = 'hash=' . strtolower($h1) . '&other=123&hash=' . $h2 . '&hash=' . $h1 . '&hash=' . $h3;
     $res = RuTrackerBatchRequest::parseHashes($body);
-    strictAssertSame(array($h1, $h2, $h3), $res, 'preserves first-seen order, converts to uppercase, dedupes');
+    strictAssertSame([$h1, $h2, $h3], $res, 'preserves first-seen order, converts to uppercase, dedupes');
 
     // Percent-encoded keys and values
     $bodyEncoded = 'hash=' . rawurlencode(strtolower($h1)) . '&%68%61%73%68=' . rawurlencode($h2);
-    strictAssertSame(array($h1, $h2), RuTrackerBatchRequest::parseHashes($bodyEncoded), 'decodes url-encoded keys and values');
+    strictAssertSame([$h1, $h2], RuTrackerBatchRequest::parseHashes($bodyEncoded), 'decodes url-encoded keys and values');
 
     // Malformed segments ignored without warnings
     $bodyMalformed = 'bare_hash&hash&hash=&hash=short&hash=' . str_repeat('Z', 40) . '&hash[]=123&hash=' . $h1;
-    strictAssertSame(array($h1), RuTrackerBatchRequest::parseHashes($bodyMalformed), 'ignores malformed segments without warning');
+    strictAssertSame([$h1], RuTrackerBatchRequest::parseHashes($bodyMalformed), 'ignores malformed segments without warning');
 
     // The contract is exact 40-hex after URL decoding: surrounding whitespace
     // is malformed input, not formatting that the request parser may repair.
     $bodyWhitespace = 'hash=%20' . $h1 . '&hash=' . $h2 . '%20&hash=' . $h3;
-    strictAssertSame(array($h3), RuTrackerBatchRequest::parseHashes($bodyWhitespace),
+    strictAssertSame([$h3], RuTrackerBatchRequest::parseHashes($bodyWhitespace),
         'rejects hash values with leading or trailing whitespace');
 
     // Oversized body rejected (> 256 KiB)
     $error = null;
     $hugeBody = str_repeat('x', 262145);
-    strictAssertSame(array(), RuTrackerBatchRequest::parseHashes($hugeBody, $error), 'oversized body rejected');
+    strictAssertSame([], RuTrackerBatchRequest::parseHashes($hugeBody, $error), 'oversized body rejected');
     strictAssertTrue($error !== null, 'error set on oversized body');
 
     // Exactly 256 KiB is admitted
     $bodyAllowed = 'hash=' . $h1 . '&pad=' . str_repeat('x', 262144 - 45 - 5);
     strictAssertSame(262144, strlen($bodyAllowed), 'boundary fixture is exactly 256 KiB');
-    strictAssertSame(array($h1), RuTrackerBatchRequest::parseHashes($bodyAllowed), 'body of exactly 256 KiB admitted');
+    strictAssertSame([$h1], RuTrackerBatchRequest::parseHashes($bodyAllowed), 'body of exactly 256 KiB admitted');
 
     // The byte bound is the single selection limit. Do not add a second,
     // arbitrary item-count refusal below it: 4097 valid hashes still fit.
-    $hashes4096 = array();
-    $bodySegments = array();
+    $hashes4096 = [];
+    $bodySegments = [];
     for ($i = 0; $i < 4096; $i++) {
         $h = sprintf('%040X', $i);
         $hashes4096[] = $h;
@@ -1056,12 +1056,12 @@ $suite->test('RuTrackerBatchRequest::parseHashes parses, normalizes, deduplicate
     strictAssertSame(null, $error4097, 'no second item-count limit rejects a bounded body');
 
     // Non-string body
-    strictAssertSame(array(), RuTrackerBatchRequest::parseHashes(null), 'null body returns empty');
-    strictAssertSame(array(), RuTrackerBatchRequest::parseHashes(array()), 'array body returns empty');
+    strictAssertSame([], RuTrackerBatchRequest::parseHashes(null), 'null body returns empty');
+    strictAssertSame([], RuTrackerBatchRequest::parseHashes([]), 'array body returns empty');
 });
 
 $suite->test('both detached CLI entrypoints suppress raw engine fatal after util resets logging', function () {
-    foreach (array('update.php' => 'update', 'batch_check.php' => 'batch_check') as $entry => $scope) {
+    foreach (['update.php' => 'update', 'batch_check.php' => 'batch_check'] as $entry => $scope) {
         $calls = epCalls($entry);
         strictAssertTrue(epAt($calls, 'RuTrackerCliLog::install') >= 0,
             $entry . ' installs fatal logging before checker work');
@@ -1073,9 +1073,9 @@ $suite->test('both detached CLI entrypoints suppress raw engine fatal after util
                 . '$log_file = ' . var_export($log, true) . '; '
                 . 'ini_set("log_errors", "1"); RuTrackerCliLog::useConfiguredLog(); '
                 . 'throw new Error("https://tracker.invalid/?pk=TOP_SECRET");';
-            $pipes = array();
-            $process = proc_open(array(PHP_BINARY, '-r', $code),
-                array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+            $pipes = [];
+            $process = proc_open([PHP_BINARY, '-r', $code],
+                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
                 $pipes, EP_DIR);
             strictAssertTrue(is_resource($process), $entry . ' child starts');
             fclose($pipes[0]);
@@ -1120,9 +1120,9 @@ $suite->test('CLI profile bootstrap fatal never writes the raw engine message', 
         $code = '$log_file = ' . var_export($log, true) . '; '
             . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
             . 'require ' . var_export($util, true) . ';';
-        $pipes = array();
-        $process = proc_open(array(PHP_BINARY, '-r', $code),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        $pipes = [];
+        $process = proc_open([PHP_BINARY, '-r', $code],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes, EP_DIR);
         strictAssertTrue(is_resource($process), 'profile bootstrap child starts');
         fclose($pipes[0]);
@@ -1155,9 +1155,9 @@ $suite->test('CLI shutdown records a missing-class fatal by safe class name', fu
         $code = '$log_file = ' . var_export($log, true) . '; '
             . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
             . 'new MissingResolverForTest;';
-        $pipes = array();
-        $process = proc_open(array(PHP_BINARY, '-r', $code),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        $pipes = [];
+        $process = proc_open([PHP_BINARY, '-r', $code],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes, EP_DIR);
         strictAssertTrue(is_resource($process), 'fatal child starts');
         fclose($pipes[0]);
@@ -1185,10 +1185,10 @@ $suite->test('detached CLI fatal logger falls back when the configured app log i
         $code = '$log_file = ' . var_export($primary, true) . '; '
             . 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
             . 'throw new Error("https://tracker.invalid/?pk=TOP_SECRET");';
-        $pipes = array();
-        $env = array_merge($_ENV, array('TMPDIR' => $temp));
-        $process = proc_open(array(PHP_BINARY, '-r', $code),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+        $pipes = [];
+        $env = array_merge($_ENV, ['TMPDIR' => $temp]);
+        $process = proc_open([PHP_BINARY, '-r', $code],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes, EP_DIR, $env);
         strictAssertTrue(is_resource($process), 'fatal child starts');
         fclose($pipes[0]);
@@ -1219,10 +1219,10 @@ $suite->test('CLI fatal logger uses a second file when the historical log is unw
     try {
         $code = 'require "cli_log.php"; RuTrackerCliLog::install("batch_check"); '
             . 'throw new Error("TOP_SECRET");';
-        $pipes = array();
-        $process = proc_open(array(PHP_BINARY, '-r', $code),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, EP_DIR, array_merge($_ENV, array('TMPDIR' => $temp)));
+        $pipes = [];
+        $process = proc_open([PHP_BINARY, '-r', $code],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, EP_DIR, array_merge($_ENV, ['TMPDIR' => $temp]));
         strictAssertTrue(is_resource($process), 'fatal child starts');
         fclose($pipes[0]);
         stream_get_contents($pipes[1]);
@@ -1252,10 +1252,10 @@ $suite->test('CLI bootstrap fatal reaches the historical log before config exist
         file_put_contents($config, '<?php missingConfigDependencyForTest();');
         $code = 'require "cli_log.php"; RuTrackerCliLog::install("update"); '
             . 'require ' . var_export($config, true) . ';';
-        $pipes = array();
-        $process = proc_open(array(PHP_BINARY, '-r', $code),
-            array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-            $pipes, EP_DIR, array_merge($_ENV, array('TMPDIR' => $temp)));
+        $pipes = [];
+        $process = proc_open([PHP_BINARY, '-r', $code],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes, EP_DIR, array_merge($_ENV, ['TMPDIR' => $temp]));
         strictAssertTrue(is_resource($process), 'bootstrap fatal child starts');
         fclose($pipes[0]);
         stream_get_contents($pipes[1]);
@@ -1278,7 +1278,7 @@ $suite->test('CLI bootstrap fatal reaches the historical log before config exist
 });
 
 $suite->test('both CLI entrypoints install fatal logging before profile config loads', function () {
-    foreach (array('update.php', 'batch_check.php') as $entry) {
+    foreach (['update.php', 'batch_check.php'] as $entry) {
         $source = file_get_contents(EP_DIR . '/' . $entry);
         $install = strpos($source, 'RuTrackerCliLog::install(');
         $util = strpos($source, 'require_once( "../../php/util.php" )');
@@ -1292,9 +1292,9 @@ $suite->test('CLI checker bootstrap loads the filesystem resolver without a test
         . '$identity = XMLRPCPathResolver::filesystemIdentity(realpath("check.php")); '
         . 'if (!is_array($identity) || !$identity["exists"]) exit(23); '
         . 'echo "resolver-loaded";';
-    $pipes = array();
-    $process = proc_open(array(PHP_BINARY, '-r', $code),
-        array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+    $pipes = [];
+    $process = proc_open([PHP_BINARY, '-r', $code],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes, EP_DIR);
     strictAssertTrue(is_resource($process), 'the isolated PHP CLI process starts');
     fclose($pipes[0]);

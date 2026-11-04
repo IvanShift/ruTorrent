@@ -3,11 +3,11 @@ require_once dirname(__DIR__, 2).'/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
 
-if( !chdir( dirname( __FILE__) ) )
-	exit(1);
+if( !chdir( dirname( __FILE__) ) ) {
+	exit(1); }
 
-if( count( $argv ) > 4 && $argv[4] !== '' )
-	$_SERVER['REMOTE_USER'] = $argv[4];
+if( count( $argv ) > 4 && $argv[4] !== '' ) {
+	$_SERVER['REMOTE_USER'] = $argv[4]; }
 
 require_once( "./hook_lib.php" );
 

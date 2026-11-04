@@ -7,7 +7,7 @@ class UTF
 	{
 		try {
 			$result = @is_string($value);
-			if($result === true || $result === false) return $result;
+			if($result === true || $result === false) { return $result; }
 		} catch(Throwable $error) {}
 		try { return @gettype($value) === 'string'; }
 		catch(Throwable $error) { return false; }
@@ -17,33 +17,14 @@ class UTF
 	// independent of PCRE and converters.
 	public static function isValid($text)
 	{
-		if(!self::isString($text)) return false;
+		if(!self::isString($text)) { return false; }
 		for($offset = 0; isset($text[$offset]);)
 		{
 			$length = self::characterLength($text, $offset);
-			if($length === 0) return false;
+			if($length === 0) { return false; }
 			$offset += $length;
 		}
 		return true;
-	}
-
-	private static function characterLength($text, $offset)
-	{
-		$first = $text[$offset];
-		if($first <= "\x7F") return 1;
-		if($first >= "\xC2" && $first <= "\xDF") $length = 2;
-		else if($first >= "\xE0" && $first <= "\xEF") $length = 3;
-		else if($first >= "\xF0" && $first <= "\xF4") $length = 4;
-		else return 0;
-		if(!isset($text[$offset + $length - 1])) return 0;
-		$minimum = $first === "\xE0" ? "\xA0" : ($first === "\xF0" ? "\x90" : "\x80");
-		$maximum = $first === "\xED" ? "\x9F" : ($first === "\xF4" ? "\x8F" : "\xBF");
-		if($text[$offset + 1] < $minimum || $text[$offset + 1] > $maximum) return 0;
-		// Not a loop: under PHP 8.1.34's tracing JIT a for loop here started at
-		// $part = 0 and refused valid text.
-		if($length > 2 && ($text[$offset + 2] < "\x80" || $text[$offset + 2] > "\xBF")) return 0;
-		if($length > 3 && ($text[$offset + 3] < "\x80" || $text[$offset + 3] > "\xBF")) return 0;
-		return $length;
 	}
 
 	// Text for display. Valid UTF-8 comes back unchanged. Otherwise each byte
@@ -58,22 +39,22 @@ class UTF
 		for($offset = 0; isset($text[$offset]);)
 		{
 			$length = self::characterLength($text, $offset);
-			if($length === 0) break;
+			if($length === 0) { break; }
 			$offset += $length;
 		}
-		if(!isset($text[$offset])) return $text;
+		if(!isset($text[$offset])) { return $text; }
 
 		// A byte lookup avoids depending on optional formatting/conversion functions.
 		static $escaped = null;
 		if($escaped === null)
 		{
-			$escaped = array();
+			$escaped = [];
 			$hex = '0123456789ABCDEF';
 			$high = "\x00\x10\x20\x30\x40\x50\x60\x70\x80\x90\xA0\xB0\xC0\xD0\xE0\xF0";
 			$low = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
-			for($hi = 0; $hi < 16; $hi++)
-				for($lo = 0; $lo < 16; $lo++)
-					$escaped[$high[$hi] | $low[$lo]] = '\\x'.$hex[$hi].$hex[$lo];
+			for($hi = 0; $hi < 16; $hi++) {
+				for($lo = 0; $lo < 16; $lo++) {
+					$escaped[$high[$hi] | $low[$lo]] = '\\x'.$hex[$hi].$hex[$lo]; } }
 		}
 		$out = '';
 		for($offset = 0; isset($text[$offset]);)
@@ -85,13 +66,13 @@ class UTF
 				$out .= $escaped[$byte];
 				$offset++;
 			}
-			else if($byte === '\\')
+			elseif($byte === '\\')
 			{
 				$out .= '\\\\';
 				$offset++;
 			}
-			else
-				for($part = 0; $part < $length; $part++) $out .= $text[$offset++];
+			else {
+				for($part = 0; $part < $length; $part++) { $out .= $text[$offset++]; } }
 		}
 		return $out;
 	}
@@ -131,8 +112,8 @@ class UTF
 	public static function win2utf($str)
 	{
 		$outstr='';
-		$recode=array
-		(
+		$recode=
+		[
 			0x0402,0x0403,0x201A,0x0453,0x201E,0x2026,0x2020,0x2021,
 			0x20AC,0x2030,0x0409,0x2039,0x040A,0x040C,0x040B,0x040F,
 			0x0452,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,
@@ -148,18 +129,18 @@ class UTF
 			0x0430,0x0431,0x0432,0x0433,0x0434,0x0435,0x0436,0x0437,
 			0x0438,0x0439,0x043A,0x043B,0x043C,0x043D,0x043E,0x043F,
 			0x0440,0x0441,0x0442,0x0443,0x0444,0x0445,0x0446,0x0447,
-			0x0448,0x0449,0x044A,0x044B,0x044C,0x044D,0x044E,0x044F
-		);
+			0x0448,0x0449,0x044A,0x044B,0x044C,0x044D,0x044E,0x044F,
+		];
 		$and=0x3F;
 		for($i=0;$i<strlen($str);$i++)
 		{
-			$octet=array();
-			if(ord($str[$i])<0x80)
-				$strhex=ord($str[$i]);
-			else
-				$strhex=$recode[ord($str[$i])-128];
-			if($strhex<0x0080)
-				$octet[0]=0x0;
+			$octet=[];
+			if(ord($str[$i])<0x80) {
+				$strhex=ord($str[$i]); }
+			else {
+				$strhex=$recode[ord($str[$i])-128]; }
+			if($strhex<0x0080) {
+				$octet[0]=0x0; }
 			elseif($strhex<0x0800)
 			{
 				$octet[0]=0xC0;
@@ -201,21 +182,40 @@ class UTF
 				$strhex=$strhex>>6;
 			}
 			$octet[0]=$octet[0] + $strhex;
-			for($j=0;$j<count($octet);$j++)
-				$outstr.=chr($octet[$j]);
+			for($j=0;$j<count($octet);$j++) {
+				$outstr.=chr($octet[$j]); }
 		}
 		return($outstr);
 	}
 
-	private static function maybe_mb_convert_to_utf8($string) {
-		return function_exists('mb_convert_encoding') ? mb_convert_encoding($string, "UTF-8", "auto") : $string;
-	}
-
 	public static function raw_url_encode($string){
-		return rawurlencode(Self::maybe_mb_convert_to_utf8($string));
+		return rawurlencode(self::maybe_mb_convert_to_utf8($string));
 	}
 
 	public static function raw_url_decode($string){
-		return rawurldecode(Self::maybe_mb_convert_to_utf8($string));
+		return rawurldecode(self::maybe_mb_convert_to_utf8($string));
+	}
+
+	private static function characterLength($text, $offset)
+	{
+		$first = $text[$offset];
+		if($first <= "\x7F") { return 1; }
+		if($first >= "\xC2" && $first <= "\xDF") { $length = 2; }
+		elseif($first >= "\xE0" && $first <= "\xEF") { $length = 3; }
+		elseif($first >= "\xF0" && $first <= "\xF4") { $length = 4; }
+		else { return 0; }
+		if(!isset($text[$offset + $length - 1])) { return 0; }
+		$minimum = $first === "\xE0" ? "\xA0" : ($first === "\xF0" ? "\x90" : "\x80");
+		$maximum = $first === "\xED" ? "\x9F" : ($first === "\xF4" ? "\x8F" : "\xBF");
+		if($text[$offset + 1] < $minimum || $text[$offset + 1] > $maximum) { return 0; }
+		// Not a loop: under PHP 8.1.34's tracing JIT a for loop here started at
+		// $part = 0 and refused valid text.
+		if($length > 2 && ($text[$offset + 2] < "\x80" || $text[$offset + 2] > "\xBF")) { return 0; }
+		if($length > 3 && ($text[$offset + 3] < "\x80" || $text[$offset + 3] > "\xBF")) { return 0; }
+		return $length;
+	}
+
+	private static function maybe_mb_convert_to_utf8($string) {
+		return function_exists('mb_convert_encoding') ? mb_convert_encoding($string, "UTF-8", "auto") : $string;
 	}
 }

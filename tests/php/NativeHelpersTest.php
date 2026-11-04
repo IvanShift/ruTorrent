@@ -13,14 +13,14 @@ class NativeHelpersTest extends TestCase
             $this->assertEquals('/usr/local/bin/'.$name, NativeHelpers::path($name), 'One declared install path');
         }
         $root = dirname(__DIR__, 2);
-        foreach (array('php', 'plugins') as $directory) {
+        foreach (['php', 'plugins'] as $directory) {
             $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root.'/'.$directory,
                 FilesystemIterator::SKIP_DOTS));
             foreach ($files as $file) {
-                if (!$file->isFile() || $file->getExtension() !== 'php') continue;
+                if (!$file->isFile() || $file->getExtension() !== 'php') { continue; }
                 preg_match_all('~/usr/local/bin/(rutorrent-[A-Za-z0-9_.-]+)~', file_get_contents($file->getPathname()), $matches);
-                foreach ($matches[1] as $name)
-                    $this->assertTrue(isset($manifest['helpers'][$name]), 'Every referenced native path is declared: '.$name);
+                foreach ($matches[1] as $name) {
+                    $this->assertTrue(isset($manifest['helpers'][$name]), 'Every referenced native path is declared: '.$name); }
             }
         }
     }
@@ -29,9 +29,9 @@ class NativeHelpersTest extends TestCase
     {
         $manifest = NativeHelpers::manifest();
         foreach ($manifest['helpers'] as $name=>$relative) {
-            $command = NativeHelpers::compilerCommand($name, '/private/output', array('-DTEST_ONLY=1'));
-            $this->assertEquals(array_merge(array('cc'), $manifest['flags'], array('-DTEST_ONLY=1', '-o',
-                '/private/output', dirname(__DIR__, 2).'/'.$relative)), $command, 'Fixture keeps manifest flags and source');
+            $command = NativeHelpers::compilerCommand($name, '/private/output', ['-DTEST_ONLY=1']);
+            $this->assertEquals(array_merge(['cc'], $manifest['flags'], ['-DTEST_ONLY=1', '-o',
+                '/private/output', dirname(__DIR__, 2).'/'.$relative]), $command, 'Fixture keeps manifest flags and source');
         }
     }
 
@@ -40,14 +40,14 @@ class NativeHelpersTest extends TestCase
         $file = tempnam(sys_get_temp_dir(), 'native-manifest-');
         $prefix = "version\t1\nflags\t-std=c11 -O2\n";
         try {
-            foreach (array(
+            foreach ([
                 "version\t2\nflags\t-O2\nrutorrent-test\tplugins/test.c\n",
                 $prefix."rutorrent-test\t../outside.c\n",
                 $prefix."rutorrent-test\t/plugins/test.c\n",
                 $prefix."rutorrent-test\tplugins/test.c\nrutorrent-test\tplugins/other.c\n",
                 "version\t1\nflags\t-O2 ;touch\nrutorrent-test\tplugins/test.c\n",
                 "version\t1\nflags\t-O2\n",
-            ) as $bytes) {
+            ] as $bytes) {
                 file_put_contents($file, $bytes);
                 $refused = false;
                 try { NativeHelpers::manifest($file); } catch (RuntimeException $e) { $refused = true; }
@@ -65,7 +65,7 @@ class NativeHelpersTest extends TestCase
         $external = preg_replace('/^<\?php/', '', file_get_contents(dirname(__DIR__, 2).'/plugins/create/external.php'),1);
         eval('namespace '.$namespace.'; '.$external);
         try {
-            foreach (array(false, true) as $present) {
+            foreach ([false, true] as $present) {
                 $useExternal = $pathToCreatetorrent = $useInternalHybrid = null;
                 $GLOBALS['createDefaultBinaryPresent'] = $present;
                 eval('namespace '.$namespace.'; '.$source);
@@ -89,8 +89,8 @@ class NativeHelpersTest extends TestCase
         file_put_contents($root.'/php/xmlrpc.php','<?php');
         $code = 'require '.var_export($root.'/plugins/_task/task.php',true)
             .'; echo class_exists("rTask") ? "BOOTSTRAP_ALLOWED" : "MISSING";';
-        $process = proc_open(array(PHP_BINARY,'-r',$code),array(1=>array('pipe','w'),
-            2=>array('pipe','w')),$pipes);
+        $process = proc_open([PHP_BINARY,'-r',$code],[1=>['pipe','w'],
+            2=>['pipe','w']],$pipes);
         $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
         $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
         $status = proc_close($process);

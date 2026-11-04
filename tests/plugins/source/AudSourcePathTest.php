@@ -14,10 +14,10 @@ class AudSourcePathTest extends TestCase
 {
 	use TorrentSequenceFixtures;
 
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
-	const AUD = 'aud "q" \b \'a\' &c';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const AUD = 'aud "q" \b \'a\' &c';
 	// The probe name plus the pairs an extra unescape would collapse.
-	const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
+	public const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
 
 	private $base;
 	private $daemon;
@@ -34,43 +34,13 @@ class AudSourcePathTest extends TestCase
 		PluginEntryDriver::removeTree($this->base);
 	}
 
-	private function stopDaemon()
-	{
-		if ($this->daemon !== null)
-			$this->daemon->stop();
-		$this->daemon = null;
-	}
-
-	/** The two places a source can be: the session copy, or the tied file. */
-	private function sources()
-	{
-		$session = $this->base . '/' . self::AUD_PAIRS . '/';
-		$tied = $this->base . '/' . self::AUD_PAIRS . '/' . self::AUD . '.torrent';
-		return array(
-			'session copy' => array(array($session, ''), $session . self::HASH . '.torrent'),
-			'tied file' => array(array('', $tied), $tied),
-		);
-	}
-
-	private function drive($script, array $answers, array $options)
-	{
-		$this->stopDaemon();
-		PluginEntryDriver::removeTree($this->base . '/profile');
-		list($session, $tied) = $answers;
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies(array(
-			'get_session' => array($session), 'session.path' => array($session),
-			'd.get_tied_to_file' => array($tied), 'd.tied_to_file' => array($tied),
-		)), $this->base . '/calls.log');
-		return PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
-	}
-
 	public function testAudSourceSendsTheTorrentTheDaemonNamed()
 	{
 		foreach ($this->sources() as $label => $source) {
 			list($answers, $path) = $source;
 			file_put_contents($path, $this->announceOnlyTorrent());
 			list($exit, $out, $err) = $this->drive('plugins/source/action.php', $answers,
-				array('post' => array('hash' => self::HASH)));
+				['post' => ['hash' => self::HASH]]);
 			@unlink($path);
 			$this->assertSame($this->announceOnlyTorrent(), $out, $label . ': the .torrent is sent: ' . $out . $err);
 		}
@@ -82,11 +52,41 @@ class AudSourcePathTest extends TestCase
 			list($answers, $path) = $source;
 			file_put_contents($path, $this->announceOnlyTorrent());
 			list($exit, $out, $err) = $this->drive('plugins/dump/action.php', $answers,
-				array('post' => array('cmd' => 'dumptorrent', 'hash' => self::HASH)));
+				['post' => ['cmd' => 'dumptorrent', 'hash' => self::HASH]]);
 			@unlink($path);
 			$scripts = PluginEntryDriver::taskScripts($this->base);
 			$this->assertTrue(count($scripts) === 1 && strpos($scripts[0], escapeshellarg($path)) !== false,
 				$label . ': dumptorrent is given the file the daemon named: ' . $out . ($scripts[0] ?? ''));
 		}
+	}
+
+	private function stopDaemon()
+	{
+		if ($this->daemon !== null) {
+			$this->daemon->stop(); }
+		$this->daemon = null;
+	}
+
+	/** The two places a source can be: the session copy, or the tied file. */
+	private function sources()
+	{
+		$session = $this->base . '/' . self::AUD_PAIRS . '/';
+		$tied = $this->base . '/' . self::AUD_PAIRS . '/' . self::AUD . '.torrent';
+		return [
+			'session copy' => [[$session, ''], $session . self::HASH . '.torrent'],
+			'tied file' => [['', $tied], $tied],
+		];
+	}
+
+	private function drive($script, array $answers, array $options)
+	{
+		$this->stopDaemon();
+		PluginEntryDriver::removeTree($this->base . '/profile');
+		list($session, $tied) = $answers;
+		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies([
+			'get_session' => [$session], 'session.path' => [$session],
+			'd.get_tied_to_file' => [$tied], 'd.tied_to_file' => [$tied],
+		]), $this->base . '/calls.log');
+		return PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
 	}
 }

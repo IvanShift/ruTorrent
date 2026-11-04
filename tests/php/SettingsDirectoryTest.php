@@ -17,18 +17,10 @@ class SettingsDirectoryTest extends TestCase
 
 	public function tearDown()
 	{
-		if ($this->hadTopDirectory)
-			$GLOBALS['topDirectory'] = $this->previousTopDirectory;
-		else
-			unset($GLOBALS['topDirectory']);
-	}
-
-	private function settings($home)
-	{
-		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
-		$settings->directory = '/downloads';
-		$settings->home = $home;
-		return $settings;
+		if ($this->hadTopDirectory) {
+			$GLOBALS['topDirectory'] = $this->previousTopDirectory; }
+		else {
+			unset($GLOBALS['topDirectory']); }
 	}
 
 	public function testUnknownHomeCannotRedirectTildePathToFilesystemRoot()
@@ -51,7 +43,7 @@ class SettingsDirectoryTest extends TestCase
 
 	public function testUnresolvedOrRelativeHomeCannotExpandTilde()
 	{
-		foreach (array('~', 'relative') as $home)
+		foreach (['~', 'relative'] as $home)
 		{
 			$path = '~/private';
 			$this->assertTrue(!$this->settings($home)->correctReportedDirectory($path),
@@ -215,5 +207,13 @@ class SettingsDirectoryTest extends TestCase
 			rmdir($root.'/inside');
 			rmdir($root);
 		}
+	}
+
+	private function settings($home)
+	{
+		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
+		$settings->directory = '/downloads';
+		$settings->home = $home;
+		return $settings;
 	}
 }

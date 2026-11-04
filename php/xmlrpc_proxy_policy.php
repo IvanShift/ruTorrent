@@ -6,8 +6,8 @@ require_once(__DIR__.'/xmlrpc_proxy.php');
 $xmlrpcProxyPolicyFile = dirname(__FILE__).'/../conf/xmlrpc_proxy.php';
 if(is_file($xmlrpcProxyPolicyFile))
 {
-	if(!is_readable($xmlrpcProxyPolicyFile))
-		return false;
+	if(!is_readable($xmlrpcProxyPolicyFile)) {
+		return false; }
 	require_once($xmlrpcProxyPolicyFile);
 }
 return true;

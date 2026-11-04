@@ -23,36 +23,36 @@ namespace {
     require_once(__DIR__ . '/TestCase.php');
 
     // Load the complete production classes without application bootstrap or network I/O.
-    foreach (array(
+    foreach ([
         'php/Snoopy.class.inc' => 'class Snoopy',
         'plugins/rutracker_check/fetcherror.php' => 'class RuTrackerFetchError',
         'plugins/rutracker_check/check.php' => 'class ruTrackerChecker',
         'php/torrentfetch.php' => 'class TorrentFetch',
-    ) as $path => $declaration) {
+    ] as $path => $declaration) {
         $source = file_get_contents(__DIR__ . '/../../' . $path);
         $start = strpos($source, $declaration);
-        if ($start === false) throw new \RuntimeException('Production class not found: ' . $path);
+        if ($start === false) { throw new \RuntimeException('Production class not found: ' . $path); }
         eval('namespace SnoopyConnectFixture; ' . substr($source, $start));
     }
 
-    $tests = array(
+    $tests = [
         'positive socket errno cannot become an HTTP status or another transport failure' => function () {
-            foreach (array('' => 'fsockopen', '127.0.0.1' => 'stream_socket_client') as $bind => $call) {
-                foreach (array(110, 111, 100, 101, 10061) as $errno) {
+            foreach (['' => 'fsockopen', '127.0.0.1' => 'stream_socket_client'] as $bind => $call) {
+                foreach ([110, 111, 100, 101, 10061] as $errno) {
                     $GLOBALS['snoopyConnectErrno'] = $errno;
                     $GLOBALS['snoopyConnectCall'] = null;
                     $client = new \SnoopyConnectFixture\Snoopy();
                     $client->IP = $bind === '' ? null : $bind;
                     $client->status = 200;
                     $client->results = 'previous body';
-                    $client->headers = array("Set-Cookie: previous=wrong\r\n");
+                    $client->headers = ["Set-Cookie: previous=wrong\r\n"];
                     $client->response_code = "HTTP/1.1 200 OK\r\n";
                     $client->_redirectaddr = 'http://previous.test/redirect';
                     testAssertSame(false, $client->connect(), 'The socket connection failed');
                     testAssertSame($call, $GLOBALS['snoopyConnectCall'], 'The selected system call ran');
                     testAssertSame(-102, $client->status, 'A positive errno replaces a stale HTTP status');
                     testAssertSame('', $client->results, 'Direct failed connect clears the previous body');
-                    testAssertSame(array(), $client->headers, 'Direct failed connect clears the previous headers');
+                    testAssertSame([], $client->headers, 'Direct failed connect clears the previous headers');
                     testAssertSame('', $client->response_code, 'Direct failed connect clears the previous status line');
                     testAssertSame(false, $client->_redirectaddr, 'Direct failed connect clears the previous redirect');
                     testAssertSame('connection failed (' . $errno . ')', $client->error,
@@ -67,13 +67,13 @@ namespace {
             }
         },
         'zero and legacy negative socket statuses retain their diagnostic contract' => function () {
-            foreach (array('' => 'fsockopen', '127.0.0.1' => 'stream_socket_client') as $bind => $call) {
-                foreach (array(
-                    0 => array('transport=no-status reason=unset', 'connection failed (0)', 'connect-errno', 'connect-failed'),
-                    -3 => array('transport=socket status=-3 reason=socket-create', 'socket creation failed (-3)', 'socket-create', 'socket-create-failed'),
-                    -4 => array('transport=socket status=-4 reason=dns', 'dns lookup failure (-4)', 'dns-lookup', 'dns-failed'),
-                    -5 => array('transport=socket status=-5 reason=connect', 'connection refused or timed out (-5)', 'connect-refused', 'connect-failed'),
-                ) as $errno => $expected) {
+            foreach (['' => 'fsockopen', '127.0.0.1' => 'stream_socket_client'] as $bind => $call) {
+                foreach ([
+                    0 => ['transport=no-status reason=unset', 'connection failed (0)', 'connect-errno', 'connect-failed'],
+                    -3 => ['transport=socket status=-3 reason=socket-create', 'socket creation failed (-3)', 'socket-create', 'socket-create-failed'],
+                    -4 => ['transport=socket status=-4 reason=dns', 'dns lookup failure (-4)', 'dns-lookup', 'dns-failed'],
+                    -5 => ['transport=socket status=-5 reason=connect', 'connection refused or timed out (-5)', 'connect-refused', 'connect-failed'],
+                ] as $errno => $expected) {
                     list($detail, $message, $classification, $downloadReason) = $expected;
                     $GLOBALS['snoopyConnectErrno'] = $errno;
                     $GLOBALS['snoopyConnectCall'] = null;
@@ -103,14 +103,14 @@ namespace {
             // text: consumers must receive only the fixed category and errno.
             $GLOBALS['snoopyConnectErrno'] = 0;
             try {
-                foreach (array('' => 'fsockopen', '127.0.0.1' => 'stream_socket_client') as $bind => $call) {
-                    foreach (array(
+                foreach (['' => 'fsockopen', '127.0.0.1' => 'stream_socket_client'] as $bind => $call) {
+                    foreach ([
                         'php_network_getaddresses: getaddrinfo for private-host.test failed: Name or service not known'
-                            => array('dns lookup failure (0)', 'dns-lookup', 'dns-failed errno=0'),
+                            => ['dns lookup failure (0)', 'dns-lookup', 'dns-failed errno=0'],
                         'Unclassified failure mentioning php_network_getaddresses: private-host.test'
-                            => array('connection failed (0)', 'connect-errno', 'connect-failed errno=0'),
-                        '' => array('connection failed (0)', 'connect-errno', 'connect-failed errno=0'),
-                    ) as $rawError => $expected) {
+                            => ['connection failed (0)', 'connect-errno', 'connect-failed errno=0'],
+                        '' => ['connection failed (0)', 'connect-errno', 'connect-failed errno=0'],
+                    ] as $rawError => $expected) {
                         $GLOBALS['snoopyConnectError'] = $rawError;
                         $GLOBALS['snoopyConnectCall'] = null;
                         $client = new \SnoopyConnectFixture\Snoopy();
@@ -132,7 +132,7 @@ namespace {
                 unset($GLOBALS['snoopyConnectError']);
             }
         },
-    );
+    ];
 
     exit(testRunCases($tests));
 }

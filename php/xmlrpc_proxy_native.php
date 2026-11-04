@@ -32,7 +32,7 @@
  * still decides which native commands and argument shapes are permitted.
  * A missing name or unreviewed daemon version is refused before trust.
  */
-return array(
+return [
 	'add_peer' => 0x1FFFFFFF,
 	'and' => 0x1FFFFFFF,
 	'argument.0' => 0x1FFFFFFF,
@@ -905,4 +905,4 @@ return array(
 	'view.sort' => 0x1FFFFFFF,
 	'view.sort_current' => 0x1FFFFFFF,
 	'view.sort_new' => 0x1FFFFFFF,
-);
+];

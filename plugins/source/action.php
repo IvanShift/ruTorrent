@@ -1,8 +1,8 @@
 <?php
 require_once( '../../php/rtorrent.php' );
 
-if(isset($_REQUEST['result']))
-	CachedEcho::send('noty(theUILang.cantFindTorrent,"error");',"text/html");
+if(isset($_REQUEST['result'])) {
+	CachedEcho::send('noty(theUILang.cantFindTorrent,"error");',"text/html"); }
 if(isset($_POST['hash']))
 {
 	$query = urldecode($_POST['hash']);
@@ -10,19 +10,19 @@ if(isset($_POST['hash']))
 	if(count($hashes) == 1)
 	{
 		$torrent = rTorrent::getSource($_POST['hash']);
-		if($torrent)
-			$torrent->send();
+		if($torrent) {
+			$torrent->send(); }
 	}
 	else
 	{
-		if(!class_exists('ZipArchive'))
-			CachedEcho::send('noty("PHP module \'zip\' is not installed.","error");',"text/html");
+		if(!class_exists('ZipArchive')) {
+			CachedEcho::send('noty("PHP module \'zip\' is not installed.","error");',"text/html"); }
 		foreach($hashes as $hash)
 		{
 			$sourcePath = null;
 			$torrent = rTorrent::getSource($hash, null, $sourcePath);
-			if($torrent)
-				$files[] = array($hash, $sourcePath, $torrent);
+			if($torrent) {
+				$files[] = [$hash, $sourcePath, $torrent]; }
 			else
 			{
 				$identity = preg_match('/\A[0-9a-f]{40}\z/i', $hash)
@@ -39,17 +39,17 @@ if(isset($_POST['hash']))
 			$fn = 1;
 			$zippath = FileUtil::getTempFilename('source','zip');
 
-			$zip = new ZipArchive;
+			$zip = new ZipArchive();
 			$failure = null;
-			if(@$zip->open($zippath, ZipArchive::CREATE) !== true)
-				$failure = 'open-failed';
+			if(@$zip->open($zippath, ZipArchive::CREATE) !== true) {
+				$failure = 'open-failed'; }
 			else
 			{
 				foreach($files as $entry)
 				{
 					list($hash, $filepath, $file) = $entry;
 					// A download label is one ZIP member, including on Windows extractors.
-					$filename = str_replace(array('/', '\\'), '_', $file->displayName())."-".$fn.".torrent";
+					$filename = str_replace(['/', '\\'], '_', $file->displayName())."-".$fn.".torrent";
 					$isMetadata = rTorrent::isMetadataStubName(basename($filepath), $hash);
 					$added = $isMetadata
 						? @$zip->addFromString($filename, (string)$file)
@@ -61,19 +61,19 @@ if(isset($_POST['hash']))
 					}
 					$fn++;
 				}
-				if(!@$zip->close() && $failure === null)
-					$failure = 'close-failed';
+				if(!@$zip->close() && $failure === null) {
+					$failure = 'close-failed'; }
 			}
 
 			if($failure === null)
 			{
 				// This POST creates a new ZIP; old validators and ranges cannot apply to it.
 				unset($_SERVER['HTTP_IF_NONE_MATCH'], $_SERVER['HTTP_IF_MODIFIED_SINCE'], $_SERVER['HTTP_RANGE']);
-				if(!SendFile::send($zippath, "application/zip", null, false))
-					$failure = 'send-failed';
+				if(!SendFile::send($zippath, "application/zip", null, false)) {
+					$failure = 'send-failed'; }
 			}
-			if(is_file($zippath) && !@unlink($zippath))
-				FileUtil::toLog('source: ZIP cleanup failed: '.($failure ?? 'completed-send'));
+			if(is_file($zippath) && !@unlink($zippath)) {
+				FileUtil::toLog('source: ZIP cleanup failed: '.($failure ?? 'completed-send')); }
 			if($failure !== null)
 			{
 				FileUtil::toLog('source: ZIP export failed: '.$failure);

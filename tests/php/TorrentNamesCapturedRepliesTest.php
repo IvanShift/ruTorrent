@@ -24,62 +24,16 @@ require_once(__DIR__.'/../../php/torrentfilenames.php');
  */
 class TorrentNamesCapturedRepliesTest extends TestCase
 {
-	const DAEMONS = array('rakshasa-9801dfed', 'native-83c9b8be');
-	const SESSION = "S\\\"q\\\\b\xFF\x85\xC2\x85";
-	const MIXED = '75F922C3E13806024B6227DC46F07D38A9E45AA6';
+	public const DAEMONS = ['rakshasa-9801dfed', 'native-83c9b8be'];
+	public const SESSION = "S\\\"q\\\\b\xFF\x85\xC2\x85";
+	public const MIXED = '75F922C3E13806024B6227DC46F07D38A9E45AA6';
 	// Spare replies: a request nobody expected is answered and recorded.
-	const TRAP = array(array('', ''), array('', ''));
+	public const TRAP = [['', ''], ['', '']];
 
 	private $previousSettings;
 	private $previousGlobals;
 	private $base;
 	private $daemon;
-
-	// The probe torrents by their info hash: key, then name.
-	private static function cases()
-	{
-		return array(
-			'182DE0D964DB82D5E2DADD41FA300EAEACF55EF5' => array('bs', "bs\\x"),
-			'55D8A68DCC5725CE5CAB73C8DF99A736E38D71E3' => array('dbs', "dbs\\\\x"),
-			'897041A0468A647A95FC7C22AC1DC1723EB0A52B' => array('q', "q\"x"),
-			'EB43A906C2B1253C57D5AB06A7AE5772C68E010F' => array('bq', "bq\\\"x"),
-			'E5DDABF41D3FF140821240335A79516832B37737' => array('cp1251', "\xCF\xF0\xE8\xE2\xE5\xF2"),
-			'3F59A6B4908EB83B67858DCFEAD63990D8D9D2C4' => array('c1raw', "c1\x85\x9B"),
-			'C80B4D503BA4FACB5562136D588F21905C3372F7' => array('c1utf8', "nel\xC2\x85"),
-			self::MIXED => array('mixed', "m\xCF\\\\\"\x85"),
-			'D633C81AE24D732292D080CB8FE8F2DD270C9A86' => array('amp', 'e&amp;<x>'),
-			'CF04AA512F8778E3558F3D3C1FD43B15013D8614' => array('cr', "cr\rx"),
-		);
-	}
-
-	private static function bencode($value)
-	{
-		if(is_int($value))
-			return 'i'.$value.'e';
-		if(is_string($value))
-			return strlen($value).':'.$value;
-		if(array_keys($value) === range(0, count($value) - 1))
-			return 'l'.implode('', array_map(array(__CLASS__, 'bencode'), $value)).'e';
-		ksort($value, SORT_STRING);
-		$out = 'd';
-		foreach($value as $key=>$item)
-			$out .= self::bencode((string)$key).self::bencode($item);
-		return $out.'e';
-	}
-
-	// The probe's metainfo: a name that is not UTF-8 has aliases, so a
-	// label shows which raw bytes were matched.
-	private static function info($key, $name)
-	{
-		$info = array('files'=>array(array('length'=>1, 'path'=>array($name.'.bin'))), 'name'=>$name,
-			'piece length'=>16384, 'pieces'=>str_repeat("\x01", 20), 'private'=>1);
-		if(!UTF::isValid($name))
-		{
-			$info['name.utf-8'] = 'alias-'.$key;
-			$info['files'][0]['path.utf-8'] = array('alias-'.$key.'.bin');
-		}
-		return $info;
-	}
 
 	public function setUp()
 	{
@@ -91,7 +45,7 @@ class TorrentNamesCapturedRepliesTest extends TestCase
 		$settings = (new ReflectionClass('rTorrentSettings'))->newInstanceWithoutConstructor();
 		$settings->iVersion = 0x101B;
 		$settings->apiVersion = 11;
-		$settings->aliases = array();
+		$settings->aliases = [];
 		$this->previousSettings = self::swapSettings($settings);
 		$GLOBALS['scgi_host'] = '127.0.0.1';
 		$GLOBALS['rpcTimeOut'] = 5;
@@ -109,8 +63,8 @@ class TorrentNamesCapturedRepliesTest extends TestCase
 		try
 		{
 			self::swapSettings($this->previousSettings);
-			if($this->daemon !== null)
-				$this->daemon->stop();
+			if($this->daemon !== null) {
+				$this->daemon->stop(); }
 			$this->daemon = null;
 			TestTree::remove($this->base);
 		}
@@ -118,6 +72,103 @@ class TorrentNamesCapturedRepliesTest extends TestCase
 		{
 			$this->previousGlobals->restore();
 		}
+	}
+
+	public function testSourcePathsKeepEveryByteBothDaemonsWrote()
+	{
+		foreach(self::DAEMONS as $daemon)
+		{
+			$root = $this->base.'/'.$daemon;
+			$this->daemon([self::captured('sourcepaths', $daemon, $root)]);
+			$paths = rTorrent::getSourcePaths();
+			$hashes = array_keys($paths);
+			sort($hashes);
+			$expected = array_keys(self::cases());
+			sort($expected);
+			$this->assertSame($expected, $hashes, $daemon.': one entry for every torrent');
+			foreach(self::cases() as $hash=>list($key, $name)) {
+				$this->assertSame([$root.'/'.self::SESSION.'/', $root.'/watch/'.$name.'.torrent'], $paths[$hash] ?? null,
+					$daemon.' '.$key.': the session directory and the tied file are the daemon\'s bytes'); }
+		}
+	}
+
+	public function testTitlesFindTheSessionCopyThroughTheCapturedPaths()
+	{
+		foreach(self::DAEMONS as $daemon)
+		{
+			$root = $this->base.'/'.$daemon;
+			$this->sessionCopies($root);
+			$this->daemon([self::captured('sourcepaths', $daemon, $root)]);
+			$names = [];
+			foreach(self::cases() as $hash=>list($key, $name)) {
+				$names[$hash] = $name; }
+			$expected = $names;
+			foreach(['cp1251', 'c1raw', 'mixed'] as $legacy) {
+				foreach(self::cases() as $hash=>list($key, $name)) {
+					if($key === $legacy) {
+						$expected[$hash] = 'alias-'.$key; } } }
+			$this->assertSame($expected, TorrentFileNames::titles($names),
+				$daemon.': every legacy title is its alias and every other title stays as it is');
+		}
+	}
+
+	public function testDownloadNameReadsTheCapturedLivePath()
+	{
+		foreach(self::DAEMONS as $daemon)
+		{
+			$root = $this->base.'/'.$daemon;
+			$this->sessionCopies($root);
+			$this->daemon([self::captured('fileinfo-mixed', $daemon, $root), self::captured('source-mixed', $daemon, $root)]);
+			$name = self::cases()[self::MIXED][1];
+			$this->assertSame('alias-mixed.bin', TorrentFileNames::downloadName(self::MIXED, 0, $root.'/data/'.$name.'/'.$name.'.bin'),
+				$daemon.': the live path with \\\\ and " matches the metainfo file, whose alias names the download');
+		}
+	}
+
+	// The probe torrents by their info hash: key, then name.
+	private static function cases()
+	{
+		return [
+			'182DE0D964DB82D5E2DADD41FA300EAEACF55EF5' => ['bs', "bs\\x"],
+			'55D8A68DCC5725CE5CAB73C8DF99A736E38D71E3' => ['dbs', "dbs\\\\x"],
+			'897041A0468A647A95FC7C22AC1DC1723EB0A52B' => ['q', "q\"x"],
+			'EB43A906C2B1253C57D5AB06A7AE5772C68E010F' => ['bq', "bq\\\"x"],
+			'E5DDABF41D3FF140821240335A79516832B37737' => ['cp1251', "\xCF\xF0\xE8\xE2\xE5\xF2"],
+			'3F59A6B4908EB83B67858DCFEAD63990D8D9D2C4' => ['c1raw', "c1\x85\x9B"],
+			'C80B4D503BA4FACB5562136D588F21905C3372F7' => ['c1utf8', "nel\xC2\x85"],
+			self::MIXED => ['mixed', "m\xCF\\\\\"\x85"],
+			'D633C81AE24D732292D080CB8FE8F2DD270C9A86' => ['amp', 'e&amp;<x>'],
+			'CF04AA512F8778E3558F3D3C1FD43B15013D8614' => ['cr', "cr\rx"],
+		];
+	}
+
+	private static function bencode($value)
+	{
+		if(is_int($value)) {
+			return 'i'.$value.'e'; }
+		if(is_string($value)) {
+			return strlen($value).':'.$value; }
+		if(array_keys($value) === range(0, count($value) - 1)) {
+			return 'l'.implode('', array_map([__CLASS__, 'bencode'], $value)).'e'; }
+		ksort($value, SORT_STRING);
+		$out = 'd';
+		foreach($value as $key=>$item) {
+			$out .= self::bencode((string)$key).self::bencode($item); }
+		return $out.'e';
+	}
+
+	// The probe's metainfo: a name that is not UTF-8 has aliases, so a
+	// label shows which raw bytes were matched.
+	private static function info($key, $name)
+	{
+		$info = ['files'=>[['length'=>1, 'path'=>[$name.'.bin']]], 'name'=>$name,
+			'piece length'=>16384, 'pieces'=>str_repeat("\x01", 20), 'private'=>1];
+		if(!UTF::isValid($name))
+		{
+			$info['name.utf-8'] = 'alias-'.$key;
+			$info['files'][0]['path.utf-8'] = ['alias-'.$key.'.bin'];
+		}
+		return $info;
 	}
 
 	private static function swapSettings($settings)
@@ -141,8 +192,8 @@ class TorrentNamesCapturedRepliesTest extends TestCase
 
 	private function daemon($replies)
 	{
-		if($this->daemon !== null)
-			$this->daemon->stop();
+		if($this->daemon !== null) {
+			$this->daemon->stop(); }
 		$this->daemon = new FakeRtorrentDaemon(array_merge($replies, self::TRAP), $this->base.'/calls-'.uniqid().'.log');
 		$GLOBALS['scgi_port'] = $this->daemon->port();
 	}
@@ -155,58 +206,7 @@ class TorrentNamesCapturedRepliesTest extends TestCase
 		{
 			$info = self::info($key, $name);
 			$this->assertSame($hash, strtoupper(sha1(self::bencode($info))), $key.': the fixture rebuilds the probe torrent');
-			file_put_contents($root.'/'.self::SESSION.'/'.$hash.'.torrent', self::bencode(array('info'=>$info)));
-		}
-	}
-
-	public function testSourcePathsKeepEveryByteBothDaemonsWrote()
-	{
-		foreach(self::DAEMONS as $daemon)
-		{
-			$root = $this->base.'/'.$daemon;
-			$this->daemon(array(self::captured('sourcepaths', $daemon, $root)));
-			$paths = rTorrent::getSourcePaths();
-			$hashes = array_keys($paths);
-			sort($hashes);
-			$expected = array_keys(self::cases());
-			sort($expected);
-			$this->assertSame($expected, $hashes, $daemon.': one entry for every torrent');
-			foreach(self::cases() as $hash=>list($key, $name))
-				$this->assertSame(array($root.'/'.self::SESSION.'/', $root.'/watch/'.$name.'.torrent'), $paths[$hash] ?? null,
-					$daemon.' '.$key.': the session directory and the tied file are the daemon\'s bytes');
-		}
-	}
-
-	public function testTitlesFindTheSessionCopyThroughTheCapturedPaths()
-	{
-		foreach(self::DAEMONS as $daemon)
-		{
-			$root = $this->base.'/'.$daemon;
-			$this->sessionCopies($root);
-			$this->daemon(array(self::captured('sourcepaths', $daemon, $root)));
-			$names = array();
-			foreach(self::cases() as $hash=>list($key, $name))
-				$names[$hash] = $name;
-			$expected = $names;
-			foreach(array('cp1251', 'c1raw', 'mixed') as $legacy)
-				foreach(self::cases() as $hash=>list($key, $name))
-					if($key === $legacy)
-						$expected[$hash] = 'alias-'.$key;
-			$this->assertSame($expected, TorrentFileNames::titles($names),
-				$daemon.': every legacy title is its alias and every other title stays as it is');
-		}
-	}
-
-	public function testDownloadNameReadsTheCapturedLivePath()
-	{
-		foreach(self::DAEMONS as $daemon)
-		{
-			$root = $this->base.'/'.$daemon;
-			$this->sessionCopies($root);
-			$this->daemon(array(self::captured('fileinfo-mixed', $daemon, $root), self::captured('source-mixed', $daemon, $root)));
-			$name = self::cases()[self::MIXED][1];
-			$this->assertSame('alias-mixed.bin', TorrentFileNames::downloadName(self::MIXED, 0, $root.'/data/'.$name.'/'.$name.'.bin'),
-				$daemon.': the live path with \\\\ and " matches the metainfo file, whose alias names the download');
+			file_put_contents($root.'/'.self::SESSION.'/'.$hash.'.torrent', self::bencode(['info'=>$info]));
 		}
 	}
 }

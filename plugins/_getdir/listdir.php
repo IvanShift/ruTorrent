@@ -21,14 +21,14 @@ if(is_string($requestedDir) && strlen($requestedDir))
 else
 {
 	$dir = User::isLocalMode() ? $theSettings->directory : $topDirectory;
-	if (!$theSettings->correctReportedDirectory($dir, true, true))
-		$dir = $topDirectory;
+	if (!$theSettings->correctReportedDirectory($dir, true, true)) {
+		$dir = $topDirectory; }
 }
 
 $dir = FileUtil::addslash($dir);
 $items = rDirectoryList::scan($dir);
 $error = $items === null;
-$items = array_diff($items ?? array(), ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
+$items = array_diff($items ?? [], ((rtrim($dir, '/') === rtrim($topDirectory, '/')) ? ["..", "."] : ["."]));
 $directories = array_filter($items, function ($item) {
 	global $dir, $theSettings, $checkUserPermissions;
 	$path = $dir.$item;
@@ -39,18 +39,17 @@ $files = (isset($_REQUEST['withfiles']) && $_REQUEST['withfiles'] === '1') ? arr
 	global $dir, $theSettings;
 	$path = $dir.$item;
 	return is_file($path) && is_readable($path) && $theSettings->correctReportedDirectory($path, true);
-}) : array();
+}) : [];
 
-usort($directories, array('rDirectoryList', 'compare'));
-usort($files, array('rDirectoryList', 'compare'));
+usort($directories, ['rDirectoryList', 'compare']);
+usort($files, ['rDirectoryList', 'compare']);
 
 header("Content-Type: application/json");
-$output = array(
+$output = [
 	"path" => FileUtil::displayPath($dir),
-	"directories" => array_map(array('FileUtil', 'displayPath'), $directories),
-	"files" => array_map(array('FileUtil', 'displayPath'), $files),
-);
-if($error)
-	$output['error'] = 'directory-unavailable';
+	"directories" => array_map(['FileUtil', 'displayPath'], $directories),
+	"files" => array_map(['FileUtil', 'displayPath'], $files),
+];
+if($error) {
+	$output['error'] = 'directory-unavailable'; }
 echo JSON::safeEncode($output);
-?>

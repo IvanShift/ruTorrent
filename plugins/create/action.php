@@ -13,14 +13,14 @@ class recentTrackers
 {
 	public $hash = "rtrackers.dat";
 	public $modified = false;
-	public $list = array();
-	public $last_used = array();
+	public $list = [];
+	public $last_used = [];
 	public $piece_size = 1024;
 	public $start_seeding = false;
 	public $private_torrent = false;
 	public $hybrid_torrent = false;
 
-	static public function load()
+	public static function load()
 	{
 		$cache = new rCache();
 		$rt = new recentTrackers();
@@ -49,9 +49,9 @@ class recentTrackers
 	}
 	public function get()
 	{
-		$ret = array();
-		foreach( $this->list as $ann )
-			$ret['recent_trackers'][self::getTrackerDomain($ann)] = $ann;
+		$ret = [];
+		foreach( $this->list as $ann ) {
+			$ret['recent_trackers'][self::getTrackerDomain($ann)] = $ann; }
 		$ret['last_used'] = $this->last_used;
 		$ret['piece_size'] = $this->piece_size;
 		$ret['start_seeding'] =  $this->start_seeding;
@@ -82,17 +82,17 @@ class recentTrackers
 		$i = 0;
 		foreach( $this->list as $ann )
 		{
-			if( ($i + 1) === $cnt )
-				break;
-			if( self::getTrackerDomain($ann) === $lastAnn )
-				array_splice($this->list,$i,1);
+			if( ($i + 1) === $cnt ) {
+				break; }
+			if( self::getTrackerDomain($ann) === $lastAnn ) {
+				array_splice($this->list,$i,1); }
 			$i = $i + 1;
 		}
 		$cnt = $cnt-$recentTrackersMaxCount;
-		if($cnt>0)
-			array_splice($this->list,0,$cnt);
+		if($cnt>0) {
+			array_splice($this->list,0,$cnt); }
 	}
-	static public function getTrackerDomain($announce)
+	public static function getTrackerDomain($announce)
 	{
 		$domain = parse_url($announce,PHP_URL_HOST);
 		if($domain && (preg_match("/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/",$domain)!=1))
@@ -101,11 +101,11 @@ class recentTrackers
 			$cnt = count($parts);
 			if($cnt>2)
 			{
-				if(in_array( $parts[$cnt-2], array( "co", "com", "net", "org" ) ) ||
-					in_array( $parts[$cnt-1], array( "uk" ) ))
-					$parts = array_slice($parts, $cnt-3);
-				else
-					$parts = array_slice($parts, $cnt-2);
+				if(in_array( $parts[$cnt-2], [ "co", "com", "net", "org" ] ) ||
+					in_array( $parts[$cnt-1], [ "uk" ] )) {
+					$parts = array_slice($parts, $cnt-3); }
+				else {
+					$parts = array_slice($parts, $cnt-2); }
 				$domain = implode('.',$parts);
 			}
 		}
@@ -113,7 +113,7 @@ class recentTrackers
 	}
 }
 
-$ret = array();
+$ret = [];
 $cmd = $_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['cmd'] ?? null) : ($_GET['cmd'] ?? null);
 if($cmd !== null)
 {
@@ -131,17 +131,17 @@ if($cmd !== null)
 			if(isset($_POST['trackers']))
 			{
 				$rt = recentTrackers::load();
-				$trk = array();
+				$trk = [];
 				$arr = explode("\r",$_POST['trackers']);
 				foreach( $arr as $key => $value )
 				{
 					$value = trim($value);
-					if(strlen($value))
-						$trk[] = $value;
+					if(strlen($value)) {
+						$trk[] = $value; }
 				}
 				$newList = array_diff($rt->list,$trk);
-				if( $newList !== $rt->list )
-					$rt->delete($newList);
+				if( $newList !== $rt->list ) {
+					$rt->delete($newList); }
 				$ret = $rt->get();
 			}
 			break;
@@ -154,13 +154,13 @@ if($cmd !== null)
 			if(is_string($requestedPath) && strlen($requestedPath))
 			{
 				$path_edit = trim($requestedPath);
-				if(is_dir($path_edit))
-					$path_edit = FileUtil::addslash($path_edit);
+				if(is_dir($path_edit)) {
+					$path_edit = FileUtil::addslash($path_edit); }
 				$refusal = CreateBoundary::refusal($path_edit, $entry);
 				if($refusal === null)
 				{
 					$rt = recentTrackers::load();
-					$trackers = array();
+					$trackers = [];
 					if(isset($_POST['trackers']))
 					{
 						$trackers = explode("\r", $_POST['trackers']);
@@ -184,22 +184,22 @@ if($cmd !== null)
 					$rt->store();
 
 					$piece_size = 262144;
-					if(isset($_POST['piece_size']))
-						$piece_size = $_POST['piece_size']*1024;
-					if(!$pathToCreatetorrent || ($pathToCreatetorrent==""))
-						$pathToCreatetorrent = createExternalEXE($useExternal);
-					if($useExternal=="mktorrent")
-						$piece_size = log($piece_size,2);
+					if(isset($_POST['piece_size'])) {
+						$piece_size = $_POST['piece_size']*1024; }
+					if(!$pathToCreatetorrent || ($pathToCreatetorrent=="")) {
+						$pathToCreatetorrent = createExternalEXE($useExternal); }
+					if($useExternal=="mktorrent") {
+						$piece_size = log($piece_size,2); }
 					if(isset($_POST['hybrid']))
 					{
-						$hybrid = TRUE;
-						if ($useExternal!=="torrenttools" && $_POST['hybrid']==1)
-							$useExternal = "inner";
+						$hybrid = true;
+						if ($useExternal!=="torrenttools" && $_POST['hybrid']==1) {
+							$useExternal = "inner"; }
 					}
-					if($useExternal===false)
-						$useExternal = "inner";
-					$task = new rTask( array
-					(
+					if($useExternal===false) {
+						$useExternal = "inner"; }
+					$task = new rTask( 
+					[
 						'arg' => FileUtil::getFileName($path_edit),
 						'requester'=>'create',
 						'name'=>'create',
@@ -212,9 +212,9 @@ if($cmd !== null)
 						'start_seeding'=>$_POST['start_seeding'],
 						'piece_size'=>$_POST['piece_size'],
 						'private'=>$_POST['private'],
-						'hybrid'=>$_POST['hybrid']
-					) );
-					$commands = array();
+						'hybrid'=>$_POST['hybrid'],
+					] );
+					$commands = [];
 
 					$commands[] = Utility::escapeShellArg($rootPath.'/plugins/create/'.$useExternal.'.sh')." ".
 					$task->id." ".
@@ -238,17 +238,17 @@ if($cmd !== null)
 					$error = 'Incorrect directory ('.$entry.')';
 				}
 			}
-			$ret = array( "no"=>-1, "pid"=>0, "status"=>255, "log"=>array(), "errors"=>array($error) );
+			$ret = [ "no"=>-1, "pid"=>0, "status"=>255, "log"=>[], "errors"=>[$error] ];
 			break;
 		}
 		case "getfile":
 		{
 			$dir = rTask::formatPath( $_REQUEST['no'] );
 			$torrent = new Torrent( $dir."/result.torrent" );
-			if( !$torrent->errors() )
-				$torrent->send();
-			else
-				header('HTTP/1.0 404 Not Found');
+			if( !$torrent->errors() ) {
+				$torrent->send(); }
+			else {
+				header('HTTP/1.0 404 Not Found'); }
 			exit();
 		}
 	}

@@ -10,11 +10,11 @@ class AudFilePathReplies extends FakeRtorrentMethodReplies
 	public function __invoke($request, $methods)
 	{
 		$values = parent::__invoke($request, $methods);
-		if(strpos($request, '<methodName>system.multicall</methodName>') === false)
-			return $values;
-		$body = HttprpcListFixture::body(array_map(function($value) { return array($value); }, $values));
+		if(strpos($request, '<methodName>system.multicall</methodName>') === false) {
+			return $values; }
+		$body = HttprpcListFixture::body(array_map(function($value) { return [$value]; }, $values));
 		// Keep this witness's literal quote/backslash spelling on the wire.
-		return new FakeRtorrentRawReply(str_replace(array('&quot;', '&apos;'), array('"', "'"), $body));
+		return new FakeRtorrentRawReply(str_replace(['&quot;', '&apos;'], ['"', "'"], $body));
 	}
 }
 
@@ -31,11 +31,11 @@ class AudFilePathReplies extends FakeRtorrentMethodReplies
  */
 class AudFilePathTest extends TestCase
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
-	const AUD = 'aud "q" \b \'a\' &c';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const AUD = 'aud "q" \b \'a\' &c';
 	// The probe name plus the pairs an extra unescape would collapse.
-	const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
-	const PAYLOAD = "aud payload\n";
+	public const AUD_PAIRS = 'aud "q" \b \'a\' &c \\\\x \\"y';
+	public const PAYLOAD = "aud payload\n";
 
 	private $base;
 	private $file;
@@ -56,6 +56,53 @@ class AudFilePathTest extends TestCase
 		PluginEntryDriver::removeTree($this->base);
 	}
 
+	public function testAudDataSendsTheFileTheDaemonNamed()
+	{
+		foreach (['open' => [$this->file], 'closed' => ['', $this->file]] as $state => $frozen) {
+			list($exit, $out, $err) = $this->drive('plugins/data/action.php', $frozen,
+				['get' => ['hash' => self::HASH, 'no' => '0']]);
+			$this->assertSame(self::PAYLOAD, $out, $state . ' download: "Get data" sends the file: ' . $out . $err);
+			$this->assertSame(0, $exit, $state . ' download: the script ends cleanly: ' . $err);
+			$this->assertSame($state === 'open' ? 1 : 2, count($this->daemon->bodies()),
+				'optional download-label evidence stays in the existing path request');
+		}
+		$lifecycle = array_values(array_filter($this->daemon->calls(), function($method) {
+			return in_array($method, ['d.open', 'f.get_frozen_path', 'd.close'], true);
+		}));
+		$this->assertSame(['d.open', 'f.get_frozen_path', 'd.close'],
+			array_slice($lifecycle, -3),
+			'a closed download is opened only to read the path, and closed again');
+	}
+
+	public function testAudMediaTasksAreGivenTheFileTheDaemonNamed()
+	{
+		foreach (['mediainfo' => 'mediainfo', 'screenshots' => 'ffmpeg', 'spectrogram' => 'sox'] as $plugin => $cmd) {
+			list($exit, $out, $err) = $this->drive('plugins/' . $plugin . '/action.php', ['', $this->file],
+				['post' => ['cmd' => $cmd, 'hash' => self::HASH, 'no' => '0']]);
+			$scripts = PluginEntryDriver::taskScripts($this->base);
+			$this->assertSame(1, count($scripts), $plugin . ' builds one task: ' . $out . $err);
+			$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], escapeshellarg($this->file)) !== false,
+				$plugin . ' runs its tool on the file the daemon named: ' . ($scripts[0] ?? ''));
+		}
+	}
+
+	/**
+	 * spectrogram titles its image with the file's name. The name must not
+	 * depend on the locale: in C, PHP 7.4's basename() made Сериал.flac .flac.
+	 */
+	public function testSpectrogramTitlesTheImageWithTheFileNameInTheCLocale()
+	{
+		$file = $this->base . '/data/Сериал.flac';
+		file_put_contents($file, self::PAYLOAD);
+		list($exit, $out, $err) = $this->drive('plugins/spectrogram/action.php', ['', $file],
+			['post' => ['cmd' => 'sox', 'hash' => self::HASH, 'no' => '0'],
+				'before' => 'setlocale(LC_CTYPE, "C");']);
+		$scripts = PluginEntryDriver::taskScripts($this->base);
+		$this->assertSame(1, count($scripts), 'spectrogram builds one task: ' . $out . $err);
+		$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], " -t 'Сериал.flac' ") !== false,
+			'its title is the file\'s name: ' . ($scripts[0] ?? ''));
+	}
+
 	private function stopDaemon()
 	{
 		if ($this->daemon !== null) {
@@ -73,58 +120,11 @@ class AudFilePathTest extends TestCase
 		$this->stopDaemon();
 		PluginEntryDriver::removeTree($this->base . '/profile');
 		$answers = new FakeRtorrentPerCall(array_map(function ($path) {
-			return array($path);
+			return [$path];
 		}, $frozen));
-		$this->daemon = new FakeRtorrentDaemon(new AudFilePathReplies(array(
+		$this->daemon = new FakeRtorrentDaemon(new AudFilePathReplies([
 			'f.get_frozen_path' => $answers, 'f.frozen_path' => $answers,
-		)), $this->base . '/calls.log', false, array(__FILE__));
+		]), $this->base . '/calls.log', false, [__FILE__]);
 		return PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
-	}
-
-	public function testAudDataSendsTheFileTheDaemonNamed()
-	{
-		foreach (array('open' => array($this->file), 'closed' => array('', $this->file)) as $state => $frozen) {
-			list($exit, $out, $err) = $this->drive('plugins/data/action.php', $frozen,
-				array('get' => array('hash' => self::HASH, 'no' => '0')));
-			$this->assertSame(self::PAYLOAD, $out, $state . ' download: "Get data" sends the file: ' . $out . $err);
-			$this->assertSame(0, $exit, $state . ' download: the script ends cleanly: ' . $err);
-			$this->assertSame($state === 'open' ? 1 : 2, count($this->daemon->bodies()),
-				'optional download-label evidence stays in the existing path request');
-		}
-		$lifecycle = array_values(array_filter($this->daemon->calls(), function($method) {
-			return in_array($method, array('d.open', 'f.get_frozen_path', 'd.close'), true);
-		}));
-		$this->assertSame(array('d.open', 'f.get_frozen_path', 'd.close'),
-			array_slice($lifecycle, -3),
-			'a closed download is opened only to read the path, and closed again');
-	}
-
-	public function testAudMediaTasksAreGivenTheFileTheDaemonNamed()
-	{
-		foreach (array('mediainfo' => 'mediainfo', 'screenshots' => 'ffmpeg', 'spectrogram' => 'sox') as $plugin => $cmd) {
-			list($exit, $out, $err) = $this->drive('plugins/' . $plugin . '/action.php', array('', $this->file),
-				array('post' => array('cmd' => $cmd, 'hash' => self::HASH, 'no' => '0')));
-			$scripts = PluginEntryDriver::taskScripts($this->base);
-			$this->assertSame(1, count($scripts), $plugin . ' builds one task: ' . $out . $err);
-			$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], escapeshellarg($this->file)) !== false,
-				$plugin . ' runs its tool on the file the daemon named: ' . ($scripts[0] ?? ''));
-		}
-	}
-
-	/**
-	 * spectrogram titles its image with the file's name. The name must not
-	 * depend on the locale: in C, PHP 7.4's basename() made Сериал.flac .flac.
-	 */
-	public function testSpectrogramTitlesTheImageWithTheFileNameInTheCLocale()
-	{
-		$file = $this->base . '/data/Сериал.flac';
-		file_put_contents($file, self::PAYLOAD);
-		list($exit, $out, $err) = $this->drive('plugins/spectrogram/action.php', array('', $file),
-			array('post' => array('cmd' => 'sox', 'hash' => self::HASH, 'no' => '0'),
-				'before' => 'setlocale(LC_CTYPE, "C");'));
-		$scripts = PluginEntryDriver::taskScripts($this->base);
-		$this->assertSame(1, count($scripts), 'spectrogram builds one task: ' . $out . $err);
-		$this->assertTrue(isset($scripts[0]) && strpos($scripts[0], " -t 'Сериал.flac' ") !== false,
-			'its title is the file\'s name: ' . ($scripts[0] ?? ''));
 	}
 }

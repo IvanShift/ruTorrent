@@ -18,24 +18,24 @@ rutorrent_require_cli(__FILE__);
 			}
 			$_SERVER['REMOTE_USER'] = substr($argv[14], 2);
 		}
-		elseif( count( $argv ) > 13 )
-			$_SERVER['REMOTE_USER'] = $argv[13];
+		elseif( count( $argv ) > 13 ) {
+			$_SERVER['REMOTE_USER'] = $argv[13]; }
 		require_once( './history.php' );
 		$hst = rHistoryData::load();
 		$mgr = rHistory::load();
 		$action = intval($argv[1]);
-		$actions = array
-		(
+		$actions = 
+		[
 			1 => 'addition',
 			2 => 'finish',
 			3 => 'deletion',
-		);
+		];
 		$tracker = '';
 		$pos = strpos( $argv[10], '#' );
-		if($pos!==false)
-			$tracker = substr( $argv[10], 0, $pos );
-		$data = array
-		(
+		if($pos!==false) {
+			$tracker = substr( $argv[10], 0, $pos ); }
+		$data = 
+		[
 			"action"=>$action,
 			"name"=>$argv[2],
 			"size"=>floatval($argv[3]),
@@ -47,7 +47,7 @@ rutorrent_require_cli(__FILE__);
 			"finished"=>intval($argv[9]),
 			"tracker"=>$tracker,
 			"label"=>rawurldecode($argv[11]),
-		);
+		];
 		// A magnet placeholder or a plugin's service download is not the
 		// user's own event: neither record it nor notify about it. The
 		// notification is skipped for the same reason the row is -- the
@@ -55,9 +55,9 @@ rutorrent_require_cli(__FILE__);
 		if(!rHistoryData::isServiceEntry($data["name"], $data["label"],
 			$hasMarker ? $argv[13] : '', $hasMarker))
 		{
-			if(isset($argv[15]))
+			if(isset($argv[15])) {
 				$data = rHistoryData::captureTorrentName($data, $argv[15],
-					isset($argv[16], $argv[17]) ? array($argv[16], $argv[17]) : false);
+					isset($argv[16], $argv[17]) ? [$argv[16], $argv[17]] : false); }
 			if($mgr->log[$actions[$action]])
 			{
 				$hst->add( $data, $mgr->log["limit"] );

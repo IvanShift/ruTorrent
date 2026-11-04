@@ -3,15 +3,15 @@ require_once __DIR__ . '/../rutracker_check/TestLib.php';
 require_once __DIR__ . '/../../php/FakeRtorrentDaemon.php';
 require_once __DIR__ . '/MoveDaemonReplies.php';
 
-function moveWorkerFixture($multi = false, $run = array(1,1,1))
+function moveWorkerFixture($multi = false, $run = [1,1,1])
 {
     $root = sys_get_temp_dir() . '/mw-' . bin2hex(random_bytes(5));
-    foreach (array('', '/session', '/dl', '/fin') as $dir) mkdir($root . $dir, 0700);
+    foreach (['', '/session', '/dl', '/fin'] as $dir) { mkdir($root . $dir, 0700); }
     $hash = str_repeat('A', 40); $qid = str_repeat('b', 32);
     $name = 'payload "q" \\ back & faultCode ';
     $base = $multi ? 'arbitrary root ' : $name;
     $source = $root . '/dl/' . $base;
-    if ($multi) mkdir($source, 0700);
+    if ($multi) { mkdir($source, 0700); }
     file_put_contents($multi ? $source . '/item' : $source, 'payload');
     $bstr = function ($v) { return strlen($v) . ':' . $v; };
     $info = ($multi ? '5:filesld6:lengthi7e4:pathl4:itemeee' : '6:lengthi7e')
@@ -22,17 +22,17 @@ function moveWorkerFixture($multi = false, $run = array(1,1,1))
         . "[ -e \"\$2\" ] || [ -L \"\$2\" ] && exit 1\n"
         . 'printf "%s\\n" "$1 -> $2" >> ' . escapeshellarg($root . '/renames') . "\nexec mv -- \"\$1\" \"\$2\"\n");
     chmod($helper, 0700);
-    return array('root'=>$root, 'hash'=>$hash, 'qid'=>$qid, 'retry'=>'', 'token'=>str_repeat('c',32).':0000000000000001',
+    return ['root'=>$root, 'hash'=>$hash, 'qid'=>$qid, 'retry'=>'', 'token'=>str_repeat('c',32).':0000000000000001',
         'run'=>$run, 'multi'=>$multi, 'basename'=>$base, 'name'=>$name, 'source'=>$source,
         'destination'=>$root.'/fin/'.$base, 'directory'=>$multi ? $source : $root.'/dl',
-        'lease'=>'absent', 'queued'=>true, 'mode'=>'S', 'open'=>$run[1], 'active'=>$run[2]);
+        'lease'=>'absent', 'queued'=>true, 'mode'=>'S', 'open'=>$run[1], 'active'=>$run[2]];
 }
 
 function moveWorkerRun($state, $actor = 'worker')
 {
     $root = $state['root']; $repo = testFindRepoRoot();
     $daemon = new FakeRtorrentDaemon(new AutoToolsMoveDaemonReplies($state), $root . '/calls', false,
-        array(__DIR__ . '/MoveDaemonReplies.php', __DIR__ . '/../../php/ScgiToolPeer.php'));
+        [__DIR__ . '/MoveDaemonReplies.php', __DIR__ . '/../../php/ScgiToolPeer.php']);
     $driver = $root . '/driver.php';
     // The settle pause gives a remote filesystem time to show a renamed name.
     // A local name is there at once, and SettlingRenameFiles reveals one by
@@ -63,9 +63,9 @@ function moveWorkerRun($state, $actor = 'worker')
         . '$argv=array("move_worker.php",' . var_export($state['hash'],true) . ',' . var_export($state['qid'],true)
         . ',"tester",' . var_export(str_repeat('d',32),true) . '); require "./move_worker.php";';
     if(isset($state['aliasVersion'])) {
-        $versions=$state['aliasVersion']==='legacy'?array('0.9.4'):array('0.9.4','0.10.2','0.16.0','0.16.16','0.16.18');
+        $versions=$state['aliasVersion']==='legacy'?['0.9.4']:['0.9.4','0.10.2','0.16.0','0.16.16','0.16.18'];
         $aliases='$s->iVersion=' . ($state['aliasVersion']==='legacy' ? '0x908' : '0x1019') . ';(function(){';
-        foreach($versions as$version)$aliases.='require '.var_export($repo.'/php/methods-'.$version.'.php',true).';';
+        foreach($versions as$version) {$aliases.='require '.var_export($repo.'/php/methods-'.$version.'.php',true).';'; }
         $aliases.='})->call($s);';
         $source=str_replace('$scgi_host=', $aliases.'$scgi_host=', $source);
     }
@@ -82,20 +82,20 @@ function moveWorkerRun($state, $actor = 'worker')
             . '$m->invoke(null,' . var_export($state['hash'],true) . ',"Copy","journal-write-failed","tester","");';
     } elseif (strpos($actor, 'upstream-') === 0) {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
-        $args = array('upstream_move.php', substr($actor, 9));
-        if ($actor === 'upstream-move' || ($actor === 'upstream-check' && empty($state['upstreamCheckWithoutHash'])))
-            $args[] = $state['hash'];
-        $args = array_merge($args, array($state['source'], $state['basename'], $state['multi'] ? '1' : '0',
-            isset($state['label']) ? $state['label'] : '', $state['name']));
-        if ($actor === 'upstream-move' && empty($state['upstreamMoveWithoutDirectory']))
+        $args = ['upstream_move.php', substr($actor, 9)];
+        if ($actor === 'upstream-move' || ($actor === 'upstream-check' && empty($state['upstreamCheckWithoutHash']))) {
+            $args[] = $state['hash']; }
+        $args = array_merge($args, [$state['source'], $state['basename'], $state['multi'] ? '1' : '0',
+            isset($state['label']) ? $state['label'] : '', $state['name']]);
+        if ($actor === 'upstream-move' && empty($state['upstreamMoveWithoutDirectory'])) {
             $args[] = isset($state['upstreamDirectory']) ? $state['upstreamDirectory']
-                : ($state['multi'] ? rtrim($state['destination'], '/') : dirname($state['destination']));
+                : ($state['multi'] ? rtrim($state['destination'], '/') : dirname($state['destination'])); }
         $args[] = isset($state['upstreamUser']) ? $state['upstreamUser'] : 'tester';
         $source .= '$argv=' . var_export($args, true) . '; require "./upstream_move.php";';
     } elseif (strpos($actor, 'hooks') === 0) {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $source .= '$pathToExternals["php"]=' . var_export($root . '/php "quoted" \\ binary',true) . ';';
-        if ($actor === 'hooks-disabled') $source .= '$at->enable_move=0;';
+        if ($actor === 'hooks-disabled') { $source .= '$at->enable_move=0;'; }
         $source .= '$at->setHandlers(); echo $at->moveStatus;';
     } elseif ($actor === 'prepare') {
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
@@ -129,13 +129,13 @@ function moveWorkerRun($state, $actor = 'worker')
         $source = substr($source, 0, strpos($source, '$argv=array("move_worker.php"'));
         $source .= 'AutoToolsMoveJob::recoverCompleted();';
     }
-    $driverArgs=array(PHP_BINARY, '-d', 'display_errors=1');
+    $driverArgs=[PHP_BINARY, '-d', 'display_errors=1'];
     if (isset($state['disabledFunctions'])) {
         $driverArgs[] = '-d';
         $driverArgs[] = 'disable_functions=' . $state['disabledFunctions'];
     }
     $driverArgs[] = $driver;
-    if(in_array($actor,array('cold-readiness','cold-reset'),true)) {
+    if(in_array($actor,['cold-readiness','cold-reset'],true)) {
         $source='<?php $_ENV["RU_PROFILE_PATH"]='.var_export($root.'/cold-profile',true)
             .'; $_ENV["RU_LOG_FILE"]='.var_export($root.'/errors.log',true).'; chdir('
             .var_export($repo.'/plugins/autotools',true).'); require_once "../../conf/config.php";'
@@ -145,16 +145,16 @@ function moveWorkerRun($state, $actor = 'worker')
         $driverArgs[]='--user';$driverArgs[]=isset($state['toolUser'])?$state['toolUser']:'tester';
     }
     file_put_contents($driver,$source);
-    $proc = proc_open($driverArgs, array(0=>array('file','/dev/null','r'),1=>array('pipe','w'),2=>array('pipe','w')), $pipes);
+    $proc = proc_open($driverArgs, [0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']], $pipes);
     $out = stream_get_contents($pipes[1]); fclose($pipes[1]); $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
     $exit = proc_close($proc);
     if ($actor === 'notify') {
         $deadline = microtime(true) + 5;
-        do { $calls = $daemon->calls(); if (in_array('d.save_full_session', $calls, true)) break; usleep(20000); } while (microtime(true) < $deadline);
+        do { $calls = $daemon->calls(); if (in_array('d.save_full_session', $calls, true)) { break; } usleep(20000); } while (microtime(true) < $deadline);
     }
     $calls = $daemon->calls(); $bodies = $daemon->bodies(); $daemon->stop();
-    return array($exit, (is_file($root.'/native.json') ? JSON::decodeBytes(file_get_contents($root.'/native.json')) : $state),
-        $calls, $out.$err, $bodies, $out, $err);
+    return [$exit, (is_file($root.'/native.json') ? JSON::decodeBytes(file_get_contents($root.'/native.json')) : $state),
+        $calls, $out.$err, $bodies, $out, $err];
 }
 
 function moveWorkerSeed(&$state, $phase, $lease, $moved = false)
@@ -163,17 +163,17 @@ function moveWorkerSeed(&$state, $phase, $lease, $moved = false)
     $stat = lstat($src);
     $file = $state['multi'] ? $src . '/item' : $src;
     $fstat = lstat($file);
-    $job = array('version'=>2, 'qid'=>$state['qid'], 'kind'=>'Move',
+    $job = ['version'=>2, 'qid'=>$state['qid'], 'kind'=>'Move',
         'hash'=>$state['hash'], 'phase'=>$phase, 'src'=>$src, 'dst'=>$dst,
         'identity'=>$stat['dev'].':'.$stat['ino'], 'source_dir'=>$state['directory'],
         'dest_dir'=>dirname($dst), 'daemon_dir'=>$state['multi'] ? $dst : dirname($dst),
-        'multi'=>$state['multi'], 'files'=>array($state['multi'] ? 'item' : $state['basename']),
+        'multi'=>$state['multi'], 'files'=>[$state['multi'] ? 'item' : $state['basename']],
         'cross'=>false, 'stage'=>dirname($dst).'/.stage', 'quarantine'=>dirname($src).'/.source',
         'token'=>$state['token'], 'finished_root'=>$root.'/fin', 'torrent_name'=>$state['name'],
         'run_state'=>$state['run'][0], 'run_open'=>$state['run'][1], 'run_active'=>$state['run'][2],
-        'receipt'=>array('files'=>array(($state['multi'] ? 'item' : '')=>array('id'=>$fstat['dev'].':'.$fstat['ino'],
-            'hash'=>hash_file('sha256',$file),'size'=>filesize($file))), 'dirs'=>array()));
-    if ($phase === 'aborting') $job['abort_identity']=$job['identity'];
+        'receipt'=>['files'=>[($state['multi'] ? 'item' : '')=>['id'=>$fstat['dev'].':'.$fstat['ino'],
+            'hash'=>hash_file('sha256',$file),'size'=>filesize($file)]], 'dirs'=>[]]];
+    if ($phase === 'aborting') { $job['abort_identity']=$job['identity']; }
     $state['lease']=$lease;
     if ($moved) { rename($src,$dst); $state['directory']=$job['daemon_dir']; }
     mkdir($root.'/session/.autotools-file-jobs',0700);
@@ -181,11 +181,11 @@ function moveWorkerSeed(&$state, $phase, $lease, $moved = false)
     return $job;
 }
 
-if (defined('MOVE_WORKER_TEST_LIBRARY')) return;
+if (defined('MOVE_WORKER_TEST_LIBRARY')) { return; }
 
 $suite = new StrictTestSuite();
-foreach (array(false,true) as $multi)
-    foreach (array(array(1,1,1),array(0,1,0),array(0,0,0)) as $run)
+foreach ([false,true] as $multi) {
+    foreach ([[1,1,1],[0,1,0],[0,0,0]] as $run) {
         $suite->test('real worker preserves ' . json_encode($run) . ' multi=' . (int)$multi, function () use ($multi,$run) {
             $state=moveWorkerFixture($multi,$run);
             try {
@@ -201,9 +201,9 @@ foreach (array(false,true) as $multi)
                 strictAssertSame(false,file_exists($state['source']),'source retired');
                 strictAssertSame($multi, in_array('d.directory.base.set_if_stop_close_claim',$calls,true),'exact multi root setter');
             } finally { strictRemoveTree($state['root']); }
-        });
-foreach (array('d.autotools.move_begin','d.directory.set_if_stop_close_claim','d.start_if_stop_close_claim',
-    'd.ack_stop_close_claim','d.autotools.move_finish') as $drop)
+        }); } }
+foreach (['d.autotools.move_begin','d.directory.set_if_stop_close_claim','d.start_if_stop_close_claim',
+    'd.ack_stop_close_claim','d.autotools.move_finish'] as $drop) {
     $suite->test('lost reply reconciles without repeating mutation: '.$drop,function() use($drop) {
         $state=moveWorkerFixture(); $state['drop']=$drop;
         try {
@@ -218,14 +218,14 @@ foreach (array('d.autotools.move_begin','d.directory.set_if_stop_close_claim','d
             strictAssertSame(false,$after['queued'],'queue finished');
             strictAssertSame(1,count(array_keys($calls,$drop,true)),'mutation sent once');
         } finally { strictRemoveTree($state['root']); }
-    });
+    }); }
 $suite->test('late Stop remains stopped after payload commit',function(){
     $state=moveWorkerFixture();$state['lateStop']=true;
     try { list($exit,$after)=moveWorkerRun($state);strictAssertSame(0,$exit,'complete');strictAssertSame(0,$after['active'],'late Stop preserved'); }
     finally { strictRemoveTree($state['root']); }
 });
 $suite->test('collision after begin restores paused intent and durably defers',function(){
-    $state=moveWorkerFixture(false,array(0,1,0));$state['collision']=true;
+    $state=moveWorkerFixture(false,[0,1,0]);$state['collision']=true;
     try {
         list($exit,$after,$calls,$error)=moveWorkerRun($state);
         strictAssertSame(0,$exit,'abort complete: '.$error.' '.@file_get_contents($state['root'].'/errors.log'));
@@ -237,10 +237,10 @@ $suite->test('collision after begin restores paused intent and durably defers',f
     } finally { strictRemoveTree($state['root']); }
 });
 
-foreach (array(false,true) as $multi)
-    foreach (array(array('intent','absent',false),array('claimed','active',false),array('receipted','active',false),
-        array('moved','active',true),array('published','terminal',true),array('started','done',true),
-        array('started','absent',true),array('notice-pending','absent',true),array('notice-attempted','absent',true),array('completed','absent',true)) as $cut)
+foreach ([false,true] as $multi) {
+    foreach ([['intent','absent',false],['claimed','active',false],['receipted','active',false],
+        ['moved','active',true],['published','terminal',true],['started','done',true],
+        ['started','absent',true],['notice-pending','absent',true],['notice-attempted','absent',true],['completed','absent',true]] as $cut) {
         $suite->test('durable kill-cut replay '.implode('/',array_slice($cut,0,2)).' multi='.(int)$multi,function() use($cut,$multi){
             $state=moveWorkerFixture($multi);
             try {
@@ -251,14 +251,14 @@ foreach (array(false,true) as $multi)
                 strictAssertSame('absent',$after['lease'],'lease released');
                 strictAssertSame(false,file_exists($state['source']),'source absent');
                 strictAssertSame('payload',file_get_contents($multi?$state['destination'].'/item':$state['destination']),'destination bytes');
-                $renames=@file($state['root'].'/renames') ?: array();
+                $renames=@file($state['root'].'/renames') ?: [];
                 strictAssertSame($cut[2]?0:1,count($renames),'never repeat an already published rename');
             } finally { strictRemoveTree($state['root']); }
-        });
-foreach (array('active','terminal','done','absent') as $lease)
-    foreach (array(false,true) as $multi)
+        }); } }
+foreach (['active','terminal','done','absent'] as $lease) {
+    foreach ([false,true] as $multi) {
         $suite->test('abort crash converges '.$lease.' multi='.(int)$multi,function() use($lease,$multi){
-            $state=moveWorkerFixture($multi,array(0,1,0));
+            $state=moveWorkerFixture($multi,[0,1,0]);
             try {
                 moveWorkerSeed($state,'aborting',$lease);
                 $state['mode']='O';
@@ -271,7 +271,7 @@ foreach (array('active','terminal','done','absent') as $lease)
                 strictAssertSame(false,file_exists($state['root'].'/session/.autotools-file-jobs/'.$state['hash'].'.move.json'),'abort journal retired');
                 strictAssertSame('foreign',file_get_contents($state['destination']),'collision preserved');
             } finally { strictRemoveTree($state['root']); }
-        });
+        }); } }
 $suite->test('same st_dev EXDEV uses staged copy and quarantine',function(){
     $state=moveWorkerFixture();$root=$state['root'];
     try {
@@ -307,12 +307,12 @@ $suite->test('L4b-D6 actual detached notifier reaches durable outcome through qu
     }finally{strictRemoveTree($state['root']);}
 });
 
-foreach(array(false,true) as $replace)
+foreach([false,true] as $replace) {
     $suite->test('source writer before publication aborts without moving replacement replace='.(int)$replace,function()use($replace){
         $state=moveWorkerFixture();
         try{
             moveWorkerSeed($state,'receipted','active');
-            if($replace)rename($state['source'],$state['source'].'.old');
+            if($replace) {rename($state['source'],$state['source'].'.old'); }
             file_put_contents($state['source'],'new writer bytes');
             list($exit,$after,$calls,$output)=moveWorkerRun($state);
             strictAssertSame(0,$exit,'abort complete: '.$output.' '.@file_get_contents($state['root'].'/errors.log'));
@@ -320,12 +320,12 @@ foreach(array(false,true) as $replace)
             strictAssertSame(false,file_exists($state['destination']),'no rename of changed source');
             strictAssertSame('new writer bytes',file_get_contents($state['source']),'replacement preserved');
         }finally{strictRemoveTree($state['root']);}
-    });
-foreach (array('probe', 'publication') as $failure)
+    }); }
+foreach (['probe', 'publication'] as $failure) {
     $suite->test('M-R6 classified '.$failure.' refusal retains path and errno', function () use ($failure) {
         $state=moveWorkerFixture();
         $helper="#!/bin/sh\n";
-        if($failure==='publication')$helper.='[ "$1" = --probe ] && exit 0'."\n";
+        if($failure==='publication') {$helper.='[ "$1" = --probe ] && exit 0'."\n"; }
         $helper.="printf '%s\\n' 'rename-noreplace-error: errno=13 Permission denied' >&2\nexit 4\n";
         file_put_contents($state['root'].'/rename',$helper);
         try {
@@ -337,7 +337,7 @@ foreach (array('probe', 'publication') as $failure)
             strictAssertSame(true,strpos($log,$state['root'].'/dl')!==false,'failed parent or source path retained');
             strictAssertSame('payload',file_get_contents($state['source']),'payload remains in place');
         } finally { strictRemoveTree($state['root']); }
-    });
+    }); }
 $suite->test('L4b-D2 foreign journal Q is visible and counted without adoption',function(){
     $state=moveWorkerFixture();
     try {
@@ -381,7 +381,7 @@ $suite->test('R5-LAB-B-2 reoccupied source retains captured obligation and repor
         strictAssertSame(true,strpos(file_get_contents($state['root'].'/errors.log'),'payload-identity-ambiguous')!==false,'classified worker failure names ambiguity');
     } finally { strictRemoveTree($state['root']); }
 });
-foreach (array('version'=>999, 'qid'=>'invalid', 'kind'=>'Other', 'phase'=>'unknown', 'quarantine_confirmed'=>'true') as $field=>$value)
+foreach (['version'=>999, 'qid'=>'invalid', 'kind'=>'Other', 'phase'=>'unknown', 'quarantine_confirmed'=>'true'] as $field=>$value) {
     $suite->test('unsupported current journal '.$field.' stays held without lease mutation',function()use($field,$value){
         $state=moveWorkerFixture();$job=moveWorkerSeed($state,'intent','absent');$job[$field]=$value;
         $path=$state['root'].'/session/.autotools-file-jobs/'.$state['hash'].'.move.json';
@@ -393,5 +393,5 @@ foreach (array('version'=>999, 'qid'=>'invalid', 'kind'=>'Other', 'phase'=>'unkn
             strictAssertSame(false,in_array('d.autotools.move_begin',$calls,true),'no lease mutation');
             strictAssertSame(true,strpos(file_get_contents($state['root'].'/errors.log'),'journal-malformed')!==false,'classified hold');
         } finally {strictRemoveTree($state['root']);}
-    });
+    }); }
 exit($suite->run());

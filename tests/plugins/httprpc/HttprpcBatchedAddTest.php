@@ -37,6 +37,47 @@ class HttprpcBatchedAddTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
+	public function testABatchOfAddsWithAnOrdinaryLabelReachesRtorrent()
+	{
+		$out = $this->post($this->batchedAdd(['tv', 'catch-up tv', 'films']));
+
+		$this->assertTrue(strpos($out, 'rejected by this server') === false,
+			'the door did not refuse the batch: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->received('load.raw_start'),
+			'rtorrent was asked to load the batch; it was asked for '
+				. json_encode($this->daemon->calls()));
+		$this->assertTrue($this->daemon->calls() === [
+			'system.client_version', 'load.raw_start', 'load.raw_start', 'load.raw_start'],
+			'all three adds reached rtorrent, not some of them: '
+				. json_encode($this->daemon->calls()));
+	}
+
+	public function testABatchCarryingExecuteIsStillRefusedAtTheDoor()
+	{
+		// The other half: the door refuses without forwarding any mutating command.
+		// Only the read-only version probe may reach rtorrent.
+		$body = str_replace('d.custom1.set=&quot;catch-up tv&quot;', 'execute=/bin/id',
+			$this->batchedAdd(['tv', 'catch-up tv', 'films']));
+		$out = $this->post($body);
+
+		$this->assertTrue(strpos($out, "The command 'execute' was rejected by this server") !== false,
+			'the door refuses execute and names it: ' . substr($out, 0, 200));
+		$this->assertTrue($this->daemon->calls() === ['system.client_version'],
+			'only the read-only version probe reached rtorrent: ' . json_encode($this->daemon->calls()));
+	}
+
+	public function testTheLabelSurvivesToRtorrentUnchanged()
+	{
+		// Refusing was one failure; quietly dropping the label would be the
+		// other. The payload forwarded is the caller's own bytes.
+		$out = $this->post($this->batchedAdd(['catch-up tv']));
+
+		$this->assertTrue(strpos($out, 'rejected by this server') === false,
+			'a single-member batch with that label is not refused');
+		$this->assertTrue($this->daemon->calls() === ['system.client_version', 'load.raw_start'],
+			'the add reached rtorrent: ' . json_encode($this->daemon->calls()));
+	}
+
 	private function removeTree($path)
 	{
 		if (!is_dir($path)) {
@@ -86,8 +127,8 @@ class HttprpcBatchedAddTest extends TestCase
 		if ($this->daemon !== null) {
 			$this->daemon->stop();
 		}
-		$this->daemon = new FakeRtorrentDaemon(array(
-			new FakeRtorrentDirectStringReply('0.16.24'), array(0, 0, 0)),
+		$this->daemon = new FakeRtorrentDaemon([
+			new FakeRtorrentDirectStringReply('0.16.24'), [0, 0, 0]],
 			$this->base . '/calls.log');
 
 		$driver = $this->base . '/drive-httprpc.php';
@@ -103,50 +144,9 @@ class HttprpcBatchedAddTest extends TestCase
 			. 'chdir(' . var_export($root . '/plugins/httprpc', true) . ");\n"
 			. 'require(' . var_export($root . '/plugins/httprpc/action.php', true) . ");\n");
 
-		$output = array();
+		$output = [];
 		exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' .
 			escapeshellarg($driver) . ' 2>&1', $output);
 		return implode("\n", $output);
-	}
-
-	public function testABatchOfAddsWithAnOrdinaryLabelReachesRtorrent()
-	{
-		$out = $this->post($this->batchedAdd(array('tv', 'catch-up tv', 'films')));
-
-		$this->assertTrue(strpos($out, 'rejected by this server') === false,
-			'the door did not refuse the batch: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->received('load.raw_start'),
-			'rtorrent was asked to load the batch; it was asked for '
-				. json_encode($this->daemon->calls()));
-		$this->assertTrue($this->daemon->calls() === array(
-			'system.client_version', 'load.raw_start', 'load.raw_start', 'load.raw_start'),
-			'all three adds reached rtorrent, not some of them: '
-				. json_encode($this->daemon->calls()));
-	}
-
-	public function testABatchCarryingExecuteIsStillRefusedAtTheDoor()
-	{
-		// The other half: the door refuses without forwarding any mutating command.
-		// Only the read-only version probe may reach rtorrent.
-		$body = str_replace('d.custom1.set=&quot;catch-up tv&quot;', 'execute=/bin/id',
-			$this->batchedAdd(array('tv', 'catch-up tv', 'films')));
-		$out = $this->post($body);
-
-		$this->assertTrue(strpos($out, "The command 'execute' was rejected by this server") !== false,
-			'the door refuses execute and names it: ' . substr($out, 0, 200));
-		$this->assertTrue($this->daemon->calls() === array('system.client_version'),
-			'only the read-only version probe reached rtorrent: ' . json_encode($this->daemon->calls()));
-	}
-
-	public function testTheLabelSurvivesToRtorrentUnchanged()
-	{
-		// Refusing was one failure; quietly dropping the label would be the
-		// other. The payload forwarded is the caller's own bytes.
-		$out = $this->post($this->batchedAdd(array('catch-up tv')));
-
-		$this->assertTrue(strpos($out, 'rejected by this server') === false,
-			'a single-member batch with that label is not refused');
-		$this->assertTrue($this->daemon->calls() === array('system.client_version', 'load.raw_start'),
-			'the add reached rtorrent: ' . json_encode($this->daemon->calls()));
 	}
 }

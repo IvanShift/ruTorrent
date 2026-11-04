@@ -2,11 +2,11 @@
 require_once dirname(__DIR__, 2).'/php/cli-only.php';
 rutorrent_require_cli(__FILE__);
 
-if( !chdir( dirname( __FILE__) ) )
-	exit();
+if( !chdir( dirname( __FILE__) ) ) {
+	exit(); }
 
-if( count( $argv ) > 2 )
-	$_SERVER['REMOTE_USER'] = $argv[2];
+if( count( $argv ) > 2 ) {
+	$_SERVER['REMOTE_USER'] = $argv[2]; }
 
 require_once( dirname(__FILE__)."/../../php/settings.php");
 require_once( "./XMPPHP/XMPP.php" );
@@ -36,11 +36,11 @@ if ( $at->message !== '' && isset($at->jabberServer) && isset($at->jabberLogin) 
     if ($useEncryption)
     {
 	$conn->useEncryption(true);
-	$opts = array(
-	    'ssl' => array(
+	$opts = [
+	    'ssl' => [
 	    'verify_peer' => true,
-	    'allow_self_signed' => true
-	));
+	    'allow_self_signed' => true,
+	]];
 	if ($at->jabberHost != $at->jabberServer)
 	{
 	    $opts['ssl']['CN_match'] = $at->jabberServer;
@@ -56,7 +56,7 @@ if ( $at->message !== '' && isset($at->jabberServer) && isset($at->jabberLogin) 
 	// Appended arguments keep previously installed two-argument hooks usable.
 	// Missing source paths mean byte escapes, never an extra daemon lookup.
 	$message = $at->notificationMessage($name, $argv[3] ?? '',
-		isset($argv[4], $argv[5]) ? array($argv[4], $argv[5]) : false);
+		isset($argv[4], $argv[5]) ? [$argv[4], $argv[5]] : false);
 	$conn->connect();
 	$conn->processUntil('session_start');
 	$conn->presence();

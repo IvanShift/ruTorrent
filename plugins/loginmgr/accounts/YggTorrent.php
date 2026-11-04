@@ -21,39 +21,11 @@ class YggTorrentAccount extends commonAccount
         return $this->configurationError;
     }
 
-    private function hasOrigin()
-    {
-        if ($this->url !== '') {
-            return true;
-        }
-        if (!self::$configurationWarningShown) {
-            self::$configurationWarningShown = true;
-            FileUtil::toLog('loginmgr YggTorrent: invalid-or-missing-origin (' . $this->configurationError . '); set $yggTorrentOrigin to a trusted HTTPS origin with an ASCII host in conf/config.php, conf/users/<user>/config.php, plugins/loginmgr/conf.local.php, or conf/users/<user>/plugins/loginmgr/conf.php (plugin override files load after global config); session downloads and automatic login are disabled');
-        }
-        return false;
-    }
-
     public function check($client, $login, $password, $auto)
     {
         if ($this->hasOrigin()) {
             parent::check($client, $login, $password, $auto);
         }
-    }
-
-    protected function isOK($client)
-    {
-        return (
-            $client->status == 200
-            && $client->results !== 'Vous devez vous connecter pour télécharger un torrent'
-            && strpos($client->results, "S'identifier</a>") === false
-        );
-    }
-
-    private function trusts($url)
-    {
-        $parts = @parse_url((string) $url);
-        return $this->hasOrigin() && is_array($parts) && !isset($parts['user']) && !isset($parts['pass'])
-            && UrlHost::sameOrigin($this->url, $url);
     }
 
     // A moving domain is an operator trust decision, never a domain-name pattern.
@@ -75,6 +47,15 @@ class YggTorrentAccount extends commonAccount
         return $this->test($url) && parent::fetch($client, $url, $login, $password, $method, $content_type, $body);
     }
 
+    protected function isOK($client)
+    {
+        return (
+            $client->status == 200
+            && $client->results !== 'Vous devez vous connecter pour télécharger un torrent'
+            && strpos($client->results, "S'identifier</a>") === false
+        );
+    }
+
     protected function login($client, $login, $password, &$url, &$method, &$content_type, &$body, &$is_result_fetched)
     {
         $is_result_fetched = false;
@@ -94,5 +75,24 @@ class YggTorrentAccount extends commonAccount
             }
         }
         return false;
+    }
+
+    private function hasOrigin()
+    {
+        if ($this->url !== '') {
+            return true;
+        }
+        if (!self::$configurationWarningShown) {
+            self::$configurationWarningShown = true;
+            FileUtil::toLog('loginmgr YggTorrent: invalid-or-missing-origin (' . $this->configurationError . '); set $yggTorrentOrigin to a trusted HTTPS origin with an ASCII host in conf/config.php, conf/users/<user>/config.php, plugins/loginmgr/conf.local.php, or conf/users/<user>/plugins/loginmgr/conf.php (plugin override files load after global config); session downloads and automatic login are disabled');
+        }
+        return false;
+    }
+
+    private function trusts($url)
+    {
+        $parts = @parse_url((string) $url);
+        return $this->hasOrigin() && is_array($parts) && !isset($parts['user']) && !isset($parts['pass'])
+            && UrlHost::sameOrigin($this->url, $url);
     }
 }

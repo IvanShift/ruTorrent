@@ -22,12 +22,12 @@ require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
 class SettlingRenameFiles extends ErasedataFilesystemOps
 {
     public static $helper = null;
-    public $lookups = array();
+    public $lookups = [];
     private $pattern;
     private $revealAt;
     private $foreign;
     private $countFile;
-    private $pending = array();
+    private $pending = [];
 
     public function __construct($pattern, $revealAt, $foreign = false, $countFile = null)
     {
@@ -47,51 +47,30 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
         return dirname($path) . '/.settling-' . basename($path);
     }
 
-    private function flush()
-    {
-        if ($this->countFile !== null)
-            file_put_contents($this->countFile, json_encode($this->lookups));
-    }
-
-    private function track($path)
-    {
-        $this->pending[$path] = true;
-        $this->lookups[$path] = 0;
-        $this->flush();
-        return true;
-    }
-
     // Hide a name that production has just renamed itself.
     public function hide($path)
     {
         return @rename($path, self::hiddenName($path)) && $this->track($path);
     }
 
-    private function noReplace($from, $to)
-    {
-        if (self::$helper !== null)
-            return parent::renameNoReplace($from, $to);
-        return @lstat($to) === false && @rename($from, $to);
-    }
-
     public function renameNoReplace($from, $to)
     {
-        if (!preg_match($this->pattern, $to))
-            return $this->noReplace($from, $to);
-        if (erasedataPathExists($to))
-            return false;
+        if (!preg_match($this->pattern, $to)) {
+            return $this->noReplace($from, $to); }
+        if (erasedataPathExists($to)) {
+            return false; }
         return $this->noReplace($from, self::hiddenName($to)) && $this->track($to);
     }
 
     // Settle by hand, as a later lookup on the real mount would.
     public function settle($path)
     {
-        if (!isset($this->pending[$path]))
-            return false;
+        if (!isset($this->pending[$path])) {
+            return false; }
         unset($this->pending[$path]);
         $hidden = self::hiddenName($path);
-        if (!$this->foreign)
-            return @rename($hidden, $path);
+        if (!$this->foreign) {
+            return @rename($hidden, $path); }
         $stat = lstat($hidden);
         return file_put_contents($path, file_get_contents($hidden)) !== false
             && chmod($path, $stat['mode'] & 07777);
@@ -103,8 +82,29 @@ class SettlingRenameFiles extends ErasedataFilesystemOps
             $this->lookups[$path]++;
             $this->flush();
         }
-        if (isset($this->pending[$path]) && $this->lookups[$path] >= $this->revealAt)
-            $this->settle($path);
+        if (isset($this->pending[$path]) && $this->lookups[$path] >= $this->revealAt) {
+            $this->settle($path); }
         return parent::entryIdentity($path);
+    }
+
+    private function flush()
+    {
+        if ($this->countFile !== null) {
+            file_put_contents($this->countFile, json_encode($this->lookups)); }
+    }
+
+    private function track($path)
+    {
+        $this->pending[$path] = true;
+        $this->lookups[$path] = 0;
+        $this->flush();
+        return true;
+    }
+
+    private function noReplace($from, $to)
+    {
+        if (self::$helper !== null) {
+            return parent::renameNoReplace($from, $to); }
+        return @lstat($to) === false && @rename($from, $to);
     }
 }

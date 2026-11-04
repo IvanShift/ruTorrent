@@ -16,16 +16,16 @@
  */
 final class UnpackArchiveFixture
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 
 	/** Every path under $directory, sorted, links shown with their targets. */
 	public static function tree($directory)
 	{
-		$found = array();
+		$found = [];
 		$entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory,
 			FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
-		foreach($entries as $path => $entry)
-			$found[] = substr($path, strlen($directory) + 1) . (is_link($path) ? ' -> ' . readlink($path) : '');
+		foreach($entries as $path => $entry) {
+			$found[] = substr($path, strlen($directory) + 1) . (is_link($path) ? ' -> ' . readlink($path) : ''); }
 		sort($found);
 		return $found;
 	}
@@ -39,8 +39,8 @@ final class UnpackArchiveFixture
 		$user = 'unpacktest' . bin2hex(random_bytes(6));
 		$directory = dirname(__DIR__, 3) . '/conf/users/' . $user;
 		if(!mkdir($directory, 0700, true) || file_put_contents($directory . '/config.php',
-			'<?php $log_file = ' . var_export($log, true) . ";\n") === false)
-			throw new RuntimeException('cannot create the user ' . $user);
+			'<?php $log_file = ' . var_export($log, true) . ";\n") === false) {
+			throw new RuntimeException('cannot create the user ' . $user); }
 		return $user;
 	}
 
@@ -54,8 +54,8 @@ final class UnpackArchiveFixture
 	public static function zip($path, array $entries)
 	{
 		$zip = new ZipArchive();
-		if($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true)
-			throw new RuntimeException('cannot create ' . $path);
+		if($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+			throw new RuntimeException('cannot create ' . $path); }
 		foreach($entries as $entry)
 		{
 			list($kind, $name, $value) = $entry;
@@ -64,14 +64,14 @@ final class UnpackArchiveFixture
 				$zip->addEmptyDir($name);
 				$name .= '/';
 			}
-			else
-				$zip->addFromString($name, $value);
+			else {
+				$zip->addFromString($name, $value); }
 			$mode = ($kind === 'l') ? 0120777 : ($entry[3] ?? null);
-			if($mode !== null)
-				$zip->setExternalAttributesName($name, ZipArchive::OPSYS_UNIX, $mode << 16);
+			if($mode !== null) {
+				$zip->setExternalAttributesName($name, ZipArchive::OPSYS_UNIX, $mode << 16); }
 		}
-		if(!$zip->close())
-			throw new RuntimeException('cannot write ' . $path);
+		if(!$zip->close()) {
+			throw new RuntimeException('cannot write ' . $path); }
 	}
 
 	public static function rar($path, array $entries)
@@ -88,14 +88,14 @@ final class UnpackArchiveFixture
 				$body = self::vint(6) . self::vint(strlen($value)) . self::vint(0100644) . $time . pack('V', crc32($value));
 				$data = $value;
 			}
-			else if($kind === 'd')
-				$body = self::vint(3) . self::vint(0) . self::vint(040755) . $time;
+			elseif($kind === 'd') {
+				$body = self::vint(3) . self::vint(0) . self::vint(040755) . $time; }
 			else
 			{
 				$body = self::vint(2) . self::vint(0) . self::vint(($kind === 'l') ? 0120777 : 0100644) . $time;
 				// Redirection record: a Unix symbolic link, a Windows one, a
 				// junction or a hard link.
-				$record = self::vint(5) . self::vint(array('l' => 1, 'w' => 2, 'j' => 3, 'h' => 4)[$kind]) . self::vint(0)
+				$record = self::vint(5) . self::vint(['l' => 1, 'w' => 2, 'j' => 3, 'h' => 4][$kind]) . self::vint(0)
 					. self::vint(strlen($value)) . $value;
 				$extra = self::vint(strlen($record)) . $record;
 			}
@@ -103,8 +103,8 @@ final class UnpackArchiveFixture
 			$body .= self::vint(0) . self::vint(1) . self::vint(strlen($name)) . $name;
 			$archive .= self::block(2, $body, $extra, $data);
 		}
-		if(file_put_contents($path, $archive . self::block(5, self::vint(0))) === false)
-			throw new RuntimeException('cannot write ' . $path);
+		if(file_put_contents($path, $archive . self::block(5, self::vint(0))) === false) {
+			throw new RuntimeException('cannot write ' . $path); }
 	}
 
 	/**
@@ -118,7 +118,7 @@ final class UnpackArchiveFixture
 		foreach($entries as list($kind, $name, $value))
 		{
 			$data = ($kind === 'd') ? '' : $value;
-			$mode = array('f' => 0100644, 'd' => 040755, 'l' => 0120777)[$kind];
+			$mode = ['f' => 0100644, 'd' => 040755, 'l' => 0120777][$kind];
 			// Packed and unpacked size, Unix host, CRC32, DOS time of
 			// 2020-01-01, version 2.9, stored, name size, mode, name.
 			$fields = pack('VVCVVCCvV', strlen($data), strlen($data), 3, crc32($data), 20513 << 16, 29, 0x30,
@@ -126,8 +126,8 @@ final class UnpackArchiveFixture
 			// 0x8000: the data size field is present; 0xe0: a directory.
 			$archive .= self::block29(0x74, 0x8000 | (($kind === 'd') ? 0xe0 : 0), $fields) . $data;
 		}
-		if(file_put_contents($path, $archive . self::block29(0x7b, 0x4000, '')) === false)
-			throw new RuntimeException('cannot write ' . $path);
+		if(file_put_contents($path, $archive . self::block29(0x7b, 0x4000, '')) === false) {
+			throw new RuntimeException('cannot write ' . $path); }
 	}
 
 	private static function block29($type, $flags, $fields)
@@ -153,10 +153,10 @@ final class UnpackArchiveFixture
 	{
 		$flags = (($extra !== '') ? 1 : 0) | (($data !== null) ? 2 : 0);
 		$fields = self::vint($type) . self::vint($flags);
-		if($extra !== '')
-			$fields .= self::vint(strlen($extra));
-		if($data !== null)
-			$fields .= self::vint(strlen($data));
+		if($extra !== '') {
+			$fields .= self::vint(strlen($extra)); }
+		if($data !== null) {
+			$fields .= self::vint(strlen($data)); }
 		$fields .= $body . $extra;
 		$size = self::vint(strlen($fields));
 		return pack('V', crc32($size . $fields)) . $size . $fields . (string)$data;

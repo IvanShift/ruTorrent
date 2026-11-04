@@ -17,13 +17,13 @@ if (isset($argv[1]) && $argv[1] === '--selected-paths-child') {
     $reflection = new ReflectionClass('rTorrentSettings');
     $settings = $reflection->newInstanceWithoutConstructor();
     $settings->iVersion = 0x101A;
-    $settings->aliases = array();
+    $settings->aliases = [];
     $settings->linkExist = true;
     $settings->directory = $root . '/dl';
     $settings->session = $root . '/session';
     (function () use ($repo) {
-        foreach (array('0.9.4', '0.10.2', '0.16.0', '0.16.16', '0.16.18') as $version)
-            require $repo . '/php/methods-' . $version . '.php';
+        foreach (['0.9.4', '0.10.2', '0.16.0', '0.16.16', '0.16.18'] as $version) {
+            require $repo . '/php/methods-' . $version . '.php'; }
     })->call($settings);
     $instance = $reflection->getProperty('theSettings');
     $instance->setAccessible(true);
@@ -41,9 +41,9 @@ if (isset($argv[1]) && $argv[1] === '--selected-paths-child') {
     $at->addLabel = 0;
     $at->addName = 0;
     $at->path_to_finished = $root . '/fin/pending';
-    if (!$at->store()) throw new RuntimeException('could not store the hook fixture settings');
+    if (!$at->store()) { throw new RuntimeException('could not store the hook fixture settings'); }
     $hash = str_repeat('A', 40);
-    $args = array($hash, $root . '/dl/Root', 'Root', '1', '', 'Root', 'finishedpaths', str_repeat('b', 32));
+    $args = [$hash, $root . '/dl/Root', 'Root', '1', '', 'Root', 'finishedpaths', str_repeat('b', 32)];
     if ($single) {
         $args[1] = $root . '/dl/payload.bin'; $args[2] = $args[5] = 'payload.bin'; $args[3] = '0';
         rename($root . '/session/' . $hash . '.torrent', $root . '/session/held.torrent');
@@ -51,8 +51,8 @@ if (isset($argv[1]) && $argv[1] === '--selected-paths-child') {
     if ($mode === 'perform') {
         $result = AutoToolsFinishedHook::perform($args, false, true);
     } else {
-        $result = array('destination' => AutoToolsFinishedHook::hook($args));
-        if ($single) rename($root . '/session/held.torrent', $root . '/session/' . $hash . '.torrent');
+        $result = ['destination' => AutoToolsFinishedHook::hook($args)];
+        if ($single) { rename($root . '/session/held.torrent', $root . '/session/' . $hash . '.torrent'); }
         if ($mode === 'expired') {
             foreach (erasedataDirectoryMatches($root . '/session/.autotools-file-jobs', '', AutoToolsFinishedHook::REQUEST_SUFFIX) as $path) {
                 $request = JSON::decodeBytes(file_get_contents($path));
@@ -76,8 +76,8 @@ require_once __DIR__ . '/../../php/ScgiToolPeer.php';
 function finishedPathFixture($selected = 'Серия.ass')
 {
     $root = sys_get_temp_dir() . '/fp-' . bin2hex(random_bytes(5));
-    foreach (array('', '/session', '/dl', '/dl/Root', '/fin') as $directory)
-        if (!mkdir($root . $directory, 0700)) throw new RuntimeException('fixture directory unavailable');
+    foreach (['', '/session', '/dl', '/dl/Root', '/fin'] as $directory) {
+        if (!mkdir($root . $directory, 0700)) { throw new RuntimeException('fixture directory unavailable'); } }
     file_put_contents($root . '/dl/Root/' . $selected, 'payload bytes');
     $raw = "\xD1\xE5\xF0\xE8\xFF.ass";
     file_put_contents($root . '/session/' . str_repeat('A', 40) . '.torrent',
@@ -95,49 +95,49 @@ function finishedPathReply($xml)
 function finishedPathRun($root, $selected, $mode = 'perform', $operation = 'Copy', $shape = 'valid', $filter = '')
 {
     return ScgiToolPeer::run($root . '/rpc.sock', __FILE__,
-        array('--selected-paths-child', $root, $mode, $operation, $filter),
+        ['--selected-paths-child', $root, $mode, $operation, $filter],
         function ($request) use ($root, $selected, $shape, $mode) {
             $method = ScgiToolPeer::method($request);
             if ($method === 'system.multicall' && strpos($request, '<string>d.base_path</string>') !== false) {
-                if ($shape === 'context-lost' || $shape === 'lost') return null;
-                if ($shape === 'fault') return finishedPathReply('<?xml version="1.0"?><methodResponse><fault><value><struct>'
+                if ($shape === 'context-lost' || $shape === 'lost') { return null; }
+                if ($shape === 'fault') { return finishedPathReply('<?xml version="1.0"?><methodResponse><fault><value><struct>'
                     . '<member><name>faultCode</name><value><int>-500</int></value></member>'
                     . '<member><name>faultString</name><value><string>source snapshot unavailable</string></value></member>'
-                    . '</struct></value></fault></methodResponse>');
+                    . '</struct></value></fault></methodResponse>'); }
                 $single = strpos($mode, '-single') !== false;
                 $base = $root . '/dl/' . ($single ? 'payload.bin' : 'Root');
-                if ($shape === 'stale-root') $base = $root . '/dl/' . ($single ? 'Current.bin' : 'Current');
-                $values = array('<base64>' . base64_encode($base) . '</base64>',
+                if ($shape === 'stale-root') { $base = $root . '/dl/' . ($single ? 'Current.bin' : 'Current'); }
+                $values = ['<base64>' . base64_encode($base) . '</base64>',
                     '<i8>' . ($shape === 'bad-flag-value' ? '2' : ($shape === 'stale-type' ? '0' : ($single ? '0' : '1'))) . '</i8>',
                     '<string>' . ($shape === 'stale-basename' ? 'Other' : ($single ? 'payload.bin' : 'Root')) . '</string>',
-                    '<string>' . str_repeat($shape === 'stale-token' ? 'c' : 'b', 32) . '</string>');
-                if ($shape === 'cold-frozen' || $shape === 'cold-stored-directory-changed') $values[0] = $values[2] = '<string></string>';
-                if ($shape === 'context-malformed')
-                    $values[0] = '<array><data><value>' . $values[0] . '</value></data></array>';
+                    '<string>' . str_repeat($shape === 'stale-token' ? 'c' : 'b', 32) . '</string>'];
+                if ($shape === 'cold-frozen' || $shape === 'cold-stored-directory-changed') { $values[0] = $values[2] = '<string></string>'; }
+                if ($shape === 'context-malformed') {
+                    $values[0] = '<array><data><value>' . $values[0] . '</value></data></array>'; }
                 if (strpos($request, '<string>d.directory</string>') !== false) {
                     $directory = $single ? dirname($base) : $base;
-                    if ($shape === 'stored-directory-changed' || $shape === 'cold-stored-directory-changed') $directory = $root . '/dl/Current';
-                    elseif ($shape === 'stored-directory-space') $directory .= ' ';
-                    elseif ($shape === 'stored-directory-tail') $directory .= '///';
+                    if ($shape === 'stored-directory-changed' || $shape === 'cold-stored-directory-changed') { $directory = $root . '/dl/Current'; }
+                    elseif ($shape === 'stored-directory-space') { $directory .= ' '; }
+                    elseif ($shape === 'stored-directory-tail') { $directory .= '///'; }
                     $stored = '<base64>' . base64_encode($directory) . '</base64>';
-                    if ($shape === 'stored-directory-malformed') $stored = '<array><data><value>' . $stored . '</value></data></array>';
+                    if ($shape === 'stored-directory-malformed') { $stored = '<array><data><value>' . $stored . '</value></data></array>'; }
                     $values[] = $stored;
                 }
                 $actual = $single ? ($shape === 'single-path-changed' ? 'Other.bin' : 'payload.bin') : $selected;
                 $cell = $shape === 'integer' ? '<i8>1</i8>' : '<base64>' . base64_encode($actual) . '</base64>';
                 $row = '<value><array><data><value>' . $cell . '</value></data></array></value>';
                 $values[] = '<array><data>' . $row . ($shape === 'extra' ? $row : '') . '</data></array>';
-                if ($shape === 'context-short') array_pop($values);
+                if ($shape === 'context-short') { array_pop($values); }
                 $rows = '';
-                foreach ($values as $value) $rows .= '<value><array><data><value>' . $value . '</value></data></array></value>';
+                foreach ($values as $value) { $rows .= '<value><array><data><value>' . $value . '</value></data></array></value>'; }
                 return ScgiToolPeer::scgiAnswer('<array><data>' . $rows . '</data></array>');
             }
             if ($method === 'f.multicall') {
-                if ($shape === 'lost') return null;
-                if ($shape === 'fault') return finishedPathReply('<?xml version="1.0"?><methodResponse><fault><value><struct>'
+                if ($shape === 'lost') { return null; }
+                if ($shape === 'fault') { return finishedPathReply('<?xml version="1.0"?><methodResponse><fault><value><struct>'
                     . '<member><name>faultCode</name><value><int>-500</int></value></member>'
                     . '<member><name>faultString</name><value><string>file list unavailable</string></value></member>'
-                    . '</struct></value></fault></methodResponse>');
+                    . '</struct></value></fault></methodResponse>'); }
                 $cell = $shape === 'integer' ? '<i8>1</i8>' : '<base64>' . base64_encode($selected) . '</base64>';
                 $row = '<value><array><data><value>' . $cell . '</value></data></array></value>';
                 return ScgiToolPeer::scgiAnswer('<array><data>' . $row
@@ -145,20 +145,20 @@ function finishedPathRun($root, $selected, $mode = 'perform', $operation = 'Copy
             }
             if ($method === 'd.directory') {
                 $directory = $root . (strpos($mode, '-single') !== false ? '/dl' : '/dl/Root');
-                if (in_array($shape, array('stale-root', 'stored-directory-changed', 'cold-stored-directory-changed'), true))
-                    $directory = $root . '/dl/Current';
-                elseif ($shape === 'stored-directory-space') $directory .= ' ';
+                if (in_array($shape, ['stale-root', 'stored-directory-changed', 'cold-stored-directory-changed'], true)) {
+                    $directory = $root . '/dl/Current'; }
+                elseif ($shape === 'stored-directory-space') { $directory .= ' '; }
                 return ScgiToolPeer::scgiAnswer('<string>' . htmlspecialchars($directory, ENT_XML1) . '</string>');
             }
-            if ($method === 'system.multicall')
+            if ($method === 'system.multicall') {
                 return ScgiToolPeer::scgiAnswer('<array><data><value><array><data><value><string>0</string></value></data></array></value>'
-                    . '<value><array><data><value><string>0</string></value></data></array></value></data></array>');
+                    . '<value><array><data><value><string>0</string></value></data></array></value></data></array>'); }
             return ScgiToolPeer::scgiAnswer('<string>0</string>');
-        }, array(), false);
+        }, [], false);
 }
 
 $suite = new StrictTestSuite();
-foreach (array('stored-directory-changed', 'stored-directory-space', 'cold-stored-directory-changed') as $shape)
+foreach (['stored-directory-changed', 'stored-directory-space', 'cold-stored-directory-changed'] as $shape) {
     $suite->test('a changed stored directory ' . $shape . ' refuses an unchanged frozen source', function () use ($shape) {
         $root = finishedPathFixture();
         try {
@@ -171,7 +171,7 @@ foreach (array('stored-directory-changed', 'stored-directory-space', 'cold-store
             strictAssertTrue(strpos($result['log'], 'source-context-changed') !== false, 'the refusal names the changed context');
             strictAssertSame('FOREIGN old payload', file_get_contents($root . '/dl/Root/Серия.ass'), 'the old root is untouched');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
 $suite->test('a changed single-file stored directory refuses unchanged frozen path and name', function () {
     $root = finishedPathFixture();
@@ -197,7 +197,7 @@ $suite->test('equivalent directory tail slashes retain the captured source ident
     } finally { strictRemoveTree($root); }
 });
 
-foreach (array('stored-directory-malformed', 'bad-flag-value') as $shape)
+foreach (['stored-directory-malformed', 'bad-flag-value'] as $shape) {
     $suite->test('an unknown directory snapshot ' . $shape . ' remains pending', function () use ($shape) {
         $root = finishedPathFixture();
         try {
@@ -206,7 +206,7 @@ foreach (array('stored-directory-malformed', 'bad-flag-value') as $shape)
             strictAssertSame(1, json_decode($output, true)['pending'], 'unknown fields are not a proven source change');
             strictAssertSame(false, file_exists($root . '/fin/pending'), 'unknown fields cannot authorize copying');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
 $suite->test('a cold single-file object retains its request until its captured frozen path can be acknowledged', function () {
     $root = finishedPathFixture();
@@ -240,7 +240,7 @@ $suite->test('a cold source still unavailable after its retry window is refused 
         strictAssertSame(0, $result['pending'], 'the retry window ends with a visible refusal');
         strictAssertTrue(strpos($result['log'], 'source-context-unconfirmed') !== false, 'the unconfirmed source is named');
         strictAssertSame(false, file_exists($root . '/fin/pending'), 'no unacknowledgeable copy is made');
-        strictAssertSame(array(), glob($root . '/session/.autotools-file-jobs/*.nonmove.json'), 'no file-operation receipt is stranded');
+        strictAssertSame([], glob($root . '/session/.autotools-file-jobs/*.nonmove.json'), 'no file-operation receipt is stranded');
     } finally { strictRemoveTree($root); }
 });
 
@@ -259,7 +259,7 @@ $suite->test('a single-file object refuses a changed live filename before copyin
     } finally { strictRemoveTree($root); }
 });
 
-foreach (array('stale-root', 'stale-token', 'stale-type', 'stale-basename') as $shape)
+foreach (['stale-root', 'stale-token', 'stale-type', 'stale-basename'] as $shape) {
     $suite->test('a deferred hook refuses ' . $shape . ' before copying a captured source', function () use ($shape) {
         $root = finishedPathFixture();
         try {
@@ -275,7 +275,7 @@ foreach (array('stale-root', 'stale-token', 'stale-type', 'stale-basename') as $
             strictAssertSame('FOREIGN old payload', file_get_contents($root . '/dl/Root/Серия.ass'), 'the old root is untouched');
             strictAssertSame('CURRENT live payload', file_get_contents($root . '/dl/Current/Серия.ass'), 'the current root is untouched');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
 $suite->test('a deferred single-file hook refuses a changed source root before copying', function () {
     $root = finishedPathFixture();
@@ -294,7 +294,7 @@ $suite->test('a deferred single-file hook refuses a changed source root before c
     } finally { strictRemoveTree($root); }
 });
 
-foreach (array('context-lost', 'context-short', 'context-malformed') as $shape)
+foreach (['context-lost', 'context-short', 'context-malformed'] as $shape) {
     $suite->test('an unconfirmed source snapshot ' . $shape . ' retains its deferred request', function () use ($shape) {
         $root = finishedPathFixture();
         try {
@@ -303,9 +303,9 @@ foreach (array('context-lost', 'context-short', 'context-malformed') as $shape)
             strictAssertSame(1, json_decode($output, true)['pending'], 'an unknown context stays retryable');
             strictAssertSame(false, file_exists($root . '/fin/pending'), 'unknown context cannot create a destination');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
-foreach (array('Copy', 'HardLink', 'SoftLink') as $operation)
+foreach (['Copy', 'HardLink', 'SoftLink'] as $operation) {
     $suite->test('background ' . $operation . ' uses selected UTF-8 paths through the real XMLRPC reader', function () use ($operation) {
         $root = finishedPathFixture();
         try {
@@ -314,10 +314,10 @@ foreach (array('Copy', 'HardLink', 'SoftLink') as $operation)
             strictAssertSame('published', json_decode($output, true)['status'], 'selected-path operation publishes');
             strictAssertSame('payload bytes', file_get_contents($root . '/fin/pending/Root/Серия.ass'), 'the actual selected path is used');
             strictAssertSame('payload bytes', file_get_contents($root . '/dl/Root/Серия.ass'), 'source bytes are retained');
-            strictAssertSame(array('system.multicall'), $methods, 'source context and paths share one read-only callback');
+            strictAssertSame(['system.multicall'], $methods, 'source context and paths share one read-only callback');
             strictAssertTrue(strpos($requests[0], '<string>f.path=</string>') !== false, 'the shared alias factory builds the native getter');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
 $suite->test('a selected UTF-8 skip filter runs before destination creation', function () {
     $root = finishedPathFixture();
@@ -341,30 +341,30 @@ $suite->test('recovery publishes a selected-path hook through its existing defer
     } finally { strictRemoveTree($root); }
 });
 
-foreach (array('lost', 'fault') as $shape)
+foreach (['lost', 'fault'] as $shape) {
     $suite->test('deferred path read ' . $shape . ' stays pending inside its retry window', function () use ($shape) {
         $root = finishedPathFixture();
         try {
             list($exit, $output, $error, , $methods) = finishedPathRun($root, 'Серия.ass', 'deferred', 'Copy', $shape);
             strictAssertSame(0, $exit, 'the real hook child returns: ' . $error);
             strictAssertSame(1, json_decode($output, true)['pending'], 'an unavailable daemon reply does not retire the request');
-            strictAssertSame(array('system.multicall'), $methods, 'only background recovery reads the source snapshot');
+            strictAssertSame(['system.multicall'], $methods, 'only background recovery reads the source snapshot');
             strictAssertSame(false, file_exists($root . '/fin/pending'), 'unknown paths create no destination');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
-foreach (array('integer', 'extra') as $shape)
+foreach (['integer', 'extra'] as $shape) {
     $suite->test('malformed selected-path ' . $shape . ' reply refuses before filesystem work', function () use ($shape) {
         $root = finishedPathFixture();
         try {
             list($exit, $output, $error) = finishedPathRun($root, 'Серия.ass', 'perform', 'Copy', $shape);
             strictAssertSame(0, $exit, 'the real hook child returns: ' . $error);
             $result = json_decode($output, true);
-            strictAssertSame(array('refused', 'file-list-invalid'), array($result['status'], $result['reason']), 'malformed rows are a visible classified refusal');
+            strictAssertSame(['refused', 'file-list-invalid'], [$result['status'], $result['reason']], 'malformed rows are a visible classified refusal');
             strictAssertSame(false, file_exists($root . '/fin/pending'), 'unproven list creates no destination');
             strictAssertSame('payload bytes', file_get_contents($root . '/dl/Root/Серия.ass'), 'source bytes remain untouched');
         } finally { strictRemoveTree($root); }
-    });
+    }); }
 
 $suite->test('a malformed deferred path reply retires with a visible classified refusal', function () {
     $root = finishedPathFixture();

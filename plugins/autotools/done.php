@@ -1,10 +1,10 @@
 <?php
 
-$req = new rXMLRPCRequest( array(
-	rTorrentSettings::get()->getOnInsertCommand(array('_autolabel'.User::getUser(), getCmd('cat='))),
-	rTorrentSettings::get()->getOnFinishedCommand(array('automove'.User::getUser(), getCmd('cat='))),
+$req = new rXMLRPCRequest( [
+	rTorrentSettings::get()->getOnInsertCommand(['_autolabel'.User::getUser(), getCmd('cat=')]),
+	rTorrentSettings::get()->getOnFinishedCommand(['automove'.User::getUser(), getCmd('cat=')]),
 	rTorrentSettings::get()->getRemoveScheduleCommand('autowatch'),
 	rTorrentSettings::get()->getRemoveScheduleCommand('autorecover'),
-	rTorrentSettings::get()->getRemoveScheduleCommand('autorecovernow')
-	));
+	rTorrentSettings::get()->getRemoveScheduleCommand('autorecovernow'),
+	]);
 $req->run();

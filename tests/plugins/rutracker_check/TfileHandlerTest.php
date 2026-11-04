@@ -65,7 +65,7 @@ function tfileTorrent($name)
     $raw = strictTorrentRaw($name, 'http://tfile.me/ann?uk=0000', tfileTopicUrl(1001));
     $torrent = @new Torrent($raw);
     strictAssertTrue(!$torrent->errors(), 'torrent fixture must parse');
-    return array($raw, strtoupper((string) $torrent->hash_info()), $torrent);
+    return [$raw, strtoupper((string) $torrent->hash_info()), $torrent];
 }
 
 $suite = new StrictTestSuite();
@@ -78,7 +78,7 @@ $suite->test('with no origin configured the handler asks nothing and says why', 
 
     strictAssertSame(ruTrackerChecker::STE_CANT_REACH_TRACKER, $result,
         'the owned topic remains retryable until its origin is configured');
-    strictAssertSame(array(), Snoopy::$requests,
+    strictAssertSame([], Snoopy::$requests,
         'and sends no request, least of all to a host nobody chose');
     $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'tfileOrigin',
         'the reason is logged, naming the setting that carries the site');
@@ -87,7 +87,7 @@ $suite->test('with no origin configured the handler asks nothing and says why', 
 
 $suite->test('the notice is said once however many topics come through', function () {
     tfileReset('');
-    foreach (array('one.mkv', 'two.mkv', 'three.mkv') as $name) {
+    foreach (['one.mkv', 'two.mkv', 'three.mkv'] as $name) {
         list($raw, $hash, $torrent) = tfileTorrent($name);
         TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
     }
@@ -103,7 +103,7 @@ $suite->test('the topic is read on the configured origin', function () {
     $result = TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'the topic still carries this hash');
-    strictAssertSame(array(array('fetchComplex', tfileViewtopicUrl(1001))), Snoopy::$requests,
+    strictAssertSame([['fetchComplex', tfileViewtopicUrl(1001)]], Snoopy::$requests,
         'one request, on the configured origin');
 });
 
@@ -120,12 +120,12 @@ $suite->test('the replacement is downloaded from the configured origin', functio
 
     strictAssertSame(ruTrackerChecker::STE_UPDATED, $result, 'the newer torrent replaces the old one');
     strictAssertSame(
-        array(
-            array('fetchComplex', tfileViewtopicUrl(1001)),
-            array('fetchComplex', tfileDownloadUrl(77)),
-        ),
+        [
+            ['fetchComplex', tfileViewtopicUrl(1001)],
+            ['fetchComplex', tfileDownloadUrl(77)],
+        ],
         Snoopy::$requests,
-        'both the topic and the torrent come from the configured origin'
+        'both the topic and the torrent come from the configured origin',
     );
     strictAssertSame(1, count(ruTrackerChecker::callsFor('createTorrentFromDownload')), 'the answer became a torrent');
 });
@@ -183,21 +183,21 @@ PHP;
     $file = $base . '/probe.php';
     file_put_contents($file, $script);
     try {
-        $child = PhpProcess::run(array_merge(PhpProcess::sameIni(), array($file, $root, $base)));
+        $child = PhpProcess::run(array_merge(PhpProcess::sameIni(), [$file, $root, $base]));
         strictAssertSame(0, $child['code'], 'the real resolution runs: ' . $child['out'] . $child['err']);
         strictAssertSame('', $child['err'], 'the real resolution emits no diagnostic');
         $output = explode("\n", trim($child['out']));
         strictAssertSame(
-            array(
+            [
                 "'https://tfile.example:8443'",
                 "''",
                 "''",
                 "''",
                 "''",
-            ),
+            ],
             $output,
             'a configured https origin comes back folded; http, a bare host and nothing come back empty, '
-            . 'and so does a tracker loginmgr has no account for'
+            . 'and so does a tracker loginmgr has no account for',
         );
     } finally {
         TestTree::remove($base);

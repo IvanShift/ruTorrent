@@ -19,7 +19,7 @@ if (!function_exists('retrackersTestCoreMethod')) {
 	// the same two characters, and isMetadataStubName() is the shipped one.
 	function retrackersTestRtorrentDouble()
 	{
-		if (class_exists('rTorrent', false)) return;
+		if (class_exists('rTorrent', false)) { return; }
 		eval(<<<'DOUBLE'
 class rTorrent
 {

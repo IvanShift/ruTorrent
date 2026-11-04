@@ -7,16 +7,16 @@ eval( FileUtil::getPluginConf( 'feeds' ) );
 $lang = (isset($_REQUEST['lang']) &&
 	preg_match('/^[A-Za-z]{2}(\-[A-Za-z]{2}|)$/', $_REQUEST['lang']) &&
 	is_file('lang/'.$_REQUEST['lang'].'.php')) ? $_REQUEST['lang'] : 'en';
-$theUILang = array();
+$theUILang = [];
 require_once( 'lang/'.$lang.'.php' );
 
 function bytes( $bt )
 {
 	global $theUILang;
-	$a = array($theUILang["bytes"], $theUILang['KB'], $theUILang['MB'], $theUILang['GB'], $theUILang['TB'], $theUILang['PB']);
+	$a = [$theUILang["bytes"], $theUILang['KB'], $theUILang['MB'], $theUILang['GB'], $theUILang['TB'], $theUILang['PB']];
 	$ndx = 0;
-	if($bt == 0)
-		$ndx = 1;
+	if($bt == 0) {
+		$ndx = 1; }
 	else
 	{
 		if($bt < 1024)
@@ -45,8 +45,8 @@ function speed($bt)
 function eta($tm)
 {
 	global $theUILang;
-	if($tm >= 2419200)
-		return("∞");
+	if($tm >= 2419200) {
+		return("∞"); }
 	$val = $tm % (604800 * 52);
 	$w = intval($val / 604800);
 	$val = $val % 604800;
@@ -78,8 +78,8 @@ function eta($tm)
 		$ret .= $m.$theUILang["time_m"];
 		$v++;
 	}
-	if($v < 2)
-		$ret .= $val.$theUILang["time_s"];
+	if($v < 2) {
+		$ret .= $val.$theUILang["time_s"]; }
 	return( substr($ret,0,-1) );
 }
 
@@ -99,26 +99,26 @@ function formatItemDescription($torrent)
 {
 	global $theUILang;
 	$desc = '<font size=2><fieldset><legend>'.$theUILang["Transfer"].'</legend>'.'<strong>'.$theUILang["Size"].": </strong>".bytes($torrent["size"])."<br>";
-	if($torrent["downloaded"]!=$torrent["size"])
-		$desc.='<strong>'.$theUILang["Downloaded"].": </strong>".bytes($torrent["downloaded"])."<br>";
-	if($torrent["eta"]>0)
-		$desc.='<strong>'.$theUILang["Remaining"].": </strong>".eta($torrent["eta"])."<br>";
-	if($torrent["dl"]>=1024)
-		$desc.='<strong>'.$theUILang["Down_speed"].": </strong>".speed($torrent["dl"])."<br>";
-	if($torrent["uploaded"]>0)
-		$desc.='<strong>'.$theUILang["Uploaded"].": </strong>".bytes($torrent["uploaded"])."<br>";
-	if($torrent["ul"]>=1024)
-		$desc.='<strong>'.$theUILang["Ul_speed"].": </strong>".speed($torrent["ul"])."<br>";
+	if($torrent["downloaded"]!=$torrent["size"]) {
+		$desc.='<strong>'.$theUILang["Downloaded"].": </strong>".bytes($torrent["downloaded"])."<br>"; }
+	if($torrent["eta"]>0) {
+		$desc.='<strong>'.$theUILang["Remaining"].": </strong>".eta($torrent["eta"])."<br>"; }
+	if($torrent["dl"]>=1024) {
+		$desc.='<strong>'.$theUILang["Down_speed"].": </strong>".speed($torrent["dl"])."<br>"; }
+	if($torrent["uploaded"]>0) {
+		$desc.='<strong>'.$theUILang["Uploaded"].": </strong>".bytes($torrent["uploaded"])."<br>"; }
+	if($torrent["ul"]>=1024) {
+		$desc.='<strong>'.$theUILang["Ul_speed"].": </strong>".speed($torrent["ul"])."<br>"; }
 	$desc.='<strong>'.$theUILang["Share_ratio"].": </strong>".$torrent["ratio"]."<br>";
-        if($torrent["seeds"]!="0 (0)")
-		$desc.='<strong>'.$theUILang["Seeds"].": </strong>".feedText($torrent["seeds"])."<br>";
-        if($torrent["peers"]!="0 (0)")
-		$desc.='<strong>'.$theUILang["Peers"].": </strong>".feedText($torrent["peers"])."<br>";
+        if($torrent["seeds"]!="0 (0)") {
+		$desc.='<strong>'.$theUILang["Seeds"].": </strong>".feedText($torrent["seeds"])."<br>"; }
+        if($torrent["peers"]!="0 (0)") {
+		$desc.='<strong>'.$theUILang["Peers"].": </strong>".feedText($torrent["peers"])."<br>"; }
 	$desc.="</fieldset>";
-	if(!empty($torrent["message"]))
-		$desc.='<fieldset><legend>'.$theUILang["Track_status"].'</legend>'.feedText($torrent["message"]).'</fieldset>';
-	if(!empty($torrent["comment"]))
-		$desc.='<fieldset><legend>'.$theUILang["Comment"].'</legend>'.feedText($torrent["comment"]).'</fieldset>';
+	if(!empty($torrent["message"])) {
+		$desc.='<fieldset><legend>'.$theUILang["Track_status"].'</legend>'.feedText($torrent["message"]).'</fieldset>'; }
+	if(!empty($torrent["comment"])) {
+		$desc.='<fieldset><legend>'.$theUILang["Comment"].'</legend>'.feedText($torrent["comment"]).'</fieldset>'; }
 	return($desc);
 }
 
@@ -128,8 +128,8 @@ function sortByPubDate( $a, $b )
 }
 
 $mode = $_REQUEST['mode'] ?? 'all';
-if(!is_string($mode) || !in_array($mode, array('all', 'completed', 'downloading', 'active', 'inactive', 'error'), true))
-	$mode = 'all';
+if(!is_string($mode) || !in_array($mode, ['all', 'completed', 'downloading', 'active', 'inactive', 'error'], true)) {
+	$mode = 'all'; }
 $url = Requests::publicBaseURL('/plugins/feeds/action.php');
 if($url === false)
 {
@@ -168,16 +168,16 @@ switch($mode)
 	}
 }
 
-$prm = array($view,
+$prm = [$view,
 	getCmd("d.get_hash="),
 	getCmd("d.get_name="),
 	getCmd("d.get_message="),
 	getCmd("d.get_up_rate="),
 	getCmd("d.get_down_rate="),
 	getCmd("d.get_custom1="),
-	(rTorrentSettings::get()->iVersion >= 0x806) ? getCmd('d.get_custom').'=seedingtime' : getCmd('cat='));
-if($showItemDescription)
-	$prm = array_merge($prm, array(
+	(rTorrentSettings::get()->iVersion >= 0x806) ? getCmd('d.get_custom').'=seedingtime' : getCmd('cat=')];
+if($showItemDescription) {
+	$prm = array_merge($prm, [
 		getCmd("d.get_custom2="),
 		getCmd("d.get_completed_chunks="),
 		getCmd("d.get_size_chunks="),
@@ -191,22 +191,22 @@ if($showItemDescription)
 		getCmd("d.get_peers_not_connected="),
 		getCmd("d.get_peers_connected="),
 		getCmd("d.get_peers_accounted="),
-		getCmd("d.get_peers_complete=")));
+		getCmd("d.get_peers_complete=")]); }
 $req = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', $prm));
 
-if($req->run(true) && $req->responseTypes === array('array') && count($req->responseValues) === 1)
+if($req->run(true) && $req->responseTypes === ['array'] && count($req->responseValues) === 1)
 {
-	$rows = array();
-	$values = array();
-	$titles = array();
+	$rows = [];
+	$values = [];
+	$titles = [];
 	$fields = count($prm)-1;
-	foreach((is_array($req->responseValues[0]) ? $req->responseValues[0] : array()) as $row)
+	foreach((is_array($req->responseValues[0]) ? $req->responseValues[0] : []) as $row)
 	{
-		if(!is_array($row) || array_keys($row) !== range(0,$fields-1)) continue;
-		foreach($row as $value) if(!is_string($value)) continue 2;
+		if(!is_array($row) || array_keys($row) !== range(0,$fields-1)) { continue; }
+		foreach($row as $value) { if(!is_string($value)) { continue 2; } }
 		$rows[] = $row;
-		if(TorrentFileNames::needsTitleMetadata($row[1]))
-			$titles[$row[0]] = rXMLRPCRequest::unescapeValue($row[1]);
+		if(TorrentFileNames::needsTitleMetadata($row[1])) {
+			$titles[$row[0]] = rXMLRPCRequest::unescapeValue($row[1]); }
 	}
 	// Source paths are read once, and only when a title needs its metadata.
 	try
@@ -216,41 +216,40 @@ if($req->run(true) && $req->responseTypes === array('array') && count($req->resp
 	catch(Throwable $error)
 	{
 		// Unreadable optional metadata leaves the daemon name, which feedText() shows.
-		$titles = array();
+		$titles = [];
 	}
 	foreach($rows as $row)
 	{
-		if(isset($titles[$row[0]]))
-			$row[1] = $titles[$row[0]];
-		foreach($row as $value) $values[] = $value;
+		if(isset($titles[$row[0]])) {
+			$row[1] = $titles[$row[0]]; }
+		foreach($row as $value) { $values[] = $value; }
 	}
-	$items = array();
+	$items = [];
 	for($i = 0; $i<count($values); $i+=$fields)
 	{
-		$item = array(
+		$item = [
 			"guid"=>$values[$i],
 			"title"=>$values[$i+1],
 			"category"=>rawurldecode($values[$i+5]),
-			"pubDate"=>floatval($values[$i+6]) );
-		if(rTorrentSettings::get()->isPluginRegistered('data'))
-			$item["link"] = $url.'plugins/data/action.php?hash='.$values[$i].'&no=0&readable=1';
+			"pubDate"=>floatval($values[$i+6]) ];
+		if(rTorrentSettings::get()->isPluginRegistered('data')) {
+			$item["link"] = $url.'plugins/data/action.php?hash='.$values[$i].'&no=0&readable=1'; }
 		if($mode=='error')
 		{
-                        if(empty($values[$i+2]))
-				continue;
+                        if(empty($values[$i+2])) {
+				continue; }
 		}
 		else
 		{
 			if($mode=='active')
 			{
-				if( floatval($values[$i+3])<1024 && floatval($values[$i+4])<1024 )
-					continue;
+				if( floatval($values[$i+3])<1024 && floatval($values[$i+4])<1024 ) {
+					continue; }
 			}
-			else
-			if($mode=='inactive')
+			elseif($mode=='inactive')
 			{
-				if( floatval($values[$i+3])>=1024 || floatval($values[$i+4])>=1024 )
-					continue;
+				if( floatval($values[$i+3])>=1024 || floatval($values[$i+4])>=1024 ) {
+					continue; }
 			}
 		}
 
@@ -263,7 +262,7 @@ if($req->run(true) && $req->responseTypes === array('array') && count($req->resp
 			$get_peers_connected = floatval($values[$i+18]);
 			$get_peers_all = $get_peers_not_connected+$get_peers_connected;
 
-			$torrent = array(
+			$torrent = [
 				"downloaded" => floatval($values[$i+11]),
 				"uploaded" => floatval($values[$i+12]),
 				"size" => floatval($values[$i+10]),
@@ -275,7 +274,7 @@ if($req->run(true) && $req->responseTypes === array('array') && count($req->resp
 				"peers" => $values[$i+19]." (".$get_peers_all.")",
 				"seeds" => $values[$i+20]." (".$get_peers_all.")",
 				"message" => $values[$i+2],
-				);
+				];
 			$torrent["eta"] = ($torrent["dl"]>0) ? floor(($get_size_chunks-$get_completed_chunks)*$get_chunk_size/$torrent["dl"]) : -1;
 			$item["description"] = formatItemDescription( $torrent );
 		}
@@ -287,20 +286,18 @@ if($req->run(true) && $req->responseTypes === array('array') && count($req->resp
 		$ret.="\r\n<item>";
 		foreach( $item as $key=>$val )
 		{
-			if($key=="guid")
-				$ret.="\r\n\t<guid isPermaLink=\"false\">".feedText($val).'</guid>';
-			else
-			if($key=="pubDate")
+			if($key=="guid") {
+				$ret.="\r\n\t<guid isPermaLink=\"false\">".feedText($val).'</guid>'; }
+			elseif($key=="pubDate")
 			{
-				if(empty($val))
-					continue;
+				if(empty($val)) {
+					continue; }
 				$ret.="\r\n\t<pubDate>".TimeFormat::gmstrftime('%a, %d %b %Y %T %Z',$val).'</pubDate>';
 			}
-			else
-			if($key=="description")
-				$ret.="\r\n\t<description><![CDATA[".$val.']]></description>';
-			else
-				$ret.="\r\n\t<".$key.'>'.feedText($val).'</'.$key.'>';
+			elseif($key=="description") {
+				$ret.="\r\n\t<description><![CDATA[".$val.']]></description>'; }
+			else {
+				$ret.="\r\n\t<".$key.'>'.feedText($val).'</'.$key.'>'; }
 		}
 		$ret.="\r\n</item>";
 	}

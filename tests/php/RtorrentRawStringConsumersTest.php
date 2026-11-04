@@ -15,15 +15,15 @@ class RtorrentRawStringCaptureSettings extends rTorrentSettings
 {
 	use PermissiveDirectorySettings;
 
-	public $captured = array();
+	public $captured = [];
 
 	public function patchDeprecatedRequest($commands)
 	{
 		$this->captured = array_merge($this->captured, $commands);
 		// Directory creation is now confirmed in its own request before a new load.
-		foreach($commands as $command)
-			if(strpos($command->command, 'load') === 0)
-				throw new RtorrentRawStringCaptured();
+		foreach($commands as $command) {
+			if(strpos($command->command, 'load') === 0) {
+				throw new RtorrentRawStringCaptured(); } }
 	}
 }
 
@@ -41,10 +41,10 @@ class RtorrentRawStringCaptureSettings extends rTorrentSettings
  */
 class RtorrentRawStringConsumersTest extends TestCase
 {
-	const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
+	public const HASH = '0123456789ABCDEF0123456789ABCDEF01234567';
 	// A backslash before a quote and a doubled backslash are the shapes that
 	// an extra unescape (or escape) would change.
-	const NAME = 'aud "q" \\"x\\" \\\\ \'a\' &c';
+	public const NAME = 'aud "q" \\"x\\" \\\\ \'a\' &c';
 
 	private $previousSettings;
 	private $base;
@@ -77,56 +77,6 @@ class RtorrentRawStringConsumersTest extends TestCase
 		$this->removeTree($this->base);
 	}
 
-	private function useSettings(ReflectionClass $class)
-	{
-		$settings = $class->newInstanceWithoutConstructor();
-		$settings->iVersion = 0x904;
-		$settings->apiVersion = 0;
-		$settings->aliases = array();
-		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-		self::makeAccessible($property);
-		if ($this->previousSettings === null) {
-			$this->previousSettings = $property->getValue();
-		}
-		$property->setValue(null, $settings);
-		return $settings;
-	}
-
-	private function removeTree($path)
-	{
-		if (!is_dir($path) || is_link($path)) {
-			@unlink($path);
-			return;
-		}
-		foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
-			$this->removeTree($path . '/' . $entry);
-		}
-		@rmdir($path);
-	}
-
-	private function daemon(array $replies)
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-		}
-		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies($replies),
-			$this->base . '/calls.log');
-		$GLOBALS['scgi_port'] = $this->daemon->port();
-	}
-
-	private function same($expected, $actual, $what)
-	{
-		$this->assertSame($expected, $actual, $what
-			. ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
-	}
-
-	private function minimalTorrent()
-	{
-		$info = 'd6:lengthi1e4:name9:test.data12:piece lengthi16384e6:pieces20:'
-			. str_repeat("\x01", 20) . 'e';
-		return 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
-	}
-
 	// AUD-ESC-06: mediainfo, screenshots and spectrogram open what this returns.
 	public function testGetFilePathAnswersThePathTheFileHas()
 	{
@@ -134,7 +84,7 @@ class RtorrentRawStringConsumersTest extends TestCase
 		mkdir($dir);
 		$file = $dir . '/file \\"y\\".bin';
 		file_put_contents($file, 'data');
-		$this->daemon(array('f.get_frozen_path' => array($file)));
+		$this->daemon(['f.get_frozen_path' => [$file]]);
 		$path = rTorrent::getFilePath(self::HASH, 0);
 		$this->same($file, $path, 'getFilePath() answers the frozen path in its own bytes');
 		$this->assertTrue(is_string($path) && is_file($path), 'and that path is the file');
@@ -144,7 +94,7 @@ class RtorrentRawStringConsumersTest extends TestCase
 	{
 		$file = $this->base . '/' . self::NAME . '.bin';
 		file_put_contents($file, 'data');
-		$this->daemon(array('f.get_frozen_path' => new FakeRtorrentPerCall(array(array(''), array($file)))));
+		$this->daemon(['f.get_frozen_path' => new FakeRtorrentPerCall([[''], [$file]])]);
 		$this->same($file, rTorrent::getFilePath(self::HASH, 0),
 			'the open/read/close fallback answers the same bytes');
 	}
@@ -155,8 +105,8 @@ class RtorrentRawStringConsumersTest extends TestCase
 		$session = $this->base . '/session \\"s\\" \\\\x/';
 		mkdir($session);
 		file_put_contents($session . self::HASH . '.torrent', $this->minimalTorrent());
-		$this->daemon(array('get_session' => array($session),
-			'd.get_tied_to_file' => array('')));
+		$this->daemon(['get_session' => [$session],
+			'd.get_tied_to_file' => ['']]);
 		$this->same($session . self::HASH . '.torrent', rTorrent::getSourcePath(self::HASH),
 			'the session copy is found under a session path carrying a quote and a backslash');
 	}
@@ -165,8 +115,8 @@ class RtorrentRawStringConsumersTest extends TestCase
 	{
 		$tied = $this->base . '/' . self::NAME . '.torrent';
 		file_put_contents($tied, $this->minimalTorrent());
-		$this->daemon(array('get_session' => array($this->base . '/no-session/'),
-			'd.get_tied_to_file' => array($tied)));
+		$this->daemon(['get_session' => [$this->base . '/no-session/'],
+			'd.get_tied_to_file' => [$tied]]);
 		$this->same($tied, rTorrent::getSourcePath(self::HASH),
 			'the tied file is found by the name the daemon reported');
 	}
@@ -180,12 +130,12 @@ class RtorrentRawStringConsumersTest extends TestCase
 	public function testADirectoryReadFromTheDaemonIsQuotedExactlyOnce()
 	{
 		$directory = $this->base . '/' . self::NAME;
-		$this->daemon(array('d.get_directory_base' => array($directory)));
+		$this->daemon(['d.get_directory_base' => [$directory]]);
 		$read = new rXMLRPCRequest(new rXMLRPCCommand('d.get_directory_base', self::HASH));
 		$this->assertTrue($read->success(), 'the directory is read from the daemon');
 		$this->same($directory, $read->val[0], 'the reader is handed the daemon bytes');
 
-		foreach (array(false, true) as $magnet) {
+		foreach ([false, true] as $magnet) {
 			$settings = $this->useSettings(new ReflectionClass('RtorrentRawStringCaptureSettings'));
 			try {
 				if ($magnet) {
@@ -217,9 +167,59 @@ class RtorrentRawStringConsumersTest extends TestCase
 			}
 			$this->same($directory, $mkdir, $what . ' asks mkdir for the directory the daemon reported');
 			$this->assertTrue($set !== null, $what . ' sets the base directory');
-			$parsed = $set === null ? array() : RtorrentCommandParser::commands($set);
-			$this->same(array(array('name' => 'd.set_directory_base', 'args' => array($directory))),
+			$parsed = $set === null ? [] : RtorrentCommandParser::commands($set);
+			$this->same([['name' => 'd.set_directory_base', 'args' => [$directory]]],
 				$parsed, $what . ' hands rtorrent a command it parses back into those bytes');
 		}
+	}
+
+	private function useSettings(ReflectionClass $class)
+	{
+		$settings = $class->newInstanceWithoutConstructor();
+		$settings->iVersion = 0x904;
+		$settings->apiVersion = 0;
+		$settings->aliases = [];
+		$property = new ReflectionProperty('rTorrentSettings', 'theSettings');
+		self::makeAccessible($property);
+		if ($this->previousSettings === null) {
+			$this->previousSettings = $property->getValue();
+		}
+		$property->setValue(null, $settings);
+		return $settings;
+	}
+
+	private function removeTree($path)
+	{
+		if (!is_dir($path) || is_link($path)) {
+			@unlink($path);
+			return;
+		}
+		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+			$this->removeTree($path . '/' . $entry);
+		}
+		@rmdir($path);
+	}
+
+	private function daemon(array $replies)
+	{
+		if ($this->daemon !== null) {
+			$this->daemon->stop();
+		}
+		$this->daemon = new FakeRtorrentDaemon(new FakeRtorrentMethodReplies($replies),
+			$this->base . '/calls.log');
+		$GLOBALS['scgi_port'] = $this->daemon->port();
+	}
+
+	private function same($expected, $actual, $what)
+	{
+		$this->assertSame($expected, $actual, $what
+			. ($expected === $actual ? '' : ': got ' . var_export($actual, true)));
+	}
+
+	private function minimalTorrent()
+	{
+		$info = 'd6:lengthi1e4:name9:test.data12:piece lengthi16384e6:pieces20:'
+			. str_repeat("\x01", 20) . 'e';
+		return 'd8:announce28:http://example.test/announce4:info' . $info . 'e';
 	}
 }

@@ -4,20 +4,11 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 
 class HttprpcSettingsPolicyTest extends TestCase
 {
-	private function policyLoaded()
-	{
-		$file = __DIR__ . '/../../../plugins/httprpc/settingspolicy.php';
-		$this->assertTrue(is_file($file), 'httprpc has one settings name policy');
-		if(!is_file($file))
-			return false;
-		require_once($file);
-		return true;
-	}
 
 	public function testSettingsNamesComeFromTheReadList()
 	{
-		if(!$this->policyLoaded())
-			return;
+		if(!$this->policyLoaded()) {
+			return; }
 		$read = HttprpcSettingsPolicy::readCommands();
 		$this->assertTrue(in_array('get_directory', $read, true),
 			'the existing settings read list includes the directory');
@@ -25,7 +16,7 @@ class HttprpcSettingsPolicyTest extends TestCase
 			'the existing settings read list includes the socket allocation input');
 		$this->assertTrue(!in_array('get_xmlrpc_size_limit', $read, true),
 			'the settings page has no XMLRPC size input');
-		$expected = array(
+		$expected = [
 			'get_check_hash', 'get_bind', 'get_dht_port', 'get_directory', 'get_download_rate',
 			'get_hash_interval', 'get_hash_max_tries', 'get_hash_read_ahead', 'get_http_cacert', 'get_http_capath',
 			'get_http_proxy', 'get_ip', 'get_max_downloads_div', 'get_max_downloads_global', 'get_max_file_size',
@@ -36,23 +27,23 @@ class HttprpcSettingsPolicyTest extends TestCase
 			'get_scgi_dont_route', 'get_send_buffer_size', 'get_session', 'get_session_lock', 'get_session_on_completion',
 			'get_split_file_size', 'get_split_suffix', 'get_timeout_safe_sync', 'get_timeout_sync', 'get_tracker_numwant',
 			'get_use_udp_trackers', 'get_max_uploads_div', 'get_max_open_sockets',
-		);
+		];
 		$this->assertTrue($read === $expected,
 			'the full 48-position settings read response retains its historical order');
 	}
 
 	public function testOnlySettingsShownByThePageCanBeWritten()
 	{
-		if(!$this->policyLoaded())
-			return;
-		foreach(array('sdirectory', 'nmax_open_files', 'ndht', 'nscgi_dont_route') as $key)
+		if(!$this->policyLoaded()) {
+			return; }
+		foreach(['sdirectory', 'nmax_open_files', 'ndht', 'nscgi_dont_route'] as $key) {
 			$this->assertTrue(HttprpcSettingsPolicy::allowsWrite($key),
-				'the settings page can write '.$key);
-		foreach(array('nxmlrpc_size_limit', 'nexecute', 'nmethod.insert',
+				'the settings page can write '.$key); }
+		foreach(['nxmlrpc_size_limit', 'nexecute', 'nmethod.insert',
 				'n', 'xdirectory', 'nDirectory', 'nget_directory', 'ndirectory',
-				'smax_open_files', 'nmax_open_sockets') as $key)
+				'smax_open_files', 'nmax_open_sockets'] as $key) {
 			$this->assertTrue(!HttprpcSettingsPolicy::allowsWrite($key),
-				'forged setting is refused: '.$key);
+				'forged setting is refused: '.$key); }
 	}
 
 	public function testGuardRunsBeforeAnySetsettingsCommandIsBuilt()
@@ -64,5 +55,14 @@ class HttprpcSettingsPolicyTest extends TestCase
 		$this->assertTrue($start !== false && $guard !== false && $setter !== false
 			&& $start < $guard && $guard < $setter,
 			'the settings name is checked before it becomes a trusted RPC setter');
+	}
+	private function policyLoaded()
+	{
+		$file = __DIR__ . '/../../../plugins/httprpc/settingspolicy.php';
+		$this->assertTrue(is_file($file), 'httprpc has one settings name policy');
+		if(!is_file($file)) {
+			return false; }
+		require_once($file);
+		return true;
 	}
 }

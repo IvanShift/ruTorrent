@@ -4,13 +4,13 @@ require_once( dirname(__FILE__)."/cloudflare.php" );
 
 class _cloudflareHooks
 {
-	static protected $in_progress = false;
+	protected static $in_progress = false;
 
-	static public function OnURLFetched( $prm )
+	public static function OnURLFetched( $prm )
 	{
 		// cloudscraper re-resolves the URL without Snoopy's private-address guard.
-		if(!empty($prm['client']->block_private))
-			return;
+		if(!empty($prm['client']->block_private)) {
+			return; }
 		if(!self::$in_progress &&
 			($prm['method']=='GET'))
 		{

@@ -11,7 +11,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
  */
 
 require_once(__DIR__ . '/../../../plugins/loginmgr/accounts.php');
-$productionAccountClasses = array();
+$productionAccountClasses = [];
 foreach (glob(__DIR__ . '/../../../plugins/loginmgr/accounts/*.php') as $accountFile) {
     require_once($accountFile);
     $productionAccountClasses[] = basename($accountFile, ".php") . "Account";
@@ -44,7 +44,7 @@ class ProbeRuTrackerDownload extends ruTrackerAccount
     public $cached = true;
     protected function loadData($client = null)
     {
-        $client->cookies = array('probe-session' => 'stored');
+        $client->cookies = ['probe-session' => 'stored'];
         return new ProbeStoredData($this->cached);
     }
 }
@@ -61,22 +61,22 @@ class ProbeStoredData
 // reads as logged in.
 class ProbeRecordingTransport
 {
-    public $cookies = array();
+    public $cookies = [];
     public $referer = '';
     public $status = 200;
     public $results = 'a readable page with no login form';
-    public $requests = array();
+    public $requests = [];
     public function setcookies() {}
     public function fetch($url, $method = 'GET', $contentType = '', $body = '')
     {
-        $this->requests[] = array('url' => $url, 'method' => $method,
+        $this->requests[] = ['url' => $url, 'method' => $method,
             'contentType' => $contentType, 'body' => $body,
-            'bb_dl' => isset($this->cookies['bb_dl']) ? $this->cookies['bb_dl'] : null);
+            'bb_dl' => isset($this->cookies['bb_dl']) ? $this->cookies['bb_dl'] : null];
         return true;
     }
 }
 
-$tests = array(
+$tests = [
     'the first download after login is prepared with the complete POST contract' => function () {
         $account = new ProbeRuTrackerDownload();
         $account->cached = false;
@@ -85,11 +85,11 @@ $tests = array(
         testAssertSame(true, $account->fetch($client, $url, 'fake-user', 'fake-pass', 'GET', '', ''), 'login and download');
         testAssertSame(2, count($client->requests), 'login then download');
         testAssertSame('https://rutracker.org/forum/login.php', $client->requests[0]['url'], 'password goes to the configured login origin');
-        testAssertSame(array('url' => $url, 'method' => 'POST', 'contentType' => 'application/x-www-form-urlencoded', 'body' => '', 'bb_dl' => '42'), $client->requests[1], 'download after login');
+        testAssertSame(['url' => $url, 'method' => 'POST', 'contentType' => 'application/x-www-form-urlencoded', 'body' => '', 'bb_dl' => '42'], $client->requests[1], 'download after login');
     },
     'a rutracker download url in either spelling of the host is prepared as a download' => function () {
-        foreach (array('https://rutracker.org/forum/dl.php?t=12345', 'https://rutracker.org./forum/dl.php?t=12345',
-                       'https://RUTRACKER.ORG/forum/dl.php?t=12345') as $url) {
+        foreach (['https://rutracker.org/forum/dl.php?t=12345', 'https://rutracker.org./forum/dl.php?t=12345',
+                       'https://RUTRACKER.ORG/forum/dl.php?t=12345'] as $url) {
             $account = new ProbeRuTrackerDownload();
             $client = new ProbeRecordingTransport();
             testAssertSame(true, $account->test($url), $url . ' is claimed');
@@ -102,7 +102,7 @@ $tests = array(
         }
         // What the id is read from, and what it is not.
         $account = new ProbeRuTrackerDownload();
-        foreach (array(
+        foreach ([
             'https://rutracker.org/forum/dl.php?t=12345&x=1' => true,      // t anywhere in the query
             'https://rutracker.org/forum/viewtopic.php?t=12345' => false,  // the topic page is not the download
             'https://rutracker.org/x/forum/dl.php?t=12345' => false,       // not the download path
@@ -113,7 +113,7 @@ $tests = array(
             'https://rutracker.org/forum/dl.php?t=abc' => false,           // not an id
             'https://rutracker.org/forum/dl.php?t[]=12345' => false,       // not a scalar
             'https://rutracker.org/forum/dl.php?t=12345%0A' => false,      // a line feed is not part of an id
-        ) as $url => $isDownload) {
+        ] as $url => $isDownload) {
             $client = new ProbeRecordingTransport();
             $account->fetch($client, $url, '', '', 'GET', '', '');
             testAssertSame($isDownload ? 'POST' : 'GET', $client->requests[0]['method'], $url);
@@ -126,10 +126,10 @@ $tests = array(
     // topic 111 in bb_dl while the request asked for 222.
     'the bb_dl cookie names the topic the forum will read from the query' => function () {
         $account = new ProbeRuTrackerDownload();
-        foreach (array(
+        foreach ([
             'https://rutracker.org/forum/dl.php?t=111&t=222'   => '222',
             'https://rutracker.org/forum/dl.php?t=111&%74=222' => '222',
-        ) as $url => $id) {
+        ] as $url => $id) {
             $client = new ProbeRecordingTransport();
             $account->fetch($client, $url, '', '', 'GET', '', '');
             testAssertSame($url, $client->requests[0]['url'], 'the query is sent as given');
@@ -139,7 +139,7 @@ $tests = array(
     },
     'an nnmclub url in either spelling of the host reaches the account, and login.php never does' => function () {
         $account = new NNMClubAccount();
-        foreach (array(
+        foreach ([
             'https://nnmclub.to/forum/viewtopic.php?t=1'  => true,
             'https://nnmclub.to/forum/' => true,
             'https://nnmclub.to/forum/x/..' => true,
@@ -165,7 +165,7 @@ $tests = array(
             'https://nnmclub.to./forum/login.php?x=1'     => false,
             'https://nnmclub.to/other/viewtopic.php?t=1'  => false,
             'https://evil.test/nnmclub.to/forum/dl.php'   => false,
-        ) as $url => $expected) {
+        ] as $url => $expected) {
             testAssertSame($expected, (bool) $account->test($url), $url);
         }
     },
@@ -185,7 +185,7 @@ $tests = array(
     'only the configured Kinozal mirrors receive the account session' => function () {
         // $kinozalHosts withdraws a mirror whose free-DNS name changed hands:
         // the site's own domains stay account hosts, the mirror does not.
-        $GLOBALS['kinozalHosts'] = array('kinozal.cloudns.nz', 'kinozal.me');
+        $GLOBALS['kinozalHosts'] = ['kinozal.cloudns.nz', 'kinozal.me'];
         try {
             KinozalResponse::resetCycle();
             $account = new KinozalTVAccount();
@@ -206,48 +206,48 @@ $tests = array(
         // https://evil.test/path/tracker.example/x. All three would have sent
         // the account's cookies to a host the attacker controls, and the url
         // need not come from the user -- plugins/rss follows feed links.
-        $cases = array(
-            array('ABTorrentsAccount', 'https://abtorrents.example/x', true),
-            array('ABTorrentsAccount', 'https://abtorrents.example@evil.test/', false),
-            array('ABTorrentsAccount', 'https://abtorrents.example.evil.test/', false),
-            array('ABTorrentsAccount', 'https://evil.test/abtorrents.example/', false),
-            array('TfileAccount', 'https://tfile.example/forum/index.php', true),
-            array('TfileAccount', 'https://tfile.example/other/', false),
-            array('TfileAccount', 'https://evil.test/x/tfile.example/forum/', false),
-            array('RedactedAccount', 'https://redacted.example/torrents.php?id=1', true),
-            array('RedactedAccount', 'https://redacted.example.evil.test/torrents.php?id=1', false),
-            array('RevolutionTTAccount', 'https://revolutiontt.example/download.php/1/x', true),
-            array('RevolutionTTAccount', 'https://revolutiontt.example@evil.test/download.php/1/x', false),
-            array('KinozalTVAccount', 'https://kinozal.guru/details.php?id=1', true),
-            array('KinozalTVAccount', 'https://dl.kinozal.guru/download.php?id=1', true),
-            array('KinozalTVAccount', 'https://evil.test/path/kinozal.guru/feed', false),
+        $cases = [
+            ['ABTorrentsAccount', 'https://abtorrents.example/x', true],
+            ['ABTorrentsAccount', 'https://abtorrents.example@evil.test/', false],
+            ['ABTorrentsAccount', 'https://abtorrents.example.evil.test/', false],
+            ['ABTorrentsAccount', 'https://evil.test/abtorrents.example/', false],
+            ['TfileAccount', 'https://tfile.example/forum/index.php', true],
+            ['TfileAccount', 'https://tfile.example/other/', false],
+            ['TfileAccount', 'https://evil.test/x/tfile.example/forum/', false],
+            ['RedactedAccount', 'https://redacted.example/torrents.php?id=1', true],
+            ['RedactedAccount', 'https://redacted.example.evil.test/torrents.php?id=1', false],
+            ['RevolutionTTAccount', 'https://revolutiontt.example/download.php/1/x', true],
+            ['RevolutionTTAccount', 'https://revolutiontt.example@evil.test/download.php/1/x', false],
+            ['KinozalTVAccount', 'https://kinozal.guru/details.php?id=1', true],
+            ['KinozalTVAccount', 'https://dl.kinozal.guru/download.php?id=1', true],
+            ['KinozalTVAccount', 'https://evil.test/path/kinozal.guru/feed', false],
             // The official mirrors are doors to the same account.
-            array('KinozalTVAccount', 'https://kinozal.jumpingcrab.com/get_srv_details.php?action=2&id=1', true),
-            array('KinozalTVAccount', 'https://kinozal.cloudns.nz/download.php?id=1', true),
+            ['KinozalTVAccount', 'https://kinozal.jumpingcrab.com/get_srv_details.php?action=2&id=1', true],
+            ['KinozalTVAccount', 'https://kinozal.cloudns.nz/download.php?id=1', true],
             // Both mirrors live under shared free-DNS zones: a sibling label
             // or the bare zone belongs to somebody else.
-            array('KinozalTVAccount', 'https://evil.jumpingcrab.com/login.php', false),
-            array('KinozalTVAccount', 'https://jumpingcrab.com/login.php', false),
-            array('KinozalTVAccount', 'https://evil.cloudns.nz/login.php', false),
-            array('KinozalTVAccount', 'https://kinozal.jumpingcrab.com.evil.test/login.php', false),
-            array('KinozalTVAccount', 'https://evil.test/kinozal.cloudns.nz/login.php', false),
-            array('ruTrackerAccount', 'https://rutracker.org/forum/dl.php?t=1', true),
-            array('ruTrackerAccount', 'https://rutracker.org/other/', false),
-            array('ruTrackerAccount', 'https://evil.test/x/rutracker.org/forum/', false),
-            array('TapochekNetAccount', 'https://tapochek.net/x', true),
-            array('TapochekNetAccount', 'https://tapochek.net.evil.test/x', false),
-            array('YggTorrentAccount', 'https://www.ygg.re/engine/download_torrent?id=1', true),
-            array('YggTorrentAccount', 'https://evil.test/x/ygg.re/engine/download_torrent?id=1', false),
-            array('LostFilmAccount', 'https://lostfilm.tv/download.php?id=7&', true),
-            array('LostFilmAccount', 'https://lostfilm.tv.evil.test/download.php?id=7&', false),
-        );
+            ['KinozalTVAccount', 'https://evil.jumpingcrab.com/login.php', false],
+            ['KinozalTVAccount', 'https://jumpingcrab.com/login.php', false],
+            ['KinozalTVAccount', 'https://evil.cloudns.nz/login.php', false],
+            ['KinozalTVAccount', 'https://kinozal.jumpingcrab.com.evil.test/login.php', false],
+            ['KinozalTVAccount', 'https://evil.test/kinozal.cloudns.nz/login.php', false],
+            ['ruTrackerAccount', 'https://rutracker.org/forum/dl.php?t=1', true],
+            ['ruTrackerAccount', 'https://rutracker.org/other/', false],
+            ['ruTrackerAccount', 'https://evil.test/x/rutracker.org/forum/', false],
+            ['TapochekNetAccount', 'https://tapochek.net/x', true],
+            ['TapochekNetAccount', 'https://tapochek.net.evil.test/x', false],
+            ['YggTorrentAccount', 'https://www.ygg.re/engine/download_torrent?id=1', true],
+            ['YggTorrentAccount', 'https://evil.test/x/ygg.re/engine/download_torrent?id=1', false],
+            ['LostFilmAccount', 'https://lostfilm.tv/download.php?id=7&', true],
+            ['LostFilmAccount', 'https://lostfilm.tv.evil.test/download.php?id=7&', false],
+        ];
         foreach ($cases as $case) {
             list($class, $url, $expected) = $case;
             $account = new $class();
             testAssertSame($expected, (bool) $account->test($url), $class . ' vs ' . $url);
             if ($expected) {
                 $host = parse_url($url, PHP_URL_HOST);
-                foreach (array(strtoupper($host), $host . '.') as $spelling) {
+                foreach ([strtoupper($host), $host . '.'] as $spelling) {
                     testAssertSame(true, $account->test(str_replace($host, $spelling, $url)), $class . ' normalized host');
                 }
             }
@@ -258,12 +258,12 @@ $tests = array(
         // Matched over http, an https site would have this account's cookies
         // put on the wire in clear by the very first request, before any
         // redirect could upgrade it -- and the url can arrive from a feed.
-        foreach (array(
-            array('LostFilmAccount', 'http://lostfilm.tv/download.php?id=7&'),
-            array('TfileAccount', 'http://tfile.example/forum/index.php'),
-            array('AniDUBAccount', 'http://tr.anidub.com/'),
-            array('ABTorrentsAccount', 'http://abtorrents.example/x'),
-        ) as $case) {
+        foreach ([
+            ['LostFilmAccount', 'http://lostfilm.tv/download.php?id=7&'],
+            ['TfileAccount', 'http://tfile.example/forum/index.php'],
+            ['AniDUBAccount', 'http://tr.anidub.com/'],
+            ['ABTorrentsAccount', 'http://abtorrents.example/x'],
+        ] as $case) {
             list($class, $url) = $case;
             $account = new $class();
             testAssertSame(false, (bool) $account->test($url),
@@ -273,10 +273,10 @@ $tests = array(
 
     'every production HTTPS account rejects its HTTP download form' => function () {
         global $productionAccountClasses;
-        $paths = array('RUTrackerAccount' => '/forum/dl.php?t=1',
+        $paths = ['RUTrackerAccount' => '/forum/dl.php?t=1',
             'NNMClubAccount' => '/forum/dl.php?id=1', 'TfileAccount' => '/forum/dl.php?id=1',
             'LostFilmAccount' => '/download.php?id=1', 'NovaFilmAccount' => '/download/1',
-            'YggTorrentAccount' => '/engine/download_torrent?id=1');
+            'YggTorrentAccount' => '/engine/download_torrent?id=1'];
         foreach ($productionAccountClasses as $class) {
             $account = new $class();
             testAssertSame('https', parse_url($account->url, PHP_URL_SCHEME), $class . ' has an HTTPS origin');
@@ -292,11 +292,11 @@ $tests = array(
         $log_file = tempnam(sys_get_temp_dir(), 'http-account-');
         try {
             $manager = new accountManager();
-            $manager->accounts = array('RUTracker' => array(
+            $manager->accounts = ['RUTracker' => [
                 'enabled' => 1,
                 'path' => __DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php',
                 'object' => 'ruTrackerAccount',
-            ));
+            ]];
             $url = 'http://rutracker.org/forum/dl.php?t=42&passkey=private';
             testAssertSame(false, $manager->getAccount($url), 'HTTP URL receives no loginmgr session');
             testAssertSame(false, $manager->getAccount($url), 'repeat HTTP URL still receives no session');
@@ -317,13 +317,13 @@ $tests = array(
         $log_file = tempnam(sys_get_temp_dir(), 'http-unrelated-');
         try {
             $manager = new accountManager();
-            $manager->accounts = array('RUTracker' => array(
+            $manager->accounts = ['RUTracker' => [
                 'enabled' => 1,
                 'path' => __DIR__ . '/../../../plugins/loginmgr/accounts/RUTracker.php',
                 'object' => 'ruTrackerAccount',
-            ));
-            foreach (array('http://unrelated.test/forum/dl.php?t=42',
-                'http://rutracker.org/other/?t=42') as $url) {
+            ]];
+            foreach (['http://unrelated.test/forum/dl.php?t=42',
+                'http://rutracker.org/other/?t=42'] as $url) {
                 $httpsAccount = 'stale';
                 testAssertSame(false, $manager->getAccount($url, $httpsAccount),
                     'unrelated HTTP URL has no selected account');
@@ -361,7 +361,7 @@ $tests = array(
                 continue;
             }
             $asked++;
-            $elsewhere = array(
+            $elsewhere = [
                 'https://evil.test/x/' . $host . '/forum/dl.php?t=1',
                 'https://evil.test/x/' . $host . '/download.php?id=1',
                 'https://evil.test/x/' . $host . '/engine/download_torrent?id=1',
@@ -369,7 +369,7 @@ $tests = array(
                 'https://' . $host . '@evil.test/forum/dl.php?t=1',
                 'https://' . $host . '@evil.test/',
                 'https://' . $host . '.evil.test/forum/dl.php?t=1',
-            );
+            ];
             foreach ($elsewhere as $url) {
                 testAssertSame(false, (bool) $account->test($url),
                     $class . ' must not claim ' . var_export($url, true));
@@ -387,13 +387,13 @@ $tests = array(
         foreach ($productionAccountClasses as $class) {
             $asked++;
             $account = new $class();
-            foreach (array('', 'not a url', '/relative/path', 'javascript:alert(1)') as $url) {
+            foreach (['', 'not a url', '/relative/path', 'javascript:alert(1)'] as $url) {
                 testAssertSame(false, (bool) $account->test($url),
                     $class . ' must not claim ' . var_export($url, true));
             }
         }
         testAssertSame(true, $asked > 0, 'accounts were found to ask');
     },
-);
+];
 
 exit(testRunCases($tests));

@@ -14,7 +14,7 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 {
 	private $root = null;
 	private $reference = null;
-	private $scannedPolicyFiles = array();
+	private $scannedPolicyFiles = [];
 
 	public function setUp()
 	{
@@ -32,9 +32,9 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			. 'isset($XMLRPCProxySafeParams)));';
 		list($exit, $output, $errors) = $this->runPhpChild($script);
 		$this->assertEquals(0, $exit, 'shipped conf loads with a legacy proxy class: '.$errors);
-		if($exit === 0)
-			$this->assertEquals(array('sanitize', true, false), json_decode($output, true),
-				'legacy proxy keeps the proxy mode and its earlier implicit policy');
+		if($exit === 0) {
+			$this->assertEquals(['sanitize', true, false], json_decode($output, true),
+				'legacy proxy keeps the proxy mode and its earlier implicit policy'); }
 	}
 
 	public function testSharedPolicyLoaderAlsoLoadsTheProxyClass()
@@ -44,70 +44,9 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			. 'isset($XMLRPCProxySafeParams), count($XMLRPCProxySafeParams ?? array())));';
 		list($exit, $output, $errors) = $this->runPhpChild($script);
 		$this->assertEquals(0, $exit, 'shared policy loader works without a preloaded class: '.$errors);
-		if($exit === 0)
-			$this->assertEquals(array(true, true, count(XMLRPCProxy::defaultSafeParams())),
-				json_decode($output, true), 'the loader supplies the class and shipped policy');
-	}
-
-	private function runPhpChild($script)
-	{
-		$process = proc_open(array(PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', '-r', $script),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
-			$pipes);
-		if(!is_resource($process))
-			throw new RuntimeException('policy child did not start');
-		fclose($pipes[0]);
-		$output = stream_get_contents($pipes[1]);
-		fclose($pipes[1]);
-		$errors = stream_get_contents($pipes[2]);
-		fclose($pipes[2]);
-		return array(proc_close($process), $output, $errors);
-	}
-
-	/**
-	 * The list a policy file defines on its own, or null when it defines none.
-	 * Evaluated inside a closure so one file's other variables cannot reach the
-	 * next.
-	 */
-	private function safeParamsOf($file)
-	{
-		$read = function ($f) {
-			$XMLRPCProxySafeParams = null;
-			require($f);
-			return $XMLRPCProxySafeParams;
-		};
-		return $read($file);
-	}
-
-	/** Every shipped conf file that assigns the list, other than the reference. */
-	private function otherDefiners()
-	{
-		$found = array();
-		$this->scannedPolicyFiles = array();
-		foreach (array('/conf', '/plugins') as $sub) {
-			$dir = $this->root . $sub;
-			if (!is_dir($dir)) {
-				continue;
-			}
-			$walk = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
-				$dir, FilesystemIterator::SKIP_DOTS));
-			foreach ($walk as $file) {
-				$path = $file->getPathname();
-				if (!preg_match('`/(conf|conf\.local|xmlrpc_proxy)\.php$`', $path)) {
-					continue;
-				}
-				if ($path === $this->root . '/conf/xmlrpc_proxy.php') {
-					continue;
-				}
-				$this->scannedPolicyFiles[] = $path;
-				$src = @file_get_contents($path);
-				if (($src !== false) && preg_match('`\$XMLRPCProxySafeParams\s*=`', $src)) {
-					$found[] = $path;
-				}
-			}
-		}
-		sort($found);
-		return $found;
+		if($exit === 0) {
+			$this->assertEquals([true, true, count(XMLRPCProxy::defaultSafeParams())],
+				json_decode($output, true), 'the loader supplies the class and shipped policy'); }
 	}
 
 	public function testTheSharedPolicyCarriesTheViewActions()
@@ -117,7 +56,7 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 		// A client sends these as a multicall over a view to stop or resume
 		// everything. Left out, the multicall carries a command this side does
 		// not rebuild, so the proxy rejects the entire call before transport.
-		foreach (array('d.open', 'd.close', 'd.start', 'd.stop') as $action) {
+		foreach (['d.open', 'd.close', 'd.start', 'd.stop'] as $action) {
 			$this->assertTrue(in_array($action, (array)$this->reference, true),
 				"the shared policy allows {$action}");
 		}
@@ -176,8 +115,8 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 	{
 		$root = sys_get_temp_dir() . '/xmlrpc-policy-scan-' . uniqid('', true);
 		$plugin = $root . '/plugins/example';
-		if(!mkdir($plugin, 0700, true))
-			throw new RuntimeException('policy scanner fixture directory was not created');
+		if(!mkdir($plugin, 0700, true)) {
+			throw new RuntimeException('policy scanner fixture directory was not created'); }
 		$definition = $plugin . '/conf.php';
 		$nonDefinition = $plugin . '/conf.local.php';
 		$previousRoot = $this->root;
@@ -185,7 +124,7 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			file_put_contents($definition, '<?php $XMLRPCProxySafeParams' . "\n = array('d.start');");
 			file_put_contents($nonDefinition, '<?php $XMLRPCProxySafeParamsCopy = array();');
 			$this->root = $root;
-			$this->assertEquals(array($definition), $this->otherDefiners(),
+			$this->assertEquals([$definition], $this->otherDefiners(),
 				'the scanner finds a policy assignment across whitespace, not a similarly named variable');
 		} finally {
 			$this->root = $previousRoot;
@@ -195,5 +134,66 @@ class XMLRPCProxyPolicyParityTest extends TestCase
 			@rmdir($root . '/plugins');
 			@rmdir($root);
 		}
+	}
+
+	private function runPhpChild($script)
+	{
+		$process = proc_open([PHP_BINARY, '-c', __DIR__ . '/../php-test.ini', '-r', $script],
+			[0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+			$pipes);
+		if(!is_resource($process)) {
+			throw new RuntimeException('policy child did not start'); }
+		fclose($pipes[0]);
+		$output = stream_get_contents($pipes[1]);
+		fclose($pipes[1]);
+		$errors = stream_get_contents($pipes[2]);
+		fclose($pipes[2]);
+		return [proc_close($process), $output, $errors];
+	}
+
+	/**
+	 * The list a policy file defines on its own, or null when it defines none.
+	 * Evaluated inside a closure so one file's other variables cannot reach the
+	 * next.
+	 */
+	private function safeParamsOf($file)
+	{
+		$read = function ($f) {
+			$XMLRPCProxySafeParams = null;
+			require($f);
+			return $XMLRPCProxySafeParams;
+		};
+		return $read($file);
+	}
+
+	/** Every shipped conf file that assigns the list, other than the reference. */
+	private function otherDefiners()
+	{
+		$found = [];
+		$this->scannedPolicyFiles = [];
+		foreach (['/conf', '/plugins'] as $sub) {
+			$dir = $this->root . $sub;
+			if (!is_dir($dir)) {
+				continue;
+			}
+			$walk = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
+				$dir, FilesystemIterator::SKIP_DOTS));
+			foreach ($walk as $file) {
+				$path = $file->getPathname();
+				if (!preg_match('`/(conf|conf\.local|xmlrpc_proxy)\.php$`', $path)) {
+					continue;
+				}
+				if ($path === $this->root . '/conf/xmlrpc_proxy.php') {
+					continue;
+				}
+				$this->scannedPolicyFiles[] = $path;
+				$src = @file_get_contents($path);
+				if (($src !== false) && preg_match('`\$XMLRPCProxySafeParams\s*=`', $src)) {
+					$found[] = $path;
+				}
+			}
+		}
+		sort($found);
+		return $found;
 	}
 }

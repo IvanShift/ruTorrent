@@ -4,12 +4,58 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 
 class RetrackersDonePluginsTest extends TestCase
 {
+
+	public function testActualDonepluginsKeepsAVetoedPluginAndAllowsOtherShutdown()
+	{
+		$result = $this->runActualShutdown('done', false);
+		$this->assertTrue(is_array($result) &&
+			strpos($result['js'], 'retrackers: hook-teardown-pending') !== false &&
+			strpos($result['js'], "thePlugins.get('retrackers').remove()") === false &&
+			strpos($result['js'], "thePlugins.get('ordinary').remove()") !== false &&
+			isset($result['state']['plugins']['retrackers']) &&
+			!isset($result['state']['plugins']['ordinary']) &&
+			$result['state']['unregistered'] === ['ordinary'] &&
+			$result['state']['ordinary_calls'] === 1,
+			'the actual doneplugins path honors the retrackers veto and still shuts down another plugin');
+	}
+
+	public function testActualUnlaunchLeavesAVetoedPluginRetryable()
+	{
+		$result = $this->runActualShutdown('unlaunch', false);
+		$this->assertTrue(is_array($result) &&
+			strpos($result['js'], "thePlugins.get('retrackers').unlaunch()") === false &&
+			strpos($result['js'], "thePlugins.get('retrackers').remove()") === false &&
+			isset($result['state']['plugins']['retrackers']) &&
+			!isset($result['state']['permissions']['retrackers']),
+			'a refused unlaunch keeps retrackers visible and registered for retry');
+	}
+
+	public function testActualUnlaunchStillCompletesAfterSuccessfulShutdown()
+	{
+		$result = $this->runActualShutdown('unlaunch', true);
+		$this->assertTrue(is_array($result) &&
+			$result['state']['unregistered'] === ['retrackers', 'ordinary'] &&
+			$result['state']['permissions']['retrackers'] === false &&
+			strpos($result['js'], "thePlugins.get('retrackers').unlaunch()") !== false &&
+			strpos($result['js'], "thePlugins.get('retrackers').remove()") !== false,
+			'a completed shutdown keeps the ordinary unlaunch and removal actions');
+	}
+
+	public function testActualDonepluginsStillRemovesSuccessfulPlugin()
+	{
+		$result = $this->runActualShutdown('done', true);
+		$this->assertTrue(is_array($result) &&
+			$result['state']['unregistered'] === ['retrackers', 'ordinary'] &&
+			strpos($result['js'], "thePlugins.get('retrackers').remove()") !== false &&
+			$result['state']['ordinary_calls'] === 1,
+			'successful retrackers and ordinary shutdowns retain the existing completion route');
+	}
 	private function removeTree($path)
 	{
 		if (!is_dir($path)) {
 			return;
 		}
-		foreach (array_diff(scandir($path), array('.', '..')) as $entry) {
+		foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
 			$child = $path . '/' . $entry;
 			if (is_dir($child)) {
 				$this->removeTree($child);
@@ -88,14 +134,14 @@ echo "\nS:", json_encode(array(
 	'permissions' => rCache::$permissions,
 ));
 PHP;
-		$fixture = str_replace(array('DONE_SUCCEEDS', 'COMMAND', 'SOURCE_PATH'),
-			array($success ? 'true' : 'false', var_export($command, true),
-				var_export($source, true)), $fixture);
+		$fixture = str_replace(['DONE_SUCCEEDS', 'COMMAND', 'SOURCE_PATH'],
+			[$success ? 'true' : 'false', var_export($command, true),
+				var_export($source, true)], $fixture);
 		file_put_contents($root . '/php/run.php', $fixture);
 		try {
-			$process = proc_open(array(PHP_BINARY, $root . '/php/run.php'),
-				array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'),
-					2 => array('pipe', 'w')), $pipes, $root . '/php');
+			$process = proc_open([PHP_BINARY, $root . '/php/run.php'],
+				[0 => ['pipe', 'r'], 1 => ['pipe', 'w'],
+					2 => ['pipe', 'w']], $pipes, $root . '/php');
 			if (!is_resource($process)) {
 				return(false);
 			}
@@ -110,55 +156,9 @@ PHP;
 				return(false);
 			}
 			$state = json_decode($match[2], true);
-			return(is_array($state) ? array('js' => $match[1], 'state' => $state) : false);
+			return(is_array($state) ? ['js' => $match[1], 'state' => $state] : false);
 		} finally {
 			$this->removeTree($root);
 		}
-	}
-
-	public function testActualDonepluginsKeepsAVetoedPluginAndAllowsOtherShutdown()
-	{
-		$result = $this->runActualShutdown('done', false);
-		$this->assertTrue(is_array($result) &&
-			strpos($result['js'], 'retrackers: hook-teardown-pending') !== false &&
-			strpos($result['js'], "thePlugins.get('retrackers').remove()") === false &&
-			strpos($result['js'], "thePlugins.get('ordinary').remove()") !== false &&
-			isset($result['state']['plugins']['retrackers']) &&
-			!isset($result['state']['plugins']['ordinary']) &&
-			$result['state']['unregistered'] === array('ordinary') &&
-			$result['state']['ordinary_calls'] === 1,
-			'the actual doneplugins path honors the retrackers veto and still shuts down another plugin');
-	}
-
-	public function testActualUnlaunchLeavesAVetoedPluginRetryable()
-	{
-		$result = $this->runActualShutdown('unlaunch', false);
-		$this->assertTrue(is_array($result) &&
-			strpos($result['js'], "thePlugins.get('retrackers').unlaunch()") === false &&
-			strpos($result['js'], "thePlugins.get('retrackers').remove()") === false &&
-			isset($result['state']['plugins']['retrackers']) &&
-			!isset($result['state']['permissions']['retrackers']),
-			'a refused unlaunch keeps retrackers visible and registered for retry');
-	}
-
-	public function testActualUnlaunchStillCompletesAfterSuccessfulShutdown()
-	{
-		$result = $this->runActualShutdown('unlaunch', true);
-		$this->assertTrue(is_array($result) &&
-			$result['state']['unregistered'] === array('retrackers', 'ordinary') &&
-			$result['state']['permissions']['retrackers'] === false &&
-			strpos($result['js'], "thePlugins.get('retrackers').unlaunch()") !== false &&
-			strpos($result['js'], "thePlugins.get('retrackers').remove()") !== false,
-			'a completed shutdown keeps the ordinary unlaunch and removal actions');
-	}
-
-	public function testActualDonepluginsStillRemovesSuccessfulPlugin()
-	{
-		$result = $this->runActualShutdown('done', true);
-		$this->assertTrue(is_array($result) &&
-			$result['state']['unregistered'] === array('retrackers', 'ordinary') &&
-			strpos($result['js'], "thePlugins.get('retrackers').remove()") !== false &&
-			$result['state']['ordinary_calls'] === 1,
-			'successful retrackers and ordinary shutdowns retain the existing completion route');
 	}
 }

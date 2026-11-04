@@ -5,7 +5,7 @@
 require_once(dirname(__DIR__) . '/plugins/retrackers/clitool.php');
 require_once(dirname(__DIR__) . '/plugins/retrackers/applyexisting.php');
 $settings = rRetrackers::load();
-$retrackersToolContext['trackers'] = array();
-foreach ($settings->list as $tier) foreach ($tier as $url) $retrackersToolContext['trackers'][] = $url;
+$retrackersToolContext['trackers'] = [];
+foreach ($settings->list as $tier) { foreach ($tier as $url) { $retrackersToolContext['trackers'][] = $url; } }
 $retrackersToolContext['dont_add_private'] = !empty($settings->dontAddPrivate);
 exit(RetrackersApplyExisting::main($args, new RetrackersQueueRpcAdapter(), STDOUT, STDERR, $retrackersToolContext));

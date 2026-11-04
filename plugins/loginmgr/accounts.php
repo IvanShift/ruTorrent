@@ -16,28 +16,16 @@ eval( FileUtil::getPluginConf( 'loginmgr' ) );
 // claim a notice without rewriting the account's refused legacy session.
 class legacyCookieNotices
 {
+	public const INTERVAL = 86400;
 	public $hash = 'legacy-cookie-notices.dat';
 	public $modified = false;
-	public $notices = array();
+	public $notices = [];
 	private $claimKey = null;
 	private $claimed = false;
-	const INTERVAL = 86400;
 
 	public function __sleep()
 	{
-		return(array('hash', 'modified', 'notices'));
-	}
-
-	private static function recent($at, $now)
-	{
-		return(is_int($at) && $at <= $now && $at > $now - self::INTERVAL);
-	}
-
-	private static function retained($notices, $now)
-	{
-		return(array_filter(is_array($notices) ? $notices : array(), function($at) use($now) {
-			return(self::recent($at, $now));
-		}));
+		return(['hash', 'modified', 'notices']);
 	}
 
 	// null means the notice could not be saved, not that another request won.
@@ -49,8 +37,8 @@ class legacyCookieNotices
 		$now = time();
 		$data->notices = self::retained($data->notices, $now);
 		$key = hash('sha256', $owner . "\0" . $fingerprint);
-		if(self::recent($data->notices[$key] ?? null, $now))
-			return(false);
+		if(self::recent($data->notices[$key] ?? null, $now)) {
+			return(false); }
 		$data->notices[$key] = $now;
 		$data->claimKey = $key;
 		$data->claimed = true;
@@ -64,12 +52,24 @@ class legacyCookieNotices
 		// the next second after this request prepared its claim.
 		$now = time();
 		$latest = self::retained($new->notices, $now);
-		if(self::recent($latest[$this->claimKey] ?? null, $now))
-			$this->claimed = false;
-		else
-			$latest[$this->claimKey] = $notice;
+		if(self::recent($latest[$this->claimKey] ?? null, $now)) {
+			$this->claimed = false; }
+		else {
+			$latest[$this->claimKey] = $notice; }
 		$this->notices = $latest;
 		return(true);
+	}
+
+	private static function recent($at, $now)
+	{
+		return(is_int($at) && $at <= $now && $at > $now - self::INTERVAL);
+	}
+
+	private static function retained($notices, $now)
+	{
+		return(array_filter(is_array($notices) ? $notices : [], function($at) use($now) {
+			return(self::recent($at, $now));
+		}));
 	}
 }
 
@@ -92,15 +92,23 @@ class privateData
 	private $replacedHost = null;
 	// Avoid repeated disk claims within one request; legacyCookieNotices owns
 	// the cross-request, per-profile/session throttle.
-	private static $legacyCacheLogged = array();
+	private static $legacyCacheLogged = [];
+
+	// rCache constructs one without an owner to read the newer copy into.
+	public function __construct( $owner = '' )
+	{
+		$this->hash = $owner.".dat";
+		$this->scopedCookies = [];
+		$this->loaded = false;
+	}
 
 	// The stored document is the public state; the merge bookkeeping is not.
 	public function __sleep()
 	{
-		return(array_keys(array_diff_key(get_object_vars($this), array('base' => 0, 'replacedHost' => 0))));
+		return(array_keys(array_diff_key(get_object_vars($this), ['base' => 0, 'replacedHost' => 0])));
 	}
 
-	static public function load( $owner, $client = null )
+	public static function load( $owner, $client = null )
 	{
 		$rt = new privateData($owner);
 		if($client)
@@ -119,12 +127,12 @@ class privateData
 					{
 						self::$legacyCacheLogged[$key] = time();
 						$claim = legacyCookieNotices::claim($owner, $fingerprint);
-						if($claim !== false)
+						if($claim !== false) {
 							FileUtil::toLog('loginmgr: ' . ($claim === null
 								? 'legacy-cookie-notice-cache-unavailable: ' : 'legacy-cookie-cache-needs-refresh: ')
 								. preg_replace('/[^a-z0-9_.-]/i', '?', $owner)
 								. '; the saved session predates scoped cookies and is not sent;'
-								. ' the next successful login replaces it (Settings -> Accounts -> Save)');
+								. ' the next successful login replaces it (Settings -> Accounts -> Save)'); }
 					}
 					// Old stores serialized this runtime flag too. Refusing the
 					// cookies must also refuse their warm-session fetch branch.
@@ -132,12 +140,12 @@ class privateData
 					// Only its flat cookies can be named in a merge: a failed
 					// login removes the document, unless another request has
 					// replaced it meanwhile.
-					$rt->base = array('cookies' => (array) $rt->cookies, 'scopedCookies' => array(),
-						'referer' => $rt->referer, 'legacy' => true);
+					$rt->base = ['cookies' => (array) $rt->cookies, 'scopedCookies' => [],
+						'referer' => $rt->referer, 'legacy' => true];
 					return($rt);
 				}
-				$rt->base = array('cookies' => (array) $rt->cookies, 'scopedCookies' => $rt->scopedCookies,
-					'referer' => $rt->referer);
+				$rt->base = ['cookies' => (array) $rt->cookies, 'scopedCookies' => $rt->scopedCookies,
+					'referer' => $rt->referer];
 				// Keep cookies already supplied for this request; the saved session
 				// keeps its previous priority when names overlap.
 				$client->cookies = array_merge((array) $client->cookies, (array) $rt->cookies);
@@ -151,14 +159,6 @@ class privateData
 			}
 		}
 		return($rt);
-	}
-
-	// rCache constructs one without an owner to read the newer copy into.
-	public function __construct( $owner = '' )
-	{
-		$this->hash = $owner.".dat";
-		$this->scopedCookies = array();
-		$this->loaded = false;
 	}
 
 	// True when this account holds no stored session afterwards. The cache
@@ -178,7 +178,7 @@ class privateData
 		$this->cookies = ($client instanceof Snoopy)
 			? $client->cookiesForAccountStorage() : $client->cookies;
 		$this->scopedCookies = ($client instanceof Snoopy)
-			? $client->responseCookiesForAccountStorage() : array();
+			? $client->responseCookiesForAccountStorage() : [];
 		$this->referer = $client->referer;
 		$this->replacedHost = $replacedUrl === null ? null : UrlHost::of($replacedUrl);
 		$cache = new rCache('/accounts');
@@ -191,16 +191,16 @@ class privateData
 	// session another request stored meanwhile was never shown to be stale.
 	public function forget( $url )
 	{
-		if($this->base === null)
-			return(true);
+		if($this->base === null) {
+			return(true); }
 		$host = UrlHost::of($url);
 		$scoped = array_values(array_filter($this->base['scopedCookies'], function($entry) use($host)
 		{
 			return(!self::isSentTo($entry, $host));
 		}));
-		if($scoped === $this->base['scopedCookies'] && !$this->base['cookies'] && empty($this->base['legacy']))
-			return(true);
-		$this->cookies = array();
+		if($scoped === $this->base['scopedCookies'] && !$this->base['cookies'] && empty($this->base['legacy'])) {
+			return(true); }
+		$this->cookies = [];
 		$this->scopedCookies = $scoped;
 		$this->referer = $scoped ? $this->base['referer'] : null;
 		$this->replacedHost = null;
@@ -216,8 +216,8 @@ class privateData
 	public function merge( $newer )
 	{
 		$base = $this->base !== null ? $this->base
-			: array('cookies' => array(), 'scopedCookies' => array(), 'referer' => null);
-		$theirs = is_array($newer->scopedCookies) ? $newer->scopedCookies : array();
+			: ['cookies' => [], 'scopedCookies' => [], 'referer' => null];
+		$theirs = is_array($newer->scopedCookies) ? $newer->scopedCookies : [];
 		$theirsFlat = (array) $newer->cookies;
 		if($this->replacedHost !== null)
 		{
@@ -226,15 +226,15 @@ class privateData
 			{
 				return(!self::isSentTo($entry, $host));
 			});
-			$theirsFlat = array();
+			$theirsFlat = [];
 		}
 		$this->scopedCookies = array_values(self::mergeChanges(self::keyed($base['scopedCookies']),
 			self::keyed($this->scopedCookies), self::keyed($theirs)));
 		$this->cookies = self::mergeChanges((array) $base['cookies'], (array) $this->cookies, $theirsFlat);
 		// The referer merges like a cookie: one this request dropped stays
 		// dropped unless the newer document renewed it.
-		if($this->referer === $base['referer'] || ($this->referer === null && $newer->referer !== $base['referer']))
-			$this->referer = $newer->referer;
+		if($this->referer === $base['referer'] || ($this->referer === null && $newer->referer !== $base['referer'])) {
+			$this->referer = $newer->referer; }
 		return(true);
 	}
 
@@ -242,6 +242,13 @@ class privateData
 	public function isEmpty()
 	{
 		return(!$this->cookies && !$this->scopedCookies && ($this->referer === null || $this->referer === ''));
+	}
+
+	public static function getModified($owner)
+	{
+		$rt = new privateData($owner);
+		$cache = new rCache('/accounts');
+		return($cache->getModified($rt));
 	}
 
 	// Whether Snoopy would send this stored cookie to $host.
@@ -253,11 +260,11 @@ class privateData
 
 	private static function keyed($entries)
 	{
-		$keyed = array();
-		foreach((array) $entries as $entry)
-			if(is_array($entry) && isset($entry['name'], $entry['domain'], $entry['path']))
+		$keyed = [];
+		foreach((array) $entries as $entry) {
+			if(is_array($entry) && isset($entry['name'], $entry['domain'], $entry['path'])) {
 				$keyed[$entry['name'] . "\0" . UrlHost::normalize($entry['domain'])
-					. "\0" . (int) (($entry['hostOnly'] ?? true) !== false) . "\0" . $entry['path']] = $entry;
+					. "\0" . (int) (($entry['hostOnly'] ?? true) !== false) . "\0" . $entry['path']] = $entry; } }
 		return($keyed);
 	}
 
@@ -269,59 +276,60 @@ class privateData
 		{
 			if(array_key_exists($key, $ours))
 			{
-				if(!array_key_exists($key, $base) || $base[$key] !== $ours[$key])
-					$theirs[$key] = $ours[$key];
+				if(!array_key_exists($key, $base) || $base[$key] !== $ours[$key]) {
+					$theirs[$key] = $ours[$key]; }
 			}
-			else if(array_key_exists($key, $theirs) && $theirs[$key] === $base[$key])
-				unset($theirs[$key]);
+			elseif(array_key_exists($key, $theirs) && $theirs[$key] === $base[$key]) {
+				unset($theirs[$key]); }
 		}
 		return($theirs);
-	}
-
-	static public function getModified($owner)
-	{
-		$rt = new privateData($owner);
-		$cache = new rCache('/accounts');
-		return($cache->getModified($rt));
 	}
 }
 
 abstract class commonAccount
 {
+
+	// Three answers, not two. They call for three different repairs, and this
+	// class used to make only two of them:
+	//
+	//   ANSWER_LIVE   the tracker answered from behind the login wall.
+	//   ANSWER_GUEST  the tracker answered, and answered as a guest. The
+	//                 session is dead and logging in again is the repair.
+	//   ANSWER_NONE   nothing usable arrived. This says NOTHING about the
+	//                 session, so logging in again is not a repair: it spends
+	//                 a credential POST on a tracker that is already failing
+	//                 and then throws away cookies never shown to be stale.
+	//
+	// Every isOK() under accounts/ tells the first two apart by looking for a
+	// guest marker -- a login form, a registration link, a "you must log in"
+	// line. A predicate can return null when its marker parser fails. A page
+	// that never arrived carries no marker either, so transport validation must
+	// precede the predicate. That is why all three used to collapse
+	// into "the session is live", and why a 5xx error page went back to the
+	// caller as the page or the torrent it had asked for.
+	public const ANSWER_NONE = 0;
+	public const ANSWER_GUEST = 1;
+	public const ANSWER_LIVE = 2;
 	public $url = '';
-	private static $missingOriginLogged = array();
+	private static $missingOriginLogged = [];
 
 	public function getName()
 	{
 		$className = get_class($this);
 		$pos = strpos($className, "Account");
-		if($pos!==false)
-			$className = substr($className,0,$pos);
+		if($pos!==false) {
+			$className = substr($className,0,$pos); }
 		return($className);
 	}
-
-	abstract protected function isOK($client);
-	abstract protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched);
 
 	// This decision selects the account whose cookies are sent. UrlHost owns
 	// the host identity rule; a prefix of the raw URL is not an identity.
 	public function test($url)
 	{
-		if($this->refuseUnconfigured())
-			return(false);
+		if($this->refuseUnconfigured()) {
+			return(false); }
 		$site = parse_url((string) $this->url);
-		return(self::urlAddresses($url,array($site["host"]),$site["scheme"]));
-	}
-
-	// Why this account cannot be used, or '' when it can. The base rule is
-	// that $url parses into a scheme and a host; an account that takes its
-	// site from configuration says here what is missing.
-	protected function unconfigured()
-	{
-		$site = @parse_url((string) $this->url);
-		if(!is_array($site) || empty($site["host"]) || empty($site["scheme"]))
-			return('the account names no site');
-		return('');
+		return(self::urlAddresses($url,[$site["host"]],$site["scheme"]));
 	}
 
 	public function configurationError()
@@ -329,12 +337,105 @@ abstract class commonAccount
 		return($this->unconfigured());
 	}
 
+	public function fetch( $client, $url, $login, $password, $method, $content_type, $body )
+	{
+		return($this->withRedirectTrust($client, function() use($client,$url,$login,$password,$method,$content_type,$body)
+		{
+			$is_result_fetched = false;
+			$data = $this->loadData($client);
+			if($data->loaded &&
+				$this->updateCached($client,$url,$method,$content_type,$body))
+			{
+				if(!$client->fetch($url,$method,$content_type,$body)) {
+					return(false); }
+				// Taken before isOKPostFetch(), because an override may fetch
+				// further pages onto this client and the question here is about
+				// the answer to the caller's own URL.
+				$answer = $this->classifyAnswer($client);
+				if($this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body))
+				{
+					if($client instanceof Snoopy && $data instanceof privateData
+						&& $data->scopedCookies !== $client->responseCookiesForAccountStorage()
+						&& !$data->store($client)) {
+						FileUtil::toLog('loginmgr: scoped-cookie-cache-write-failed: ' . $this->getName()); }
+					return(true);
+				}
+				// Only a guest answer is evidence that the session died. Anything
+				// else leaves that unproven, so report the failure and keep the
+				// cookies rather than log in again against a tracker that is not
+				// answering: one outage would otherwise cost a credential POST per
+				// call for every caller looping over a torrent list, which is how
+				// an account gets locked out.
+				if($answer!==self::ANSWER_GUEST) {
+					return(false); }
+			}
+			$requestUrl = $url;
+			$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
+				$this->loginWasNotRefused($client) &&
+				($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
+				$this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body) &&
+				$data->store($client) );
+			if(!$ret && $data instanceof privateData) {
+				$data->forget($requestUrl); }
+			return($ret);
+		}));
+	}
+
+	public function check( $client, $login, $password, $auto )
+	{
+		return($this->withRedirectTrust($client, function() use($client,$login,$password,$auto)
+		{
+			if($this->refuseUnconfigured()) {
+				return; }
+			$modified = privateData::getModified($this->getName());
+			if( ($modified===false) || ((time()-$modified)>=$auto))
+			{
+				// login() takes these by reference and several accounts read them
+				// before writing: undeclared, they arrived as null, and an account
+				// whose login() starts by fetching $url could never authenticate
+				// from here at all.
+				$url = $this->url;
+				$method = "GET";
+				$content_type = "";
+				$body = "";
+				$is_result_fetched = false;
+				// The login runs without the stored session: a tracker may send a
+				// signed-in visitor away from its login page before reading the
+				// credentials. Storing replaces only this origin's session; other
+				// hosts' sessions in the same document are kept (privateData::merge).
+				$data = $this->loadData();
+				if($this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
+					$this->loginWasNotRefused($client)) {
+					$data->store($client, $this->url); }
+				// A login that did not come back is not evidence that the stored
+				// session is stale, and this job exists to REFRESH a session:
+				// deleting one it merely failed to renew leaves the user worse off
+				// than not running at all. A session that really has died is
+				// discovered, and replaced, by the next fetch().
+			}
+		}));
+	}
+
+	abstract protected function isOK($client);
+	abstract protected function login($client,$login,$password,&$url,&$method,&$content_type,&$body,&$is_result_fetched);
+
+	// Why this account cannot be used, or '' when it can. The base rule is
+	// that $url parses into a scheme and a host; an account that takes its
+	// site from configuration says here what is missing.
+	protected function unconfigured()
+	{
+		$site = @parse_url((string) $this->url);
+		if(!is_array($site) || empty($site["host"]) || empty($site["scheme"])) {
+			return('the account names no site'); }
+		return('');
+	}
+
 	// Refuse once per account, before selection or refresh can use an empty site.
 	protected function refuseUnconfigured()
 	{
 		$reason = $this->unconfigured();
-		if($reason==='')
-			return(false);
+		if($reason==='') {
+			return(false); }
 		$name = $this->getName();
 		if(!isset(self::$missingOriginLogged[$name]))
 		{
@@ -350,7 +451,7 @@ abstract class commonAccount
 	// parse_url(): PHP 7.4 drops empty query/fragment parts and rewrites controls.
 	// $reason retains the classified Ygg configuration contract; $error never
 	// quotes the value, which may contain credentials. Explicit IPv6 is allowed.
-	static protected function configuredOrigin($origin,&$error,&$reason = null)
+	protected static function configuredOrigin($origin,&$error,&$reason = null)
 	{
 		$reason = 'missing-origin';
 		if(!is_string($origin))
@@ -417,7 +518,7 @@ abstract class commonAccount
 	// The reason an account that takes its site from configuration cannot be
 	// used, naming the setting that carries it and where to set it. The value
 	// is never quoted: a mistyped setting can hold a password.
-	static protected function unconfiguredOrigin($setting,$error)
+	protected static function unconfiguredOrigin($setting,$error)
 	{
 		return('$'.$setting.' '.$error
 			.'; set it to the tracker\'s origin in plugins/loginmgr/conf.local.php'
@@ -426,7 +527,7 @@ abstract class commonAccount
 
 	// Compatibility wrapper for account subclasses. Host, scheme and path
 	// matching live in UrlHost::urlIsOneOf(), shared with rutracker_check.
-	static protected function urlAddresses($url,$hosts,$scheme = null,$pathPrefix = null)
+	protected static function urlAddresses($url,$hosts,$scheme = null,$pathPrefix = null)
 	{
 		return(UrlHost::urlIsOneOf($url,$hosts,$scheme,$pathPrefix));
 	}
@@ -435,8 +536,8 @@ abstract class commonAccount
 	{
 		// Match PHP's decoded names and last-value rule for repeated keys.
 		$parts = @parse_url((string) $url);
-		if(!is_array($parts))
-			return(false);
+		if(!is_array($parts)) {
+			return(false); }
 		parse_str(isset($parts['query']) ? $parts['query'] : '', $params);
 		return(isset($params[$name]) && is_string($params[$name]) ? $params[$name] : false);
 	}
@@ -458,50 +559,28 @@ abstract class commonAccount
 		return(true);
 	}
 
-	// Three answers, not two. They call for three different repairs, and this
-	// class used to make only two of them:
-	//
-	//   ANSWER_LIVE   the tracker answered from behind the login wall.
-	//   ANSWER_GUEST  the tracker answered, and answered as a guest. The
-	//                 session is dead and logging in again is the repair.
-	//   ANSWER_NONE   nothing usable arrived. This says NOTHING about the
-	//                 session, so logging in again is not a repair: it spends
-	//                 a credential POST on a tracker that is already failing
-	//                 and then throws away cookies never shown to be stale.
-	//
-	// Every isOK() under accounts/ tells the first two apart by looking for a
-	// guest marker -- a login form, a registration link, a "you must log in"
-	// line. A predicate can return null when its marker parser fails. A page
-	// that never arrived carries no marker either, so transport validation must
-	// precede the predicate. That is why all three used to collapse
-	// into "the session is live", and why a 5xx error page went back to the
-	// caller as the page or the torrent it had asked for.
-	const ANSWER_NONE = 0;
-	const ANSWER_GUEST = 1;
-	const ANSWER_LIVE = 2;
-
 	// What the client is holding after a fetch of the caller's own URL.
 	protected function classifyAnswer($client)
 	{
-		if(!is_object($client))
-			return(self::ANSWER_NONE);
+		if(!is_object($client)) {
+			return(self::ANSWER_NONE); }
 		$status = (int) $client->status;
 		// A conditional request the server honoured. It answered, it answered
 		// the authenticated request, and it sent no body on purpose: the
 		// caller asked for that (plugins/rss sends If-None-Match and reads
 		// $client->status itself). Judging it by its absent body would turn
 		// every unchanged poll of an authenticated feed into a fresh login.
-		if($status===304)
-			return(self::ANSWER_LIVE);
+		if($status===304) {
+			return(self::ANSWER_LIVE); }
 		// Only 2xx carries a body meant for the caller. A 3xx reaching here is
 		// a redirect Snoopy did not follow -- a followed chain ends at the
 		// status of its last hop -- and the boilerplate body a server puts on
 		// one carries no guest marker either, so it would read as a live
 		// session for want of evidence.
-		if(($status<200) || ($status>=300))
-			return(self::ANSWER_NONE);
-		if(!$this->hasReadableBody($client))
-			return(self::ANSWER_NONE);
+		if(($status<200) || ($status>=300)) {
+			return(self::ANSWER_NONE); }
+		if(!$this->hasReadableBody($client)) {
+			return(self::ANSWER_NONE); }
 		// A marker parser may fail independently of the transport. Unknown
 		// content proves neither authentication nor stale cookies.
 		$accepted = $this->isOK($client);
@@ -525,17 +604,34 @@ abstract class commonAccount
 	// status range stays the one this class has always used here.
 	protected function loginWasNotRefused($client)
 	{
-		if(!is_object($client))
-			return(false);
+		if(!is_object($client)) {
+			return(false); }
 		$status = (int) $client->status;
-		if(($status<200) || ($status>=400))
-			return(false);
+		if(($status<200) || ($status>=400)) {
+			return(false); }
 		return(!$this->hasReadableBody($client) || $this->isOK($client));
 	}
 
 	protected function isOKPostFetch($client,$url,$method,$content_type,$body)
 	{
 		return($this->classifyAnswer($client)===self::ANSWER_LIVE);
+	}
+
+	protected function withRedirectTrust($client, callable $body)
+	{
+		$scopedTrust = $client instanceof Snoopy;
+		$previousTrust = $scopedTrust ? $client->redirectTrust : null;
+		if($scopedTrust) {
+			$client->redirectTrust = [$this, 'test']; }
+		try
+		{
+			return($scopedTrust ? $client->withAccountCookieScope($this->getName(), $body) : $body());
+		}
+		finally
+		{
+			if($scopedTrust) {
+				$client->redirectTrust = $previousTrust; }
+		}
 	}
 
 	private function hasLivePostFetchAnswer($client,$url,$method,$content_type,$body)
@@ -546,111 +642,15 @@ abstract class commonAccount
 			$this->classifyAnswer($client)===self::ANSWER_LIVE);
 	}
 
-	protected function withRedirectTrust($client, callable $body)
-	{
-		$scopedTrust = $client instanceof Snoopy;
-		$previousTrust = $scopedTrust ? $client->redirectTrust : null;
-		if($scopedTrust)
-			$client->redirectTrust = array($this, 'test');
-		try
-		{
-			return($scopedTrust ? $client->withAccountCookieScope($this->getName(), $body) : $body());
-		}
-		finally
-		{
-			if($scopedTrust)
-				$client->redirectTrust = $previousTrust;
-		}
-	}
-
-	public function fetch( $client, $url, $login, $password, $method, $content_type, $body )
-	{
-		return($this->withRedirectTrust($client, function() use($client,$url,$login,$password,$method,$content_type,$body)
-		{
-			$is_result_fetched = false;
-			$data = $this->loadData($client);
-			if($data->loaded &&
-				$this->updateCached($client,$url,$method,$content_type,$body))
-			{
-				if(!$client->fetch($url,$method,$content_type,$body))
-					return(false);
-				// Taken before isOKPostFetch(), because an override may fetch
-				// further pages onto this client and the question here is about
-				// the answer to the caller's own URL.
-				$answer = $this->classifyAnswer($client);
-				if($this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body))
-				{
-					if($client instanceof Snoopy && $data instanceof privateData
-						&& $data->scopedCookies !== $client->responseCookiesForAccountStorage()
-						&& !$data->store($client))
-						FileUtil::toLog('loginmgr: scoped-cookie-cache-write-failed: ' . $this->getName());
-					return(true);
-				}
-				// Only a guest answer is evidence that the session died. Anything
-				// else leaves that unproven, so report the failure and keep the
-				// cookies rather than log in again against a tracker that is not
-				// answering: one outage would otherwise cost a credential POST per
-				// call for every caller looping over a torrent list, which is how
-				// an account gets locked out.
-				if($answer!==self::ANSWER_GUEST)
-					return(false);
-			}
-			$requestUrl = $url;
-			$ret = ( $this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
-				$this->loginWasNotRefused($client) &&
-				($is_result_fetched || $client->fetch($url,$method,$content_type,$body)) &&
-				$this->hasLivePostFetchAnswer($client,$url,$method,$content_type,$body) &&
-				$data->store($client) );
-			if(!$ret && $data instanceof privateData)
-				$data->forget($requestUrl);
-			return($ret);
-		}));
-	}
-
-	public function check( $client, $login, $password, $auto )
-	{
-		return($this->withRedirectTrust($client, function() use($client,$login,$password,$auto)
-		{
-			if($this->refuseUnconfigured())
-				return;
-			$modified = privateData::getModified($this->getName());
-			if( ($modified===false) || ((time()-$modified)>=$auto))
-			{
-				// login() takes these by reference and several accounts read them
-				// before writing: undeclared, they arrived as null, and an account
-				// whose login() starts by fetching $url could never authenticate
-				// from here at all.
-				$url = $this->url;
-				$method = "GET";
-				$content_type = "";
-				$body = "";
-				$is_result_fetched = false;
-				// The login runs without the stored session: a tracker may send a
-				// signed-in visitor away from its login page before reading the
-				// credentials. Storing replaces only this origin's session; other
-				// hosts' sessions in the same document are kept (privateData::merge).
-				$data = $this->loadData();
-				if($this->login($client,$login,$password,$url,$method,$content_type,$body,$is_result_fetched) &&
-					$this->loginWasNotRefused($client))
-					$data->store($client, $this->url);
-				// A login that did not come back is not evidence that the stored
-				// session is stale, and this job exists to REFRESH a session:
-				// deleting one it merely failed to renew leaves the user worse off
-				// than not running at all. A session that really has died is
-				// discovered, and replaced, by the next fetch().
-			}
-		}));
-	}
-
 }
 
 class accountManager
 {
 	public $hash = "loginmgr.dat";
 	public $modified = false;
-	public $accounts = array();
+	public $accounts = [];
 
-	static public function load()
+	public static function load()
 	{
 		$cache = new rCache();
 		$ar = new accountManager();
@@ -685,20 +685,20 @@ class accountManager
 			FileUtil::toLog('loginmgr: the accounts directory could not be read, so the stored list is left alone: '.$dir);
 			return(false);
 		}
-		$accounts = array();
+		$accounts = [];
 		while(false !== ($file = readdir($handle)))
 		{
 			if(is_file($dir.'/'.$file))
 			{
 				$name = basename($file,".php");
-				$accounts[$name] = array( "name"=>$name, "path"=>FileUtil::fullpath($dir.'/'.$file), "object"=>$name."Account", "login"=>'', "password"=>'', "enabled"=>0, "auto"=>0 );
+				$accounts[$name] = [ "name"=>$name, "path"=>FileUtil::fullpath($dir.'/'.$file), "object"=>$name."Account", "login"=>'', "password"=>'', "enabled"=>0, "auto"=>0 ];
 				if(array_key_exists($name,$oldAccounts) && array_key_exists("login",$oldAccounts[$name]))
 				{
 					$accounts[$name]["login"] = self::asText($oldAccounts[$name]["login"]);
 					$accounts[$name]["password"] = self::asText($oldAccounts[$name]["password"]);
 					$accounts[$name]["enabled"] = self::asFlag($oldAccounts[$name]["enabled"]);
-					if(array_key_exists("auto",$oldAccounts[$name]))
-						$accounts[$name]["auto"] = self::asNumber($oldAccounts[$name]["auto"]);
+					if(array_key_exists("auto",$oldAccounts[$name])) {
+						$accounts[$name]["auto"] = self::asNumber($oldAccounts[$name]["auto"]); }
 				}
 			}
 		}
@@ -714,43 +714,16 @@ class accountManager
 		return(true);
 	}
 
-	static protected function asFlag($value)
-	{
-		return(is_scalar($value) && $value && $value !== '0' ? 1 : 0);
-	}
-
-	static protected function asNumber($value)
-	{
-		return(is_scalar($value) ? intval($value) : 0);
-	}
-
-	static protected function asText($value)
-	{
-		return(is_scalar($value) ? strval($value) : '');
-	}
-
-	private function configurationRequired($nfo, $account = null)
-	{
-		if($account === null)
-		{
-			require_once($nfo["path"]);
-			if(!method_exists($nfo["object"], 'configurationError'))
-				return(false);
-			$account = new $nfo["object"]();
-		}
-		return(is_callable(array($account, 'configurationError')) && $account->configurationError() !== '');
-	}
-
 	public function get()
 	{
-		$accounts = array();
-		foreach( $this->accounts as $name=>$nfo )
-			$accounts[self::asText($name)] = array(
+		$accounts = [];
+		foreach( $this->accounts as $name=>$nfo ) {
+			$accounts[self::asText($name)] = [
 				"login" => self::asText($nfo["login"] ?? ''),
 				"password_set" => self::asText($nfo["password"] ?? '') === '' ? 0 : 1,
 				"enabled" => self::asFlag($nfo["enabled"] ?? 0),
 				"auto" => self::asNumber($nfo["auto"] ?? 0),
-				"configurationRequired" => $this->configurationRequired($nfo));
+				"configurationRequired" => $this->configurationRequired($nfo)]; }
 		return("theWebUI.theAccounts = ".JSON::jsValue((object) $accounts).";\n");
 	}
 
@@ -762,17 +735,17 @@ class accountManager
 		$previous = $this->accounts;
 		foreach( $this->accounts as $name=>$nfo )
 		{
-			if(isset($_POST[$name."_enabled"]))
-				$this->accounts[$name]["enabled"] = self::asFlag($_POST[$name."_enabled"]);
-			if(isset($_POST[$name."_login"]))
-				$this->accounts[$name]["login"] = self::asText($_POST[$name."_login"]);
+			if(isset($_POST[$name."_enabled"])) {
+				$this->accounts[$name]["enabled"] = self::asFlag($_POST[$name."_enabled"]); }
+			if(isset($_POST[$name."_login"])) {
+				$this->accounts[$name]["login"] = self::asText($_POST[$name."_login"]); }
 			// An empty edit keeps the stored value; only the separate clear flag removes it.
-			if(isset($_POST[$name."_clear_password"]) && $_POST[$name."_clear_password"] === '1')
-				$this->accounts[$name]["password"] = '';
-			else if(isset($_POST[$name."_password"]) && $_POST[$name."_password"] !== '')
-				$this->accounts[$name]["password"] = self::asText($_POST[$name."_password"]);
-			if(isset($_POST[$name."_auto"]))
-				$this->accounts[$name]["auto"] = self::asNumber($_POST[$name."_auto"]);
+			if(isset($_POST[$name."_clear_password"]) && $_POST[$name."_clear_password"] === '1') {
+				$this->accounts[$name]["password"] = ''; }
+			elseif(isset($_POST[$name."_password"]) && $_POST[$name."_password"] !== '') {
+				$this->accounts[$name]["password"] = self::asText($_POST[$name."_password"]); }
+			if(isset($_POST[$name."_auto"])) {
+				$this->accounts[$name]["auto"] = self::asNumber($_POST[$name."_auto"]); }
 		}
 		// A refused edit must leave the active credentials and sessions in place.
 		if(!$this->store())
@@ -780,28 +753,19 @@ class accountManager
 			$this->accounts = $previous;
 			return(false);
 		}
-		$notRetired = array();
-		foreach(array_keys($this->accounts) as $name)
-			if(!$this->forgetSession($name))
-				$notRetired[] = $name;
+		$notRetired = [];
+		foreach(array_keys($this->accounts) as $name) {
+			if(!$this->forgetSession($name)) {
+				$notRetired[] = $name; } }
 		// A session the cache would not discard is still sent to the tracker
 		// under credentials that no longer exist, which is the one thing
 		// forgetSession() is for. Nothing here can force the removal, so the
 		// names go where an operator can read them.
-		if(count($notRetired))
+		if(count($notRetired)) {
 			FileUtil::toLog('loginmgr: a stored session outlived the credentials it was made with: '.
-				implode(', ',$notRetired));
+				implode(', ',$notRetired)); }
 		$this->setHandlers();
 		return(true);
-	}
-
-	// Discards the cookies and referer held for this account: whatever was
-	// just written may name another site or another user. False when the
-	// session is still there afterwards.
-	protected function forgetSession( $name )
-	{
-		$data = new privateData( $name );
-		return($data->remove());
 	}
 
 	public function getAccount( $url, &$httpsAccount = null )
@@ -812,26 +776,26 @@ class accountManager
 		$httpHost = strtolower((string) @parse_url((string) $url, PHP_URL_SCHEME)) === 'http'
 			? UrlHost::of($url) : null;
 		$httpsUrl = $httpHost === null ? null : preg_replace('/^http:/i', 'https:', (string) $url, 1);
-		$httpCandidates = array();
+		$httpCandidates = [];
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			if($nfo["enabled"])
 			{
 				require_once( $nfo["path"] );
 				$object = new $nfo["object"]();
-				if($object->test($url))
-					return( $name );
-				if($httpsUrl !== null)
-					$httpCandidates[$name] = $object;
+				if($object->test($url)) {
+					return( $name ); }
+				if($httpsUrl !== null) {
+					$httpCandidates[$name] = $object; }
 			}
 		}
 		// Diagnose only after every account has declined the original HTTP URL.
 		foreach($httpCandidates as $name => $object)
 		{
-			if(!$object->test($httpsUrl))
-				continue;
+			if(!$object->test($httpsUrl)) {
+				continue; }
 			$httpsAccount = $name;
-			static $httpWarnings = array();
+			static $httpWarnings = [];
 			$key = $name . ' ' . preg_replace('/[^a-z0-9.\[\]:-]/i', '?', $httpHost);
 			if(!isset($httpWarnings[$key]))
 			{
@@ -857,7 +821,7 @@ class accountManager
 
 	public function getInfo()
 	{
-		$ret = array();
+		$ret = [];
 		foreach( $this->accounts as $name=>$nfo )
 		{
 			require_once( $nfo["path"] );
@@ -881,9 +845,9 @@ class accountManager
 
 	public function hasAuto()
 	{
-		foreach( $this->accounts as $name=>$nfo )
-			if($nfo["enabled"] && !empty($nfo["auto"]))
-				return(true);
+		foreach( $this->accounts as $name=>$nfo ) {
+			if($nfo["enabled"] && !empty($nfo["auto"])) {
+				return(true); } }
 		return(false);
 	}
 
@@ -910,5 +874,41 @@ class accountManager
 				$object->check( new Snoopy(), $nfo["login"], $nfo["password"], $nfo["auto"] );
 			}
 		}
+	}
+
+	protected static function asFlag($value)
+	{
+		return(is_scalar($value) && $value && $value !== '0' ? 1 : 0);
+	}
+
+	protected static function asNumber($value)
+	{
+		return(is_scalar($value) ? intval($value) : 0);
+	}
+
+	protected static function asText($value)
+	{
+		return(is_scalar($value) ? strval($value) : '');
+	}
+
+	// Discards the cookies and referer held for this account: whatever was
+	// just written may name another site or another user. False when the
+	// session is still there afterwards.
+	protected function forgetSession( $name )
+	{
+		$data = new privateData( $name );
+		return($data->remove());
+	}
+
+	private function configurationRequired($nfo, $account = null)
+	{
+		if($account === null)
+		{
+			require_once($nfo["path"]);
+			if(!method_exists($nfo["object"], 'configurationError')) {
+				return(false); }
+			$account = new $nfo["object"]();
+		}
+		return(is_callable([$account, 'configurationError']) && $account->configurationError() !== '');
 	}
 }

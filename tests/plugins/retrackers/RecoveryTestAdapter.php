@@ -2,54 +2,54 @@
 
 class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 {
-	public $ledgerKeys = array();
-	public $scalarSequence = array();
-	public $mutations = array();
-	public $multicallHistory = array();
-	public $adoptCallbacks = array();
+	public $ledgerKeys = [];
+	public $scalarSequence = [];
+	public $mutations = [];
+	public $multicallHistory = [];
+	public $adoptCallbacks = [];
 	public $ledgerReadUnknown = false;
-	public $preflightCalls = array();
+	public $preflightCalls = [];
 	public $preflightResult = true;
 	public $preflightFailure = null;
 	public $candidateCapability = null;
 	public $originalCapability = null;
-	public $capabilityReads = array();
+	public $capabilityReads = [];
 	public $loadResult = true;
-	public $phaseArmCalls = array();
+	public $phaseArmCalls = [];
 	public $phaseArmResult = 'RETRACKERS_PHASE_ARMED';
-	public $phaseArmResults = array();
-	public $loadCallbacks = array();
-	public $loadCallbackResults = array();
-	public $loadPhaseReceiptSequence = array();
+	public $phaseArmResults = [];
+	public $loadCallbacks = [];
+	public $loadCallbackResults = [];
+	public $loadPhaseReceiptSequence = [];
 	public $loadPhaseReceiptReads = 0;
-	public $cleanupCallbacks = array();
-	public $cleanupCallbackResults = array();
-	public $cleanupReceiptSequence = array();
+	public $cleanupCallbacks = [];
+	public $cleanupCallbackResults = [];
+	public $cleanupReceiptSequence = [];
 	public $cleanupReceiptReads = 0;
-	public $oldCommitCalls = array();
+	public $oldCommitCalls = [];
 	public $oldCommitResult = 'RETRACKERS_ERASED';
 	public $oldCommitFailure = null;
 	public $oldCommitLedgerKeys = null;
 	public $oldCommitReceiptReads = 0;
 	public $oldCommitReceiptFailure = null;
-	public $oldCommitReceiptSequence = array();
+	public $oldCommitReceiptSequence = [];
 	public $candidateFenceChecks = 0;
 	public $candidateFenceReady = false;
 	public $candidateFenceObligation = null;
 	public $daemonCap = 16777216;
 	public $maxContentSizeCalls = 0;
 	public $scalarReads = 0;
-	public $releaseCallbacks = array();
-	public $releaseResults = array();
-	public $terminalCleanupCallbacks = array();
-	public $terminalCleanupResults = array();
-	public $terminalCleanupApply = array();
-	public $terminalCleanupResidualPrefixes = array();
-	public $terminalCleanupOrder = array();
-	public $ledgerReadSequence = array();
+	public $releaseCallbacks = [];
+	public $releaseResults = [];
+	public $terminalCleanupCallbacks = [];
+	public $terminalCleanupResults = [];
+	public $terminalCleanupApply = [];
+	public $terminalCleanupResidualPrefixes = [];
+	public $terminalCleanupOrder = [];
+	public $ledgerReadSequence = [];
 	public $ledgerReadCount = 0;
 	public $ledgerReadFailureAt = null;
-	public $recoveryEvents = array();
+	public $recoveryEvents = [];
 
 	public function __construct($ledgerKeys, $scalarSequence)
 	{
@@ -96,7 +96,7 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 
 	public function preflightStage(RetrackersAnonymousStage $stage, $php, &$failure = null)
 	{
-		$this->preflightCalls[] = array($stage->candidate(), $stage->original(), $php);
+		$this->preflightCalls[] = [$stage->candidate(), $stage->original(), $php];
 		if (!$this->preflightResult) {
 			$failure = $this->preflightFailure === null ? 'procfd-preflight-failed' : $this->preflightFailure;
 			return(false);
@@ -124,13 +124,13 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 			return(false);
 		}
 		$failure = null;
-		return(array('family' => 2, 'values' => $current));
+		return(['family' => 2, 'values' => $current]);
 	}
 
 	public function executeDirectMutation($method, array $params, &$failure = null)
 	{
-		$this->mutations[] = array('method' => $method, 'params' => $params);
-		if (in_array($method, array('load.normal', 'load.start'), true) && isset($params[1])) {
+		$this->mutations[] = ['method' => $method, 'params' => $params];
+		if (in_array($method, ['load.normal', 'load.start'], true) && isset($params[1])) {
 			$kind = strpos(implode("\n", $params), 'v1:rollback-claim:') !== false ?
 				'rollback-dispatch' : 'candidate-dispatch';
 			$this->capabilityReads[$kind] = retrackersTestReadCapability($params[1]);
@@ -182,8 +182,8 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 			return('ADOPTED');
 		}
 		if (!$hasWa && $hasWp && !in_array('ma:1', $this->ledgerKeys, true)) {
-			$this->executeDirectMutation('method.set_key', array('rr.receipts.v1', $wa, '1'));
-			$this->executeDirectMutation('method.set_key', array('rr.receipts.v1', $wp));
+			$this->executeDirectMutation('method.set_key', ['rr.receipts.v1', $wa, '1']);
+			$this->executeDirectMutation('method.set_key', ['rr.receipts.v1', $wp]);
 			$failure = null;
 			return('ADOPTED');
 		}
@@ -212,7 +212,7 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 		$this->terminalCleanupCallbacks[] = $callback;
 		$this->recoveryEvents[] = 'cleanup';
 		$grammar = implode("\n", $callback->params());
-		$positions = array();
+		$positions = [];
 		foreach ($this->ledgerKeys as $key) {
 			$position = strpos($grammar, $key);
 			if ($position !== false) {
@@ -230,7 +230,7 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 				function ($key) use ($grammar) { return(strpos($grammar, $key) === false); }));
 		}
 		$residual = count($this->terminalCleanupResidualPrefixes) > 0 ?
-			array_shift($this->terminalCleanupResidualPrefixes) : array();
+			array_shift($this->terminalCleanupResidualPrefixes) : [];
 		if (is_array($residual) && preg_match('/wa:([0-9a-f]{32})/', $grammar, $match) === 1) {
 			foreach ($residual as $prefix) {
 				$this->ledgerKeys[] = $prefix . ':' . $match[1];
@@ -248,7 +248,7 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 
 	public function armPhase($phase, $tx, &$failure = null)
 	{
-		$this->phaseArmCalls[] = array($phase, $tx);
+		$this->phaseArmCalls[] = [$phase, $tx];
 		$result = count($this->phaseArmResults) > 0 ?
 			array_shift($this->phaseArmResults) : $this->phaseArmResult;
 		if ($result === false) {
@@ -293,12 +293,12 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 			$failure = null;
 			return($result);
 		}
-		$map = $phase === 'la' ? array('lb', 'lf') : array('rb', 'rf');
+		$map = $phase === 'la' ? ['lb', 'lf'] : ['rb', 'rf'];
 		$failure = null;
-		return(array(
+		return([
 			'begin' => in_array($map[0] . ':' . $tx, $this->ledgerKeys, true) ? '1' : '0',
 			'fence' => in_array($map[1] . ':' . $tx, $this->ledgerKeys, true) ? '1' : '0',
-		));
+		]);
 	}
 
 	public function executeCandidateCleanup(RetrackersCandidateCleanupCallback $callback,
@@ -328,11 +328,11 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 			return($result);
 		}
 		$failure = null;
-		return(array(
+		return([
 			'begin' => in_array('cb:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
 			'done' => in_array('cd:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
 			'exit' => in_array('cx:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
-		));
+		]);
 	}
 
 	public function executeOldGenerationCommit($callback, &$failure = null)
@@ -362,11 +362,11 @@ class RetrackersRecoveryTestAdapter extends RetrackersWorkerRpcAdapter
 			return(false);
 		}
 		$failure = null;
-		return(array(
+		return([
 			'begin' => in_array('eb:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
 			'done' => in_array('ed:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
 			'exit' => in_array('ex:' . $tx, $this->ledgerKeys, true) ? '1' : '0',
-		));
+		]);
 	}
 
 	public function hasDurableCandidateFenceObligation($tx, &$failure = null,

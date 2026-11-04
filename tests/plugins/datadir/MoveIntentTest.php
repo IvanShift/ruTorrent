@@ -3,14 +3,14 @@
 require_once(__DIR__ . '/../../php/TestCase.php');
 umask(0022);
 $candidate = __DIR__ . '/../../../plugins/datadir/moveintent.php';
-if (is_file($candidate)) require_once($candidate);
+if (is_file($candidate)) { require_once($candidate); }
 
 function dataDirMoveFixture()
 {
     $root = (getenv('TMPDIR') ?: sys_get_temp_dir()) . '/datadir-intent-' . bin2hex(random_bytes(8));
     if (!mkdir($root, 0700) || !mkdir($root . '/from', 0700)
-        || !mkdir($root . '/to', 0700) || !mkdir($root . '/receipts', 0700))
-        throw new RuntimeException('Cannot create DataDir intent fixture');
+        || !mkdir($root . '/to', 0700) || !mkdir($root . '/receipts', 0700)) {
+        throw new RuntimeException('Cannot create DataDir intent fixture'); }
     return $root;
 }
 
@@ -20,19 +20,19 @@ function dataDirRemoveFixture($path)
         @unlink($path);
         return;
     }
-    foreach (array_diff(scandir($path), array('.', '..')) as $entry)
-        dataDirRemoveFixture($path . '/' . $entry);
+    foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+        dataDirRemoveFixture($path . '/' . $entry); }
     rmdir($path);
 }
 
 function dataDirNoReplace($source, $destination)
 {
-    if (@lstat($destination) !== false)
-        return false;
+    if (@lstat($destination) !== false) {
+        return false; }
     return @rename($source, $destination);
 }
 
-$tests = array(
+$tests = [
     'a two-file receipt resumes after a crash cut without moving either file twice' => function () {
         $root = dataDirMoveFixture();
         try {
@@ -40,7 +40,7 @@ $tests = array(
             file_put_contents($root . '/from/two', 'two');
             $receipt = $root . '/receipts/' . str_repeat('A', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('b', 32), str_repeat('A', 40),
-                $root . '/from', $root . '/to', array('one', 'two'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one', 'two'], 'dataDirNoReplace');
             testAssertSame('pending', $intent->advance(1), 'first file moved and receipt remains');
             testAssertSame(false, $intent->markFinishing(), 'partial transfer cannot enter daemon finish');
             testAssertSame(false, file_exists($root . '/from/one'), 'first source is gone');
@@ -68,7 +68,7 @@ $tests = array(
             file_put_contents($root . '/from/two', 'two');
             $receipt = $root . '/receipts/' . str_repeat('C', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('d', 32), str_repeat('C', 40),
-                $root . '/from', $root . '/to', array('one', 'two'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one', 'two'], 'dataDirNoReplace');
             file_put_contents($root . '/to/two', 'foreign');
             testAssertSame('occupied-destination', $intent->advance(), 'second path is blocked');
             testAssertSame('foreign', file_get_contents($root . '/to/two'), 'foreign destination is intact');
@@ -89,7 +89,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('D', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('5', 32), str_repeat('D', 40),
-                    $root . '/from', $root . '/to', array('one'));
+                    $root . '/from', $root . '/to', ['one']);
                 throw new RuntimeException('expected move-unavailable refusal');
             } catch (RuntimeException $error) {
                 testAssertSame('move-unavailable', $error->getMessage(),
@@ -111,7 +111,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('1', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('2', 32), str_repeat('1', 40),
-                    $root . '/from', $root . '/to', array('one', 'two'), 'dataDirNoReplace');
+                    $root . '/from', $root . '/to', ['one', 'two'], 'dataDirNoReplace');
                 throw new RuntimeException('expected occupied-destination refusal');
             } catch (RuntimeException $error) {
                 testAssertSame('occupied-destination', $error->getMessage(), 'classified preflight refusal');
@@ -129,7 +129,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'original');
             $receipt = $root . '/receipts/' . str_repeat('3', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('4', 32), str_repeat('3', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             file_put_contents($root . '/from/replacement', 'foreign');
             rename($root . '/from/replacement', $root . '/from/one');
             testAssertSame('changed-source', $intent->advance(), 'identity mismatch refuses transfer');
@@ -152,7 +152,7 @@ $tests = array(
                 return dataDirNoReplace($source, $destination);
             };
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('7', 32), str_repeat('6', 40),
-                $root . '/from', $root . '/to', array('one'), $mover);
+                $root . '/from', $root . '/to', ['one'], $mover);
             testAssertSame('occupied-destination', $intent->advance(),
                 'the post-move identity check refuses the substituted file');
             testAssertSame('foreign', file_get_contents($root . '/to/one'),
@@ -175,7 +175,7 @@ $tests = array(
             file_put_contents($root . '/from/sub/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('5', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('6', 32), str_repeat('5', 40),
-                $root . '/from', $root . '/to', array('sub/one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['sub/one'], 'dataDirNoReplace');
             rmdir($root . '/to/sub');
             symlink($root . '/outside', $root . '/to/sub');
             testAssertSame('destination-outside-root', $intent->advance(), 'parent escape is refused');
@@ -191,7 +191,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'original');
             $receipt = $root . '/receipts/' . str_repeat('7', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('8', 32), str_repeat('7', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'original reaches destination');
             clearstatcache(true, $root . '/to/one');
             $originalInode = lstat($root . '/to/one')['ino'];
@@ -222,7 +222,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('d', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('e', 32), str_repeat('d', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             $data = json_decode(file_get_contents($receipt), true);
             unlink($data['witness'] . '/0');
             testAssertSame('missing-or-changed-witness', $intent->advance(), 'inode authority is required');
@@ -239,7 +239,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('9', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('a', 32), str_repeat('9', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             $data = json_decode(file_get_contents($receipt), true);
             $data['phase'] = 'preparing';
             file_put_contents($receipt, json_encode($data));
@@ -260,7 +260,7 @@ $tests = array(
             file_put_contents($root . '/from/two', 'two');
             $receipt = $root . '/receipts/' . str_repeat('b', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('c', 32), str_repeat('b', 40),
-                $root . '/from', $root . '/to', array('one', 'two'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one', 'two'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'payload reaches destination');
             testAssertSame(true, $intent->markFinishing(), 'finish intent is recorded');
             testAssertSame(true, $intent->markTerminal(), 'daemon terminal result is recorded');
@@ -285,7 +285,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('9', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('a', 32), str_repeat('9', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             testAssertSame('ready', $intent->phase(), 'published receipt may be claimed');
             testAssertSame(false, $intent->retire(), 'uncommitted ready receipt cannot be retired');
             testAssertSame(true, is_file($receipt), 'receipt remains');
@@ -299,7 +299,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('F', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('1', 32), str_repeat('F', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'payload is at destination');
             testAssertSame(true, $intent->markFinishing(), 'finish intent is recorded');
             testAssertSame(true, $intent->markTerminal(), 'matched daemon DONE is recorded');
@@ -322,7 +322,7 @@ $tests = array(
             file_put_contents($root . '/from/two', 'two');
             $receipt = $root . '/receipts/' . str_repeat('A', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('2', 32), str_repeat('A', 40),
-                $root . '/from', $root . '/to', array('one', 'two'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one', 'two'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'both payload files moved');
             testAssertSame(true, $intent->markFinishing(), 'finish intent recorded');
             testAssertSame(true, $intent->markTerminal(), 'daemon DONE recorded');
@@ -342,7 +342,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'original');
             $receipt = $root . '/receipts/' . str_repeat('B', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('3', 32), str_repeat('B', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'original payload moved');
             testAssertSame(true, $intent->markFinishing(), 'finish intent recorded');
             unlink($root . '/to/one');
@@ -360,7 +360,7 @@ $tests = array(
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('C', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('4', 32), str_repeat('C', 40),
-                $root . '/from', $root . '/to', array('one'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['one'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'payload moved');
             testAssertSame(true, $intent->markFinishing(), 'finish intent recorded');
             testAssertSame(true, $intent->markTerminal(), 'daemon DONE recorded');
@@ -376,15 +376,15 @@ $tests = array(
         $root = dataDirMoveFixture();
         $other = '/dev/shm/datadir-intent-' . bin2hex(random_bytes(8));
         try {
-            if (@stat('/dev/shm')['dev'] === @stat($root)['dev'])
-                throw new RuntimeException('Cross-filesystem fixture needs distinct /dev/shm');
-            if (!mkdir($other, 0700))
-                throw new RuntimeException('Cannot create cross-filesystem fixture');
+            if (@stat('/dev/shm')['dev'] === @stat($root)['dev']) {
+                throw new RuntimeException('Cross-filesystem fixture needs distinct /dev/shm'); }
+            if (!mkdir($other, 0700)) {
+                throw new RuntimeException('Cannot create cross-filesystem fixture'); }
             file_put_contents($root . '/from/one', 'one');
             $receipt = $root . '/receipts/' . str_repeat('E', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('f', 32), str_repeat('E', 40),
-                    $root . '/from', $other, array('one'), 'dataDirNoReplace');
+                    $root . '/from', $other, ['one'], 'dataDirNoReplace');
                 throw new RuntimeException('expected cross-filesystem refusal');
             } catch (RuntimeException $error) {
                 testAssertSame('cross-filesystem', $error->getMessage(), 'classified refusal');
@@ -394,7 +394,7 @@ $tests = array(
             testAssertSame(false, file_exists($receipt), 'no pending receipt exists');
         } finally {
             dataDirRemoveFixture($root);
-            if (is_dir($other)) dataDirRemoveFixture($other);
+            if (is_dir($other)) { dataDirRemoveFixture($other); }
         }
     },
 
@@ -406,7 +406,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('B', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('b', 32), str_repeat('B', 40),
-                    $root . '/from', $root . '/to', array('a'), 'dataDirNoReplace');
+                    $root . '/from', $root . '/to', ['a'], 'dataDirNoReplace');
                 throw new RuntimeException('unsafe file was accepted');
             } catch (RuntimeException $e) {
                 testAssertSame('untrusted-file', $e->getMessage(),
@@ -426,7 +426,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('D', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('d', 32), str_repeat('D', 40),
-                    $root . '/from', $root . '/to', array('a'), 'dataDirNoReplace');
+                    $root . '/from', $root . '/to', ['a'], 'dataDirNoReplace');
                 throw new RuntimeException('unsafe directory was accepted');
             } catch (RuntimeException $e) {
                 testAssertSame('untrusted-directory', $e->getMessage(),
@@ -454,7 +454,7 @@ $tests = array(
                 'the destination preflight accepts the 0777 ancestor');
             $receipt = $root . '/receipts/' . str_repeat('A', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('a', 32), str_repeat('A', 40),
-                $root . '/from', $root . '/to', array('sub/a'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['sub/a'], 'dataDirNoReplace');
             testAssertSame('complete', $intent->advance(), 'the payload moves');
             testAssertSame('A', file_get_contents($root . '/to/sub/a'), 'the bytes arrive');
             testAssertSame(false, file_exists($root . '/from/sub/a'), 'the source name is gone');
@@ -474,7 +474,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('B', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('b', 32), str_repeat('B', 40),
-                    $root . '/from', $root . '/to', array('a'), 'dataDirNoReplace');
+                    $root . '/from', $root . '/to', ['a'], 'dataDirNoReplace');
                 throw new RuntimeException('a writable destination outside the top was accepted');
             } catch (RuntimeException $e) {
                 testAssertSame('untrusted-directory', $e->getMessage(), 'the move refuses before a receipt');
@@ -497,7 +497,7 @@ $tests = array(
             $receipt = $root . '/receipts/' . str_repeat('C', 40) . '.json';
             try {
                 DataDirMoveIntent::prepare($receipt, str_repeat('c', 32), str_repeat('C', 40),
-                    $root . '/from', $root . '/to', array('sub/b', 'a'), 'dataDirNoReplace');
+                    $root . '/from', $root . '/to', ['sub/b', 'a'], 'dataDirNoReplace');
                 throw new RuntimeException('a missing source parent was accepted');
             } catch (RuntimeException $e) {
                 testAssertSame('source-parent-unavailable', $e->getMessage(), 'the refusal says what is missing');
@@ -514,7 +514,7 @@ $tests = array(
             file_put_contents($root . '/from/b', 'B');
             $receipt = $root . '/receipts/' . str_repeat('E', 40) . '.json';
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('e', 32), str_repeat('E', 40),
-                $root . '/from', $root . '/to', array('a', 'b'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['a', 'b'], 'dataDirNoReplace');
             file_put_contents($root . '/to/b', 'foreign');
             testAssertSame(false, $intent->abortUnmoved(), 'foreign destination holds the receipt');
             testAssertSame(true, is_file($receipt), 'receipt remains discoverable');
@@ -524,7 +524,7 @@ $tests = array(
             testAssertSame('B', file_get_contents($root . '/from/b'), 'second source remains');
             testAssertSame(false, file_exists($receipt), 'cancelled receipt retired');
             $intent = DataDirMoveIntent::prepare($receipt, str_repeat('f', 32), str_repeat('E', 40),
-                $root . '/from', $root . '/to', array('a', 'b'), 'dataDirNoReplace');
+                $root . '/from', $root . '/to', ['a', 'b'], 'dataDirNoReplace');
             testAssertSame('pending', $intent->advance(1), 'first file moved');
             testAssertSame(false, $intent->abortUnmoved(), 'partial move cannot be cancelled');
             testAssertSame(true, is_file($receipt), 'partial receipt remains for recovery');
@@ -557,6 +557,6 @@ $tests = array(
         }
     },
 
-);
+];
 
 exit(testRunCases($tests));

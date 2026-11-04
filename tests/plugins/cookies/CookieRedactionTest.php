@@ -12,6 +12,17 @@ class CookieRedactionTest extends TestCase
 {
     private $profile;
 
+    public function setUp()
+    {
+        $jar = new rCookies();
+        $jar->list = [
+            'one.test' => ['sid' => 'first-secret'],
+            'two.test' => ['auth' => 'second-secret'],
+            'remove.test' => ['token' => 'third-secret'],
+        ];
+        $this->assertTrue($jar->store(), 'synthetic cookie fixture stored');
+    }
+
     public function setUpClass()
     {
         $this->profile = $_ENV['RU_PROFILE_PATH'];
@@ -19,48 +30,12 @@ class CookieRedactionTest extends TestCase
 
     public function tearDownClass()
     {
-        if (!is_dir($this->profile)) return;
+        if (!is_dir($this->profile)) { return; }
         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($this->profile,
             FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($files as $entry)
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+        foreach ($files as $entry) {
+            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
         rmdir($this->profile);
-    }
-
-    public function setUp()
-    {
-        $jar = new rCookies();
-        $jar->list = array(
-            'one.test' => array('sid' => 'first-secret'),
-            'two.test' => array('auth' => 'second-secret'),
-            'remove.test' => array('token' => 'third-secret'),
-        );
-        $this->assertTrue($jar->store(), 'synthetic cookie fixture stored');
-    }
-
-    private function action($mode, $post = array(), $host = null, $gzip = false)
-    {
-        $code = '$_ENV["RU_PROFILE_PATH"] = $argv[1];'
-            . '$_SERVER["REQUEST_METHOD"] = ' . var_export($mode === 'add' ? 'POST' : 'GET', true) . ';'
-            . '$_REQUEST = array("mode" => ' . var_export($mode, true) . ');'
-            . ($host === null ? '' : '$_REQUEST["host"] = ' . var_export($host, true) . ';')
-            . '$_POST = json_decode($argv[2], true);'
-            . ($gzip ? 'ob_start(); $_SERVER["HTTP_ACCEPT_ENCODING"] = "gzip";'
-                . 'require ' . var_export(__DIR__ . '/../../../php/util.php', true) . ';'
-                . '$phpUseGzip = true; $phpGzipLevel = 2;' : '')
-            . 'require ' . var_export(__DIR__ . '/../../../plugins/cookies/action.php', true) . ';';
-        $process = proc_open(array(PHP_BINARY, '-d', 'display_errors=0', '-r', $code,
-            $this->profile, json_encode($post)), array(1 => array('pipe', 'w'),
-            2 => array('pipe', 'w')), $pipes, __DIR__ . '/../../../plugins/cookies');
-        if (!is_resource($process)) throw new RuntimeException('Could not start cookie action');
-        $body = stream_get_contents($pipes[1]);
-        $errors = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $status = proc_close($process);
-        if ($status !== 0 || $errors !== '')
-            throw new RuntimeException('Cookie action failed: ' . $errors);
-        return $body;
     }
 
     public function testCookieValuesNeverEnterBootstrapOrInfoResponses()
@@ -74,16 +49,16 @@ class CookieRedactionTest extends TestCase
             'bootstrap omits the first stored value');
         $this->assertTrue(strpos($bootstrap, 'second-secret') === false,
             'bootstrap omits the second stored value');
-        $this->assertSame(array('one.test' => true, 'two.test' => true, 'remove.test' => true),
+        $this->assertSame(['one.test' => true, 'two.test' => true, 'remove.test' => true],
             $jar->getInfo(), 'info contains host presence only');
         $this->assertSame($jar->getInfo(), json_decode($this->action('info'), true),
             'info route contains host presence only');
-        $this->assertSame(true, json_decode($this->action('info', array(), 'one.test'), true),
+        $this->assertSame(true, json_decode($this->action('info', [], 'one.test'), true),
             'host info route reports presence without cookie pairs');
-        $this->assertSame(false, json_decode($this->action('info', array(), 'missing.test'), true),
+        $this->assertSame(false, json_decode($this->action('info', [], 'missing.test'), true),
             'unknown host info route reports absence');
-        $added = $this->action('add', array('host' => 'new.test',
-            'cookies' => rawurlencode('session=fourth-secret')));
+        $added = $this->action('add', ['host' => 'new.test',
+            'cookies' => rawurlencode('session=fourth-secret')]);
         $this->assertSame(true, json_decode($added, true)['new.test'],
             'add response reports host presence without its new cookie');
         $this->assertTrue(strpos($added, 'fourth-secret') === false,
@@ -93,23 +68,23 @@ class CookieRedactionTest extends TestCase
     public function testLargeGzipAddResponseDoesNotClearStoredCookies()
     {
         $jar = rCookies::load();
-        for ($i = 0; $i < 90; $i++)
-            $jar->list[sprintf('host-%03d.example.test', $i)] = array('sid' => 'saved');
+        for ($i = 0; $i < 90; $i++) {
+            $jar->list[sprintf('host-%03d.example.test', $i)] = ['sid' => 'saved']; }
         $this->assertTrue($jar->store(), 'large cookie-host list stored');
         $this->assertTrue(strlen(JSON::safeEncode($jar->getInfo())) >= 2048,
             'add response reaches the gzip branch');
-        $body = $this->action('add', array('host' => 'new.test',
-            'cookies' => rawurlencode('sid=new-secret')), null, true);
+        $body = $this->action('add', ['host' => 'new.test',
+            'cookies' => rawurlencode('sid=new-secret')], null, true);
         $this->assertTrue(substr($body, 0, 2) === "\x1f\x8b",
             'add response is gzip encoded');
         $saved = rCookies::load();
-        $this->assertSame(array('sid' => 'first-secret'),
+        $this->assertSame(['sid' => 'first-secret'],
             $saved->getCookiesForHost('one.test'),
             'gzip add response preserves an existing stored credential');
-        $this->assertSame(array('sid' => 'new-secret'),
+        $this->assertSame(['sid' => 'new-secret'],
             $saved->getCookiesForHost('new.test'),
             'gzip add response retains the newly added credential');
-        $this->assertSame(array('sid' => 'saved'),
+        $this->assertSame(['sid' => 'saved'],
             $saved->getCookiesForHost('host-089.example.test'),
             'gzip add response preserves the last host in the large list');
     }
@@ -127,11 +102,11 @@ class CookieRedactionTest extends TestCase
         $this->assertTrue(is_string($error) && strpos($error, 'full cookie string') !== false,
             'renaming a masked host requires a full cookie string');
         $saved = rCookies::load();
-        $this->assertSame(array('sid' => 'first-secret'), $saved->getCookiesForHost('one.test'),
+        $this->assertSame(['sid' => 'first-secret'], $saved->getCookiesForHost('one.test'),
             'the original host keeps its cookie after refusal');
-        $this->assertSame(array('auth' => 'second-secret'), $saved->getCookiesForHost('two.test'),
+        $this->assertSame(['auth' => 'second-secret'], $saved->getCookiesForHost('two.test'),
             'another edited row is not partly saved');
-        $this->assertSame(array(), $saved->getCookiesForHost('renamed.test'),
+        $this->assertSame([], $saved->getCookiesForHost('renamed.test'),
             'the renamed host is not created from a masked value');
     }
 
@@ -142,17 +117,42 @@ class CookieRedactionTest extends TestCase
             . '&cookie=' . rawurlencode('two.test|auth=********')
             . '&cookie=' . rawurlencode('fresh.test|sid=fresh'));
         $saved = rCookies::load();
-        $this->assertSame(array('sid' => 'first-secret'), $saved->getCookiesForHost('one.test'),
+        $this->assertSame(['sid' => 'first-secret'], $saved->getCookiesForHost('one.test'),
             'unchanged placeholder retains the existing server-side value');
-        $this->assertSame(array('auth' => '********'), $saved->getCookiesForHost('two.test'),
+        $this->assertSame(['auth' => '********'], $saved->getCookiesForHost('two.test'),
             'literal masked-looking cookie value replaces an old value without colliding with the placeholder');
-        $this->assertSame(array('sid' => 'fresh'), $saved->getCookiesForHost('fresh.test'),
+        $this->assertSame(['sid' => 'fresh'], $saved->getCookiesForHost('fresh.test'),
             'a new host can be added');
-        $this->assertSame(array(), $saved->getCookiesForHost('remove.test'),
+        $this->assertSame([], $saved->getCookiesForHost('remove.test'),
             'omitting a host removes it');
-        $this->assertSame(array(), $saved->getCookiesForHost('unknown.test'),
+        $this->assertSame([], $saved->getCookiesForHost('unknown.test'),
             'placeholder alone cannot create a cookie');
         $this->assertTrue(strpos($saved->get(), 'first-secret') === false,
             'post-save bootstrap still omits the preserved value');
+    }
+
+    private function action($mode, $post = [], $host = null, $gzip = false)
+    {
+        $code = '$_ENV["RU_PROFILE_PATH"] = $argv[1];'
+            . '$_SERVER["REQUEST_METHOD"] = ' . var_export($mode === 'add' ? 'POST' : 'GET', true) . ';'
+            . '$_REQUEST = array("mode" => ' . var_export($mode, true) . ');'
+            . ($host === null ? '' : '$_REQUEST["host"] = ' . var_export($host, true) . ';')
+            . '$_POST = json_decode($argv[2], true);'
+            . ($gzip ? 'ob_start(); $_SERVER["HTTP_ACCEPT_ENCODING"] = "gzip";'
+                . 'require ' . var_export(__DIR__ . '/../../../php/util.php', true) . ';'
+                . '$phpUseGzip = true; $phpGzipLevel = 2;' : '')
+            . 'require ' . var_export(__DIR__ . '/../../../plugins/cookies/action.php', true) . ';';
+        $process = proc_open([PHP_BINARY, '-d', 'display_errors=0', '-r', $code,
+            $this->profile, json_encode($post)], [1 => ['pipe', 'w'],
+            2 => ['pipe', 'w']], $pipes, __DIR__ . '/../../../plugins/cookies');
+        if (!is_resource($process)) { throw new RuntimeException('Could not start cookie action'); }
+        $body = stream_get_contents($pipes[1]);
+        $errors = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $status = proc_close($process);
+        if ($status !== 0 || $errors !== '') {
+            throw new RuntimeException('Cookie action failed: ' . $errors); }
+        return $body;
     }
 }

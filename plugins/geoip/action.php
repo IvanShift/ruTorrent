@@ -13,4 +13,4 @@ require_once( 'ip_db.php' );
 $db = new ipDB();
 $db->add($_POST["ip"],$_POST["comment"]);
 
-CachedEcho::send( JSON::safeEncode( array( "ip"=>$_POST["ip"], "comment"=>$_POST["comment"] ) ), "application/json" );
+CachedEcho::send( JSON::safeEncode( [ "ip"=>$_POST["ip"], "comment"=>$_POST["comment"] ] ), "application/json" );

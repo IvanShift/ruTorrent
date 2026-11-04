@@ -3,7 +3,7 @@ require_once(__DIR__.'/../../../php/utility/json.php');
 // Extracted classes omit the production bootstrap which supplies Utility.
 require_once(__DIR__.'/../../../php/utility/utility.php');
 require_once dirname(__DIR__, 2) . '/plugins/rutracker_check/TestLib.php';
-class FileUtil { public static $messages = array(); public static function toLog($message) { self::$messages[] = $message; }
+class FileUtil { public static $messages = []; public static function toLog($message) { self::$messages[] = $message; }
     public static function getFileName($path) { $parts = explode('/', $path); return end($parts); } }
 
 function rtAddTailSlash($path) { return rtrim($path, '/') . '/'; }
@@ -17,16 +17,16 @@ class LFS { public static function stat($path) { return @stat($path); } }
 require_once dirname(__DIR__, 3) . '/plugins/erasedata/filesystem.php';
 require_once dirname(__DIR__, 3) . '/plugins/erasedata/outcome.php';
 $util = dirname(__DIR__, 3) . '/plugins/autotools/util_rt.php';
-if (strpos(file_get_contents($util), 'function rtMoveFile(') !== false)
-    eval(loadFunctionDefinition($util, 'rtMoveFile'));
+if (strpos(file_get_contents($util), 'function rtMoveFile(') !== false) {
+    eval(loadFunctionDefinition($util, 'rtMoveFile')); }
 eval(loadClassDefinition(dirname(__DIR__, 3) . '/plugins/autotools/util_rt.php', 'AutoToolsFileTransaction'));
 eval(loadFunctionDefinition(dirname(__DIR__, 3) . '/plugins/autotools/util_rt.php', 'rtOpFiles'));
 
 function removeAutoToolsFixture($path)
 {
-    if (!is_dir($path) || is_link($path)) return @unlink($path);
-    foreach (scandir($path) as $name)
-        if ($name !== '.' && $name !== '..') removeAutoToolsFixture($path . '/' . $name);
+    if (!is_dir($path) || is_link($path)) { return @unlink($path); }
+    foreach (scandir($path) as $name) {
+        if ($name !== '.' && $name !== '..') { removeAutoToolsFixture($path . '/' . $name); } }
     return rmdir($path);
 }
 
@@ -61,11 +61,11 @@ $suite->test('legacy Move and unknown modes cannot use the unsafe file loop', fu
     }
     rTorrentSettings::get()->session = $root . '/session';
     try {
-        foreach (array('Move', 'Unexpected') as $mode) {
+        foreach (['Move', 'Unexpected'] as $mode) {
             file_put_contents($root . '/src/present', 'source');
             file_put_contents($root . '/dst/present', 'foreign');
-            FileUtil::$messages = array();
-            strictAssertSame(false, rtOpFiles(array('present'), $root . '/src', $root . '/dst', $mode),
+            FileUtil::$messages = [];
+            strictAssertSame(false, rtOpFiles(['present'], $root . '/src', $root . '/dst', $mode),
                 $mode . ' must not enter the legacy rename loop');
             strictAssertSame('source', @file_get_contents($root . '/src/present'),
                 $mode . ' preserves the source');
