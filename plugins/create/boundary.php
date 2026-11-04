@@ -36,11 +36,14 @@ final class CreateBoundary
 		// Nothing is outside a top directory of "/", the default.
 		if(FileUtil::addslash($topDirectory) === '/')
 			return(null);
-		// isInsideTopDirectory() above already refused without realpath() or
-		// is_link(). Without these, PHP 7.4 returns null, which would skip
-		// the links or, for is_dir(), the whole walk; PHP 8 throws.
-		if(!function_exists('scandir') || !function_exists('is_dir'))
-			return('walk-unavailable');
+		// isInsideTopDirectory() above refuses without realpath() or
+		// is_link() only for a local rtorrent; for a remote one it answers
+		// without them, so the walk checks every function it calls. A
+		// disabled one returns null on PHP 7.4, which would skip the links
+		// or, for is_dir(), the whole walk; PHP 8 throws.
+		foreach(array('scandir', 'is_dir', 'is_link', 'realpath') as $function)
+			if(!function_exists($function))
+				return('walk-unavailable');
 		if(!@is_dir($path))
 			return(null);
 		// Each real folder is listed once and without recursion, so a link

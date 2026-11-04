@@ -114,6 +114,8 @@ class CreateTopDirectoryTest extends TestCase
 			. '$topDirectory = ' . var_export(isset($options['top']) ? $options['top'] : $this->top . '/', true) . ";\n"
 			. '$tempDirectory = ' . var_export($this->base . '/', true) . ";\n"
 			. '$log_file = ' . var_export($this->base . '/errors.log', true) . ";\n"
+			// Not one of $localhosts, so User::isLocalMode() answers false.
+			. (empty($options['remote']) ? '' : '$scgi_host = "127.0.0.2";' . "\n")
 			. $body);
 		// A walk that loops is stopped, not waited for.
 		$arguments = array_merge(PhpProcess::sameIni(), array('-d', 'error_reporting=0', '-d', 'max_execution_time=30'));
@@ -134,8 +136,9 @@ class CreateTopDirectoryTest extends TestCase
 	 * Posts "create" to action.php for $path and returns its answer, with the
 	 * creator tasks prepared and the log. Options: 'top', the top directory;
 	 * 'creator', an external creator set in a copy of the plugin's
-	 * conf.local.php; 'disable', functions the child lacks; 'mayFail', to
-	 * answer null errors instead of throwing when nothing is printed.
+	 * conf.local.php; 'disable', functions the child lacks; 'remote', for
+	 * an rtorrent that is not local; 'mayFail', to answer null errors instead
+	 * of throwing when nothing is printed.
 	 */
 	private function create($path, $options = array())
 	{
@@ -303,6 +306,28 @@ class CreateTopDirectoryTest extends TestCase
 			return;
 		}
 		$this->assertTrue($this->refused($a), 'a folder is not hashed without realpath(): ' . json_encode($a['errors']));
+	}
+
+	/**
+	 * For a remote rtorrent the path check is text only and needs neither
+	 * is_link() nor realpath(), so the walk refuses without them itself.
+	 */
+	public function testARemoteFolderIsRefusedWithoutIsLink()
+	{
+		$this->assertRefusedAs('walk-unavailable', '/clean',
+			$this->create($this->top . '/clean', array('remote' => true, 'disable' => 'is_link', 'mayFail' => true)),
+			'a folder is not hashed for a remote rtorrent without is_link()');
+	}
+
+	public function testARemoteFolderIsRefusedWithoutRealpath()
+	{
+		$a = $this->create($this->top . '/clean', array('remote' => true, 'disable' => 'realpath', 'mayFail' => true));
+		if (PHP_MAJOR_VERSION >= 8) {
+			$this->assertEquals(array(), $a['tasks'], 'without realpath() no creator task is prepared for a remote rtorrent');
+			echo "NOT CHECKED: the remote refusal answer without realpath(); PHP 8 stops in util.php\n";
+			return;
+		}
+		$this->assertRefusedAs('walk-unavailable', '/clean', $a, 'a folder is not hashed for a remote rtorrent without realpath()');
 	}
 
 	public function testNoFolderIsSkippedWhenIsDirIsUnavailable()
