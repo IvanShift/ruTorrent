@@ -498,29 +498,36 @@ class rTorrent
         return($hashes);
     }
 
-    // The same session/tied-file fallback serves source download and dump.
-    // Return a path only; getSource() owns parsing and .meta validation.
-    public static function getSourcePath($hash, $knownPaths = null)
+    // The file getSource() reads: the torrent's copy in the session
+    // directory, else the file the download is tied to; null when neither is
+    // readable, the request fails or $knownPaths is not a pair. Given paths
+    // must be in their own bytes, as getSourcePaths() returns them: a value
+    // read through rXMLRPCRequest goes through unescapeValue() exactly once.
+    // For a caller that needs the whole file: getSource() drops its
+    // libtorrent_resume and rtorrent keys. Fork: a pair member that is not a
+    // string is no path either.
+    public static function getSourceFile($hash, $knownPaths = null)
     {
-        // A caller that already read these paths in its batch must not start
-        // another daemon request; false records an unavailable optional result.
+        // Batched readers pass the paths they already hold; false means none.
+        // The reply reader escapes backslashes and double quotes.
         if ($knownPaths === null) {
             $req = new rXMLRPCRequest([
                 new rXMLRPCCommand("get_session"),
                 new rXMLRPCCommand("d.get_tied_to_file", $hash)]);
-            if (!$req->run() || $req->fault) {
-                return(false);
-            }
-            $knownPaths = $req->val;
+            $knownPaths = ($req->run() && !$req->fault)
+                ? array_map(['rXMLRPCRequest', 'unescapeValue'], $req->val) : false;
         }
         if (!is_array($knownPaths) || !isset($knownPaths[0], $knownPaths[1])
             || !is_string($knownPaths[0]) || !is_string($knownPaths[1])) {
-            return(false);
+            return(null);
         }
         $fname = $knownPaths[0] . $hash . ".torrent";
         if (empty($knownPaths[0]) || !is_readable($fname)) {
-            $fname = strlen($knownPaths[1]) && is_readable($knownPaths[1])
-                ? $knownPaths[1] : false;
+            if (strlen($knownPaths[1]) && is_readable($knownPaths[1])) {
+                $fname = $knownPaths[1];
+            } else {
+                $fname = null;
+            }
         }
         return($fname);
     }
@@ -563,11 +570,11 @@ class rTorrent
 
     // $knownPaths is what getSourcePaths() returns for this hash, false when
     // that is unknown (nothing is asked), or null to ask the daemon. Fork:
-    // $sourcePath receives the file that was read.
+    // $sourcePath receives the file that was read, null when none was found.
     public static function getSource($hash, $knownPaths = null, &$sourcePath = null)
     {
-        $sourcePath = self::getSourcePath($hash, $knownPaths);
-        if ($sourcePath === false) {
+        $sourcePath = self::getSourceFile($hash, $knownPaths);
+        if ($sourcePath === null) {
             return(false);
         }
         $fname = $sourcePath;

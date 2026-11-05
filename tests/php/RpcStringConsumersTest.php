@@ -28,7 +28,7 @@ require_once(__DIR__ . '/TestCase.php');
  *    which exists for external plugins only.
  *
  * Typed accessor calls, raw semantic properties and Move inventory edges have separate reviewed maps.
- * Accesses through a helper (rTorrent::getFilePath(), getSourcePath(),
+ * Accesses through a helper (rTorrent::getFilePath(), getSourceFile(),
  * rTorrentSettings' directory, session and home, AutoTools' rpc() wrapper)
  * are counted where the helper reads ->val, not where its result is used.
  */
@@ -118,8 +118,8 @@ class RpcStringConsumersTest extends TestCase
     // Callers of unescapeValue(), all of them upstream code: it returns its
     // argument (XMLRPCStringBytesTest), so each still reads the daemon's bytes.
     public const REVIEWED_UNESCAPE_COUNTS = [
-        // getSourcePaths(): the session and tied paths.
-        'php/rtorrent.php' => 2,
+        // getSourceFile() and getSourcePaths(): the session and tied paths.
+        'php/rtorrent.php' => 3,
         // downloadName(): the live path.
         'php/torrentfilenames.php' => 1,
         // A title that needs metadata.

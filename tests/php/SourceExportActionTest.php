@@ -425,6 +425,25 @@ class SourceExportActionTest extends TestCase
             . ' source-invalid') !== false, 'invalid raw metadata refusal reaches the journal');
     }
 
+    // getSource() leaves null in its path argument when the validating lookup
+    // finds no file; dump names that unavailable, not invalid.
+    public function testDumpReportsMetadataGoneBeforeValidationAsUnavailable()
+    {
+        $raw = 'd6:lengthi1e4:name8:seed.bin12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\0", 20) . 'e';
+        $first = $this->directory . '/' . self::INFO_HASH . '.meta';
+        file_put_contents($first, $raw);
+        $gone = $this->directory . '/gone/' . self::INFO_HASH . '.meta';
+        list($status, $out, $err) = $this->request($first, 'dump', null, null, null, $gone);
+        $this->assertSame(0, $status, 'vanished-metadata dump exits cleanly: ' . $err);
+        $this->assertSame('', $err, 'vanished-metadata dump emits no warning');
+        $result = json_decode($out, true);
+        $this->assertSame(255, $result['status'], 'vanished metadata does not start a task: ' . $out);
+        $log = file_get_contents($this->directory . '/source.log');
+        $this->assertTrue(strpos($log, 'dump: source refused: ' . self::INFO_HASH
+            . ' source-unavailable') !== false, 'vanished metadata is named unavailable in the journal: ' . $log);
+    }
+
     // The child runs with -n so the real zip extension cannot declare ZipArchive
     // before the fixture's double does. PHP 7.4 builds that ship json as a shared
     // module (the GitHub runner's does) lose it with the ini files, so it is

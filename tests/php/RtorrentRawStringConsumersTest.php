@@ -33,7 +33,7 @@ class RtorrentRawStringCaptureSettings extends rTorrentSettings
  * real php/xmlrpc.php parser and a scripted SCGI peer.
  *
  * While run() escaped every '"' and '\', getFilePath() answered a path that did
- * not exist for any file whose name carried one, getSourcePath() missed a
+ * not exist for any file whose name carried one, getSourceFile() missed a
  * session directory carrying one, and a directory read back from the daemon
  * reached quoteCommandArg() already escaped, so rtorrent was told to put a
  * download into a directory whose name had grown a backslash -- which the
@@ -103,7 +103,7 @@ class RtorrentRawStringConsumersTest extends TestCase
     }
 
     // AUD-ESC-13: source and dump read the session copy or the tied file.
-    public function testGetSourcePathFindsTheSessionCopyUnderARawSessionPath()
+    public function testGetSourceFileFindsTheSessionCopyUnderARawSessionPath()
     {
         $session = $this->base . '/session \\"s\\" \\\\x/';
         mkdir($session);
@@ -112,12 +112,12 @@ class RtorrentRawStringConsumersTest extends TestCase
             'd.get_tied_to_file' => ['']]);
         $this->same(
             $session . self::HASH . '.torrent',
-            rTorrent::getSourcePath(self::HASH),
+            rTorrent::getSourceFile(self::HASH),
             'the session copy is found under a session path carrying a quote and a backslash',
         );
     }
 
-    public function testGetSourcePathFallsBackToARawTiedFile()
+    public function testGetSourceFileFallsBackToARawTiedFile()
     {
         $tied = $this->base . '/' . self::NAME . '.torrent';
         file_put_contents($tied, $this->minimalTorrent());
@@ -125,7 +125,7 @@ class RtorrentRawStringConsumersTest extends TestCase
             'd.get_tied_to_file' => [$tied]]);
         $this->same(
             $tied,
-            rTorrent::getSourcePath(self::HASH),
+            rTorrent::getSourceFile(self::HASH),
             'the tied file is found by the name the daemon reported',
         );
     }

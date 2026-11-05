@@ -6,8 +6,8 @@ require_once(__DIR__ . '/../../php/PluginEntryDriver.php');
 
 /**
  * AUD-ESC-13 for source and dump: both find a download's .torrent through
- * rTorrent::getSourcePath(), which reads session.path and d.tied_to_file in
- * the daemon's own bytes. A session directory or a tied file whose path held
+ * rTorrent::getSourceFile() or the same request, session.path and
+ * d.tied_to_file, in the daemon's own bytes. A session directory or a tied file whose path held
  * a quote or a backslash was "not found" while every string came escaped.
  */
 class AudSourcePathTest extends TestCase

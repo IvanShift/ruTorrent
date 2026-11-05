@@ -33,7 +33,7 @@ class RtorrentSourceTest
             );
             strictAssertSame(
                 $path,
-                rTorrent::getSourcePath(self::INFO_HASH),
+                rTorrent::getSourceFile(self::INFO_HASH),
                 'the common source lookup uses tied metainfo when the session copy is absent',
             );
         });
@@ -49,14 +49,14 @@ class RtorrentSourceTest
                 [$dir, $dir . 'missing.torrent'],
             );
             strictAssertSame(
-                false,
-                rTorrent::getSourcePath(self::INFO_HASH),
+                null,
+                rTorrent::getSourceFile(self::INFO_HASH),
                 'a missing session and tied file do not name a source',
             );
             rXMLRPCRequest::queue(['get_session', 'd.get_tied_to_file'], true, true);
             strictAssertSame(
-                false,
-                rTorrent::getSourcePath(self::INFO_HASH),
+                null,
+                rTorrent::getSourceFile(self::INFO_HASH),
                 'an RPC fault is not interpreted as an empty source path',
             );
             rXMLRPCRequest::queue(
@@ -66,8 +66,8 @@ class RtorrentSourceTest
                 [$dir, 1],
             );
             strictAssertSame(
-                false,
-                rTorrent::getSourcePath(self::INFO_HASH),
+                null,
+                rTorrent::getSourceFile(self::INFO_HASH),
                 'a malformed RPC path is refused without a PHP type error',
             );
         });
@@ -85,12 +85,13 @@ class RtorrentSourceTest
             strictAssertSame(self::INFO_HASH, $torrent->hash_info(), 'known paths retain the source identity');
             $session = $dir . self::INFO_HASH . '.torrent';
             file_put_contents($session, 'd4:info' . $this->rawInfo() . 'e');
-            strictAssertSame($session, rTorrent::getSourcePath(self::INFO_HASH, [$dir, $tied]), 'the session copy still has precedence');
-            foreach ([false, [], [$dir], [$dir, 1], [$dir, '/missing-source']] as $paths) {
+            strictAssertSame($session, rTorrent::getSourceFile(self::INFO_HASH, [$dir, $tied]), 'the session copy still has precedence');
+            foreach ([false, [], [$dir], [$dir, 1], [1, $tied], [$dir, '/missing-source']] as $paths) {
                 if ($paths === [$dir, '/missing-source']) {
                     unlink($session);
                 }
                 strictAssertSame(false, rTorrent::getSource(self::INFO_HASH, $paths, $sourcePath), 'failed known paths are refused without a fallback network lookup');
+                strictAssertSame(null, $sourcePath, 'a source that was not found leaves null, which source and dump report as source-unavailable');
             }
             strictAssertSame([], rXMLRPCRequest::$requests, 'known source acquisition makes no daemon request');
         });

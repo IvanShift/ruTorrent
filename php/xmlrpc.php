@@ -238,8 +238,9 @@ class rXMLRPCRequest
      * out the daemon's bytes, so this returns its argument unchanged and code
      * written for either reader gets the same bytes. Upstream comments that
      * say the reader escapes values (TorrentFileNames, rTorrent::
-     * getSourcePaths()) describe upstream's reader, not this one. A value read
-     * with the deprecated $escapeForScript keeps its escaped form.
+     * getSourceFile(), getSourcePaths()) describe upstream's reader, not
+     * this one. A value read with the deprecated $escapeForScript keeps its
+     * escaped form.
      */
     public static function unescapeValue($value)
     {

@@ -50,7 +50,7 @@ if (($hash !== '') && ($cmd !== '')) {
                 // request that fails must leave a name here that fails it --
                 // an unset variable passes it and dumps nothing.
                 $fname = '';
-                // The same request and order as rTorrent::getSourcePath(), which
+                // The same request and order as rTorrent::getSourceFile(), which
                 // answers only a path; the reasons below need the answers. A reply
                 // without two strings is no usable answer either.
                 $req = new rXMLRPCRequest([
@@ -100,7 +100,7 @@ if (($hash !== '') && ($cmd !== '')) {
                 if (rTorrent::isMetadataStubName(basename($fname), $hash)) {
                     $validatedPath = null;
                     if (rTorrent::getSource($hash, null, $validatedPath) === false) {
-                        $reason = $validatedPath === false ? 'source-unavailable' : 'source-invalid';
+                        $reason = $validatedPath === null ? 'source-unavailable' : 'source-invalid';
                         $ret = [ "status" => 255, "errors" => ['Magnet metadata is missing or invalid'] ];
                         FileUtil::toLog('dump: source refused: ' . $identity . ' ' . $reason);
                         break;

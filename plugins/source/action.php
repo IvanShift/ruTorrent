@@ -25,7 +25,7 @@ if (isset($_POST['hash'])) {
             } else {
                 $identity = preg_match('/\A[0-9a-f]{40}\z/i', $hash)
                     ? strtoupper($hash) : 'invalid-hash';
-                $reason = $sourcePath === false ? 'source-unavailable' : 'source-invalid';
+                $reason = $sourcePath === null ? 'source-unavailable' : 'source-invalid';
                 FileUtil::toLog('source: ZIP entry refused: ' . $identity . ' ' . $reason);
             }
         }

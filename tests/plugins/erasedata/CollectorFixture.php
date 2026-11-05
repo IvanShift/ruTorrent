@@ -1733,6 +1733,9 @@ class ErasedataProductionMirror
             . "\t\telse if(!is_null(\$commands)) \$this->commands = array(\$commands);\n"
             . "\t}\n"
             . "\tpublic function addCommand(\$command) { \$this->commands[] = \$command; }\n"
+            // rTorrent::getSourceFile() maps its reply through this; as in
+            // php/xmlrpc.php, the values are already the daemon's bytes.
+            . "\tpublic static function unescapeValue(\$value) { return(\$value); }\n"
             . "\tpublic function run(\$trusted = true)\n"
             . "\t{\n"
             . "\t\t\$this->clearPhysicalReply();\n"
