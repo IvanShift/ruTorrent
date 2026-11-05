@@ -1,52 +1,45 @@
 <?php
 
 /**
- * Stands in for PHP's plain-file wrapper in a child process, so that a test
- * without a second Unix user or a fork can refuse the open fs.protected_regular
- * refuses, record what FileUtil::toLog() does to the log and act between its
- * calls. Everything else reaches the real file through a real handle, its real
- * flock() included.
+ * LogFileModeTest's child requires this file in place of fileutil.php. It
+ * loads FileUtil and then stands in for PHP's plain-file wrapper, so that a
+ * test without a second Unix user or a fork can refuse an open the way
+ * fs.protected_regular does, or append another writer's line between
+ * FileUtil::toLog()'s open and its write. Everything else reaches the real file
+ * through a real handle, its real flock() included: flock() reads
+ * EWOULDBLOCK from errno, which the real flock() is the last call to set.
+ * stream_seek() only seeks for SEEK_END, the one seek toLog() asks for.
  *
- * Options: 'refuse', the fopen() modes to refuse; 'fifo', report the log as a
- * FIFO; 'lockFails', flock() fails for a reason other than another holder;
- * 'beforeWrite', text error_log(.., 3, ..) appends just before the write;
- * 'throwOnWrite', the write throws.
+ * Options, as JSON in RUTORRENT_LOG_WRAPPER: 'refuse', the fopen() modes to
+ * refuse; 'beforeWrite', text that error_log(.., 3, ..) appends just before
+ * the write; 'lockFails', flock() fails for a reason other than another
+ * holder; 'throwOnWrite', the write throws.
  */
+require_once(__DIR__ . '/../../php/utility/fileutil.php');
+
 class LogFileWrapperFixture
 {
     public $context;
-    public static $calls = [];
-    public static $lockOperations = [];
-    private static $options = [];
+    private static $options;
     private $path;
     private $real;
 
     public static function install($options)
     {
-        self::$options = $options + ['refuse' => [], 'fifo' => false, 'lockFails' => false,
-            'beforeWrite' => '', 'throwOnWrite' => false];
-        self::replacePlainFiles();
-    }
-
-    public static function remove()
-    {
-        stream_wrapper_restore('file');
+        self::$options = $options + ['refuse' => [], 'beforeWrite' => '', 'lockFails' => false, 'throwOnWrite' => false];
+        stream_wrapper_unregister('file');
+        stream_wrapper_register('file', __CLASS__);
     }
 
     public function url_stat($path, $flags)
     {
-        $stat = self::withPlainFiles(function () use ($path) {
+        return self::withPlainFiles(function () use ($path) {
             return @stat($path);
         });
-        if ($stat !== false && self::$options['fifo']) {
-            $stat['mode'] = $stat[2] = 0010600;
-        }
-        return $stat;
     }
 
     public function stream_open($path, $mode, $options, &$openedPath)
     {
-        self::$calls[] = 'open ' . $mode;
         if (in_array($mode, self::$options['refuse'], true)) {
             return false;
         }
@@ -59,10 +52,8 @@ class LogFileWrapperFixture
 
     public function stream_lock($operation)
     {
-        self::$calls[] = 'lock';
-        self::$lockOperations[] = $operation;
         if (self::$options['lockFails']) {
-            // flock() takes the reason from errno.
+            // flock() takes the reason from errno: ENOENT, not EWOULDBLOCK.
             self::withPlainFiles(function () {
                 @stat('/nonexistent/rutorrent-log-test');
             });
@@ -74,11 +65,7 @@ class LogFileWrapperFixture
     // PHP also asks an append stream for its position after opening it.
     public function stream_seek($offset, $whence)
     {
-        if ($whence !== SEEK_END) {
-            return true;
-        }
-        self::$calls[] = 'seek to end';
-        return fseek($this->real, $offset, $whence) === 0;
+        return ($whence !== SEEK_END) || fseek($this->real, $offset, $whence) === 0;
     }
 
     public function stream_tell()
@@ -88,7 +75,6 @@ class LogFileWrapperFixture
 
     public function stream_write($data)
     {
-        self::$calls[] = 'write';
         if (self::$options['throwOnWrite']) {
             throw new RuntimeException('write failed');
         }
@@ -104,23 +90,19 @@ class LogFileWrapperFixture
 
     public function stream_close()
     {
-        self::$calls[] = 'close';
         fclose($this->real);
-    }
-
-    private static function replacePlainFiles()
-    {
-        stream_wrapper_unregister('file');
-        stream_wrapper_register('file', __CLASS__);
     }
 
     private static function withPlainFiles($call)
     {
-        self::remove();
+        stream_wrapper_restore('file');
         try {
             return $call();
         } finally {
-            self::replacePlainFiles();
+            stream_wrapper_unregister('file');
+            stream_wrapper_register('file', __CLASS__);
         }
     }
 }
+
+LogFileWrapperFixture::install(json_decode(getenv('RUTORRENT_LOG_WRAPPER'), true));

@@ -4,6 +4,7 @@ require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
 require_once(__DIR__ . '/../../../php/Torrent.php');
+require_once(__DIR__ . '/../../php/TestTree.php');
 
 /**
  * plugins/edit/action.php erases the torrent before it reloads it.
@@ -53,7 +54,7 @@ class EditActionReloadTest extends TestCase
             $this->daemon->stop();
             $this->daemon = null;
         }
-        $this->removeTree($this->base);
+        TestTree::remove($this->base);
     }
 
     public function testRawEqualsAndMalformedTrailingFieldKeepTrackerAndComment()
@@ -521,25 +522,6 @@ class EditActionReloadTest extends TestCase
             }
         }
         $this->assertTrue($loadSeen, 'the load transcript was inspected rather than skipped');
-    }
-
-    // scandir, not glob: a fixture directory may carry a backslash, a quote
-    // or a bracket in its name, and glob reads those as pattern syntax.
-    private function removeTree($path)
-    {
-        if (is_link($path) || is_file($path)) {
-            @unlink($path);
-            return;
-        }
-        if (!is_dir($path)) {
-            return;
-        }
-        foreach (scandir($path) as $entry) {
-            if ($entry !== '.' && $entry !== '..') {
-                $this->removeTree($path . '/' . $entry);
-            }
-        }
-        @rmdir($path);
     }
 
     private function repoRoot()

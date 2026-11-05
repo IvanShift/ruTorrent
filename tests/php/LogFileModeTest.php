@@ -79,20 +79,15 @@ class LogFileModeStream
  */
 class LogFileModeTest extends TestCase
 {
-    // Logs one line with the plain-file wrapper replaced, keeping a thrown error
-    // alive the way an error handler or a debugger may, and reports the wrapper's
-    // calls, what was thrown and whether the lock is free while it is kept.
-    public const WRAPPED_CHILD = 'require $argv[1]; require $argv[2]; $GLOBALS["log_file"] = $argv[3];
-LogFileWrapperFixture::install(json_decode($argv[4], true));
-$caught = ""; $kept = null;
-$started = microtime(true);
-try { FileUtil::toLog("the line"); } catch (Throwable $e) { $kept = $e; $caught = get_class($e); }
-$wall = microtime(true) - $started;
-LogFileWrapperFixture::remove();
-$probe = fopen($argv[3], "rb");
-echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $caught, "wall" => $wall,
-	"lockOperations" => LogFileWrapperFixture::$lockOperations,
-	"lockFree" => function_exists("flock") && flock($probe, LOCK_EX | LOCK_NB)));';
+    // Logs each remaining argument through FileUtil::toLog(), keeping any
+    // Throwable alive the way an error handler or a debugger may and naming it
+    // on stderr, and prints how many milliseconds the calls took.
+    public const LOG_CHILD = '$GLOBALS["log_file"] = $argv[2]; require $argv[1]; $kept = array(); $start = microtime(true);
+foreach (array_slice($argv, 3) as $str) { try { FileUtil::toLog($str); }
+	catch (Throwable $e) { $kept[] = $e; fwrite(STDERR, "Thrown: " . get_class($e) . "\n"); } }
+echo (int)((microtime(true) - $start) * 1000);';
+    // Keeps the child's output to the milliseconds and its warnings on stderr.
+    public const CHILD_ERRORS_TO_STDERR = ['-d', 'display_errors=0', '-d', 'log_errors=1', '-d', 'error_log='];
 
     private $dir;
 
@@ -344,7 +339,7 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
         );
     }
 
-    // O_APPEND keeps each line whole and in place without a lock.
+    // O_APPEND and the lock keep each line whole and in place.
     public function testConcurrentWritersKeepEveryLine()
     {
         if (!function_exists('pcntl_fork')) {
@@ -377,169 +372,227 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
         );
     }
 
-    // Between the open and the write another process appends a line. With
-    // O_APPEND the write lands after it; a handle positioned by a seek would
-    // write over it, whatever lock it holds, since error_log() takes none.
-    public function testAnOrdinaryLogKeepsOAppend()
+    // Another process appends a line without the lock, as error_log() does,
+    // between toLog()'s open and its write. With O_APPEND the line lands after
+    // it; a handle placed by a seek would write over it. The lock is held
+    // elsewhere, so the writer's wait shows that it still asks for the lock.
+    public function testAnOrdinaryLogAsksForTheLockAndKeepsOAppend()
     {
-        $log = $this->seededLog('o-append.log');
-        $report = $this->logThroughWrapper($log, ['beforeWrite' => "other writer\n"]);
-        $this->assertEquals(['open ab', 'write', 'close'], $report['calls'], 'An ordinary log is opened ab, once');
-        $this->assertLogHoldsTheLineAfter("seed\nother writer\n", $log, 'A line written between the open and the write survives');
-    }
-
-    public function testAnOrdinaryLogDoesNotWaitForAHeldLock()
-    {
-        $log = $this->seededLog('held-ordinary.log');
+        $log = $this->logAfterFirstWrite(0777, 'o-append.log');
         $holder = fopen($log, 'rb');
         flock($holder, LOCK_EX);
         try {
-            $report = $this->logThroughWrapper($log, []);
+            $result = $this->logInChild(
+                $log,
+                self::CHILD_ERRORS_TO_STDERR,
+                ['the line'],
+                ['beforeWrite' => "other writer\n"],
+            );
         } finally {
             fclose($holder);
         }
-        $this->assertEquals(['open ab', 'write', 'close'], $report['calls'], 'An ordinary log asks for no lock');
-        $this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line is written past the held lock');
+        $this->assertEquals([], $this->reportsOf($result), 'An ordinary log reports nothing: ' . $result['err']);
+        $this->assertEquals(
+            "probe\nother writer\nthe line\n",
+            $this->messagesOf($log),
+            'A line appended between the open and the write survives',
+        );
+        $this->assertTrue((int) $result['out'] >= 900, 'The writer waits for the held lock: ' . $result['out'] . ' ms');
     }
 
+    // Refused as fs.protected_regular refuses another user's log in a sticky
+    // directory, the line is still written at the end, under the lock.
     public function testARefusedAppendWritesAtTheEndUnderTheLock()
     {
-        $log = $this->seededLog('refused.log');
-        $report = $this->logThroughWrapper($log, ['refuse' => ['ab']]);
-        $this->assertEquals(
-            ['open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'],
-            $report['calls'],
-            'A refused append is written at the end, under the lock',
-        );
-        $this->assertEquals('', $report['err'], 'A log the fallback can write reports no failure');
-        $this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line follows what the log held');
+        $log = $this->logAfterFirstWrite(0777, 'refused.log');
+        $holder = fopen($log, 'rb');
+        flock($holder, LOCK_EX);
+        try {
+            $result = $this->logInChild(
+                $log,
+                self::CHILD_ERRORS_TO_STDERR,
+                ['the line'],
+                ['refuse' => ['ab']],
+            );
+        } finally {
+            fclose($holder);
+        }
+        $this->assertEquals([], $this->reportsOf($result), 'A log the fallback can write reports nothing: ' . $result['err']);
+        $this->assertEquals("probe\nthe line\n", $this->messagesOf($log), 'The line follows what the log held');
+        $this->assertTrue((int) $result['out'] >= 900, 'The writer waits for the held lock: ' . $result['out'] . ' ms');
     }
 
     public function testALogRefusedBothWaysFailsVisibly()
     {
-        $log = $this->seededLog('refused-twice.log');
-        $report = $this->logThroughWrapper($log, ['refuse' => ['ab', 'r+b']]);
-        $this->assertEquals(
-            ['open ab', 'open r+b', 'open ab'],
-            $report['calls'],
-            'After both silent opens the original open runs',
+        $log = $this->logAfterFirstWrite(0777, 'refused-twice.log');
+        $result = $this->logInChild(
+            $log,
+            self::CHILD_ERRORS_TO_STDERR,
+            ['the line'],
+            ['refuse' => ['ab', 'r+b']],
         );
-        $this->assertEquals(
-            1,
-            substr_count($report['err'], 'fopen('),
-            'The failure reaches the PHP error log once: ' . $report['err'],
-        );
-        $this->assertEquals("seed\n", file_get_contents($log), 'The log is unchanged');
+        $this->assertOnlyTheOriginalOpenReports($result, 'Only the original open reports the failure');
+        $this->assertEquals("probe\n", $this->messagesOf($log), 'The log is unchanged');
     }
 
-    // A writer that stops while holding the lock must not hang every request
-    // that logs: the fallback waits a bounded time and writes the line anyway.
-    public function testAHeldLockDoesNotHangTheWriter()
+    // A disabled function throws on PHP 8 and warns on 7.4. The lock is held,
+    // so that a wait would reach usleep().
+    public function testWithoutFlockOrUsleepTheLineIsWrittenWithoutTheLock()
     {
-        $log = $this->seededLog('held-refused.log');
-        $holder = fopen($log, 'rb');
-        flock($holder, LOCK_EX);
-        try {
-            $report = $this->logThroughWrapper($log, ['refuse' => ['ab']]);
-        } finally {
-            fclose($holder);
-        }
-        $counts = array_count_values($report['calls']);
-        $this->assertEquals(100, $counts['lock'], 'The lock is asked for a bounded number of times');
-        $this->assertEquals(
-            [LOCK_EX | LOCK_NB],
-            array_values(array_unique($report['lockOperations'])),
-            'Every attempt asks for the exclusive lock without blocking',
-        );
-        // A sleep cannot run short, so a busy host cannot fail this lower bound.
-        $this->assertTrue($report['wall'] >= 0.9, 'The writer waits between its attempts: ' . $report['wall']);
-        $this->assertTrue(
-            FileUtil::LOG_LOCK_ATTEMPTS * FileUtil::LOG_LOCK_WAIT_US <= 1000000,
-            'A stopped holder costs a line at most a second',
-        );
-        $this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line is written after the bounded wait');
-    }
-
-    public function testALockThatCannotBeTakenIsNotWaitedFor()
-    {
-        $log = $this->seededLog('lock-fails.log');
-        $report = $this->logThroughWrapper($log, ['refuse' => ['ab'], 'lockFails' => true]);
-        $this->assertEquals(
-            ['open ab', 'open r+b', 'lock', 'seek to end', 'write', 'close'],
-            $report['calls'],
-            'Only another holder is worth waiting for',
-        );
-        $this->assertLogHoldsTheLineAfter("seed\n", $log, 'The line is written without the lock');
-    }
-
-    // Each case holds the lock for real: only a contended lock reaches usleep().
-    public function testAnOrdinaryLogNeedsNoFunctionOfTheLock()
-    {
-        foreach (['flock', 'fseek', 'usleep'] as $function) {
-            $log = $this->seededLog('ordinary-without-' . $function . '.log');
+        foreach (['flock', 'usleep'] as $function) {
+            $log = $this->logAfterFirstWrite(0777, 'without-' . $function . '.log');
             $holder = fopen($log, 'rb');
             flock($holder, LOCK_EX);
             try {
-                $report = $this->logThroughWrapper($log, [], ['-d', 'disable_functions=' . $function]);
-            } finally {
-                fclose($holder);
-            }
-            $this->assertEquals('', $report['caught'], 'Without ' . $function . '() nothing is thrown');
-            $this->assertEquals('', $report['err'], 'Without ' . $function . '() nothing is reported');
-            $this->assertLogHoldsTheLineAfter("seed\n", $log, 'Without ' . $function . '() the line is appended');
-        }
-    }
-
-    /**
-     * Without a function the lock needs the fallback is not taken, and the
-     * refusal stays what it was before the fallback existed: on PHP 8 a
-     * disabled function would throw, and on 7.4 a fseek() returning NULL would
-     * write the line over the start of the log.
-     */
-    public function testARefusedAppendWithoutAFunctionOfTheLockFailsVisibly()
-    {
-        foreach (['flock', 'fseek', 'usleep'] as $function) {
-            $log = $this->seededLog('refused-without-' . $function . '.log');
-            $holder = fopen($log, 'rb');
-            flock($holder, LOCK_EX);
-            try {
-                $report = $this->logThroughWrapper(
+                $result = $this->logInChild(
                     $log,
-                    ['refuse' => ['ab']],
-                    ['-d', 'disable_functions=' . $function],
+                    array_merge(self::CHILD_ERRORS_TO_STDERR, ['-d', 'disable_functions=' . $function]),
+                    ['the line'],
                 );
             } finally {
                 fclose($holder);
             }
-            $this->assertEquals('', $report['caught'], 'Without ' . $function . '() nothing is thrown');
-            $this->assertEquals(['open ab', 'open ab'], $report['calls'], 'Without ' . $function . '() no r+b is opened');
-            $this->assertTrue(
-                strpos($report['err'], 'fopen(') !== false,
-                'Without ' . $function . '() the failure reaches the PHP error log: ' . $report['err'],
+            $this->assertEquals(
+                [],
+                $this->reportsOf($result),
+                'Without ' . $function . '() nothing is reported: ' . $result['err'],
             );
-            $this->assertEquals("seed\n", file_get_contents($log), 'Without ' . $function . '() the log is unchanged');
+            $this->assertEquals("probe\nthe line\n", $this->messagesOf($log), 'Without ' . $function . '() the line is appended');
         }
     }
 
-    // The thrown error's trace holds the handle as an argument of fputs(), so
-    // only an explicit close releases the lock while that error is alive.
-    public function testAThrowingWriteReleasesTheLock()
+    // Without a function that the r+b fallback needs, the refusal stays what it
+    // was before the fallback existed. On 7.4 a fseek() returning NULL would
+    // write the line over the start of the log.
+    public function testARefusedAppendWithoutAFunctionOfTheFallbackFailsVisibly()
     {
-        $log = $this->seededLog('throwing-write.log');
-        $report = $this->logThroughWrapper($log, ['refuse' => ['ab'], 'throwOnWrite' => true]);
-        $this->assertEquals('RuntimeException', $report['caught'], 'The write threw');
-        $this->assertTrue($report['lockFree'], 'The lock is released while the error is alive');
+        foreach (['flock', 'fseek', 'usleep'] as $function) {
+            $log = $this->logAfterFirstWrite(0777, 'refused-without-' . $function . '.log');
+            $result = $this->logInChild(
+                $log,
+                array_merge(self::CHILD_ERRORS_TO_STDERR, ['-d', 'disable_functions=' . $function]),
+                ['the line'],
+                ['refuse' => ['ab']],
+            );
+            $this->assertOnlyTheOriginalOpenReports($result, 'Without ' . $function . '() only the original open reports the failure');
+            $this->assertEquals("probe\n", $this->messagesOf($log), 'Without ' . $function . '() the log is unchanged');
+        }
     }
 
-    public function testAFifoOnTheFilesystemKeepsTheOldMode()
+    // The fallback does not call fflush(), which does nothing for a plain file:
+    // disabled, it would throw after the write on PHP 8 and warn on 7.4.
+    public function testARefusedAppendNeedsNoFflush()
     {
-        $log = $this->seededLog('fifo.log');
-        $report = $this->logThroughWrapper($log, ['fifo' => true]);
-        $this->assertEquals(
-            ['open ab+', 'write', 'close'],
-            $report['calls'],
-            'A write-only open of a FIFO would block until a reader appears',
+        $log = $this->logAfterFirstWrite(0777, 'refused-without-fflush.log');
+        $result = $this->logInChild(
+            $log,
+            array_merge(self::CHILD_ERRORS_TO_STDERR, ['-d', 'disable_functions=fflush']),
+            ['the line'],
+            ['refuse' => ['ab']],
         );
+        $this->assertEquals(
+            [],
+            $this->reportsOf($result),
+            'Without fflush() nothing is reported or thrown: ' . $result['err'],
+        );
+        $this->assertEquals("probe\nthe line\n", $this->messagesOf($log), 'Without fflush() the line is appended');
+    }
+
+    // A write-only open of a FIFO blocks until a reader appears.
+    public function testAFifoLogDoesNotWaitForAReader()
+    {
+        if (!function_exists('posix_mkfifo')) {
+            return;
+        }
+        $fifo = $this->dir . '/fifo.log';
+        posix_mkfifo($fifo, 0600);
+        try {
+            $result = $this->logInChild($fifo, self::CHILD_ERRORS_TO_STDERR, ['the line']);
+        } finally {
+            unlink($fifo);
+        }
+        $this->assertTrue(!$result['timedOut'] && $result['code'] === 0, 'A FIFO log is written without a reader');
+        $this->assertEquals([], $this->reportsOf($result), 'A FIFO log reports nothing: ' . $result['err']);
+    }
+
+    // A writer that stops while holding the lock must not hang every request
+    // that logs: toLog() waits a bounded time and writes the line anyway.
+    public function testAHeldLockDoesNotHangTheWriter()
+    {
+        $log = $this->logAfterFirstWrite(0777, 'held-lock.log');
+        $holder = fopen($log, 'rb');
+        flock($holder, LOCK_EX);
+        try {
+            $result = $this->logInChild($log, [], ['past the held lock']);
+        } finally {
+            fclose($holder);
+        }
+        $this->assertTrue(!$result['timedOut'] && $result['code'] === 0, 'A held lock does not hang the writer');
+        $this->assertTrue(
+            strpos(file_get_contents($log), 'past the held lock') !== false,
+            'The line is written after the bounded wait',
+        );
+    }
+
+    // A write that throws (fputs() disabled is an Error on PHP 8) must still
+    // release the lock, even when the Error outlives the call; under Xdebug
+    // it keeps the open handle alive too.
+    public function testAThrowingWriteReleasesTheLock()
+    {
+        $log = $this->logAfterFirstWrite(0777, 'throwing-write.log');
+        $result = $this->logInChild(
+            $log,
+            array_merge(self::CHILD_ERRORS_TO_STDERR, ['-d', 'disable_functions=fputs']),
+            ['first', 'second'],
+        );
+        $this->assertTrue(!$result['timedOut'] && $result['code'] === 0, 'A second line after a throwing write does not hang');
+        $this->assertTrue(
+            (int) $result['out'] < FileUtil::LOG_LOCK_ATTEMPTS * FileUtil::LOG_LOCK_WAIT_US / 2000,
+            'The lock is released at once, not after the bounded wait: ' . $result['out'] . ' ms',
+        );
+    }
+
+    // The stand-in throws from inside fputs(), so the kept error's trace holds
+    // the handle as an argument: only the explicit close releases the lock.
+    public function testAThrowingWriteReleasesTheLockOnEitherPath()
+    {
+        foreach ([[], ['ab']] as $refuse) {
+            $log = $this->logAfterFirstWrite(0777, 'throwing-write-' . count($refuse) . '.log');
+            $result = $this->logInChild(
+                $log,
+                array_merge(self::CHILD_ERRORS_TO_STDERR, ['-d', 'zend.exception_ignore_args=0']),
+                ['first', 'second'],
+                ['refuse' => $refuse, 'throwOnWrite' => true],
+            );
+            $label = $refuse === [] ? 'The ordinary log' : 'The refused append';
+            $this->assertTrue(!$result['timedOut'] && $result['code'] === 0, $label . ' does not hang after a throwing write');
+            $this->assertTrue(
+                (int) $result['out'] < FileUtil::LOG_LOCK_ATTEMPTS * FileUtil::LOG_LOCK_WAIT_US / 2000,
+                $label . ' releases the lock at once, not after the bounded wait: ' . $result['out'] . ' ms',
+            );
+        }
+    }
+
+    // flock() that fails for a reason other than another holder is not
+    // retried, on either path.
+    public function testALockThatCannotBeTakenIsNotWaitedFor()
+    {
+        foreach ([[], ['ab']] as $refuse) {
+            $log = $this->logAfterFirstWrite(0777, 'lock-fails-' . count($refuse) . '.log');
+            $result = $this->logInChild(
+                $log,
+                self::CHILD_ERRORS_TO_STDERR,
+                ['the line'],
+                ['refuse' => $refuse, 'lockFails' => true],
+            );
+            $label = $refuse === [] ? 'The ordinary log' : 'The refused append';
+            $this->assertEquals([], $this->reportsOf($result), $label . ' reports nothing: ' . $result['err']);
+            $this->assertEquals("probe\nthe line\n", $this->messagesOf($log), $label . ' is written without the lock');
+            $this->assertTrue(
+                (int) $result['out'] < FileUtil::LOG_LOCK_ATTEMPTS * FileUtil::LOG_LOCK_WAIT_US / 2000,
+                $label . ' waits only for another holder: ' . $result['out'] . ' ms',
+            );
+        }
     }
 
     // The fallback is for a local file's refused O_CREAT, not for a stream.
@@ -738,48 +791,38 @@ echo json_encode(array("calls" => LogFileWrapperFixture::$calls, "caught" => $ca
         return fileperms($file) & 0777;
     }
 
-    private function seededLog($name)
+    // With $wrapper, the options of LogFileWrapperFixture, the child logs
+    // through that stand-in for the plain-file wrapper.
+    private function logInChild($log, $ini, $lines, $wrapper = null)
     {
-        $log = $this->dir . '/' . $name;
-        file_put_contents($log, "seed\n");
-        return $log;
+        $script = is_null($wrapper) ? realpath(__DIR__ . '/../../php/utility/fileutil.php')
+            : __DIR__ . '/LogFileWrapperFixture.php';
+        return PhpProcess::run(
+            array_merge(PhpProcess::sameIni(), $ini, ['-r', self::LOG_CHILD, $script, $log], $lines),
+            ['timeout' => 10, 'env' => ['XDEBUG_MODE' => 'develop', 'RUTORRENT_LOG_WRAPPER' => json_encode($wrapper)]],
+        );
     }
 
-    // Runs WRAPPED_CHILD. A failure of the child itself is not a verdict on
-    // toLog(), so it fails here, with what the child said.
-    private function logThroughWrapper($log, $options, $ini = [])
+    // The log's messages, one per line, without toLog()'s timestamps.
+    private function messagesOf($log)
     {
-        $result = PhpProcess::run(
-            array_merge(
-                PhpProcess::sameIni(),
-                ['-d', 'display_errors=0', '-d', 'log_errors=1', '-d', 'error_log=',
-                    '-d', 'zend.exception_ignore_args=0', '-d', 'xdebug.mode=off'],
-                $ini,
-                ['-r', self::WRAPPED_CHILD, realpath(__DIR__ . '/../../php/utility/fileutil.php'),
-                    __DIR__ . '/LogFileWrapperFixture.php', $log, json_encode((object) $options)],
-            ),
-            ['timeout' => 30],
-        );
-        $report = json_decode($result['out'], true);
-        $this->assertTrue(
-            !$result['timedOut'] && $result['code'] === 0 && is_array($report),
-            'The wrapped child reports: ' . json_encode($result),
-        );
-        // Startup diagnostics ("in Unknown on line 0") belong to the PHP build.
-        $report['err'] = implode("\n", preg_grep(
-            '/ in Unknown on line 0\s*$/',
-            explode("\n", trim($result['err'])),
-            PREG_GREP_INVERT,
-        ));
-        return $report;
+        return preg_replace('/^\[[0-9-]+ [0-9:]+\] /m', '', file_get_contents($log));
     }
 
-    private function assertLogHoldsTheLineAfter($before, $log, $label)
+    // The child's warnings and what it threw, without the startup diagnostics
+    // of the PHP build.
+    private function reportsOf($result)
     {
-        $body = file_get_contents($log);
+        return array_values(preg_grep('/^((PHP )?Warning: (?!.* in Unknown on line 0$)|Thrown: )/', explode("\n", $result['err'])));
+    }
+
+    // Exactly one report: the original open's warning.
+    private function assertOnlyTheOriginalOpenReports($result, $label)
+    {
+        $reports = $this->reportsOf($result);
         $this->assertTrue(
-            preg_match('/^' . $before . '\[[0-9-]+ [0-9:]+\] the line\n$/', $body) === 1,
-            $label . ': ' . json_encode($body),
+            count($reports) === 1 && strpos($reports[0], 'fopen(') !== false,
+            $label . ': ' . $result['err'],
         );
     }
 }
