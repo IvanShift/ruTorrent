@@ -102,15 +102,9 @@ if (!function_exists('erasedataPhysicalRelativePath')) {
 }
 
 if (!function_exists('erasedataPhysicalMetainfoPlan')) {
-    // $failure tells the two refusals apart: 'plan-unavailable' when no
-    // session copy of this download could be read, 'plan-invalid' when the
-    // copy is this download's own (its info hash matches) but its layout
-    // gives no exact plan. A save cannot change the latter: the daemon would
-    // write the same info dictionary again.
     // Replacement preparation may reuse its already parsed, hash-verified source.
-    function erasedataPhysicalMetainfoPlan($hash, &$failure = null, $source = null)
+    function erasedataPhysicalMetainfoPlan($hash, $source = null)
     {
-        $failure = 'plan-unavailable';
         $canonicalHash = erasedataCanonicalHash($hash);
         if ($source === null) {
             $source = $canonicalHash === false ? false : erasedataLoadTorrentSource($canonicalHash);
@@ -120,7 +114,6 @@ if (!function_exists('erasedataPhysicalMetainfoPlan')) {
             || erasedataCanonicalHash($source->hash_info()) !== $canonicalHash) {
             return(false);
         }
-        $failure = 'plan-invalid';
         $info = $source->info;
         $single = array_key_exists('length', $info);
         $multi = array_key_exists('files', $info);
@@ -156,7 +149,6 @@ if (!function_exists('erasedataPhysicalMetainfoPlan')) {
                 $physical[] = !$padding;
             }
         }
-        $failure = null;
         return(['multi' => $multi ? 1 : 0, 'relative' => $relative, 'physical' => $physical]);
     }
 }
@@ -192,19 +184,16 @@ if (!function_exists('erasedataCollectPhysicalPaths')) {
         return($multi === false ? false : ['base' => $values[0], 'multi' => $multi, 'rows' => $rows]);
     }
 
-    // $failure says why there is no answer: the plan's own reason
-    // (erasedataPhysicalMetainfoPlan()), otherwise 'daemon-paths-unconfirmed'
-    // when the daemon's answer did not confirm it. Stored and frozen paths
-    // must agree; metadata supplies their indexed physical/padding roles.
-    // Preserve the daemon's own bytes, including aliases and file renames,
-    // without another unescape (ACC-OWNB-04, AUD-ESC-09).
-    function erasedataCollectPhysicalPaths($hash, &$failure = null, $source = null)
+    // Stored and frozen paths must agree; metadata supplies their indexed
+    // physical/padding roles. Preserve the daemon's own bytes, including
+    // aliases and file renames, without another unescape (ACC-OWNB-04,
+    // AUD-ESC-09).
+    function erasedataCollectPhysicalPaths($hash, $source = null)
     {
-        $plan = erasedataPhysicalMetainfoPlan($hash, $failure, $source);
+        $plan = erasedataPhysicalMetainfoPlan($hash, $source);
         if ($plan === false) {
             return(false);
         }
-        $failure = 'daemon-paths-unconfirmed';
         $count = count($plan['relative']);
         $frozen = new rXMLRPCRequest([
             new rXMLRPCCommand(getCmd("d.get_base_path"), $hash),
@@ -285,7 +274,6 @@ if (!function_exists('erasedataCollectPhysicalPaths')) {
                 }
             }
         }
-        $failure = null;
         return([
             'base' => $plan['multi'] ? $directory : $storedFiles[0],
             'multi' => $plan['multi'] ? '1' : '0',
@@ -390,115 +378,46 @@ if (!function_exists('erasedataCollectPaths')) {
 require_once(dirname(__FILE__) . "/manifest.php");
 require_once(dirname(__FILE__) . "/filesystem.php");
 require_once(dirname(__FILE__) . "/native.php");
+require_once(dirname(__FILE__) . "/shared.php");
 
-// Native BEP-9 session stubs carry a synthetic info dictionary, captured
-// through load.start on 0.16.25. Its pieces field is the requested hash, not
-// payload pieces; no file layout is present. Require the exact envelope and
-// current daemon identity so corrupt real torrents remain uncertain owners.
-function erasedataCleanupMetadataOnly($hash)
+// The reason a job is retained when the files of the loaded downloads are not
+// known: $why is erasedataLoadedDownloads()'s, or "changed" when a download
+// came or changed while the cleanup held a file captured.
+function erasedataOwnerRefusal($why)
 {
-    $hash = erasedataCanonicalHash($hash);
-    if ($hash === false) {
-        return(false);
-    }
-    $source = erasedataLoadTorrentSource($hash);
-    if (!is_object($source) || !property_exists($source, 'info')) {
-        return(false);
-    }
-    $info = $source->info;
-    // Only the exact captured envelope qualifies; the real loader never
-    // yields a source without info, so a missing dictionary is no stub.
-    if (!is_array($info) || count($info) !== 3
-        || !isset($info['meta_download'], $info['name'], $info['pieces'])
-        // Torrent decodes bencoded integers as floats; strings remain invalid.
-        || !in_array($info['meta_download'], [1, 1.0], true) || !is_string($info['name'])
-        || !rTorrent::isMetadataStubName($info['name'], $hash)
-        || !is_string($info['pieces']) || strtoupper(bin2hex($info['pieces'])) !== $hash) {
-        return(false);
-    }
-    $probe = new rXMLRPCRequest([
-        new rXMLRPCCommand(getCmd('d.is_meta'), $hash),
-        new rXMLRPCCommand(getCmd('d.hash'), $hash)]);
-    $probe->important = false;
-    return($probe->success() && count($probe->val) === 2
-        && in_array($probe->val[0], [1, '1', true], true)
-        && is_string($probe->val[1]) && strtoupper($probe->val[1]) === $hash);
+    return('owner-snapshot-unconfirmed why=' . $why);
 }
 
-// Every path the daemon names for a download's files, stored and frozen, in
-// its own bytes, or false when it does not answer consistently. Without the
-// session copy the payload cannot be told from padding, so every listed file
-// is claimed: a claim can only keep more files (ACC-OWNB-04). A claim must
-// name exactly the owner's file: unescaped once more, the daemon's
-// `a\"b` read as its neighbour `a"b`, which the claim then kept while the
-// owner's file went unclaimed (AUD-ESC-09 F2b, F3).
-function erasedataCleanupDaemonClaims($hash)
+// The downloads rtorrent holds but $excluded, and which of $ownPaths they
+// still use: ['downloads' => erasedataLoadedDownloads(), 'claimed' =>
+// erasedataClaimedFiles()], whose $sizes a caller keeps for its pass. False,
+// with $refusal set, when rtorrent will not say.
+function erasedataLoadedOwners(array $ownPaths, &$sizes, &$refusal, array $excluded = [])
 {
-    $request = new rXMLRPCRequest([
-        new rXMLRPCCommand(getCmd('d.get_directory'), $hash),
-        new rXMLRPCCommand(getCmd('f.multicall'), [$hash, '',
-            getCmd('f.get_path') . '=', getCmd('f.get_frozen_path') . '='])]);
-    $request->important = false;
-    if (!$request->success() || !is_array($request->val) || count($request->val) % 2 !== 1) {
+    $why = null;
+    $downloads = erasedataLoadedDownloads($why);
+    $claimed = null;
+    if (is_array($downloads)) {
+        $downloads = array_diff_key($downloads, $excluded);
+        $claimed = erasedataClaimedFiles($ownPaths, $downloads, $sizes, $why);
+    }
+    if ($claimed === null) {
+        $refusal = erasedataOwnerRefusal($why);
         return(false);
     }
-    $directory = $request->val[0];
-    if (!is_string($directory) || $directory === '' || $directory[0] !== '/'
-        || strpos($directory, "\0") !== false) {
-        return(false);
-    }
-    $directory = $directory === '/' ? '' : rtrim($directory, '/');
-    $files = [];
-    for ($index = 1; $index < count($request->val); $index += 2) {
-        $stored = $request->val[$index];
-        $frozen = $request->val[$index + 1];
-        if (!is_string($stored) || $stored === '' || $stored[0] === '/' || strpos($stored, "\0") !== false
-            || !is_string($frozen) || strpos($frozen, "\0") !== false || ($frozen !== '' && $frozen[0] !== '/')) {
-            return(false);
-        }
-        $files[$directory . '/' . $stored] = true;
-        if ($frozen !== '') {
-            $files[$frozen] = true;
-        }
-    }
-    return(['files' => array_keys($files)]);
+    $refusal = null;
+    return(['downloads' => $downloads, 'claimed' => $claimed]);
 }
 
-// A download without an exact payload plan -- its session copy is missing or
-// unreadable, the copy's layout gives no plan, or the daemon's paths do not
-// match it -- is claimed through its daemon file list instead of blocking
-// every replacement cleanup. For a missing copy a save is requested once per
-// process so the exact plan returns; a save would not change the other two.
-// Each is logged with the download's hash and its own reason (ACC-OWNB-04).
-function erasedataCleanupClaimWithoutPlan($hash, $failure, &$refusal = null)
+// The replacement cleanup's other owners (erasedataLoadedOwners()): every
+// download rtorrent holds except the exact rows of this replacement
+// transaction -- the old download while it carries only this replacement's
+// marker, the successor while it carries exactly this transaction. Any other
+// row, either hash with other custom state included, stays an owner. False
+// with $refusal set when the daemon's answer is unconfirmed.
+function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, &$refusal, array $ownPaths, &$sizes = null)
 {
-    static $reported = [];
-    $reasons = ['plan-unavailable' => 'session-copy-unreadable',
-        'plan-invalid' => 'metainfo-paths-unusable'];
-    $reason = isset($reasons[$failure]) ? $reasons[$failure] : 'daemon-paths-unconfirmed';
-    $owned = erasedataCleanupDaemonClaims($hash);
-    if ($owned === false) {
-        $refusal = 'owner-' . $reason . '-daemon-paths-unconfirmed owner=' . $hash;
-        return(false);
-    }
-    if (!isset($reported[$hash])) {
-        $reported[$hash] = true;
-        $line = 'erasedata: cleanup owner ' . $hash . ' ' . $reason . '; its daemon file list is claimed instead';
-        if ($reason === 'session-copy-unreadable') {
-            $save = new rXMLRPCRequest(new rXMLRPCCommand(getCmd('d.save_full_session'), $hash));
-            $save->important = false;
-            $line .= '; session save ' . ($save->success() ? 'requested' : 'unconfirmed');
-        }
-        FileUtil::toLog($line);
-    }
-    return($owned);
-}
-
-// A cleanup may discard only names and inodes unclaimed by every other torrent.
-// Keep the scan in erasedata so producer and delayed consumer use one rule.
-function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, &$refusal = null)
-{
-    $refusal = 'owner-snapshot-unconfirmed';
+    $refusal = erasedataOwnerRefusal('unreadable');
     $oldHash = erasedataCanonicalHash($oldHash);
     $newHash = erasedataCanonicalHash($newHash);
     if ($oldHash === false || $newHash === false || $oldHash === $newHash
@@ -512,22 +431,25 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
         return(false);
     }
     $oldMarker = $newHash . '-' . $parts[2] . '-' . $parts[3];
-    $scan = new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', ['main',
+    $why = null;
+    // The view erasedataLoadedDownloads() reads, so both see the same rows.
+    $scan = erasedataAnswer(new rXMLRPCRequest(new rXMLRPCCommand('d.multicall', ['default',
         getCmd('d.get_hash='),
         getCmd('d.get_custom=') . 'chk-replacement',
         getCmd('d.get_custom=') . 'chk-replaces',
         getCmd('d.get_custom=') . 'chk-replacing',
-        getCmd('d.get_custom=') . 'chk-reuse']));
-    $scan->important = false;
-    if (!$scan->success() || !is_array($scan->val) || count($scan->val) % 5 !== 0) {
+        getCmd('d.get_custom=') . 'chk-reuse'])), $why);
+    if ($scan === null) {
+        $refusal = erasedataOwnerRefusal($why);
+        return(false);
+    }
+    if (count($scan) % 5 !== 0) {
         return(false);
     }
     $seenHashes = [];
-    $paths = [];
-    $inodes = [];
-    $bindings = [];
-    for ($index = 0; $index < count($scan->val); $index += 5) {
-        $row = array_slice($scan->val, $index, 5);
+    $excluded = [];
+    for ($index = 0; $index < count($scan); $index += 5) {
+        $row = array_slice($scan, $index, 5);
         $hash = erasedataCanonicalHash($row[0]);
         if ($hash === false || !is_string($row[0]) || strtoupper($row[0]) !== $hash
             || !is_string($row[1]) || !is_string($row[2]) || !is_string($row[3])
@@ -536,65 +458,25 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
             return(false);
         }
         $seenHashes[$hash] = true;
-        if ($hash === $oldHash && $row[1] === '' && $row[2] === ''
-            && $row[3] === $oldMarker && $row[4] === '') {
-            continue;
-        }
-        // An independently loaded successor keeps its own path and inode claims.
-        if ($hash === $newHash && $row[1] === $marker && $row[2] === $record
-            && $row[3] === '' && $row[4] === '') {
-            continue;
-        }
-        $failure = null;
-        $owned = erasedataCollectPhysicalPaths($hash, $failure);
-        if (!is_array($owned) || !isset($owned['files']) || !is_array($owned['files'])) {
-            if (erasedataCleanupMetadataOnly($hash)) {
-                continue;
-            }
-            $owned = erasedataCleanupClaimWithoutPlan($hash, $failure, $refusal);
-            if ($owned === false) {
-                return(false);
-            }
-        }
-        foreach ($owned['files'] as $file) {
-            $identity = erasedataPathIdentity($file);
-            if (!is_array($identity) || !isset($identity['path'])) {
-                return(false);
-            }
-            $key = "p\0" . $identity['path'];
-            $paths[$key] = true;
-            if (!isset($bindings[$key])) {
-                $bindings[$key] = [];
-            }
-            $bindings[$key]["r\0" . $file] = true;
-            if (!empty($identity['exists'])) {
-                if (!isset($identity['stat']['dev'], $identity['stat']['ino'])) {
-                    return(false);
-                }
-                $inodes['i:' . $identity['stat']['dev'] . ':' . $identity['stat']['ino']] = true;
-            }
+        if (($hash === $oldHash && $row[1] === '' && $row[2] === ''
+                && $row[3] === $oldMarker && $row[4] === '')
+            // An independently loaded successor keeps its own claims.
+            || ($hash === $newHash && $row[1] === $marker && $row[2] === $record
+                && $row[3] === '' && $row[4] === '')) {
+            $excluded[$hash] = true;
         }
     }
-    $refusal = null;
-    return(['paths' => $paths, 'inodes' => $inodes,
-        'bindings' => $bindings]);
+    return(erasedataLoadedOwners($ownPaths, $sizes, $refusal, $excluded));
 }
 
-function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+// 'claimed' when an owner in $snapshot uses $path, one of the paths the
+// snapshot was taken for; 'unknown' without a snapshot.
+function erasedataCleanupOtherOwnerState($snapshot, $path)
 {
-    if (!is_array($snapshot) || !isset($snapshot['paths'], $snapshot['inodes'])
-        || !is_array($snapshot['paths']) || !is_array($snapshot['inodes'])
-        || !is_string($path) || !is_array($stat)
-        || !isset($stat['dev'], $stat['ino'])) {
+    if (!is_array($snapshot)) {
         return('unknown');
     }
-    $identity = erasedataPathIdentity($path);
-    if (!is_array($identity) || !isset($identity['path'])) {
-        return('unknown');
-    }
-    return(isset($snapshot['paths']["p\0" . $identity['path']])
-        || isset($snapshot['inodes']['i:' . $stat['dev'] . ':' . $stat['ino']])
-        ? 'claimed' : 'unclaimed');
+    return(isset($snapshot['claimed'][$path]) ? 'claimed' : 'unclaimed');
 }
 
 if (!function_exists('erasedataCanonicalHash')) {

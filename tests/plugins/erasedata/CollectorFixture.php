@@ -137,6 +137,7 @@ if (!class_exists('rXMLRPCRequest')) {
         public $faultString = '';
         public $rawFaultString = null;
         public $faultCode = 0;
+        public $transportFailure = null;
         public $important = true;
         private $commands = [];
 
@@ -151,6 +152,11 @@ if (!class_exists('rXMLRPCRequest')) {
         public function addCommand($command)
         {
             $this->commands[] = $command;
+        }
+        // As in php/xmlrpc.php, the values are already the daemon's bytes.
+        public static function unescapeValue($value)
+        {
+            return($value);
         }
         public function run($trusted = true)
         {
@@ -182,10 +188,15 @@ if (!class_exists('rXMLRPCRequest')) {
                     self::$erased[] = $c->params;
                 }
             }
-            if (!array_key_exists($first, self::$responses)) {
+            // The loaded downloads' questions share the fleet scripted
+            // under d.multicall, or an empty one.
+            $fleetQuestion = $first === 'd.multicall' || (!array_key_exists($first, self::$responses)
+                && $first === 'f.get_path');
+            if (!array_key_exists($first, self::$responses) && !$fleetQuestion) {
                 return(false);
             }
-            $response = self::$responses[$first];
+            $response = array_key_exists($first, self::$responses) ? self::$responses[$first]
+                : (isset(self::$responses['d.multicall']['fleet']) ? self::$responses['d.multicall'] : ['fleet' => []]);
             if (isset($response['byHash']) && isset($this->commands[0]->params)
                 && array_key_exists((string) $this->commands[0]->params, $response['byHash'])) {
                 $entry = $response['byHash'][(string) $this->commands[0]->params];
@@ -201,6 +212,9 @@ if (!class_exists('rXMLRPCRequest')) {
             }
             if (isset($response["callback"]) && is_callable($response["callback"])) {
                 call_user_func($response["callback"], $this->commands);
+            }
+            if (isset($response['fleet']) && is_array($response['fleet'])) {
+                $response = ErasedataLoadedFleet::reply($response, $this->commands) + $response;
             }
             if ($first === 'd.hash' && isset($response['swap']) && $response['swap'] !== null) {
                 self::applySwap($response['swap']);
@@ -288,18 +302,8 @@ if (!class_exists('rTorrentSettings')) {
         . loadFunctionDefinition(__DIR__ . '/../../../php/settings.php', 'getAlignedStart') . '}');
 }
 
-if (!class_exists('rTorrent', false)) {
-    // erasedataCleanupMetadataOnly() asks the shipped rTorrent::isMetadataStubName().
-    // Only the class definition is evaluated, because its file's requires would
-    // replace this harness's rXMLRPCRequest; the lookup below stands in for
-    // rTorrent::getSource().
-    $erasedataRtorrentSource = file_get_contents(dirname(__FILE__) . '/../../../php/rtorrent.php');
-    eval(substr($erasedataRtorrentSource, strpos($erasedataRtorrentSource, "\nclass rTorrent\n")));
-    unset($erasedataRtorrentSource);
-}
-
-// Replaceable metainfo lookup: the collector harness scripts successor and
-// other-torrent sources instead of reaching rTorrent.
+// Replaceable metainfo lookup: the collector harness scripts the successor's
+// source instead of reaching rTorrent.
 class ErasedataCollectorTestSource
 {
     public $info;
@@ -318,7 +322,6 @@ class ErasedataCollectorTestSource
 class ErasedataCollectorTestState
 {
     public static $source = false;
-    public static $fleetSources = [];
     public static $indexBuilds = 0;
     public static $indexCountFile = null;
 }
@@ -326,9 +329,7 @@ class ErasedataCollectorTestState
 if (!function_exists('erasedataLoadTorrentSource')) {
     function erasedataLoadTorrentSource($hash)
     {
-        $source = isset(ErasedataCollectorTestState::$fleetSources[$hash])
-            ? ErasedataCollectorTestState::$fleetSources[$hash]
-            : ErasedataCollectorTestState::$source;
+        $source = ErasedataCollectorTestState::$source;
         return(is_array($source)
             ? new ErasedataCollectorTestSource($source) : false);
     }
@@ -833,10 +834,7 @@ class ErasedataCollectorFixture extends ErasedataFilesystemOps
             case 'fleet-change':
                 rXMLRPCRequest::$responses['d.multicall'] = [
                     'ok' => true, 'fault' => !empty($entry['fault']),
-                    'val' => isset($entry['rows']) ? $entry['rows'] : []];
-                if (isset($entry['sources'])) {
-                    ErasedataCollectorTestState::$fleetSources = $entry['sources'];
-                }
+                    'fleet' => isset($entry['fleet']) ? $entry['fleet'] : []];
                 $this->mark($entry);
                 break;
             case 'transition':
@@ -1187,7 +1185,7 @@ class ErasedataProductionMirror
     {
         return(['action.php', 'collect_worker.php', 'collector.php', 'conf.php', 'done.php',
             'erase.php', 'filesystem.php', 'init.php', 'manifest.php', 'native.php', 'outcome.php',
-            'pending.php', 'presence.php', 'removewithdata.php', 'status.php', 'update.php']);
+            'pending.php', 'presence.php', 'removewithdata.php', 'shared.php', 'status.php', 'update.php']);
     }
 
     public static function build($root, $sourceRoot, $user = 'rutorrent')
@@ -1724,7 +1722,7 @@ class ErasedataProductionMirror
             . "\tpublic \$responseValues = array(); public \$responseTypes = array();\n"
             . "\tpublic \$val = array(); public \$fault = false;\n"
             . "\tpublic \$faultString = ''; public \$rawFaultString = null;\n"
-            . "\tpublic \$faultCode = 0; public \$important = true;\n"
+            . "\tpublic \$faultCode = 0; public \$important = true; public \$transportFailure = null;\n"
             . "\tprivate \$commands = array();\n"
             . "\tprivate static \$sequence = 0;\n"
             . "\tpublic function __construct(\$commands = null)\n"
@@ -1756,6 +1754,9 @@ class ErasedataProductionMirror
             . "\t\tforeach(\$this->commands as \$candidate)\n"
             . "\t\t\tif(array_key_exists(\$candidate->command, \$script))\n"
             . "\t\t\t\t{ \$first = \$candidate->command; break; }\n"
+            . "\t\tif(in_array(\$first, array('d.multicall', 'f.get_path'), true)\n"
+            . "\t\t\t&& (!is_array(\$script) || !array_key_exists(\$first, \$script)))\n"
+            . "\t\t\t\$script[\$first] = isset(\$script['d.multicall']['fleet']) ? \$script['d.multicall'] : array('fleet' => array());\n"
             . "\t\tif(!is_array(\$script) || !array_key_exists(\$first, \$script))\n"
             . "\t\t{\n"
             . "\t\t\t\$record = array();\n"
@@ -1790,6 +1791,8 @@ class ErasedataProductionMirror
             . "\t\t\t\t&& is_array(\$byParam[\$key]))\n"
             . "\t\t\t\t\$reply = \$byParam[\$key] + \$reply;\n"
             . "\t\t}\n"
+            . "\t\tif(isset(\$reply['fleet']) && is_array(\$reply['fleet']))\n"
+            . "\t\t\t\$reply = ErasedataLoadedFleet::reply(\$reply, \$this->commands) + \$reply;\n"
             . "\t\tif(isset(\$reply['cut']) && is_int(\$reply['cut']))\n"
             . "\t\t{\n"
             . "\t\t\t\$seen = (int)@file_get_contents(" . $settings . ".'/cut-'.\$first);\n"
@@ -2205,10 +2208,11 @@ if (PHP_SAPI === 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
         if ($erasedataFixtureScenario['onlyHash'] !== null) {
             $argv[] = $erasedataFixtureScenario['onlyHash'];
         }
-        register_shutdown_function(
-            'erasedataCollectorFixtureFlush',
-            $erasedataFixtureScenario['logFile'],
-        );
+        // Registered from a shutdown function, so the log is written after
+        // every one the collector registers, its fatal report included.
+        register_shutdown_function(function ($logFile) {
+            register_shutdown_function('erasedataCollectorFixtureFlush', $logFile);
+        }, $erasedataFixtureScenario['logFile']);
         require(dirname(__FILE__) . '/../../../plugins/erasedata/update.php');
         erasedataCollectorFixtureRun($erasedataFixtureScenario);
     }

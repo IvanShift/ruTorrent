@@ -1609,19 +1609,14 @@ function erasedataCleanupCaptureReferencedByName(
     $successorSnapshot,
     $otherSnapshot
 ) {
-    $key = "p\0" . $entry;
-    if (isset($otherSnapshot['paths'][$key])) {
-        // The previous release published a bridge at $public. A torrent
-        // naming that bridge keeps working after exact restoration; a direct
-        // reference to the private name would break, so keep the capture.
-        if (!isset($otherSnapshot['bindings'][$key])
-            || !is_array($otherSnapshot['bindings'][$key])) {
+    // The previous release published a bridge at $public. A torrent naming
+    // that bridge keeps working after exact restoration; any other name that
+    // reaches the private file would break, so keep the capture. $otherSnapshot
+    // was taken for both: through the bridge a torrent uses both, through
+    // another name only the private file.
+    foreach ($otherSnapshot['claimed'][$entry] ?? [] as $hash => $_) {
+        if (!isset($otherSnapshot['claimed'][$public][$hash])) {
             return(true);
-        }
-        foreach ($otherSnapshot['bindings'][$key] as $raw => $_) {
-            if ($raw !== "r\0" . $public) {
-                return(true);
-            }
         }
     }
     foreach ($successorSnapshot['observations'] as $observation) {
@@ -1684,21 +1679,14 @@ function erasedataCleanupParents($manifest)
     return($dirs);
 }
 
-function erasedataCleanupParentOwnerState($snapshot, $path)
+// 'claimed' while another download lies in the directory $path, $real on
+// disk (erasedataDownloadsUnder()); 'unknown' without a snapshot.
+function erasedataCleanupParentOwnerState($snapshot, $path, $real)
 {
-    if (!is_array($snapshot) || !isset($snapshot['paths'])
-        || !is_array($snapshot['paths'])) {
+    if (!is_array($snapshot)) {
         return('unknown');
     }
-    foreach ($snapshot['paths'] as $key => $_) {
-        if (strpos($key, "p\0") !== 0) {
-            return('unknown');
-        }
-        if (erasedataPathsOverlap($path, substr($key, 2))) {
-            return('claimed');
-        }
-    }
-    return('unclaimed');
+    return(count(erasedataDownloadsUnder($real, $path, $snapshot['downloads'])) ? 'claimed' : 'unclaimed');
 }
 
 // Legacy cleanup used a public symlink to a reserved directory. Move only
@@ -1867,19 +1855,18 @@ function erasedataCleanupRestoreReservation(
     return(true);
 }
 
+// $sizes: erasedataClaimedFiles()'s, kept for the caller's pass.
 function erasedataResumeCleanupCapturedTargets(
     $manifest,
     $reservationKey,
     $successorSnapshot,
-    $otherSnapshot,
     ErasedataFilesystemOps $filesystem,
-    &$reason
+    &$reason,
+    &$sizes = null
 ) {
     if (!is_array($successorSnapshot)
         || !isset($successorSnapshot['observations'])
-        || !is_array($successorSnapshot['observations'])
-        || !is_array($otherSnapshot) || !isset($otherSnapshot['paths'])
-        || !is_array($otherSnapshot['paths'])) {
+        || !is_array($successorSnapshot['observations'])) {
         $reason = 'rpc-unknown';
         return(false);
     }
@@ -1967,6 +1954,18 @@ function erasedataResumeCleanupCapturedTargets(
             }
             continue;
         }
+        $otherSnapshot = erasedataCleanupOtherOwnerSnapshot(
+            $manifest['hash'],
+            $manifest['new_hash'],
+            $manifest['marker'],
+            $manifest['replacement_record'],
+            $reason,
+            [$info['entry'], $file],
+            $sizes,
+        );
+        if ($otherSnapshot === false) {
+            return(false);
+        }
         if (erasedataCleanupCaptureReferencedByName(
             $info['entry'],
             $file,
@@ -2003,6 +2002,13 @@ final class ErasedataCollector
     // Set by reportRetentionsTo(); null means log directly, as the ordinary
     // schedule does.
     private $retentionSink = null;
+    // The files of the list in hand that loaded downloads still use, as
+    // erasedataClaimedFiles() answers, and those deleteBoundFile() kept.
+    private $claimedFiles = [];
+    private $keptFiles = [];
+    // erasedataClaimedFiles()'s sizes of the loaded downloads' files, asked
+    // once a pass.
+    private $fileSizes = null;
 
     public function __construct(
         ErasedataFilesystemOps $filesystem,
@@ -2350,6 +2356,53 @@ final class ErasedataCollector
     private function collectPaths($hash, $physicalOnly = false)
     {
         return(call_user_func($this->pathCollector, $hash, $physicalOnly));
+    }
+
+    // Which files of this list loaded downloads still use, asked right before
+    // it is applied, and whether Delete Path removes its base whole ('force'),
+    // or null when the daemon does not say: then nothing of the list is
+    // applied and it is retained, classified. Delete Path is narrowed to the
+    // download's own files while a loaded download lies in its base, as it
+    // is or would be on disk, or uses one of its files, and while the base
+    // cannot be resolved. An interrupted forced removal keeps its decision.
+    // The same hash loaded again is among them; its owned paths
+    // (collectPaths()) retain what it uses before a file counts as kept.
+    private function sharedFiles($item, $manifest, &$reason)
+    {
+        $this->registerFatalReport();
+        $owners = erasedataLoadedOwners($manifest['files'], $this->fileSizes, $reason);
+        if ($owners === false) {
+            return(null);
+        }
+        $force = $manifest['force'] === 2 && $this->enableForceDeletion && !empty($manifest['multi']);
+        $narrowed = false;
+        if ($force && $this->readDirectoryIntent($item) === null) {
+            $base = $this->filesystem->pathIdentity($manifest['base']);
+            $narrowed = count($owners['claimed']) || !is_array($base)
+                || count(erasedataDownloadsUnder($base['path'], $manifest['base'], $owners['downloads']));
+        }
+        return(['claimed' => $owners['claimed'], 'force' => $force && !$narrowed, 'narrowed' => $narrowed]);
+    }
+
+    // A fatal error while the loaded downloads are read -- an exhausted
+    // memory_limit above all -- would end the pass with its lists queued and
+    // say nothing. Say it once, from this process only. Both readers,
+    // sharedFiles() and consumeCleanupManifest(), register it.
+    private function registerFatalReport()
+    {
+        static $registered = false;
+        if ($registered) {
+            return;
+        }
+        $registered = true;
+        $pid = getmypid();
+        register_shutdown_function(function () use ($pid) {
+            $error = error_get_last();
+            if (getmypid() === $pid && is_array($error) && $error['type'] === E_ERROR) {
+                FileUtil::toLog('erasedata: the collector stopped on a fatal error; its lists stay queued'
+                    . ' reason=collector-fatal memory_limit=' . ini_get('memory_limit'));
+            }
+        });
     }
 
     // Resolve intermediate directories from owned descriptors. File deletion
@@ -3034,6 +3087,13 @@ final class ErasedataCollector
             $this->log('Retain active file ' . $logical);
             return(false);
         }
+        // Another loaded download uses this file: keeping it completes the
+        // entry, or the job would be retried for as long as that one stays.
+        if (array_key_exists($logical, $this->claimedFiles)) {
+            $this->log('Keep shared file ' . $logical);
+            $this->keptFiles[$logical] = true;
+            return(true);
+        }
         if (empty($entry['is_link'])) {
             $identity = $this->filesystem->pathIdentity($bound);
             if ($identity === false) {
@@ -3057,7 +3117,7 @@ final class ErasedataCollector
         return(false);
     }
 
-    private function parseOneItem($item, $manifest, $ownedPaths, $manifestDigest)
+    private function parseOneItem($item, $manifest, $ownedPaths, $manifestDigest, array $shared)
     {
         $this->log('*** Parse item ' . $item);
         // Callers hand over a record the codec already normalized; nothing here
@@ -3073,10 +3133,12 @@ final class ErasedataCollector
 
         $dirs = [];
         $complete = true;
-        $force_delete = $manifest['force'] === 2 && $this->enableForceDeletion;
+        $force_delete = $shared['force'];
         $is_multi = !empty($manifest['multi']);
         $base_path = $manifest['base'];
         $files = $manifest['files'];
+        $this->claimedFiles = $shared['claimed'];
+        $this->keptFiles = [];
 
         $baseReference = false;
         $physicalBase = null;
@@ -3292,7 +3354,30 @@ final class ErasedataCollector
         if (is_array($baseReference)) {
             $this->filesystem->closeDirectoryReference($baseReference);
         }
+        if ($complete) {
+            $this->reportSharedFiles($manifest['hash'], $shared);
+        }
+        $this->claimedFiles = $this->keptFiles = [];
         return($complete);
+    }
+
+    // One unconditional classified line per kind of keep, once the job is
+    // complete: counts and hashes, never a path (paths go to eLog()).
+    private function reportSharedFiles($hash, array $shared)
+    {
+        if ($shared['narrowed']) {
+            FileUtil::toLog('erasedata: Delete Path of ' . $hash . ' removed only its own files, because another'
+                . ' loaded torrent lies in its directory or uses its files reason=delete-path-narrowed');
+        }
+        if (!count($this->keptFiles)) {
+            return;
+        }
+        $users = [];
+        foreach (array_intersect_key($shared['claimed'], $this->keptFiles) as $hashes) {
+            $users += $hashes;
+        }
+        FileUtil::toLog('erasedata: kept ' . count($this->keptFiles) . ' file(s) of ' . $hash
+            . ' claimed by ' . count($users) . ' loaded torrent(s) reason=shared-with-loaded-torrent');
     }
 
     private function quarantineUnverifiedManifest($path, $expectedStat, $hash)
@@ -3415,7 +3500,14 @@ final class ErasedataCollector
             @fclose($handle);
             return(false);
         }
-        $complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes));
+        $reason = null;
+        $shared = $this->sharedFiles($path, $manifest, $reason);
+        if ($shared === null) {
+            $this->manifestLog($hash, $path, $reason);
+            @fclose($handle);
+            return(false);
+        }
+        $complete = $this->parseOneItem($path, $manifest, $ownedPaths, hash('sha256', $bytes), $shared);
         if (!$complete && $this->nativeIntent !== null && $this->nativeFailure === null) {
             $this->manifestLog($hash, $path, 'incomplete');
         }
@@ -3571,7 +3663,9 @@ final class ErasedataCollector
         if (!erasedataPathExists($dir)) {
             return(true);
         }
-        if (!is_dir($dir)) {
+        // Resolved once: the reservation below moves the directory away.
+        $expected = $this->filesystem->pathIdentity($dir);
+        if (!is_dir($dir) || !is_array($expected) || empty($expected['exists'])) {
             $reason = 'unsafe-path';
             return(false);
         }
@@ -3581,8 +3675,10 @@ final class ErasedataCollector
             $manifest['marker'],
             $manifest['replacement_record'],
             $ownerRefusal,
+            [],
+            $this->fileSizes,
         );
-        $state = erasedataCleanupParentOwnerState($owners, $dir);
+        $state = erasedataCleanupParentOwnerState($owners, $dir, $expected['path']);
         if ($state === 'unknown') {
             $reason = $ownerRefusal === null ? 'rpc-unknown' : $ownerRefusal;
             return(false);
@@ -3598,10 +3694,8 @@ final class ErasedataCollector
         if (count(array_diff($entries, ['.', '..'])) > 0) {
             return(true);
         }
-        $expected = $this->filesystem->pathIdentity($dir);
         $before = $this->filesystem->entryIdentity($dir);
-        if (!is_array($expected) || empty($expected['exists'])
-            || !is_array($before) || empty($before['is_dir'])
+        if (!is_array($before) || empty($before['is_dir'])
             || ($restoredIdentity !== null
                 && (!is_array($restoredIdentity)
                     || (string) $before['dev'] !== $restoredIdentity['device']
@@ -3663,8 +3757,10 @@ final class ErasedataCollector
             $manifest['marker'],
             $manifest['replacement_record'],
             $ownerRefusal,
+            [],
+            $this->fileSizes,
         );
-        $postState = erasedataCleanupParentOwnerState($postOwners, $dir);
+        $postState = erasedataCleanupParentOwnerState($postOwners, $dir, $expected['path']);
         if ($postState !== 'unclaimed') {
             $skipParent = false;
             if (!erasedataCleanupRestoreReservation(
@@ -3737,6 +3833,7 @@ final class ErasedataCollector
         return(true);
     }
 
+    // $downloads: the other downloads the file was found unclaimed among.
     private function cleanupCapturedFile(
         $file,
         $current,
@@ -3744,6 +3841,7 @@ final class ErasedataCollector
         $reservationKey,
         $manifest,
         $successorFiles,
+        $downloads,
         &$reason
     ) {
         $original = $this->filesystem->entryIdentity($file);
@@ -3806,12 +3904,22 @@ final class ErasedataCollector
             $manifest['marker'],
             $manifest['replacement_record'],
             $ownerRefusal,
+            [],
+            $this->fileSizes,
         );
         $postPaths = $this->cleanupSuccessorPaths($manifest['new_hash']);
         $postSuccessor = is_array($postPaths) && $postPaths === $successorFiles
             ? erasedataCleanupSuccessorSnapshot($postPaths, $this->filesystem) : false;
-        $owner = $postOwners === false ? 'unknown'
-            : erasedataCleanupOtherOwnerState($postOwners, $file, $current['stat']);
+        $owner = $postOwners === false ? 'unknown' : 'unclaimed';
+        // While the file is captured no stat() reaches it through its public
+        // name, so no download can be seen using it. One that came, or changed
+        // its directory or number of files, since the file was found unclaimed
+        // may: the file is restored and asked about again.
+        foreach ($owner === 'unclaimed' ? $postOwners['downloads'] : [] as $hash => $download) {
+            if (!isset($downloads[$hash]) || $downloads[$hash] !== $download) {
+                $owner = 'changed';
+            }
+        }
         if ($postSuccessor === false) {
             $owner = 'unknown';
         } else {
@@ -3832,6 +3940,20 @@ final class ErasedataCollector
                 $reason,
             )) {
                 return(false);
+            }
+            if ($owner === 'changed') {
+                $owner = erasedataCleanupOtherOwnerState(erasedataCleanupOtherOwnerSnapshot(
+                    $manifest['hash'],
+                    $manifest['new_hash'],
+                    $manifest['marker'],
+                    $manifest['replacement_record'],
+                    $ownerRefusal,
+                    [$file],
+                    $this->fileSizes,
+                ), $file);
+                if ($owner === 'unclaimed') {
+                    $ownerRefusal = erasedataOwnerRefusal('changed');
+                }
             }
             if ($owner === 'claimed') {
                 return(true);
@@ -3873,6 +3995,7 @@ final class ErasedataCollector
 
     private function consumeCleanupManifest($path, $expectedStat, $hash, $token, $jobKey = null)
     {
+        $this->registerFatalReport();
         $artifact = null;
         $manifest = erasedataReadCleanupManifest(
             $path,
@@ -3900,17 +4023,6 @@ final class ErasedataCollector
             $this->cleanupLog($hash, 'retained', 'rpc-unknown', $path, $jobKey);
             return(false);
         }
-        $otherSnapshot = erasedataCleanupOtherOwnerSnapshot(
-            $manifest['hash'],
-            $manifest['new_hash'],
-            $manifest['marker'],
-            $manifest['replacement_record'],
-            $ownerRefusal,
-        );
-        if ($otherSnapshot === false) {
-            $this->cleanupLog($hash, 'retained', $ownerRefusal, $path, $jobKey);
-            return(false);
-        }
         $successorSnapshot = erasedataCleanupSuccessorSnapshot($successorFiles, $this->filesystem);
         if ($successorSnapshot === false) {
             $this->cleanupLog($hash, 'retained', 'unsafe-path', $path, $jobKey);
@@ -3930,9 +4042,9 @@ final class ErasedataCollector
             $manifest,
             $path,
             $successorSnapshot,
-            $otherSnapshot,
             $this->filesystem,
             $resumeReason,
+            $this->fileSizes,
         )) {
             $this->cleanupLog(
                 $hash,
@@ -3943,15 +4055,18 @@ final class ErasedataCollector
             );
             return(false);
         }
-        // Recovery can restore a public inode. Refresh other ownership, while
-        // keeping the original successor observation as the comparison baseline:
-        // accepting a changed successor here would authorize stale deletion.
+        // Recovery can restore a public inode. Read other ownership after it,
+        // while keeping the original successor observation as the comparison
+        // baseline: accepting a changed successor here would authorize stale
+        // deletion.
         $otherSnapshot = erasedataCleanupOtherOwnerSnapshot(
             $manifest['hash'],
             $manifest['new_hash'],
             $manifest['marker'],
             $manifest['replacement_record'],
             $ownerRefusal,
+            $manifest['files'],
+            $this->fileSizes,
         );
         if ($otherSnapshot === false) {
             $this->cleanupLog($hash, 'retained', $ownerRefusal, $path, $jobKey);
@@ -3989,13 +4104,7 @@ final class ErasedataCollector
             if (!erasedataCleanupIdentityMatches($expected, $current)) {
                 continue;
             } // A replacement object satisfies the old object's obligation.
-            $owner = erasedataCleanupOtherOwnerState($otherSnapshot, $file, $current['stat']);
-            if ($owner === 'unknown') {
-                $complete = false;
-                $reason = 'owner-snapshot-unconfirmed';
-                break;
-            }
-            if ($owner === 'claimed') {
+            if (erasedataCleanupOtherOwnerState($otherSnapshot, $file) === 'claimed') {
                 continue;
             } // A present third-owner claim intentionally protects this path.
             $key = erasedataCleanupExactIdentityKey($current);
@@ -4068,6 +4177,7 @@ final class ErasedataCollector
                         $path,
                         $manifest,
                         $successorFiles,
+                        $otherSnapshot['downloads'],
                         $reason,
                     )) {
                     $complete = false;

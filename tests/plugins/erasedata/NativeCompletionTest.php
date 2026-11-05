@@ -985,7 +985,7 @@ class ErasedataNativeCompletionTest extends TestCase
                         $expected = $current;
                         $expected['canonical'] = $current['path'];
                         $method = self::makeAccessible(new ReflectionMethod($service, 'cleanupCapturedFile'));
-                        $arguments = [$public,$current,$expected,$key,$manifest,[],&$reason];
+                        $arguments = [$public,$current,$expected,$key,$manifest,[],[],&$reason];
                     }
                     $result = $method->invokeArgs($service, $arguments);
                 }

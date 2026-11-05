@@ -2358,8 +2358,7 @@ class ruTrackerChecker
             || strpos($baseDir, "\0") !== false) {
             return(false);
         }
-        $failure = null;
-        $owned = erasedataCollectPhysicalPaths($hash, $failure, $torrent);
+        $owned = erasedataCollectPhysicalPaths($hash, $torrent);
         if (!is_array($owned) || !isset($owned['files']) || !is_array($owned['files'])) {
             return(false);
         }
@@ -2470,12 +2469,17 @@ class ruTrackerChecker
         $basePrefix = $base . DIRECTORY_SEPARATOR;
         $newBasePrefix = $newBase === null ? $basePrefix : $newBase . DIRECTORY_SEPARATOR;
         $ownerRefusal = null;
+        $obsoletePaths = [];
+        foreach ($obsolete as $path) {
+            $obsoletePaths[] = $basePrefix . $path;
+        }
         $otherOwners = erasedataCleanupOtherOwnerSnapshot(
             $oldHash,
             $newHash,
             $marker,
             $record,
             $ownerRefusal,
+            $obsoletePaths,
         );
         if ($otherOwners === false) {
             self::logCleanupFailure('obsolete cleanup refused old=' . $oldHash . ' new=' . $newHash
@@ -2521,15 +2525,7 @@ class ruTrackerChecker
                 return(false);
             }
 
-            $owner = erasedataCleanupOtherOwnerState(
-                $otherOwners,
-                $candidate,
-                $identity['stat'],
-            );
-            if ($owner === 'unknown') {
-                return(false);
-            }
-            if ($owner === 'claimed') {
+            if (erasedataCleanupOtherOwnerState($otherOwners, $candidate) === 'claimed') {
                 continue;
             }
             $key = self::fileIdentityIndexKey($identity);

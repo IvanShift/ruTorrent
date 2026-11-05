@@ -86,21 +86,6 @@ class OutcomeParserTest extends TestCase
         );
     }
 
-    public function testClaimedDaemonPathsAreTheDaemonsOwnBytes()
-    {
-        $file = self::DIRECTORY . '/' . self::NAME;
-        $claims = $this->drive(
-            [[self::DIRECTORY, self::NAME, $file]],
-            'require_once(' . var_export($this->repoRoot() . '/plugins/erasedata/removewithdata.php', true) . ");\n"
-            . 'echo json_encode(erasedataCleanupDaemonClaims(' . var_export(self::HASH, true) . '));',
-        );
-        $this->assertSame(
-            ['files' => [$file]],
-            $claims,
-            'the stored and the frozen path name the same file, as the daemon spelled it',
-        );
-    }
-
     // The driver's profile directory lives under the base as well.
     private function remove($path)
     {

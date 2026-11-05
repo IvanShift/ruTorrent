@@ -586,6 +586,43 @@ class ErasedataNativeRetryTest extends TestCase
         $this->assertTrue(is_array($after) && $after['journal'] === [] && !file_exists($terminal), 'journal and terminal record retired');
     }
 
+    // The native worker -- the route of Delete Data and of a ratio group's
+    // "Remove data" on a native daemon -- keeps a file another loaded download
+    // still uses, and keeping it completes the job (Novik #3514).
+    public function testNativeWorkerKeepsAFileAnotherLoadedDownloadUsesAndCompletes()
+    {
+        list($hash, $intent, , , , $payload) = $this->boundJob('shared');
+        rXMLRPCRequest::$responses['d.multicall'] = ['fleet' => [str_repeat('C', 40) => [
+            'directory' => dirname($payload), 'files' => [basename($payload) => filesize($payload)]]]];
+        try {
+            $completed = $this->worker(new ErasedataCollectorFixture([]))->runNative($this->dir, $hash, $intent);
+        } finally {
+            unset(rXMLRPCRequest::$responses['d.multicall']);
+        }
+        $this->assertTrue(is_array($completed), 'the job completes');
+        $this->assertSame('consumed exactly once', @file_get_contents($payload), 'the other download keeps its file');
+        $this->assertSame(['erasedata: kept 1 file(s) of ' . $hash . ' claimed by 1 loaded torrent(s)'
+            . ' reason=shared-with-loaded-torrent'], FileUtil::$log, 'and one classified line says so');
+    }
+
+    public function testNativeWorkerRetainsTheJobWhileLoadedFilesAreUnknown()
+    {
+        list($hash, $intent, $path, , $bytes, $payload) = $this->boundJob('unknown-owners');
+        rXMLRPCRequest::$responses['d.multicall'] = ['fleet' => [], 'faults' => ['loaded' => true]];
+        try {
+            $completed = $this->worker(new ErasedataCollectorFixture([]))->runNative($this->dir, $hash, $intent);
+        } finally {
+            unset(rXMLRPCRequest::$responses['d.multicall']);
+        }
+        $this->assertSame(false, $completed, 'the job is retained');
+        $this->assertTrue(is_file($payload) && file_get_contents($path) === $bytes, 'nothing is deleted and the list is exact');
+        $log = implode("\n", FileUtil::$log);
+        $this->assertTrue(
+            strpos($log, 'reason=owner-snapshot-unconfirmed why=fault; exact record retained for retry') !== false,
+            'the retention is classified and visible: ' . $log,
+        );
+    }
+
     // The owner's queue after the retry finished: no record, empty journal,
     // disarmed, and one hint whose record has gone.
     public function testFullPassForgetsOnlyHintsWhoseRecordHasLeftTheQueue()

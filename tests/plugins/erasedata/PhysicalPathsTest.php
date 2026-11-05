@@ -10,7 +10,6 @@ class ErasedataPhysicalPathsTest extends TestCase
 
     public function setUp()
     {
-        ErasedataCollectorTestState::$fleetSources = [];
         rXMLRPCRequest::$responses = [];
         rXMLRPCRequest::$requested = [];
         rXMLRPCRequest::$commandCalls = [];
@@ -23,14 +22,12 @@ class ErasedataPhysicalPathsTest extends TestCase
         foreach ([false, true] as $open) {
             $this->fixture(true, [['path' => [$legacy],
                 'path.utf-8' => [$utf8], 'length' => 7]], [$utf8], $open);
-            $failure = null;
             $this->assertEquals(
                 ['base' => '/downloads/Show', 'multi' => '1',
                     'files' => ['/downloads/Show/' . $utf8]],
-                erasedataCollectPhysicalPaths(self::HASH, $failure),
+                erasedataCollectPhysicalPaths(self::HASH),
                 'the daemon selected path is returned without metadata substitution',
             );
-            $this->assertEquals(null, $failure, 'selected aliases are confirmed physical paths');
         }
     }
 
@@ -190,8 +187,7 @@ class ErasedataPhysicalPathsTest extends TestCase
         $this->fixture(true, [['path' => ['legacy.bin'], 'length' => 7]], ['selected.bin']);
         $source = new ErasedataCollectorTestSource(ErasedataCollectorTestState::$source);
         ErasedataCollectorTestState::$source = false;
-        $failure = null;
-        $result = erasedataCollectPhysicalPaths(self::HASH, $failure, $source);
+        $result = erasedataCollectPhysicalPaths(self::HASH, $source);
         $this->assertEquals(
             ['/downloads/Show/selected.bin'],
             is_array($result) ? $result['files'] : null,
@@ -200,13 +196,13 @@ class ErasedataPhysicalPathsTest extends TestCase
         $wrong = new ErasedataCollectorTestSource(['hash' => str_repeat('B', 40), 'info' => $source->info]);
         $this->assertSame(
             false,
-            erasedataCollectPhysicalPaths(self::HASH, $failure, $wrong),
+            erasedataCollectPhysicalPaths(self::HASH, $wrong),
             'the supplied source must still match the requested info hash',
         );
         $invalid = new ErasedataCollectorTestSource(['hash' => 'invalid', 'info' => $source->info]);
         $this->assertSame(
             false,
-            erasedataCollectPhysicalPaths('invalid', $failure, $invalid),
+            erasedataCollectPhysicalPaths('invalid', $invalid),
             'two invalid hash spellings cannot attest a supplied source',
         );
     }

@@ -223,69 +223,42 @@ class DaemonPathParserTest extends TestCase
         foreach ($cases as $case => $plan) {
             list($hash, $replies, $expected) = $plan;
             $answer = $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
-                . '$failure = null; $paths = erasedataCollectPhysicalPaths(' . var_export($hash, true) . ', $failure);'
-                . ' echo json_encode(array("paths" => $paths, "failure" => $failure));');
+                . '$paths = erasedataCollectPhysicalPaths(' . var_export($hash, true) . ');'
+                . ' echo json_encode(array("paths" => $paths));');
             $this->assertSame($expected, $answer['paths'], 'the session copy and the daemon agree, and the'
                 . ' payload is named in the daemon\'s own bytes (' . $case . '): ' . self::show($answer));
         }
     }
 
-    public function testAPresentCopyWithSuchNamesIsClaimedThroughItsExactPlan()
+    // The replacement cleanup's owner scan claims the files another loaded
+    // download lists, in the daemon's own bytes: the real names, never their
+    // neighbours spelled the way one more unescape would read them.
+    public function testTheOwnerScanClaimsTheDaemonsOwnBytes()
     {
         $dir = $this->dir;
-        $hash = $this->sessionCopy($this->multiInfo());
-        $answer = $this->ownerSnapshot([
-            [$hash, '', '', '', ''],
-            $this->sourceReply(),
-            ErasedataRealParserDriver::physicalPathReply(
-                $dir,
-                1,
-                [$dir . '/' . self::NAME, $dir . '/.pad/0', $dir . '/sub/b.bin'],
-            ),
-            ErasedataRealParserDriver::physicalPathReply($dir, 1, [self::NAME, '.pad/0', 'sub/b.bin'])]);
-        $this->assertSame(
-            $this->claims([$dir . '/' . self::NAME, $dir . '/sub/b.bin']),
-            $answer['snapshot'],
-            'its payload files are claimed as they are on disk, and its padding is not: '
-            . self::show($answer['snapshot']),
+        $single = str_repeat('C', 40);
+        $answer = $this->ownerSnapshot(
+            new ErasedataLoadedFleetReplies([
+                self::HASH => ['directory' => $dir, 'files' => [self::NAME => 3, '.pad/0' => 5, 'sub/b.bin' => 4]],
+                $single => ['directory' => dirname($this->file), 'files' => [self::SINGLE => 5]]]),
+            [$dir . '/' . self::NAME, $dir . '/' . self::unescapedOnce(self::NAME), $this->file],
         );
-        $this->assertSame([], $this->driver->logLines(), 'a copy that is there is not reported as'
-            . ' unreadable: ' . self::show($this->driver->logLines()));
-        $this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
-    }
-
-    // A copy that is this download's own -- its info hash matches -- but whose
-    // layout gives no exact plan (here a single-file length beside a file
-    // list) is claimed through the daemon's file list as before. It is named
-    // for what it is, without a save: the daemon would write the same info
-    // dictionary again.
-    public function testAReadableCopyWithoutAUsableLayoutIsNamedSoWithoutASave()
-    {
-        $dir = $this->dir;
-        $hash = $this->sessionCopy([
-            'files' => [['length' => 3, 'path' => [self::NAME]]],
-            'length' => 3,
-            'name' => self::DIRECTORY,
-            'piece length' => 16384,
-            'pieces' => str_repeat("\x03", 20)]);
-        $answer = $this->ownerSnapshot([
-            [$hash, '', '', '', ''],
-            // The plan reads the copy, then the metadata-stub check reads it again.
-            $this->sourceReply(),
-            $this->sourceReply(),
-            // d.directory, then f.path and f.frozen_path of each file.
-            [$dir, self::NAME, $dir . '/' . self::NAME],
-            // The answer to a session save, should one be requested.
-            [0]]);
         $this->assertSame(
-            $this->claims([$dir . '/' . self::NAME]),
+            [$dir . '/' . self::NAME, $this->file],
             $answer['snapshot'],
-            'its daemon file list is claimed: ' . self::show($answer['snapshot']),
+            'every listed file is claimed as the daemon spelled it: ' . self::show($answer['snapshot']),
         );
-        $this->assertSame(['erasedata: cleanup owner ' . $hash . ' metainfo-paths-unusable; its daemon file'
-            . ' list is claimed instead'], $this->driver->logLines(), 'the log says the copy is there and its'
-            . ' layout unusable: ' . self::show($this->driver->logLines()));
-        $this->assertSame(false, $this->saveRequested(), 'and no session save is requested for it');
+        $this->assertSame([], $this->driver->logLines(), 'nothing is reported: ' . self::show($this->driver->logLines()));
+        $this->assertSame(
+            false,
+            in_array('d.save_full_session', $this->driver->daemon()->calls(), true),
+            'no session save is asked for',
+        );
+        $this->assertSame(
+            ['claimed', 'unclaimed'],
+            [$answer['state'], $answer['neighbour']],
+            'the file is claimed, its once-unescaped neighbour is not',
+        );
     }
 
     // What rXMLRPCRequest::unescapeValue(), now kept only for the deprecated
@@ -372,37 +345,18 @@ class DaemonPathParserTest extends TestCase
     }
 
     // The replacement cleanup's owner scan, seen from a download that is
-    // neither side of the replacement.
-    private function ownerSnapshot(array $replies)
+    // neither side of the replacement: the paths it claims.
+    private function ownerSnapshot($replies, array $own)
     {
+        $file = $this->dir . '/' . self::NAME;
+        $neighbour = $this->dir . '/' . self::unescapedOnce(self::NAME);
         return $this->driver->drive($replies, 'require_once(' . var_export($this->plugin(), true) . ");\n"
-            . '$s = erasedataCleanupOtherOwnerSnapshot(' . var_export(self::OLD, true) . ', '
+            . '$r = null; $s = erasedataCleanupOtherOwnerSnapshot(' . var_export(self::OLD, true) . ', '
             . var_export(self::SUCCESSOR, true) . ', ' . var_export(self::MARKER, true) . ', '
-            . var_export(self::OLD . '-started-1787587200', true) . ");\n"
-            . 'echo json_encode(array("snapshot" => is_array($s) ? array("paths" => array_keys($s["paths"]),'
-            . ' "inodes" => array_keys($s["inodes"])) : $s));');
-    }
-
-    private function claims(array $files)
-    {
-        $paths = [];
-        $inodes = [];
-        foreach ($files as $file) {
-            $paths[] = "p\0" . realpath($file);
-            $stat = stat($file);
-            $inodes[] = 'i:' . $stat['dev'] . ':' . $stat['ino'];
-        }
-        return ['paths' => $paths, 'inodes' => $inodes];
-    }
-
-    private function saveRequested()
-    {
-        foreach ($this->driver->daemon()->calls() as $call) {
-            if (strpos($call, 'save_full_session') !== false) {
-                return true;
-            }
-        }
-        return false;
+            . var_export(self::OLD . '-started-1787587200', true) . ', $r, ' . var_export($own, true) . ");\n"
+            . 'echo json_encode(array("snapshot" => is_array($s) ? array_keys($s["claimed"]) : $s,'
+            . ' "state" => erasedataCleanupOtherOwnerState($s, ' . var_export($file, true) . '),'
+            . ' "neighbour" => erasedataCleanupOtherOwnerState($s, ' . var_export($neighbour, true) . ')));');
     }
 
     private static function show($value)

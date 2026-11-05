@@ -6,7 +6,7 @@ require_once __DIR__ . '/../../../plugins/erasedata/removewithdata.php';
 eval(loadClassDefinition(__DIR__ . '/../../../plugins/rutracker_check/check.php', 'ruTrackerChecker'));
 
 $suite = new StrictTestSuite();
-foreach (['blocking owner', 'unknown fleet'] as $scene) {
+foreach (['unplaceable owner', 'short owner scan', 'unknown fleet'] as $scene) {
     $suite->test('obsolete cleanup reports one classified refusal for ' . $scene, function () use ($scene) {
         $root = sys_get_temp_dir() . '/checker-owner-refusal-' . bin2hex(random_bytes(8));
         mkdir($root, 0700);
@@ -15,10 +15,16 @@ foreach (['blocking owner', 'unknown fleet'] as $scene) {
             FileUtil::$settingsPath = $root;
             FileUtil::$log = [];
             ErasedataCollectorTestState::$source = false;
-            ErasedataCollectorTestState::$fleetSources = [];
             $owner = str_repeat('D', 40);
-            if ($scene === 'blocking owner') {
+            if ($scene === 'unplaceable owner') {
+                // The owner scan answers, but the downloads question gets an
+                // answer without whole rows (erasedataLoadedDownloads()).
                 rXMLRPCRequest::queue('d.multicall', true, false, [$owner, '', '', '', '']);
+                rXMLRPCRequest::queue('d.multicall', true, false, [$owner, $root]);
+            }
+            if ($scene === 'short owner scan') {
+                // The owner scan's last row lacks a value.
+                rXMLRPCRequest::queue('d.multicall', true, false, [$owner, '', '', '']);
             }
             $old = new ErasedataCollectorTestSource(['hash' => str_repeat('A', 40),
                 'info' => ['name' => 'old.bin', 'length' => 3]]);
@@ -38,14 +44,20 @@ foreach (['blocking owner', 'unknown fleet'] as $scene) {
                 $old, $new, $root, str_repeat('A', 40), str_repeat('B', 40), str_repeat('a', 32),
                 str_repeat('A', 40) . '-started-1787587200']);
             strictAssertSame(false, $result, 'unconfirmed other ownership blocks obsolete-file cleanup');
-            $reason = $scene === 'blocking owner'
-                ? 'owner-session-copy-unreadable-daemon-paths-unconfirmed owner=' . $owner
-                : 'owner-snapshot-unconfirmed';
+            $reason = 'owner-snapshot-unconfirmed why=' . ($scene === 'unknown fleet' ? 'fault' : 'unreadable');
             strictAssertSame(
                 ['rutracker_check: obsolete cleanup refused old=' . str_repeat('A', 40)
                 . ' new=' . str_repeat('B', 40) . ' reason=' . $reason],
                 FileUtil::$log,
                 'the actual producer consumes the snapshot reason and emits it once',
+            );
+            $scans = rXMLRPCRequest::requestsFor('d.multicall');
+            strictAssertSame(
+                $scene === 'unplaceable owner' ? ['default', 'default'] : ['default'],
+                array_map(function ($request) {
+                    return $request['commands'][0]->params[0];
+                }, $scans),
+                'the owner scan and the downloads question read one view, the one shared.php reads',
             );
             strictAssertSame('old', file_get_contents($root . '/old.bin'), 'refusal preserves obsolete payload');
             strictAssertSame([], rXMLRPCRequest::requestsFor('d.erase'), 'refusal never erases a torrent');

@@ -1,6 +1,7 @@
 <?php
 
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/PhysicalRpcFixture.php');
 
 /**
  * Runs PHP code in a child process that loads the real conf/config.php,
@@ -50,11 +51,14 @@ final class ErasedataRealParserDriver
     }
 
     // Answers $replies in order -- one scalar list or explicit wire reply per
-    // request -- and returns what $body printed, decoded from JSON.
-    public function drive(array $replies, $body)
+    // request -- or through a responder such as ErasedataLoadedFleetReplies,
+    // and returns what $body printed, decoded from JSON.
+    public function drive($replies, $body)
     {
         $this->stop();
-        $this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls-' . uniqid() . '.log');
+        $this->daemon = is_array($replies)
+            ? new FakeRtorrentDaemon($replies, $this->base . '/calls-' . uniqid() . '.log')
+            : new FakeRtorrentDaemon($replies, $this->base . '/calls-' . uniqid() . '.log', false, [__FILE__]);
         $this->logFile = $this->base . '/app-' . uniqid() . '.log';
         $root = realpath(__DIR__ . '/../../..');
         $driver = $this->base . '/drive-' . uniqid() . '.php';
@@ -104,5 +108,92 @@ final class ErasedataRealParserDriver
             $this->daemon->stop();
         }
         $this->daemon = null;
+    }
+}
+
+/**
+ * A daemon holding a fleet of loaded downloads (ErasedataLoadedFleet): it
+ * answers the questions of shared.php and of the replacement cleanup from
+ * the fleet, in the wire shape captured from 0.16.27 and 0.9.8 (strings
+ * escaped only for '&', '<' and '>', numbers as <i8>, system.multicall
+ * results wrapped once), and every other request with the next of $replies.
+ * $faults maps a question kind to the reply that stands for it instead (a
+ * FakeRtorrentDaemon::fault(), a paced reply, or null for no reply).
+ */
+class ErasedataLoadedFleetReplies
+{
+    private $fleet;
+    private $replies;
+    private $faults;
+
+    public function __construct(array $fleet, array $replies = [], array $faults = [])
+    {
+        $this->fleet = $fleet;
+        $this->replies = $replies;
+        $this->faults = $faults;
+    }
+
+    public function __invoke($body, $methods)
+    {
+        $calls = self::calls($body);
+        $results = [];
+        foreach ($calls as $call) {
+            $kind = ErasedataLoadedFleet::kind($call[0], $call[1]);
+            if ($kind === null) {
+                return count($this->replies) ? array_shift($this->replies) : null;
+            }
+            if (array_key_exists($kind, $this->faults)) {
+                return $this->faults[$kind];
+            }
+            $result = ErasedataLoadedFleet::result($this->fleet, $call[0], $call[1]);
+            if ($result === false) {
+                return FakeRtorrentDaemon::fault('Could not find info-hash.', -501);
+            }
+            $results[] = $result;
+        }
+        $value = count($calls) === 1 && strpos($body, '<methodName>system.multicall</methodName>') === false
+            ? self::xml($results[0]) : self::xml(array_map(function ($result) {
+                return [$result];
+            }, $results));
+        return new FakeRtorrentRawReply('<?xml version="1.0"?><methodResponse><params><param>'
+            . $value . '</param></params></methodResponse>');
+    }
+
+    // [method, params] of each call in a request body.
+    private static function calls($body)
+    {
+        $xml = simplexml_load_string($body);
+        $calls = [];
+        if ((string) $xml->methodName === 'system.multicall') {
+            foreach ($xml->params->param->value->array->data->value as $struct) {
+                $method = '';
+                $params = [];
+                foreach ($struct->struct->member as $member) {
+                    if ((string) $member->name === 'methodName') {
+                        $method = (string) $member->value->string;
+                    } else {
+                        foreach ($member->value->array->data->value as $param) {
+                            $params[] = trim((string) $param->children()[0]);
+                        }
+                    }
+                }
+                $calls[] = [$method, $params];
+            }
+            return $calls;
+        }
+        $params = [];
+        foreach ($xml->params->param as $param) {
+            $params[] = (string) $param->value->children()[0];
+        }
+        return [[(string) $xml->methodName, $params]];
+    }
+
+    private static function xml($value)
+    {
+        if (is_array($value)) {
+            return '<value><array><data>' . implode('', array_map([self::class, 'xml'], $value)) . '</data></array></value>';
+        }
+        return is_int($value) ? '<value><i8>' . $value . '</i8></value>'
+            : '<value><string>' . strtr($value, ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;']) . '</string></value>';
     }
 }

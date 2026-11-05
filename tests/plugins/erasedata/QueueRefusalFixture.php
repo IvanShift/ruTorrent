@@ -45,7 +45,7 @@ class ErasedataQueueRefusalFixture
         foreach (['plugins/erasedata/init.php', 'plugins/erasedata/update.php',
             'plugins/erasedata/filesystem.php', 'plugins/erasedata/manifest.php',
             'plugins/erasedata/pending.php', 'plugins/erasedata/presence.php', 'plugins/erasedata/native.php',
-            'plugins/erasedata/removewithdata.php',
+            'plugins/erasedata/removewithdata.php', 'plugins/erasedata/shared.php',
             'plugins/erasedata/collector.php', 'plugins/rutracker_check/init.php',
             'plugins/rutracker_check/done.php', 'plugins/ratio/init.php', 'php/utility/permission.php', 'php/utility/hashfault.php'] as $name) {
             copy($root . '/' . $name, $tree . '/' . $name);

@@ -1,0 +1,5 @@
+Status: 200 OK
+Content-Type: text/xml
+Content-Length: 422
+
+<?xml version="1.0"?><methodResponse><params><param><value><array><data><value><array><data><value><string>top &amp; &lt;lt&gt;.bin</string></value></data></array></value><value><array><data><value><string>sub "d"/ü ж\b.bin</string></value></data></array></value><value><array><data><value><string>single "one" &amp; ä.bin</string></value></data></array></value></data></array></value></param></params></methodResponse>

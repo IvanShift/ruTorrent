@@ -346,6 +346,14 @@ class MiniRtorrent
             $hash = $this->target(array_shift($params));
             return $this->call($method, $params, $hash);
         }
+        // One file, addressed as <hash>:f<index>.
+        if (strpos($method, 'f.') === 0 && preg_match('/^([0-9A-Fa-f]{40}):f([0-9]+)$/D', (string) reset($params), $file)) {
+            $hash = $this->target($file[1]);
+            if (!isset($this->downloads[$hash]['files'][(int) $file[2]])) {
+                throw new MiniRtorrentFault(-500, 'invalid parameters: index not found');
+            }
+            return $this->call($method, array_slice($params, 1), $hash, ['f', (int) $file[2]]);
+        }
         throw new MiniRtorrentFault(-506, 'Method \'' . $method . '\' not defined');
     }
 
@@ -426,7 +434,7 @@ class MiniRtorrent
         $view = (string) array_shift($params);
         $values = [];
         foreach ($this->downloads as $hash => $download) {
-            if ($view !== '' && $view !== 'main' && !in_array($view, $download['views'], true)) {
+            if (!in_array($view, ['', 'main', 'default'], true) && !in_array($view, $download['views'], true)) {
                 continue;
             }
             $row = [];
@@ -528,6 +536,10 @@ class MiniRtorrent
                 return $this->compare($args, $hash, $sub) < 0 ? 1 : 0;
             case 'cat':
                 return self::text($args);
+            case 'f.multicall':
+                // Run in a download's command, as d.multicall's
+                // cat="$f.multicall=,f.size_bytes=,cat=/" does.
+                return $this->subMulticall($hash, 'f', array_slice($args, 1));
             case 'value':
                 return (int) self::one($args);
             case 'view.set_visible':
@@ -555,6 +567,11 @@ class MiniRtorrent
             $path = $download['files'][$sub[1]];
             switch ($name) {
                 case 'f.path': case 'f.get_path': return $path;
+                    // The declared size is the size the scene wrote.
+                case 'f.size_bytes': case 'f.get_size_bytes':
+                    $file = rtrim($download['directory'], '/') . '/' . $path;
+                    clearstatcache(true, $file);
+                    return is_file($file) ? (int) filesize($file) : 0;
                     // Filled in only while the download is open, as rtorrent does.
                 case 'f.frozen_path': case 'f.get_frozen_path':
                     return $download['open'] ? rtrim($download['directory'], '/') . '/' . $path : '';
@@ -589,6 +606,7 @@ class MiniRtorrent
             case 'd.complete': case 'd.get_complete': return (int) $download['complete'];
             case 'd.tracker_size': case 'd.get_tracker_size': return count($download['trackers']);
             case 'd.is_multi_file': return (int) $download['multi'];
+            case 'd.size_files': case 'd.get_size_files': return count($download['files']);
             case 'd.base_path': case 'd.get_base_path':
                 if (!$download['open']) {
                     return '';

@@ -45,10 +45,10 @@ class CheckerMetaFetchErasedata
 // recorders. The owner scanner is unclaimed for this isolated replacement case.
 function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record)
 {
-    return ['paths' => [], 'inodes' => []];
+    return ['downloads' => [], 'claimed' => []];
 }
 
-function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+function erasedataCleanupOtherOwnerState($snapshot, $path)
 {
     return 'unclaimed';
 }

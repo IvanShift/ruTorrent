@@ -1274,6 +1274,7 @@ RUNNER;
             'plugins/erasedata/presence.php' => 'plugins/erasedata/presence.php',
             'plugins/erasedata/native.php' => 'plugins/erasedata/native.php',
             'plugins/erasedata/removewithdata.php' => 'plugins/erasedata/removewithdata.php',
+            'plugins/erasedata/shared.php' => 'plugins/erasedata/shared.php',
             'plugins/erasedata/collector.php' => 'plugins/erasedata/collector.php',
             'php/xmlrpc_path.php' => 'php/xmlrpc_path.php',
             // presence.php decides absence with this core leaf.

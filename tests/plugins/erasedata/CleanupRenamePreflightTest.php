@@ -56,7 +56,6 @@ class CleanupRenamePreflightTest extends TestCase
         FileUtil::$settingsPath = $this->dir;
         FileUtil::$log = [];
         ErasedataCollectorTestState::$source = false;
-        ErasedataCollectorTestState::$fleetSources = [];
         rXMLRPCRequest::$erased = [];
         rXMLRPCRequest::$requested = [];
         rXMLRPCRequest::$responses = [
@@ -273,178 +272,34 @@ class CleanupRenamePreflightTest extends TestCase
         $this->assertEquals([$this->hash], rXMLRPCRequest::$erased, 'a repaired parent lets the next tick erase');
     }
 
-    // ACC-OWNB-04: a download whose session copy rTorrent could not write
-    // when it was added names its files only through the daemon. It is
-    // claimed through that list instead of blocking every replacement
-    // cleanup, and a save of its copy is requested once, with its hash logged.
-    public function testDownloadWithoutSessionCopyIsClaimedThroughItsDaemonFileList()
+    // Every loaded download is claimed through its daemon file list
+    // (erasedataLoadedDownloads(), erasedataClaimedFiles()). A download
+    // without a session copy needs no save and blocks nothing, and a magnet
+    // stub claims only its <HASH>.meta.
+    public function testEveryLoadedDownloadIsClaimedThroughItsDaemonFileList()
     {
         $other = str_repeat('C', 40);
+        $stub = str_repeat('F', 40);
         $dir = $this->dir . '/data/other';
-        mkdir($dir, 0700);
+        mkdir($dir . '/pad', 0700, true);
         file_put_contents($dir . '/kept.bin', 'kept');
-        rXMLRPCRequest::$responses['d.multicall'] = ['ok' => true, 'val' => [$other, '', '', '', '']];
-        rXMLRPCRequest::$responses['d.get_directory'] = ['ok' => true,
-            'val' => [$dir, 'kept.bin', $dir . '/kept.bin', 'pad/0', '']];
-        rXMLRPCRequest::$responses['d.save_full_session'] = ['ok' => true, 'val' => [0]];
-        $snapshot = $this->ownerSnapshot();
-        $this->assertTrue(is_array($snapshot), 'an unrelated download without a session copy does not block');
-        $kept = realpath($dir . '/kept.bin');
-        $stat = stat($kept);
-        $this->assertTrue(isset($snapshot['paths']["p\0" . $kept])
-            && isset($snapshot['inodes']['i:' . $stat['dev'] . ':' . $stat['ino']]), 'its listed file is claimed');
-        $this->assertTrue(
-            isset($snapshot['paths']["p\0" . realpath($dir) . '/pad/0']),
-            'a listed file that may be padding is claimed as well',
-        );
-        $this->assertEquals(['d.save_full_session'], array_values(array_intersect(
-            rXMLRPCRequest::$requested,
-            ['d.save_full_session'],
-        )), 'one save of its copy is requested');
-        $this->assertEquals(['erasedata: cleanup owner ' . $other . ' session-copy-unreadable; its daemon file'
-            . ' list is claimed instead; session save requested'], FileUtil::$log, 'the download is named');
-        $this->assertTrue(is_array($this->ownerSnapshot()), 'a later snapshot is not blocked either');
-        $this->assertEquals(
-            1,
-            count(array_keys(rXMLRPCRequest::$requested, 'd.save_full_session')),
-            'and asks for no second save in the same process',
-        );
-    }
+        file_put_contents($dir . '/pad/0', "\0\0\0\0\0");
+        rXMLRPCRequest::$responses['d.multicall'] = ['fleet' => [
+            $other => ['directory' => $dir, 'files' => ['kept.bin' => 4, 'pad/0' => 5]],
+            $stub => ['directory' => $this->dir . '/session', 'files' => [$stub . '.meta' => 1]]]];
+        $reason = null;
+        $own = [$dir . '/kept.bin', $dir . '/pad/0', $this->payload];
+        $snapshot = $this->ownerSnapshot($reason, $own);
+        $this->assertTrue(is_array($snapshot) && $reason === null, 'the snapshot is read: ' . $reason);
+        $this->assertEquals('claimed', erasedataCleanupOtherOwnerState($snapshot, $dir . '/kept.bin'), 'its listed file is claimed');
+        $this->assertEquals('claimed', erasedataCleanupOtherOwnerState($snapshot, $dir . '/pad/0'), 'so is a listed file that may be padding');
+        $this->assertEquals('unclaimed', erasedataCleanupOtherOwnerState($snapshot, $this->payload), 'the stub claims no payload');
+        $this->assertEquals([], array_values(array_intersect(rXMLRPCRequest::$requested, ['d.save_full_session'])), 'no save is requested');
 
-    // A readable copy whose files the daemon does not confirm (a name the
-    // parser escaped once made exactly this) is claimed the same way, with its
-    // own reason and without a save: the copy is there.
-    public function testDownloadWhoseDaemonPathsDoNotConfirmItsCopyIsClaimedWithoutASave()
-    {
-        $other = str_repeat('E', 40);
-        $dir = $this->dir . '/data/third';
-        mkdir($dir, 0700);
-        file_put_contents($dir . '/kept.bin', 'kept');
-        ErasedataCollectorTestState::$fleetSources[$other] = ['hash' => $other,
-            'info' => ['length' => 4, 'name' => 'kept.bin']];
-        rXMLRPCRequest::$responses['d.multicall'] = ['ok' => true, 'val' => [$other, '', '', '', '']];
-        // The exact plan's stored read and the claim read start with the same
-        // command; the claim's answer has no multi-file flag, so the plan is
-        // not confirmed while the claim is.
-        rXMLRPCRequest::$responses['d.get_directory'] = ['ok' => true, 'val' => [$dir, 'kept.bin', '']];
-        try {
-            $snapshot = $this->ownerSnapshot();
-            $this->assertTrue(is_array($snapshot), 'an unconfirmed plan does not block the cleanup');
-            $kept = realpath($dir . '/kept.bin');
-            $this->assertTrue(is_array($snapshot) && isset($snapshot['paths']["p\0" . $kept]), 'its listed file is claimed');
-            $this->assertEquals([], array_values(array_intersect(
-                rXMLRPCRequest::$requested,
-                ['d.save_full_session'],
-            )), 'no session save is requested for a copy that is there');
-            $this->assertEquals(['erasedata: cleanup owner ' . $other . ' daemon-paths-unconfirmed; its daemon file'
-                . ' list is claimed instead'], FileUtil::$log, 'the download and its reason are named');
-        } finally {
-            unset(ErasedataCollectorTestState::$fleetSources[$other]);
-        }
-    }
-
-    public function testDownloadWithoutSessionCopyOrDaemonFileListBlocksWithItsHashNamed()
-    {
-        $other = str_repeat('D', 40);
-        rXMLRPCRequest::$responses['d.multicall'] = ['ok' => true, 'val' => [$other, '', '', '', '']];
-        foreach (['unanswered' => null, 'relative directory' => ['relative', 'f', ''],
-            'absolute file path' => [$this->dir, '/f', ''], 'odd answer' => [$this->dir, 'f']] as $case => $val) {
-            FileUtil::$log = [];
-            if ($val === null) {
-                unset(rXMLRPCRequest::$responses['d.get_directory']);
-            } else {
-                rXMLRPCRequest::$responses['d.get_directory'] = ['ok' => true, 'val' => $val];
-            }
-            $this->assertEquals(false, $this->ownerSnapshot($reason), 'an unknown owner still refuses: ' . $case);
-            $this->assertEquals(
-                'owner-session-copy-unreadable-daemon-paths-unconfirmed owner=' . $other,
-                $reason,
-                'the single consumer refusal names the blocking download: ' . $case,
-            );
-            $this->assertEquals([], FileUtil::$log, 'the probe does not duplicate its consumer diagnostic');
-        }
-    }
-
-    public function testCapturedNativeMagnetSessionIsSkippedByRealSourceLoader()
-    {
-        $result = $this->metadataSourceProbe($this->metadataSourceMirror());
-        $this->assertEquals('Torrent', $result['source'], 'getSource accepts the captured synthetic info envelope');
-        $this->assertEquals(true, $result['metadata_only'], 'the captured native stub has no torrent payload');
-        $this->assertEquals(
-            ['paths' => [], 'inodes' => [], 'bindings' => []],
-            $result['snapshot'],
-            'an unresolved native magnet does not block unrelated replacement cleanup',
-        );
-    }
-
-    public function testNativeMagnetEnvelopeRejectsPayloadAndIdentityUncertainty()
-    {
-        $mirror = $this->metadataSourceMirror();
-        $changes = [
-            'length' => ['length' => 1],
-            'files' => ['files' => [['length' => 1, 'path' => ['payload']]]],
-            'piece length' => ['piece length' => 16384],
-            'meta type' => ['meta_download' => '1'],
-            'meta absent' => ['meta_download' => null],
-            'wrong name' => ['name' => str_repeat('E', 40) . '.meta'],
-            // rTorrent writes only the uppercase spelling (rTorrent::isMetadataStubName()).
-            'lowercase name' => ['name' => str_repeat('f', 40) . '.meta'],
-            'uppercase suffix' => ['name' => str_repeat('F', 40) . '.META'],
-            'wrong pieces' => ['pieces' => str_repeat("\xee", 20)],
-            'incomplete info' => ['pieces' => null]];
-        foreach ($changes as $reason => $change) {
-            $result = $this->metadataSourceProbe($mirror, $change);
-            $this->assertEquals(false, $result['metadata_only'], 'a changed native stub refuses: ' . $reason);
-            $this->assertEquals(false, $result['snapshot'], 'uncertain payload ownership blocks cleanup: ' . $reason);
-        }
-        foreach ([0, false, 'broken'] as $meta) {
-            $result = $this->metadataSourceProbe($mirror, [], $meta);
-            $this->assertEquals(false, $result['snapshot'], 'nonmetadata or unknown daemon state refuses');
-        }
-        $result = $this->metadataSourceProbe($mirror, [], 1, str_repeat('E', 40));
-        $this->assertEquals(false, $result['snapshot'], 'a mismatched current daemon hash refuses');
-        $result = $this->metadataSourceProbe($mirror, [], 1, null, 'd4:infod');
-        $this->assertEquals(false, $result['source'], 'malformed captured source bytes fail the actual loader');
-        $this->assertEquals(false, $result['snapshot'], 'a parse failure cannot become metadata-only');
-        $result = $this->metadataSourceProbe($mirror, [], 1, null, null, false);
-        $this->assertEquals(false, $result['snapshot'], 'an unavailable daemon attestation refuses');
-    }
-
-    public function testMetadataOnlyMagnetDoesNotOwnPayloadButCorruptRealTorrentRefuses()
-    {
-        $stubHash = str_repeat('F', 40);
-        rXMLRPCRequest::$responses['d.multicall'] = ['ok' => true,
-            'val' => [$stubHash, '', '', '', '']];
-        $envelope = $this->capturedEnvelope($stubHash);
-        ErasedataCollectorTestState::$fleetSources[$stubHash] = ['hash' => $stubHash, 'info' => $envelope];
-        rXMLRPCRequest::$responses['d.is_meta'] = ['ok' => true, 'val' => [1, $stubHash]];
-        $this->assertEquals(
-            ['paths' => [], 'inodes' => [], 'bindings' => []],
-            $this->ownerSnapshot(),
-            'an attested metadata-only magnet has no torrent payload ownership',
-        );
-        foreach ([0, false, 'broken'] as $meta) {
-            rXMLRPCRequest::$responses['d.is_meta']['val'][0] = $meta;
-            $this->assertEquals(false, $this->ownerSnapshot(), 'missing info on a real or unknown torrent refuses');
-        }
-        rXMLRPCRequest::$responses['d.is_meta']['val'] = [1, $stubHash];
-        ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = ['name' => 'corrupt'];
-        $this->assertEquals(false, $this->ownerSnapshot(), 'a malformed info dictionary is never skipped');
-        // The real loader never yields a missing info; such a source is not the
-        // captured envelope and cannot bypass its check.
-        ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = null;
-        $this->assertEquals(
-            false,
-            erasedataCleanupMetadataOnly($stubHash),
-            'a source without the captured envelope is not a metadata stub',
-        );
-        $this->assertEquals(false, $this->ownerSnapshot(), 'a missing info dictionary is never skipped');
-        ErasedataCollectorTestState::$fleetSources[$stubHash]['info'] = $envelope;
-        rXMLRPCRequest::$responses['d.is_meta']['val'] = [1, str_repeat('D', 40)];
-        $this->assertEquals(false, $this->ownerSnapshot(), 'a mismatched daemon identity is never skipped');
-        rXMLRPCRequest::$responses['d.is_meta']['val'] = [1, $stubHash];
-        unset(ErasedataCollectorTestState::$fleetSources[$stubHash]);
-        $this->assertEquals(false, $this->ownerSnapshot(), 'an unreadable source is never mistaken for a stub');
+        rXMLRPCRequest::$responses['d.multicall'] = ['fleet' => [], 'faults' => ['sizes' => true]];
+        rXMLRPCRequest::$responses['d.multicall']['fleet'][$other] = ['directory' => $dir, 'files' => ['kept.bin' => 4]];
+        $this->assertEquals(false, $this->ownerSnapshot($reason, $own), 'an unanswered question is no snapshot');
+        $this->assertEquals('owner-snapshot-unconfirmed why=fault', $reason, 'and the refusal is classified with its cause');
     }
 
     private function remove($path)
@@ -477,7 +332,7 @@ class CleanupRenamePreflightTest extends TestCase
         ));
     }
 
-    private function ownerSnapshot(&$reason = null)
+    private function ownerSnapshot(&$reason, array $own)
     {
         return(erasedataCleanupOtherOwnerSnapshot(
             $this->hash,
@@ -485,89 +340,8 @@ class CleanupRenamePreflightTest extends TestCase
             str_repeat('a', 32),
             $this->hash . '-started-1787587200',
             $reason,
+            $own,
         ));
     }
 
-
-    private function metadataSourceMirror()
-    {
-        $root = dirname(__DIR__, 3);
-        $mirror = ErasedataProductionMirror::build($this->dir . '/source-mirror', $root);
-        $this->assertTrue($mirror->isExact(), 'the metadata test executes the shipped erasedata files');
-        // Keep the real source loader and parser: a fake info=null source hid
-        // the native session envelope observed through load.start on 0.16.25.
-        foreach (['rtorrent.php', 'Torrent.php', 'commandargs.php'] as $name) {
-            $bytes = file_get_contents($root . '/php/' . $name);
-            file_put_contents($mirror->root . '/php/' . $name, $bytes);
-            $this->assertEquals(
-                $bytes,
-                file_get_contents($mirror->root . '/php/' . $name),
-                'the source loader and parser remain byte-identical to production',
-            );
-        }
-        return($mirror);
-    }
-
-    private function metadataSourceProbe(
-        $mirror,
-        array $changes = [],
-        $meta = 1,
-        $replyHash = null,
-        $rawOverride = null,
-        $rpcOk = true
-    ) {
-        $hash = str_repeat('F', 40);
-        $mirror->scriptRpc([
-            'get_session' => ['ok' => true, 'val' => [$mirror->settings . '/', '']],
-            'd.multicall' => ['ok' => true, 'val' => [$hash, '', '', '', '']],
-            'd.is_meta' => ['ok' => $rpcOk,
-                'val' => [$meta, $replyHash === null ? $hash : $replyHash]]]);
-        // Captured verbatim from a real daemon's unresolved magnet session on
-        // 2026-10-07 (load.start, requested hash F*40); no tracker or credentials.
-        $raw = $rawOverride === null ? base64_decode(trim(file_get_contents(
-            __DIR__ . '/fixtures/native-unresolved-magnet-session.b64',
-        )), true) : $rawOverride;
-        $this->assertTrue(is_string($raw), 'the captured native session fixture decodes');
-        $body = 'require_once(' . var_export($mirror->root . '/php/rtorrent.php', true) . ');'
-            . 'require_once(' . var_export($mirror->pluginDir . '/removewithdata.php', true) . ');'
-            . '$hash=' . var_export($hash, true) . '; $raw=' . var_export($raw, true) . ';'
-            . '$changes=' . var_export($changes, true) . ';'
-            . 'if(count($changes)) { $parsed=Torrent::fromRawBytes($raw);'
-            . ' foreach($changes as $key=>$value) {'
-            . ' if($value === null) unset($parsed->info[$key]); else $parsed->info[$key]=$value; }'
-            . ' $raw=(string)$parsed; }'
-            . 'file_put_contents(' . var_export($mirror->settings . '/' . $hash . '.torrent', true) . ', $raw);'
-            . '$source=erasedataLoadTorrentSource($hash);'
-            . '$snapshot=erasedataCleanupOtherOwnerSnapshot(' . var_export($this->hash, true) . ','
-            . var_export(str_repeat('B', 40), true) . ',' . var_export(str_repeat('a', 32), true) . ','
-            . var_export($this->hash . '-started-1787587200', true) . ');'
-            . 'echo json_encode(array("source"=>is_object($source) ? get_class($source) : false,'
-            . '"metadata_only"=>erasedataCleanupMetadataOnly($hash), "snapshot"=>$snapshot));';
-        $runner = $mirror->writeRunner('metadata-source', $body);
-        $process = ErasedataTestProcess::start($mirror->php($runner));
-        try {
-            $this->assertTrue($process->wait(5), 'the real metadata source probe terminates');
-            $this->assertEquals(0, $process->reap(), 'the real source loader runs without error: ' . $process->err);
-            $result = json_decode($process->out, true);
-            $this->assertTrue(is_array($result), 'the real source probe emits its result: ' . $process->out);
-            return($result);
-        } finally {
-            $process->reap();
-        }
-    }
-
-    // The info dictionary of the captured native session for F*40, as
-    // php/Torrent.php decodes it (bencoded integers become floats).
-    private function capturedEnvelope($hash)
-    {
-        $raw = base64_decode(trim(file_get_contents(
-            __DIR__ . '/fixtures/native-unresolved-magnet-session.b64',
-        )), true);
-        $this->assertTrue(
-            is_string($raw) && strpos($raw, 'd4:infod13:meta_downloadi1e4:name45:'
-            . $hash . '.meta6:pieces20:' . hex2bin($hash) . 'e') === 0,
-            'the in-process envelope is the captured info dictionary byte for byte',
-        );
-        return(['meta_download' => 1.0, 'name' => $hash . '.meta', 'pieces' => hex2bin($hash)]);
-    }
 }

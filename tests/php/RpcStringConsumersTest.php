@@ -62,7 +62,11 @@ class RpcStringConsumersTest extends TestCase
         'plugins/edit/action.php' => 18,
         'plugins/erasedata/outcome.php' => 9,
         // Physical paths now retain per-command XML types/table rows instead of flat values.
-        'plugins/erasedata/removewithdata.php' => 40,
+        'plugins/erasedata/removewithdata.php' => 26,
+        // The loaded downloads' files (Novik #3514), read by erasedataAnswer():
+        // hashes, directories, counts, sizes and paths, the paths in the
+        // daemon's own bytes and only stat()ed and compared, never quoted.
+        'plugins/erasedata/shared.php' => 1,
         'plugins/extratio/rules.php' => 5,
         // List and files are read row by row, other modes as flat values, and a
         // names=1 file list reads the session and tied paths for its labels.
@@ -122,6 +126,8 @@ class RpcStringConsumersTest extends TestCase
         'php/rtorrent.php' => 3,
         // downloadName(): the live path.
         'php/torrentfilenames.php' => 1,
+        // The directory of a loaded download and the path of its file.
+        'plugins/erasedata/shared.php' => 2,
         // A title that needs metadata.
         'plugins/feeds/action.php' => 1,
         // A list title and a file row that need metadata.

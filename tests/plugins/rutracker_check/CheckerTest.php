@@ -197,9 +197,8 @@ class ErasedataFake
 // The collector owns daemon path validation. Checker fixtures model its
 // confirmed physical reply; selected aliases and unavailable reads override
 // this legacy-layout default explicitly in the path authority regressions.
-function erasedataCollectPhysicalPaths($hash, &$failure = null, $source = null)
+function erasedataCollectPhysicalPaths($hash, $source = null)
 {
-    $failure = null;
     if (array_key_exists($hash, ErasedataFake::$physicalPaths)) {
         return(ErasedataFake::$physicalPaths[$hash]);
     }
@@ -219,12 +218,12 @@ function erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record
 {
     ErasedataFake::record(__FUNCTION__, func_get_args());
     return(ErasedataFake::$scanUnknown ? false
-        : ['paths' => ErasedataFake::$claimPaths, 'inodes' => []]);
+        : ['downloads' => [], 'claimed' => ErasedataFake::$claimPaths]);
 }
 
-function erasedataCleanupOtherOwnerState($snapshot, $path, $stat)
+function erasedataCleanupOtherOwnerState($snapshot, $path)
 {
-    return(isset($snapshot['paths']["p\0" . $path]) ? 'claimed' : 'unclaimed');
+    return(isset($snapshot['claimed'][$path]) ? 'claimed' : 'unclaimed');
 }
 
 function erasedataPrepareObsoleteCleanup($oldHash, $newHash, $marker, $record, $base, array $entries)
@@ -595,7 +594,7 @@ class CheckerTest
         $orphan = $base . '/orphan.bin';
         file_put_contents($shared, 'shared');
         file_put_contents($orphan, 'orphan');
-        ErasedataFake::$claimPaths["p\0" . $shared] = true;
+        ErasedataFake::$claimPaths[$shared] = ['C' => true];
         try {
             $entries = $this->cleanupEntries(
                 ['files' => [['path' => ['shared.bin']],

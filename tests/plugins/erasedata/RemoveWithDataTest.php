@@ -4102,13 +4102,9 @@ class RemoveWithDataTest extends TestCase
         $original = lstat($old);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'old.bin']]]],
             'filesystem' => ['rename:1' => ['path' => $old,
                 'action' => 'fleet-change', 'at' => 'after',
-                'rows' => [$thirdHash, '', '', '', ''],
-                'sources' => [$thirdHash => ['hash' => $thirdHash,
-                    'info' => ['name' => 'old.bin', 'length' => 16]]]]],
+                'fleet' => $this->loadedOwner($thirdHash, $base, ['old.bin' => 16])]],
             'captureLogs' => true,
         ]);
         $this->assertEquals(0, $status, 'a late third-owner claim must not crash cleanup: ' . $output);
@@ -4129,11 +4125,7 @@ class RemoveWithDataTest extends TestCase
             'a proved late claim ends this obsolete-file obligation without a private hardlink',
         );
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => ['hash' => $thirdHash,
-                'info' => ['name' => 'old.bin', 'length' => 16]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'old.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['old.bin' => 16]),
             'captureLogs' => true,
         ]);
         $this->assertEquals(0, $status, 'claimed capture retry must run: ' . $output);
@@ -4145,6 +4137,96 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
+
+    // A download moved by d.directory.set while the file is captured names it
+    // now: its row changed, so the file is restored and asked about again,
+    // and the moved download keeps it.
+    public function testCleanupRechecksADownloadMovedOntoTheFileDuringCapture()
+    {
+        $this->reset();
+        $oldHash = $this->hash('A');
+        $newHash = $this->hash('B');
+        $thirdHash = $this->hash('C');
+        $base = $this->dir . '/moved-owner';
+        @mkdir($base, 0777, true);
+        $old = $base . '/old.bin';
+        file_put_contents($old, 'moved owner bytes');
+        $original = lstat($old);
+        $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
+        list($status, $output) = $this->runCollector([
+            'fleet' => $this->loadedOwner($thirdHash, $this->dir . '/moved-from', ['old.bin' => 17]),
+            'filesystem' => ['rename:1' => ['path' => $old,
+                'action' => 'fleet-change', 'at' => 'after',
+                'fleet' => $this->loadedOwner($thirdHash, $base, ['old.bin' => 17])]],
+            'captureLogs' => true,
+        ]);
+        $this->assertEquals(0, $status, 'a moved owner must not crash cleanup: ' . $output);
+        $restored = @lstat($old);
+        $this->assertTrue(
+            @file_get_contents($old) === 'moved owner bytes' && is_array($restored)
+            && $restored['ino'] === $original['ino'] && count(glob($base . '/.erasedata-entry-*')) === 0,
+            'the moved download keeps the file, restored at its name',
+        );
+        $this->assertTrue(!is_file($tmp), 'its claim ends the obligation');
+    }
+
+    // A download that came while the file was captured, and a question about
+    // it that then fails: the job waits with the failure as its reason.
+    public function testCleanupRecheckThatFailsAfterAChangeSaysWhy()
+    {
+        $this->reset();
+        $oldHash = $this->hash('A');
+        $newHash = $this->hash('B');
+        $base = $this->dir . '/recheck-fails';
+        @mkdir($base, 0777, true);
+        $old = $base . '/old.bin';
+        file_put_contents($old, 'recheck bytes');
+        $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
+        list($status, $output) = $this->runCollector([
+            'filesystem' => [
+                'rename:1' => ['path' => $old, 'action' => 'fleet-change', 'at' => 'after',
+                    'fleet' => $this->loadedOwner($this->hash('C'), $this->dir . '/unrelated', ['other.bin' => 3])],
+                'renameNoReplace:1' => ['path' => $old, 'action' => 'fleet-change', 'at' => 'after',
+                    'fault' => true]],
+            'captureLogs' => true,
+        ]);
+        $this->assertEquals(0, $status, 'a failed recheck must not crash cleanup: ' . $output);
+        $this->assertTrue(
+            @file_get_contents($old) === 'recheck bytes' && is_file($tmp),
+            'the file is restored and the job waits',
+        );
+        $this->assertTrue(
+            strpos($output, 'owner-snapshot-unconfirmed why=fault') !== false
+            && strpos($output, 'why=changed') === false,
+            'with the failure as its reason: ' . $output,
+        );
+    }
+
+    // A fatal error while the cleanup reads the loaded downloads -- an
+    // exhausted memory_limit -- is said once, and the job waits.
+    public function testCleanupFatalErrorReadingTheLoadedDownloadsIsLogged()
+    {
+        $this->reset();
+        $oldHash = $this->hash('A');
+        $newHash = $this->hash('B');
+        $base = $this->dir . '/cleanup-fatal';
+        @mkdir($base, 0777, true);
+        $old = $base . '/old.bin';
+        file_put_contents($old, 'fatal bytes');
+        $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
+        list($status, $output) = $this->runCollector([
+            'fleetFaults' => ['exhaust' => 'loaded'], 'captureLogs' => true]);
+        // PHP's own text is not compared or printed: the suite runner reads
+        // it as a failure where it is printed.
+        $this->assertEquals(255, $status, 'the collector ends on the exhausted memory_limit');
+        $this->assertSame(
+            1,
+            count(preg_grep('/^erasedata: the collector stopped on a fatal error; its lists stay queued'
+                . ' reason=collector-fatal memory_limit=[0-9]+$/D', $this->collectorLogs($output))),
+            'one classified line says so',
+        );
+        $this->assertTrue(@file_get_contents($old) === 'fatal bytes' && is_file($tmp), 'the file and the job wait');
+    }
 
     public function testCleanupUnknownAfterCaptureRetainsBytesAndJob()
     {
@@ -4203,13 +4285,9 @@ class RemoveWithDataTest extends TestCase
         $newcomer = lstat($replacement);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'old.bin']]]],
             'filesystem' => [
                 'rename:1' => ['path' => $old, 'action' => 'fleet-change',
-                    'at' => 'after', 'rows' => [$thirdHash, '', '', '', ''],
-                    'sources' => [$thirdHash => ['hash' => $thirdHash,
-                        'info' => ['name' => 'old.bin', 'length' => 23]]]],
+                    'at' => 'after', 'fleet' => $this->loadedOwner($thirdHash, $base, ['old.bin' => 23])],
                 'renameNoReplace:1' => ['path' => $old,
                     'action' => 'replace-public', 'at' => 'before',
                     'public_path' => $old, 'replacement' => $replacement],
@@ -4274,13 +4352,9 @@ class RemoveWithDataTest extends TestCase
         $original = lstat($old);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'old-link']]]],
             'filesystem' => ['rename:1' => ['path' => $old,
                 'action' => 'fleet-change', 'at' => 'after',
-                'rows' => [$thirdHash, '', '', '', ''],
-                'sources' => [$thirdHash => ['hash' => $thirdHash,
-                    'info' => ['name' => 'old-link', 'length' => 12]]]]],
+                'fleet' => $this->loadedOwner($thirdHash, $base, ['old-link' => 12])]],
             'captureLogs' => true,
         ]);
         $restored = @lstat($old);
@@ -4298,7 +4372,12 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
-    public function testCleanupRechecksPhysicalHardlinkClaimAfterCapture()
+    // Another download's hardlink is not a claim (erasedataClaimedFiles(),
+    // S4 of #3514): the cleanup removes only the old name, and the third
+    // torrent keeps its own name and the data. One that comes while the file
+    // is captured is asked about with the file restored; unclaimed, the job
+    // waits for the next pass.
+    public function testCleanupLateHardlinkOfAThirdTorrentKeepsOnlyItsName()
     {
         $this->reset();
         $oldHash = $this->hash('A');
@@ -4313,26 +4392,32 @@ class RemoveWithDataTest extends TestCase
         $original = lstat($old);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'third.bin']]]],
             'filesystem' => ['rename:1' => ['path' => $old,
                 'action' => 'fleet-change', 'at' => 'after',
-                'rows' => [$thirdHash, '', '', '', ''],
-                'sources' => [$thirdHash => ['hash' => $thirdHash,
-                    'info' => ['name' => 'third.bin', 'length' => 10]]]]],
+                'fleet' => $this->loadedOwner($thirdHash, $base, ['third.bin' => 10])]],
+            'captureLogs' => true,
         ]);
         $restored = @lstat($old);
         $this->assertEquals(0, $status, 'late hardlink claimant must not crash: ' . $output);
         $this->assertTrue(
-            is_array($restored) && $restored['dev'] === $original['dev']
-            && $restored['ino'] === $original['ino']
-            && file_get_contents($alias) === 'same bytes'
-            && file_get_contents($old) === 'same bytes',
-            'post-capture physical ownership restores the exact hardlinked inode',
+            is_array($restored) && $restored['ino'] === $original['ino'] && is_file($tmp)
+            && count(glob($base . '/.erasedata-entry-*')) === 0
+            && strpos($output, 'owner-snapshot-unconfirmed why=changed') !== false,
+            'a download that came during the capture restores the file and retains the job: ' . $output,
+        );
+        list($status, $output) = $this->runCollector([
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['third.bin' => 10]),
+        ]);
+        $kept = @lstat($alias);
+        $this->assertEquals(0, $status, 'the next pass runs: ' . $output);
+        $this->assertTrue(
+            !erasedataPathExists($old) && is_array($kept) && $kept['dev'] === $original['dev']
+            && $kept['ino'] === $original['ino'] && file_get_contents($alias) === 'same bytes',
+            'the old name goes and the third torrent keeps the data under its own name',
         );
         $this->assertTrue(
             !is_file($tmp) && count(glob($base . '/.erasedata-entry-*')) === 0,
-            'a proved hardlink claim completes without private residue',
+            'the obligation completes without private residue',
         );
     }
 
@@ -4350,15 +4435,9 @@ class RemoveWithDataTest extends TestCase
         $original = lstat($nested);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 1, 'season/missing.bin']]]],
             'filesystem' => ['rename:*' => ['path' => $nested,
                 'action' => 'fleet-change', 'at' => 'after',
-                'rows' => [$thirdHash, '', '', '', ''],
-                'sources' => [$thirdHash => ['hash' => $thirdHash,
-                    'info' => ['name' => basename($base), 'files' => [
-                        ['path' => ['season', 'missing.bin'], 'length' => 1]]]]]]],
+                'fleet' => $this->loadedOwner($thirdHash, $base . '/season', ['missing.bin' => 1])]],
             'captureLogs' => true,
         ]);
         $restored = @lstat($nested);
@@ -4393,15 +4472,9 @@ class RemoveWithDataTest extends TestCase
         $newcomer = lstat($replacement);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 1, 'season/missing.bin']]]],
             'filesystem' => [
                 'rename:*' => ['path' => $nested, 'action' => 'fleet-change',
-                    'at' => 'after', 'rows' => [$thirdHash, '', '', '', ''],
-                    'sources' => [$thirdHash => ['hash' => $thirdHash,
-                        'info' => ['name' => basename($base), 'files' => [
-                            ['path' => ['season', 'missing.bin'], 'length' => 1]]]]]],
+                    'at' => 'after', 'fleet' => $this->loadedOwner($thirdHash, $base . '/season', ['missing.bin' => 1])],
                 'renameNoReplace:1' => ['path' => $nested,
                     'action' => 'replace-public', 'at' => 'before',
                     'public_path' => $nested, 'replacement' => $replacement]],
@@ -4446,13 +4519,7 @@ class RemoveWithDataTest extends TestCase
             'crash retains the exact hidden directory and cleanup obligation',
         );
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => ['hash' => $thirdHash,
-                'info' => ['name' => basename($base), 'files' => [
-                    ['path' => ['season', 'missing.bin'], 'length' => 1]]]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 1, 'season/missing.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base . '/season', ['missing.bin' => 1]),
         ]);
         $restored = @lstat($nested);
         $this->assertEquals(0, $status, 'captured parent retry must run: ' . $output);
@@ -4476,16 +4543,11 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($old, 'original bytes');
         $original = lstat($old);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
-        $third = ['hash' => $thirdHash,
-            'info' => ['name' => 'old.bin', 'length' => 14]];
-        $reply = ['stored' => ['ok' => true, 'fault' => false,
-            'val' => [$base, 0, 'old.bin']]];
+        $owner = $this->loadedOwner($thirdHash, $base, ['old.bin' => 14]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => $reply],
             'filesystem' => [
                 'rename:1' => ['path' => $old, 'action' => 'fleet-change',
-                    'at' => 'after', 'rows' => [$thirdHash, '', '', '', ''],
-                    'sources' => [$thirdHash => $third]],
+                    'at' => 'after', 'fleet' => $owner],
                 'renameNoReplace:1' => ['path' => $old,
                     'action' => 'exit', 'at' => 'after']],
         ]);
@@ -4496,9 +4558,7 @@ class RemoveWithDataTest extends TestCase
             'crash after restore leaves the exact job and an empty private shell',
         );
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => $third],
-            'fleetReplies' => [$thirdHash => $reply],
+            'fleet' => $owner,
         ]);
         $restored = @lstat($old);
         $this->assertEquals(0, $status, 'restored file retry must run: ' . $output);
@@ -4523,17 +4583,11 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($old, 'obsolete');
         $original = lstat($nested);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
-        $third = ['hash' => $thirdHash, 'info' => [
-            'name' => basename($base), 'files' => [
-                ['path' => ['season', 'missing.bin'], 'length' => 1]]]];
-        $reply = ['stored' => ['ok' => true, 'fault' => false,
-            'val' => [$base, 1, 'season/missing.bin']]];
+        $owner = $this->loadedOwner($thirdHash, $base . '/season', ['missing.bin' => 1]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => $reply],
             'filesystem' => [
                 'rename:*' => ['path' => $nested, 'action' => 'fleet-change',
-                    'at' => 'after', 'rows' => [$thirdHash, '', '', '', ''],
-                    'sources' => [$thirdHash => $third]],
+                    'at' => 'after', 'fleet' => $owner],
                 'renameNoReplace:1' => ['path' => $nested,
                     'action' => 'exit', 'at' => 'after']],
         ]);
@@ -4544,9 +4598,7 @@ class RemoveWithDataTest extends TestCase
             'crash leaves the restored directory and an empty private shell',
         );
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => $third],
-            'fleetReplies' => [$thirdHash => $reply],
+            'fleet' => $owner,
             'captureLogs' => true,
         ]);
         $restored = @lstat($nested);
@@ -4587,12 +4639,7 @@ class RemoveWithDataTest extends TestCase
         );
         $private = $roots[0] . '/entry';
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => ['hash' => $thirdHash,
-                'info' => ['name' => 'entry', 'length' => 8]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [dirname($private), 0, 'entry']]]],
+            'fleet' => $this->loadedOwner($thirdHash, dirname($private), ['entry' => 8]),
             'captureLogs' => true]);
         $this->assertEquals(0, $status, 'private alias retry must run: ' . $output);
         $this->assertTrue(
@@ -4603,6 +4650,17 @@ class RemoveWithDataTest extends TestCase
         $this->assertTrue(
             strpos($output, 'capture-aliased') !== false,
             'the retained job explains the direct private alias',
+        );
+        // Unanswered, the owners of the private entry are unknown: it stays,
+        // and the job with it, though later questions are answered.
+        list($status, $output) = $this->runCollector([
+            'fleet' => $this->loadedOwner($thirdHash, $this->dir . '/unrelated', ['same-size.bin' => 8]),
+            'fleetFaults' => ['paths' => true], 'captureLogs' => true]);
+        $this->assertEquals(0, $status, 'unanswered retry must run: ' . $output);
+        $this->assertTrue(
+            is_file($private) && !erasedataPathExists($old) && is_file($tmp)
+            && strpos($output, 'owner-snapshot-unconfirmed why=fault') !== false,
+            'an unknown owner leaves the capture where it is and says why: ' . $output,
         );
     }
 
@@ -4619,17 +4677,11 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($old, 'obsolete');
         $original = lstat($nested);
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
-        $third = ['hash' => $thirdHash, 'info' => [
-            'name' => basename($base), 'files' => [
-                ['path' => ['season', 'missing.bin'], 'length' => 1]]]];
-        $reply = ['stored' => ['ok' => true, 'fault' => false,
-            'val' => [$base, 1, 'season/missing.bin']]];
+        $owner = $this->loadedOwner($thirdHash, $base . '/season', ['missing.bin' => 1]);
         list($status, $output) = $this->runCollector([
-            'fleetReplies' => [$thirdHash => $reply],
             'filesystem' => [
                 'rename:*' => ['path' => $nested, 'action' => 'fleet-change',
-                    'at' => 'after', 'rows' => [$thirdHash, '', '', '', ''],
-                    'sources' => [$thirdHash => $third]],
+                    'at' => 'after', 'fleet' => $owner],
                 'renameNoReplace:1' => ['path' => $nested,
                     'action' => 'exit', 'at' => 'after']],
         ]);
@@ -4882,33 +4934,34 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
+    // A directory is kept for a download that lies in it, told by the
+    // download's directory (erasedataDownloadsUnder()). One whose directory is
+    // above lies there only through files it has not written yet, or the
+    // directory would not be empty, and libtorrent makes the directories of a
+    // file when it opens it.
     public function testCleanupSiblingOwnerDoesNotProtectEmptyParent()
     {
-        $this->reset();
-        $oldHash = $this->hash('A');
-        $newHash = $this->hash('B');
-        $thirdHash = $this->hash('C');
-        $base = $this->dir . '/sibling-parent';
-        $nested = $base . '/season';
-        @mkdir($nested, 0777, true);
-        $old = $nested . '/old.bin';
-        file_put_contents($old, 'obsolete');
-        $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
-        list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => ['hash' => $thirdHash,
-                'info' => ['name' => basename($base), 'files' => [
-                    ['path' => ['season2', 'other.bin'], 'length' => 1]]]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 1, 'season2/other.bin']]]],
-        ]);
-        $this->assertEquals(0, $status, 'sibling owner cleanup must run: ' . $output);
-        $this->assertTrue(
-            !erasedataPathExists($old) && !erasedataPathExists($nested)
-            && is_dir($base) && !is_file($tmp),
-            'a sibling component does not claim the empty obsolete parent',
-        );
+        foreach (['season2/other.bin', 'season/not-written.bin'] as $listed) {
+            $this->reset();
+            $oldHash = $this->hash('A');
+            $newHash = $this->hash('B');
+            $thirdHash = $this->hash('C');
+            $base = $this->dir . '/sibling-parent';
+            $nested = $base . '/season';
+            @mkdir($nested, 0777, true);
+            $old = $nested . '/old.bin';
+            file_put_contents($old, 'obsolete');
+            $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
+            list($status, $output) = $this->runCollector([
+                'fleet' => $this->loadedOwner($thirdHash, $base, [$listed => 1]),
+            ]);
+            $this->assertEquals(0, $status, 'sibling owner cleanup must run: ' . $output);
+            $this->assertTrue(
+                !erasedataPathExists($old) && !erasedataPathExists($nested)
+                && is_dir($base) && !is_file($tmp),
+                'a download above does not claim the empty obsolete parent: ' . $listed,
+            );
+        }
     }
 
     public function testCleanupUnknownParentAfterCaptureRestoresAndRetains()
@@ -4970,11 +5023,7 @@ class RemoveWithDataTest extends TestCase
         );
         $bridges = $this->dir . '/legacy-file-new-bridges';
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => ['hash' => $thirdHash,
-                'info' => ['name' => 'old.bin', 'length' => 14]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false, 'val' => [$base, 0, 'old.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['old.bin' => 14]),
             'filesystem' => ['makeSymlink:*' => ['path' => $old,
                 'result' => false, 'count_file' => $bridges]],
         ]);
@@ -5265,13 +5314,7 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($shared, 'third torrent still owns these bytes');
         $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$shared]);
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => [
-                'hash' => $thirdHash,
-                'info' => ['name' => 'shared.bin', 'length' => 36]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 0, 'shared.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['shared.bin' => 36]),
         ]);
         $this->assertEquals(0, $status, 'a third-torrent claim must not crash cleanup');
         $this->assertEquals(
@@ -5281,7 +5324,7 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
-    public function testCleanupKeepsHardlinkedThirdTorrentObject()
+    public function testCleanupRemovesOnlyTheOldNameOfAThirdTorrentsHardlink()
     {
         $this->reset();
         $oldHash = $this->hash('A');
@@ -5295,19 +5338,12 @@ class RemoveWithDataTest extends TestCase
         $this->assertTrue(link($old, $alias), 'the fixture must create a real hardlink');
         $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => [
-                'hash' => $thirdHash,
-                'info' => ['name' => 'third.bin', 'length' => 12]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 0, 'third.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['third.bin' => 12]),
         ]);
-        $this->assertEquals(0, $status, 'a third-torrent hardlink claim must not crash cleanup');
-        $this->assertEquals(
-            'shared inode',
-            @file_get_contents($old),
-            'an old path hardlinked to a third torrent must survive',
+        $this->assertEquals(0, $status, 'a third-torrent hardlink must not crash cleanup');
+        $this->assertTrue(
+            !erasedataPathExists($old) && @file_get_contents($alias) === 'shared inode',
+            'another hardlink is not a claim: the old name goes, the third torrent keeps its data',
         );
     }
 
@@ -5322,7 +5358,7 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($old, 'retain');
         $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$this->hash('C')],
+            'fleetVal' => [$this->hash('C')],
             'captureLogs' => true,
         ]);
         $this->assertEquals(0, $status, 'an incomplete fleet scan must not crash cleanup');
@@ -5358,93 +5394,67 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
-    public function testCleanupReusedSuccessorRetainsItsPhysicalAndRenamedHardlinkClaims()
+    // A transaction row is excluded only in its exact staged state: a
+    // successor or predecessor that also carries reuse ownership stays an
+    // owner, and its files keep their claim.
+    public function testCleanupSnapshotKeepsReuseOwnersAndExcludesExactTransactionRows()
     {
-        foreach (['alias.bin', 'original.bin'] as $metainfoName) {
-            $this->reset();
-            $oldHash = $this->hash('A');
-            $newHash = $this->hash('B');
-            $marker = '0123456789abcdef0123456789abcdef';
-            $record = $oldHash . '-started-1787587200';
-            $base = $this->dir . '/reuse-owner';
-            $newBase = $base . '/new';
-            mkdir($newBase, 0700, true);
-            $old = $base . '/old.bin';
-            $alias = $newBase . '/alias.bin';
-            file_put_contents($old, 'shared inode');
-            $this->assertTrue(link($old, $alias), 'the reused download has an independent hardlink name');
-            ErasedataCollectorTestState::$fleetSources = [$newHash => ['hash' => $newHash,
-                'info' => ['name' => $metainfoName, 'length' => 12]]];
-            $row = ['d.get_hash=' => $newHash,
-                'd.get_custom=chk-replacement' => $marker, 'd.get_custom=chk-replaces' => $record,
-                'd.get_custom=chk-replacing' => '', 'd.get_custom=chk-reuse' => $marker];
-            $values = [];
-            // Answer the requested columns, so the old four-column exclusion fails
-            // on lost ownership rather than on a fabricated response shape.
-            rXMLRPCRequest::$responses['d.multicall'] = ['val' => &$values,
-                'callback' => function ($commands) use (&$values, &$row) {
-                    $values = [];
-                    foreach (array_slice($commands[0]->params, 1) as $column) {
-                        $values[] = $row[$column];
-                    }
-                }];
-            rXMLRPCRequest::$responses['d.get_base_path'] = ['val' => [$alias, 0, $alias]];
-            $stored = [];
-            rXMLRPCRequest::$responses['d.get_directory'] = ['val' => &$stored,
-                'callback' => function ($commands) use (&$stored, $newBase, $alias) {
-                    $stored = count($commands) === 3 ? [$newBase, 0, 'alias.bin']
-                        : [$newBase, 'alias.bin', $alias];
-                }];
+        $this->reset();
+        $oldHash = $this->hash('A');
+        $newHash = $this->hash('B');
+        $marker = '0123456789abcdef0123456789abcdef';
+        $record = $oldHash . '-started-1787587200';
+        $base = $this->dir . '/reuse-owner';
+        mkdir($base, 0700, true);
+        $old = $base . '/old.bin';
+        file_put_contents($old, 'shared bytes');
+        $size = filesize($old);
+        $snapshot = function (array $customs, $hash) use ($oldHash, $newHash, $marker, $record, $base, $old) {
+            rXMLRPCRequest::$responses['d.multicall'] = ['fleet'
+                => $this->loadedOwner($hash, $base, ['old.bin' => 12], $customs)];
             $refusal = null;
-            $snapshot = erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, $refusal);
-            $this->assertTrue(
-                is_array($snapshot) && $refusal === null,
-                'the reused successor is resolved through the existing physical or daemon-claim helper',
+            $answer = erasedataCleanupOtherOwnerSnapshot(
+                $oldHash,
+                $newHash,
+                $marker,
+                $record,
+                $refusal,
+                [$old],
             );
-            $this->assertEquals(
-                'claimed',
-                erasedataCleanupOtherOwnerState($snapshot, $old, stat($old)),
-                $metainfoName . ': an old pathname sharing the reused successor inode is protected',
-            );
-            $this->assertEquals(
-                'claimed',
-                erasedataCleanupOtherOwnerState($snapshot, $alias, stat($alias)),
-                $metainfoName . ': the actual successor pathname is protected',
-            );
-            $this->assertTrue(
-                !in_array('d.save_full_session', rXMLRPCRequest::$requested, true),
-                'a renamed daemon path does not require changing the successor',
-            );
-
-            $row['d.get_custom=chk-reuse'] = '';
-            $snapshot = erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, $refusal);
-            $this->assertEquals(
-                'unclaimed',
-                erasedataCleanupOtherOwnerState($snapshot, $old, stat($old)),
-                'the ordinary exact staged successor retains its existing exclusion',
-            );
-
-            $row['d.get_hash='] = $oldHash;
-            $row['d.get_custom=chk-replacement'] = $row['d.get_custom=chk-replaces'] = '';
-            $row['d.get_custom=chk-replacing'] = $newHash . '-started-1787587200';
-            $row['d.get_custom=chk-reuse'] = $marker;
-            ErasedataCollectorTestState::$fleetSources[$oldHash] = ['hash' => $oldHash,
-                'info' => ['name' => $metainfoName, 'length' => 12]];
-            $snapshot = erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, $refusal);
-            $this->assertEquals(
-                'claimed',
-                erasedataCleanupOtherOwnerState($snapshot, $old, stat($old)),
-                'a predecessor carrying reuse ownership remains an independent owner',
-            );
-            $row['d.get_custom=chk-reuse'] = '';
-            $snapshot = erasedataCleanupOtherOwnerSnapshot($oldHash, $newHash, $marker, $record, $refusal);
-            $this->assertEquals(
-                'unclaimed',
-                erasedataCleanupOtherOwnerState($snapshot, $old, stat($old)),
-                'the ordinary exact predecessor retains its existing exclusion',
-            );
-        }
-        ErasedataCollectorTestState::$fleetSources = [];
+            $this->assertTrue(is_array($answer) && $refusal === null, 'the snapshot is read');
+            return($answer);
+        };
+        $this->assertEquals(
+            'claimed',
+            erasedataCleanupOtherOwnerState($snapshot([$marker, $record, '', $marker], $newHash), $old),
+            'a successor carrying reuse ownership keeps its claim',
+        );
+        $this->assertEquals(
+            'unclaimed',
+            erasedataCleanupOtherOwnerState($snapshot([$marker, $record, '', ''], $newHash), $old),
+            'the exact staged successor is excluded',
+        );
+        $this->assertEquals(
+            'claimed',
+            erasedataCleanupOtherOwnerState(
+                $snapshot(['', '', $newHash . '-started-1787587200', $marker], $oldHash),
+                $old,
+            ),
+            'a predecessor carrying reuse ownership remains an independent owner',
+        );
+        $this->assertEquals(
+            'unclaimed',
+            erasedataCleanupOtherOwnerState(
+                $snapshot(['', '', $newHash . '-started-1787587200', ''], $oldHash),
+                $old,
+            ),
+            'the exact predecessor is excluded',
+        );
+        $this->assertEquals(
+            'unknown',
+            erasedataCleanupOtherOwnerState(false, $old),
+            'no snapshot is no answer',
+        );
     }
 
     public function testCleanupExcludesOnlyExactTransactionRowsFromOtherOwners()
@@ -5457,11 +5467,20 @@ class RemoveWithDataTest extends TestCase
         $old = $base . '/old.bin';
         file_put_contents($old, 'orphan');
         $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
-        list($status, $output) = $this->runCollector(['fleetRows' => [
-            $oldHash, '', '', $newHash . '-started-1787587200', '',
-            $newHash, '0123456789abcdef0123456789abcdef',
-            $oldHash . '-started-1787587200', '', '',
-        ]]);
+        // Both transaction rows name the orphan, so only their exclusion lets it go.
+        list($status, $output) = $this->runCollector(['fleet'
+            => $this->loadedOwner(
+                $oldHash,
+                $base,
+                ['old.bin' => 6],
+                ['', '', $newHash . '-started-1787587200', ''],
+            )
+            + $this->loadedOwner(
+                $newHash,
+                $base,
+                ['old.bin' => 6],
+                ['0123456789abcdef0123456789abcdef', $oldHash . '-started-1787587200', '', ''],
+            )]);
         $this->assertEquals(0, $status, 'the matching transaction fleet rows must not crash cleanup');
         $this->assertTrue(
             !file_exists($old),
@@ -5478,13 +5497,7 @@ class RemoveWithDataTest extends TestCase
         file_put_contents($old, 'foreign takeover');
         $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$oldHash, '', '', 'foreign-generation', ''],
-            'fleetSources' => [$oldHash => [
-                'hash' => $oldHash,
-                'info' => ['name' => 'old.bin', 'length' => 16]]],
-            'fleetReplies' => [$oldHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 0, 'old.bin']]]],
+            'fleet' => $this->loadedOwner($oldHash, $base, ['old.bin' => 16], ['', '', 'foreign-generation', '']),
         ]);
         $this->assertEquals(0, $status, 'a foreign same-hash occupant must not crash cleanup');
         $this->assertEquals(
@@ -5637,7 +5650,7 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
-    public function testCleanupRetryRestoresCaptureClaimedByThirdTorrent()
+    public function testCleanupRetryLeavesACaptureHardlinkedByAThirdTorrentToThatTorrent()
     {
         $this->reset();
         $oldHash = $this->hash('A');
@@ -5662,27 +5675,19 @@ class RemoveWithDataTest extends TestCase
             'the third torrent must acquire the captured inode through a hardlink',
         );
         list($status, $output) = $this->runCollector([
-            'fleetRows' => [$thirdHash, '', '', '', ''],
-            'fleetSources' => [$thirdHash => [
-                'hash' => $thirdHash,
-                'info' => ['name' => 'third.bin', 'length' => 14]]],
-            'fleetReplies' => [$thirdHash => ['stored' => [
-                'ok' => true, 'fault' => false,
-                'val' => [$base, 0, 'third.bin']]]],
+            'fleet' => $this->loadedOwner($thirdHash, $base, ['third.bin' => 14]),
         ]);
-        $this->assertEquals(0, $status, 'claimed captured-entry retry must not crash');
-        $restored = @lstat($old);
+        $this->assertEquals(0, $status, 'hardlinked captured-entry retry must not crash');
+        $kept = @lstat($alias);
         $this->assertTrue(
-            is_array($restored) && $restored['dev'] === $original['dev']
-            && $restored['ino'] === $original['ino'] && !is_link($old)
-            && file_get_contents($old) === 'captured bytes'
-            && file_get_contents($alias) === 'captured bytes',
-            'a hardlink claim restores the exact public inode and preserves the alias',
+            !erasedataPathExists($old) && is_array($kept) && $kept['dev'] === $original['dev']
+            && $kept['ino'] === $original['ino'] && file_get_contents($alias) === 'captured bytes',
+            'another hardlink is not a claim: the old name goes and the third torrent keeps the data',
         );
         $this->assertTrue(
             !is_file($tmp) && !is_file($token)
             && count(glob($base . '/.erasedata-entry-*')) === 0,
-            'a proved claim completes without keeping an unnecessary private link',
+            'the obligation completes without keeping a private link',
         );
     }
 
@@ -10841,6 +10846,36 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
+    // An interrupted forced removal keeps its decision: a download that lies
+    // in the base by the retry does not narrow it to the listed files, which
+    // would leave the recovery link and its private directory (#3514).
+    public function testInterruptedForcedRemovalIsNotNarrowedByALaterDownload()
+    {
+        $this->reset();
+        $firstHash = $this->hash('5');
+        $secondHash = $this->hash('6');
+        $base = $this->dir . '/force-narrow-base';
+        $secondList = $this->dir . '/erasedata/' . $secondHash . '.list';
+        mkdir($base);
+        $this->writeManifestLines($firstHash . '.list', [$base . '/already-gone.bin'], $base, 1, 1);
+        $this->runCollector(['rmdirCrash' => $base]);
+        $this->runCollector([]);
+        $this->writeManifestLines($secondHash . '.list', [$base . '/crash-data.bin'], $base, 1, 2);
+        list($status, $output) = $this->runCollector(['cleanupCrash' => 'bridge']);
+        $this->assertEquals(0, $status, 'the forced removal stops at its bridge cleanup: ' . $output);
+        $this->assertTrue(is_link($base) && is_file($secondList), 'the recovery link and the list remain');
+        list($status, $output) = $this->runCollector([
+            'fleet' => $this->loadedOwner($this->hash('C'), $base . '/later', ['later.bin' => 1]),
+            'captureLogs' => true,
+        ]);
+        $this->assertEquals(0, $status, 'the retry exits: ' . $output);
+        $this->assertTrue(
+            !file_exists($base) && !is_link($base) && glob($this->dir . '/.erasedata-rmdir-*') === []
+            && !file_exists($secondList),
+            'the retry completes the forced removal: ' . $output,
+        );
+    }
+
     public function testNonForceMissingParentReplayCompletesWithoutCreatingData()
     {
         $this->reset();
@@ -15537,6 +15572,31 @@ class RemoveWithDataTest extends TestCase
             is_file($payload),
             'and the payload is still retained under the new reason',
         );
+
+        // (4) The torrent is gone, but the files of the other loaded downloads
+        // cannot be read (Novik #3514): one more reason, heard at once, and
+        // nothing is deleted on it.
+        $this->probe(true, true, [], 'invalid parameters: info-hash not found');
+        unset(rXMLRPCRequest::$responses['f.multicall']);
+        rXMLRPCRequest::$responses['d.multicall'] = ['fleet' => [], 'faults' => ['loaded' => true]];
+        FileUtil::$log = [];
+        $tick = erasedataDrainWorkerRun($this->dependencies());
+        $this->assertTrue(
+            is_array($tick) && $tick['admitted'] === true,
+            'the unknown-owners tick really ran: ' . json_encode($tick),
+        );
+        $unknown = [];
+        foreach (FileUtil::$log as $line) {
+            if (strpos($line, $hash) !== false && strpos($line, 'owner-snapshot-unconfirmed') !== false) {
+                $unknown[] = $line;
+            }
+        }
+        $this->assertEquals(
+            1,
+            count($unknown),
+            'unknown other owners are a classified retention: ' . json_encode(FileUtil::$log),
+        );
+        $this->assertTrue(is_file($payload), 'and the payload is still retained');
     }
 
     /**
@@ -22862,6 +22922,15 @@ class RemoveWithDataTest extends TestCase
     // Every collector run is described by one structured scenario array. The
     // named seam options below are translated into scripted operations of the
     // ErasedataCollectorFixture, which is the only injection point.
+    // One loaded download for the collector's d.multicall reads
+    // (ErasedataLoadedFleet): its directory, files as relative path => size,
+    // and its chk-replacement/-replaces/-replacing/-reuse custom values.
+    private function loadedOwner($hash, $directory, array $files, ?array $customs = null)
+    {
+        return([$hash => ['directory' => $directory, 'files' => $files,
+            'customs' => $customs === null ? ['', '', '', ''] : $customs]]);
+    }
+
     private function collectorDefaults()
     {
         return([
@@ -22879,8 +22948,7 @@ class RemoveWithDataTest extends TestCase
             'cleanupUnlinkFail' => null, 'commitTokenUnlinkFail' => null,
             'artifactReadCountFile' => null, 'successorTransition' => null,
             'successorObservationCountFile' => null,
-            'fleetRows' => [], 'fleetFault' => false,
-            'fleetSources' => [], 'fleetReplies' => [],
+            'fleet' => [], 'fleetFault' => false, 'fleetFaults' => [], 'fleetVal' => null,
         ]);
     }
 
@@ -23069,21 +23137,15 @@ class RemoveWithDataTest extends TestCase
                 ? $successor['stored'] + ['swap' => null]
                 : ['ok' => false, 'fault' => false, 'val' => [], 'swap' => null],
         ];
-        $responses['d.multicall'] = ['ok' => true, 'fault' => $options['fleetFault'],
-            'val' => $options['fleetRows'], 'swap' => null];
-        foreach ($options['fleetReplies'] as $hash => $reply) {
-            foreach (['frozen' => 'd.get_base_path', 'stored' => 'd.get_directory'] as $key => $command) {
-                if (isset($reply[$key])) {
-                    if (!isset($responses[$command]['byHash'])) {
-                        $responses[$command]['byHash'] = [];
-                    }
-                    $responses[$command]['byHash'][$hash] = $reply[$key] + ['swap' => null];
-                }
-            }
-        }
+        // The loaded downloads every d.multicall read sees; 'fleetVal' answers
+        // each read with the same raw values instead, to script a malformed one.
+        $responses['d.multicall'] = $options['fleetVal'] === null
+            ? ['ok' => true, 'fault' => $options['fleetFault'], 'fleet' => $options['fleet'],
+                'faults' => $options['fleetFaults'], 'swap' => null]
+            : ['ok' => true, 'fault' => $options['fleetFault'], 'val' => $options['fleetVal'], 'swap' => null];
         $source = is_array($successor) && array_key_exists('source', $successor)
             ? $successor['source'] : false;
-        return($this->collectorCrashes($options['filesystem'])
+        return($this->collectorCrashes($options['filesystem']) || isset($options['fleetFaults']['exhaust'])
             ? $this->runCollectorSubprocess($options, $responses, $source)
             : $this->runCollectorInProcess($options, $responses, $source));
     }
@@ -23098,7 +23160,6 @@ class RemoveWithDataTest extends TestCase
             'erased' => rXMLRPCRequest::$erased,
             'calls' => rXMLRPCRequest::$commandCalls,
             'source' => ErasedataCollectorTestState::$source,
-            'fleetSources' => ErasedataCollectorTestState::$fleetSources,
             'countFile' => ErasedataCollectorTestState::$indexCountFile,
             'debug' => isset($erasedebug_enabled) ? $erasedebug_enabled : false,
             'argv' => $argv,
@@ -23106,7 +23167,6 @@ class RemoveWithDataTest extends TestCase
         ];
         rXMLRPCRequest::$responses = $responses;
         ErasedataCollectorTestState::$source = $source;
-        ErasedataCollectorTestState::$fleetSources = $options['fleetSources'];
         ErasedataCollectorTestState::$indexCountFile = $options['indexCountFile'];
         $erasedebug_enabled = (bool) $options['debug'];
         $argv = ['update.php', 'rutorrent'];
@@ -23144,7 +23204,6 @@ class RemoveWithDataTest extends TestCase
         rXMLRPCRequest::$erased = $saved['erased'];
         rXMLRPCRequest::$commandCalls = $saved['calls'];
         ErasedataCollectorTestState::$source = $saved['source'];
-        ErasedataCollectorTestState::$fleetSources = $saved['fleetSources'];
         ErasedataCollectorTestState::$indexCountFile = $saved['countFile'];
         $erasedebug_enabled = $saved['debug'];
         $argv = $saved['argv'];

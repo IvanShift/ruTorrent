@@ -508,6 +508,8 @@ class rXMLRPCRequest
     // clean answer. Consumers that need exact fault boundaries prefer it, so a
     // double that omits it silently reroutes them to the trimmed copy.
     public $rawFaultString = null;
+    // Set by php/xmlrpc.php when the transport, not the daemon, failed.
+    public $transportFailure = null;
     public $val = [];
     public $responseValues = [];
     public $responseTypes = [];

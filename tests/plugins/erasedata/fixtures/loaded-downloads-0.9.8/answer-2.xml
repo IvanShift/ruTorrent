@@ -1,0 +1,23 @@
+Status: 200 OK
+Content-Type: text/xml
+Content-Length: 651
+
+<?xml version="1.0" encoding="UTF-8"?>
+<methodResponse>
+<params>
+<param><value><array><data>
+<value><array><data>
+<value><string>74C5453644F2CE3F1EC506D31121BFF8194B25DA</string></value>
+<value><string>17000/17000/40000/</string></value>
+</data></array></value>
+<value><array><data>
+<value><string>325B634BE820EA510744026DCE51450937B8641A</string></value>
+<value><string>25000/</string></value>
+</data></array></value>
+<value><array><data>
+<value><string>F3514F3514F3514F3514F3514F3514F3514F3514</string></value>
+<value><string>1/</string></value>
+</data></array></value>
+</data></array></value></param>
+</params>
+</methodResponse>
