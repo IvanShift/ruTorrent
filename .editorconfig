@@ -40,3 +40,10 @@ end_of_line = unset
 [tests/php/fixtures/names-*-rtorrent-*.xml]
 end_of_line = unset
 insert_final_newline = false
+
+# What rtorrent 0.16.27 and 0.9.8 answered shared.php's three questions, byte
+# for byte with the SCGI headers (see .gitattributes): CRLF line ends, and no
+# final newline from 0.16.27.
+[tests/plugins/erasedata/fixtures/loaded-downloads-*/*.xml]
+end_of_line = unset
+insert_final_newline = unset

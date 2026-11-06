@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/PermissionsBiteFixture.php');
+require_once(__DIR__ . '/../../php/PhpProcess.php');
 // One shared collector environment: FileUtil/RPC stubs, the replaceable
 // metainfo source and the scripted ErasedataFilesystemOps subclass.
 require_once(__DIR__ . '/CollectorFixture.php');
@@ -4203,7 +4204,8 @@ class RemoveWithDataTest extends TestCase
     }
 
     // A fatal error while the cleanup reads the loaded downloads -- an
-    // exhausted memory_limit -- is said once, and the job waits.
+    // exhausted memory_limit -- is said once wherever PHP still runs shutdown
+    // functions after it (PhpProcess::memoryExhaustion()), and the job waits.
     public function testCleanupFatalErrorReadingTheLoadedDownloadsIsLogged()
     {
         $this->reset();
@@ -4216,14 +4218,22 @@ class RemoveWithDataTest extends TestCase
         $tmp = $this->writeCleanupCollectorManifest($oldHash, $newHash, $base, [$old]);
         list($status, $output) = $this->runCollector([
             'fleetFaults' => ['exhaust' => 'loaded'], 'captureLogs' => true]);
-        // PHP's own text is not compared or printed: the suite runner reads
-        // it as a failure where it is printed.
-        $this->assertEquals(255, $status, 'the collector ends on the exhausted memory_limit');
+        // PHP's own text is not printed: the suite runner reads it as a
+        // failure where it is printed. Where no shutdown function runs, the
+        // fixture cannot write the log either.
+        $php = PhpProcess::memoryExhaustion();
+        $this->assertTrue(
+            $status === $php['code']
+            && ($php['shutdown'] || strpos($output, 'Allowed memory size of ') !== false),
+            'the collector ends on the exhausted memory_limit as this PHP ends one (exit ' . $php['code']
+            . ($php['shutdown'] ? ', shutdown functions run' : ', no shutdown function runs') . '): exit ' . $status,
+        );
         $this->assertSame(
-            1,
+            $php['shutdown'] ? 1 : 0,
             count(preg_grep('/^erasedata: the collector stopped on a fatal error; its lists stay queued'
                 . ' reason=collector-fatal memory_limit=[0-9]+$/D', $this->collectorLogs($output))),
-            'one classified line says so',
+            'one classified line says so, where PHP still runs shutdown functions: '
+            . json_encode($this->collectorLogs($output)),
         );
         $this->assertTrue(@file_get_contents($old) === 'fatal bytes' && is_file($tmp), 'the file and the job wait');
     }

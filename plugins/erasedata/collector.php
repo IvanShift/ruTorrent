@@ -2387,7 +2387,10 @@ final class ErasedataCollector
     // A fatal error while the loaded downloads are read -- an exhausted
     // memory_limit above all -- would end the pass with its lists queued and
     // say nothing. Say it once, from this process only. Both readers,
-    // sharedFiles() and consumeCleanupManifest(), register it.
+    // sharedFiles() and consumeCleanupManifest(), register it. Some PHP
+    // builds run no shutdown function after an exhausted memory_limit: Ondřej
+    // Surý's 7.4.33-31 and 8.1.34-9 exit 1 at once. There the lists wait
+    // without this line.
     private function registerFatalReport()
     {
         static $registered = false;

@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/../../php/TestCase.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/../../php/PhpProcess.php');
 require_once(__DIR__ . '/RealParserDriver.php');
 
 /**
@@ -620,7 +621,9 @@ class UnconfirmedEraseTest extends TestCase
     }
 
     // An exhausted memory_limit while the downloads are read ends the
-    // collector; one classified line says so, and the list waits.
+    // collector, and the list waits. One classified line says so wherever PHP
+    // still runs shutdown functions after it; where PHP ends the process at
+    // once (PhpProcess::memoryExhaustion()), nothing can.
     public function testAFatalErrorIsLoggedAndTheListIsKept()
     {
         $this->fresh();
@@ -632,20 +635,30 @@ class UnconfirmedEraseTest extends TestCase
                 . '<data>' . str_repeat($row, 20000) . '</data></array></value></param></params></methodResponse>')]);
         $this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
 
+        $ended = null;
         try {
             $this->collect('', '-d memory_limit=24M');
             $this->assertTrue(false, 'the collector ends on the fatal error');
         } catch (RuntimeException $error) {
-            // A fatal error exits 255. PHP's own text is not compared: 7.4
-            // prints none once memory is exhausted, and the suite runner
-            // reads it as a failure where it is printed.
-            $this->assertTrue(
-                strpos($error->getMessage(), 'The production driver exited 255') === 0,
-                'the collector ends on the exhausted memory_limit',
-            );
+            $ended = $error->getMessage();
         }
-        $this->assertSame(['erasedata: the collector stopped on a fatal error; its lists stay queued'
-            . ' reason=collector-fatal memory_limit=24M'], $this->loggedLines(), 'one classified line');
+        // PHP's own text is not printed: the suite runner reads it as a
+        // failure where it is printed. 7.4 prints none under the @ of the read
+        // that exhausts memory, unless it ends the process at once.
+        $php = PhpProcess::memoryExhaustion(['-c', __DIR__ . '/../../php-test.ini']);
+        $this->assertTrue(
+            is_string($ended) && strpos($ended, 'The production driver exited ' . $php['code'] . ':') === 0
+            && ($php['shutdown'] || strpos($ended, 'Allowed memory size of 25165824 bytes exhausted') !== false),
+            'the collector ends on the exhausted memory_limit as this PHP ends one (exit ' . $php['code']
+            . ($php['shutdown'] ? ', shutdown functions run' : ', no shutdown function runs') . '): '
+            . (is_string($ended) ? strtok($ended, ':') : 'it did not end'),
+        );
+        $this->assertSame(
+            $php['shutdown'] ? ['erasedata: the collector stopped on a fatal error; its lists stay queued'
+                . ' reason=collector-fatal memory_limit=24M'] : [],
+            $this->loggedLines(),
+            'one classified line, where PHP still runs shutdown functions: ' . json_encode($this->loggedLines()),
+        );
         $this->assertTrue($this->listPublished() && $this->isFile($download['files'][0]), 'the list and its data wait');
     }
 
