@@ -36,15 +36,14 @@ test("mobile keeps the deletion visible and displays a classified HTTP refusal",
   expect(plugin.showAlert).toHaveBeenLastCalledWith(
     "Deletion request failed. Check the server log.", "alert-danger");
 
+  plugin.showAlert.mockClear();
   success({ refused: ["invalid-hash:string"] });
-  expect(plugin.showAlert).toHaveBeenLastCalledWith(
-    "Deletion partly refused: 1 torrent(s). Check the server log.", "alert-danger");
+  expect(plugin.showAlert).not.toHaveBeenCalled();
   expect(plugin.torrent.hash).toBe("A".repeat(40));
   expect(plugin.showList).not.toHaveBeenCalled();
 
   success({ retained: ["A".repeat(40)] });
-  expect(plugin.showAlert).toHaveBeenLastCalledWith(
-    "Deletion outcome unresolved for 1 torrent(s). Check the server log.", "alert-danger");
+  expect(plugin.showAlert).not.toHaveBeenCalled();
   expect(plugin.torrent).toBeUndefined();
   expect(plugin.showList).toHaveBeenCalledTimes(1);
 });

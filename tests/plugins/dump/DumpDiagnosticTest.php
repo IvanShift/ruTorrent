@@ -96,6 +96,32 @@ class DumpDiagnosticTest extends TestCase
     }
 
     /**
+     * Both paths keep the bytes returned by rXMLRPCRequest, including quotes
+     * and literal backslashes.
+     */
+    public function testAPathWithAQuoteOrABackslashIsFound()
+    {
+        $this->newCase();
+        $session = $this->caseDir . '/se"ss\\ion/';
+        @mkdir($session, 0700, true);
+        file_put_contents($session . $this->hash() . '.torrent', 'd8:announce0:4:infodee');
+        $run = $this->runDump([[$session, '']]);
+        $this->assertTrue(
+            !$this->isPluginError($run) && (strpos($this->dumpCommand($run), $session . $this->hash()) !== false),
+            'the session copy is found under its own name: ' . $this->describe($run),
+        );
+
+        $this->newCase();
+        $tied = $this->caseDir . '/ti"ed\\\\.torrent';
+        file_put_contents($tied, 'd8:announce0:4:infodee');
+        $run = $this->runDump([['', $tied]]);
+        $this->assertTrue(
+            !$this->isPluginError($run) && (strpos($this->dumpCommand($run), $tied) !== false),
+            'and so is the tied file: ' . $this->describe($run),
+        );
+    }
+
+    /**
      * #3360. The file is there and the process cannot open it, which is a
      * permissions job -- so the message names the file and the account that
      * was refused, because those are the two facts needed to fix it.

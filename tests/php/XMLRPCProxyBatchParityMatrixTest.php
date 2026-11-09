@@ -411,16 +411,18 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
 
         // Include spellings the daemon may parse but this policy refuses.
         $asked = [
-            '1' => 1,
-            (string) $sizeLimitMax => $sizeLimitMax,
-            (string) ($sizeLimitMax + 1) => $sizeLimitMax + 1,
-            '99999999999' => 99999999999,
-            '+99999999999' => 99999999999,
-            '+' . $sizeLimitMax => $sizeLimitMax,
-            '0000000000000016777217' => 16777217,
-            '009' => 9,
-            str_repeat('9', 18) => (int) str_repeat('9', 18),
-            '9223372036854775807' => PHP_INT_MAX];
+            ['1', '1024'],
+            ['16777216', '16777216'],
+            ['16777217', '16777216'],
+            ['99999999999', '16777216'],
+            ['+99999999999', null],
+            ['+16777216', null],
+            ['0000000000000016777217', null],
+            ['009', null],
+            [str_repeat('9', 18), '16777216'],
+            ['9223372036854775807', '16777216'],
+            ['9223372036854775808', null],
+        ];
 
         foreach ($this->property('elevate') as $method => $shapes) {
             $index = array_search('size', $shapes, true);
@@ -428,7 +430,7 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
                 continue;
             }
 
-            foreach ($asked as $spelling => $number) {
+            foreach ($asked as [$spelling, $number]) {
                 // Whichever type the number arrives in. An over-limit size sent as
                 // the plain XMLRPC integer any client writes must leave clamped
                 // too, not only one spelled out as a string.
@@ -441,11 +443,7 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
                     }
 
                     // Accepted sizes leave as i8 within the floor and ceiling.
-                    $expected = ['type' => 'i8',
-                        'value' => (string) max(
-                            $this->property('sizeLimitMin'),
-                            min($number, $sizeLimitMax),
-                        )];
+                    $expected = ['type' => 'i8', 'value' => $number];
 
                     foreach (['alone' => $this->single($method, $params),
                         'batched' => $this->batched($method, $params)] as $shape => $xml) {
@@ -454,7 +452,7 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
                             . '> ' . $shape;
 
                         $decision = $this->decide($xml, false);
-                        if (!preg_match('/^[1-9][0-9]{0,17}$/', (string) $spelling)) {
+                        if ($number === null) {
                             if ($decision['action'] !== 'reject' || $decision['payload'] !== '') {
                                 $this->bad[] = $where . ': noncanonical size was forwarded';
                             }
@@ -1098,10 +1096,10 @@ class XMLRPCProxyBatchParityMatrixTest extends TestCase
                         'at the ceiling' => (string) $sizeLimitMax,
                         'over the ceiling' => (string) ($sizeLimitMax + 1),
                         'far over the ceiling' => '99999999999',
-                        'eighteen digits' => str_repeat('9', 18)],
+                        'eighteen digits' => str_repeat('9', 18),
+                        'int64 max' => '9223372036854775807'],
                     'bad' => ['signed far over ceiling' => '+99999999999',
                         'zero padded' => '0000000000000016777217',
-                        'int64 max' => '9223372036854775807',
                         'zero' => '0', 'negative' => '-1',
                         'signed zero' => '+0', 'alphabetic' => 'lots',
                         'empty size' => '', 'leading space' => ' 1024',

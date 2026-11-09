@@ -66,9 +66,10 @@ class rCache
         }
         return(true);
     }
-    public function set($rss, $arg = null)
+    public function set($rss, $arg = null, $mode = null)
     {
         global $profileMask;
+        $fileMode = (is_null($mode) ? $profileMask : $mode) & 0666;
         $name = $this->getName($rss);
         if (is_null($name)) {
             FileUtil::toLog('rCache: set refused: invalid key; cache entry unchanged');
@@ -86,7 +87,7 @@ class rCache
             self::logRefusal('set', $name, 'key lock open failed');
             return(false);
         }
-        @chmod($lockName, $profileMask & 0666);
+        @chmod($lockName, $fileMode);
         if (!self::flock($lock)) {
             fclose($lock);
             self::logRefusal('set', $name, 'key lock unavailable');
@@ -134,7 +135,17 @@ class rCache
         // Use a per-process temporary file and publish it atomically under the key lock.
         $tmpName = $name . '.' . getmypid() . '.' . uniqid('', true) . '.tmp';
         $reason = 'temporary file open failed';
-        $fp = @fopen($tmpName, "wb");
+        $oldMask = umask(0077);
+        try {
+            $fp = @fopen($tmpName, "x+b");
+        } finally {
+            umask($oldMask);
+        }
+        if ($fp !== false && !@chmod($tmpName, $fileMode)) {
+            fclose($fp);
+            $fp = false;
+            $reason = 'temporary file chmod failed';
+        }
         if ($fp !== false) {
             $str = serialize($rss);
             $written = @fwrite($fp, $str);
@@ -147,9 +158,7 @@ class rCache
             } elseif (!$closed) {
                 $reason = 'temporary file close failed';
             } else {
-                @chmod($tmpName, $profileMask & 0666);
                 if (@rename($tmpName, $name)) {
-                    @chmod($name, $profileMask & 0666);
                     if (is_object($rss)) {
                         self::rememberLoadedState($rss, $name, self::stampOf($name), $str);
                     }

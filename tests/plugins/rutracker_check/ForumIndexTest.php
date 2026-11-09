@@ -36,7 +36,27 @@ function fiPermissionStateTest($suite, $name, $callback)
     if (testSkipUnlessPermissionsBite($name)) {
         return;
     }
-    fiStateTest($suite, $name, $callback);
+    fiStateTest($suite, $name, function ($tmp) use ($callback) {
+        // Permission cases vary profileMask; a pre-created private log keeps
+        // that variation from changing the shared runner log's permissions.
+        $log = tempnam(sys_get_temp_dir(), 'forum-permission-log-');
+        if ($log === false) {
+            throw new RuntimeException('Unable to create permission-case log');
+        }
+        $hadLog = array_key_exists('log_file', $GLOBALS);
+        $oldLog = $hadLog ? $GLOBALS['log_file'] : null;
+        $GLOBALS['log_file'] = $log;
+        try {
+            return $callback($tmp);
+        } finally {
+            if ($hadLog) {
+                $GLOBALS['log_file'] = $oldLog;
+            } else {
+                unset($GLOBALS['log_file']);
+            }
+            @unlink($log);
+        }
+    });
 }
 
 function fiStateTest($suite, $name, $callback)

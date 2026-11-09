@@ -472,6 +472,71 @@ class XMLRPCProxyTest extends TestCase
         ), 'the upper clamp is visible too');
     }
 
+    public function testXmlrpcSizeLimitAcceptsCanonicalI8AndRefusesOtherSpellings()
+    {
+        foreach (['9223372036854775807', '999999999999999999'] as $value) {
+            foreach (['string', 'i8'] as $type) {
+                $xml = $this->methodCallXml('network.xmlrpc.size_limit.set', ['', $value]);
+                $xml = str_replace('<string>' . $value . '</string>', '<' . $type . '>' . $value . '</' . $type . '>', $xml);
+                $decision = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+                $this->assertTrue(
+                    $decision['action'] === 'send' && $decision['trusted']
+                    && strpos($decision['payload'], '<i8>16777216</i8>') !== false
+                    && in_array('WARNING: network.xmlrpc.size_limit.set requested ' . $value . ', sent 16777216', $decision['log'], true),
+                    $type . ' ' . $value . ' is clamped and reported',
+                );
+            }
+        }
+        foreach (['9223372036854775808', '9223372036854775809', '+500', '0500', '0', '-1'] as $value) {
+            $decision = self::decideOnModernDaemon(
+                $this->methodCallXml('network.xmlrpc.size_limit.set', ['', $value]),
+                'sanitize',
+                XMLRPCProxy::defaultSafeParams(),
+            );
+            $this->assertTrue($decision['action'] === 'reject', $value . ' is refused');
+        }
+        $batch = self::decideOnModernDaemon($this->systemMulticallXml([
+            ['network.xmlrpc.size_limit.set', ['', '9223372036854775807']],
+        ]), 'sanitize', XMLRPCProxy::defaultSafeParams());
+        $this->assertTrue(
+            $batch['action'] === 'send' && $batch['trusted']
+            && strpos($batch['payload'], '<i8>16777216</i8>') !== false
+            && in_array('[slot 1] WARNING: network.xmlrpc.size_limit.set requested 9223372036854775807, sent 16777216', $batch['log'], true),
+            'a system.multicall member clamps and reports the same maximum',
+        );
+    }
+
+    public function testCheckHashCommandSlotsRespectDefaultAndExplicitPolicies()
+    {
+        foreach ([
+            $this->methodCallXml('d.multicall2', ['', 'main', 'd.check_hash=']),
+            $this->methodCallXml('load.start', ['', 'https://example.test/a.torrent', 'd.check_hash=']),
+        ] as $xml) {
+            $default = self::decideOnModernDaemon($xml, 'sanitize', XMLRPCProxy::defaultSafeParams());
+            $this->assertTrue($default['action'] === 'send' && $default['trusted'], 'default policy admits d.check_hash');
+            $allow = self::decideOnModernDaemon($xml, 'sanitize', ['d.check_hash']);
+            $this->assertTrue($allow['action'] === 'send' && $allow['trusted'], 'explicit policy admits d.check_hash');
+            $deny = array_values(array_diff(XMLRPCProxy::defaultSafeParams(), ['d.check_hash']));
+            $explicit = self::decideOnModernDaemon($xml, 'sanitize', $deny);
+            $this->assertTrue($explicit['action'] === 'reject', 'explicit policy can refuse d.check_hash');
+        }
+    }
+
+    public function testCanonicalI8BoundsDoNotDependOnStrcmp()
+    {
+        $code = 'require ' . var_export(__FILE__, true) . ';'
+            . '$test = new XMLRPCProxyTest();'
+            . '$test->runMethod("testXmlrpcSizeLimitAcceptsCanonicalI8AndRefusesOtherSpellings");'
+            . 'exit($test->failureCount() ? 1 : 0);';
+        $child = SCGITransportFixture::runPhpChild(['-d', 'disable_functions=strcmp', '-r', $code]);
+        $this->assertEquals(0, $child['exitCode'], 'i8 bounds still work with strcmp disabled: ' . $child['stderr']);
+        $this->assertTrue(
+            strpos($child['stdout'], 'Failed:') === false
+            && strpos($child['stdout'], '9223372036854775808 is refused') !== false,
+            'the disabled-function probe exercises both sides of the i8 boundary: ' . $child['stdout'],
+        );
+    }
+
     public function testExplicitPolicyCannotSetXmlrpcLimitThroughNestedCommands()
     {
         $safeParams = ['network.xmlrpc.size_limit.set'];
@@ -2472,7 +2537,7 @@ class XMLRPCProxyTest extends TestCase
 
     public function testOneDownloadByHashIsElevated()
     {
-        foreach (['d.open', 'd.start', 'd.stop', 'd.delete_tied'] as $method) {
+        foreach (['d.open', 'd.start', 'd.stop', 'd.delete_tied', 'd.check_hash'] as $method) {
             $this->callMethod($method, ['0123456789abcdef0123456789ABCDEF01234567']);
             $this->assertTrue(rXMLRPCRequest::$lastTrusted === true, $method . ' is elevated');
             $this->assertTrue(

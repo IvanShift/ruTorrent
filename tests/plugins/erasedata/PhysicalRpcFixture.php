@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../php/SourceDefinitionFixture.php';
 require_once __DIR__ . '/../../../php/xmlrpc_response.php';
 
 // Loaded downloads as rtorrent answers the questions of shared.php and the
-// replacement cleanup: d.multicall rows of hash, directory and file count
+// replacement cleanup: d.multicall rows of hash, directory, file count and size
 // (erasedataLoadedDownloads()), of hash and the sizes of its files joined by
 // cat (erasedataFileSizes()), or of hash and chk-* custom values; and
 // "<hash>:f<index>" reads of f.path (erasedataClaimPaths()), alone or in a
@@ -55,6 +55,8 @@ final class ErasedataLoadedFleet
                         $row[] = $entry['directory'];
                     } elseif (preg_match('/^d\.(get_)?size_files=$/', $column)) {
                         $row[] = count($entry['files']);
+                    } elseif (preg_match('/^d\.(get_)?size_bytes=$/', $column)) {
+                        $row[] = array_sum($entry['files']);
                     } elseif (strpos($column, 'size_bytes') !== false) {
                         $sizes = '';
                         foreach ($entry['files'] as $size) {

@@ -12,6 +12,8 @@ class User
 
 class SeedingtimeSettingsFixture
 {
+    public $iVersion = 0x101b;
+
     public function getOnFinishedCommand($args)
     {
         return $args;

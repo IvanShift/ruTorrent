@@ -38,7 +38,7 @@ if (!function_exists('erasedataLoadedDownloads')) {
         return($req->val);
     }
 
-    // The downloads rtorrent holds: hash => [directory, number of files]. Or
+    // The downloads rtorrent holds: hash => [directory, number of files, size]. Or
     // null, with $why as erasedataAnswer() sets it, or "unreadable" for an
     // answer that does not have the shape asked for.
     function erasedataLoadedDownloads(&$why = null)
@@ -48,22 +48,23 @@ if (!function_exists('erasedataLoadedDownloads')) {
             getCmd("d.get_hash="),
             getCmd("d.get_directory="),
             getCmd("d.get_size_files="),
+            getCmd("d.get_size_bytes="),
         ])), $why);
         if ($val === null) {
             return(null);
         }
         // An answer without whole rows was not read from the shape asked
-        // for. A row whose hash or number of files is wrong does not match
-        // the sizes (erasedataClaimedFiles()), and is not read either.
-        if (count($val) % 3) {
+        // for. A row whose hash, file count or single-file size does not match
+        // the sizes (erasedataClaimedFiles()) is not read either.
+        if (count($val) % 4) {
             $why = "unreadable";
             return(null);
         }
         $ret = [];
-        foreach (array_chunk($val, 3) as $row) {
+        foreach (array_chunk($val, 4) as $row) {
             // run() escapes what it reads for pasting into a command; this is
             // a path to stat().
-            $ret[strtoupper($row[0])] = [rXMLRPCRequest::unescapeValue($row[1]), intval($row[2])];
+            $ret[strtoupper($row[0])] = [rXMLRPCRequest::unescapeValue($row[1]), intval($row[2]), $row[3]];
         }
         return($ret);
     }
@@ -188,7 +189,7 @@ if (!function_exists('erasedataLoadedDownloads')) {
     // download being deleted. $sizes keeps what erasedataFileSizes() answered
     // from one call to the next, so a pass asks for it once: start it as
     // null. It is asked for again when a download holds another number of
-    // files.
+    // files, or a single file of another size.
     //
     // A file is in use when another download reaches its inode, whichever
     // path it takes: the same path, a symlink, a directory mounted twice. What
@@ -219,12 +220,15 @@ if (!function_exists('erasedataLoadedDownloads')) {
         }
 
         // The sizes are asked for again, the old ones dropped first, when a
-        // download is new or holds another number of files; still so in the
-        // new answer, it changed between the two questions.
+        // download is new, holds another number of files, or holds a single
+        // file of another size. A magnet stub can be replaced under the same
+        // hash by another single-file download. If the new answer still
+        // disagrees, it changed between the two questions.
         for ($asked = false; ; $asked = true) {
             $stale = false;
             foreach ($downloads as $hash => $download) {
-                if (!isset($sizes[$hash]) || (substr_count($sizes[$hash], '/') != $download[1])) {
+                if (!isset($sizes[$hash]) || (substr_count($sizes[$hash], '/') != $download[1])
+                    || (($download[1] == 1) && ($sizes[$hash] !== $download[2] . '/'))) {
                     $stale = true;
                     break;
                 }

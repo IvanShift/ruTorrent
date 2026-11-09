@@ -287,6 +287,227 @@ describe("mobile plugin: desktop or mobile UI", () => {
         jest.useRealTimers();
       }
     });
+
+    // The desktop UI keeps the lock for good after a save of unknown
+    // outcome, with an alert asking for a manual reload. The next load is
+    // on a device that would start the other UI without the stored choice.
+    it.each([
+      ["mobile", { url: "/rtorrent/" }, "mobile", false, "mobile"],
+      ["desktop", { url: "/rtorrent/" }, "desktop", true, "desktop"],
+      ["", { url: "/rtorrent/?mobile=0", coarse: true }, null, true, "mobile"],
+    ])("stays while the save holds its lock; the next load applies %j", (choice, page, kept, coarse, ui) => {
+      jest.useFakeTimers();
+      try {
+        boot(page);
+        const select = openSettings();
+        select.value = choice;
+        window.theWebUI.settingsSavePending = true;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(60000);
+        expect(navigated).toEqual([]);
+        expect(stored()).toBe(kept);
+      } finally {
+        jest.useRealTimers();
+      }
+      expect(boot({ url: "/rtorrent/", coarse }).ui).toBe(ui);
+    });
+
+    it.each([false, true])("keeps the choice on the actual manual reload with blocked storage=%s", (blocked) => {
+      jest.useFakeTimers();
+      let setter;
+      let getter;
+      try {
+        boot({ url: "/rtorrent/?keep=1&mobile=0#settings" });
+        if (blocked) {
+          setter = jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+          getter = jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+        }
+        const select = openSettings();
+        select.value = "mobile";
+        window.theWebUI.settingsSavePending = true;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(1000);
+        expect(navigated).toEqual([]);
+        const reload = window.location.pathname + window.location.search + window.location.hash;
+        expect(reload).toContain("/rtorrent/?keep=1");
+        expect(reload).toMatch(/#settings$/);
+        expect(boot({ url: reload }).ui).toBe("mobile");
+      } finally {
+        if (setter) setter.mockRestore();
+        if (getter) getter.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it.each([false, true])("keeps the page when auto mode cannot be saved, pending=%s", (pending) => {
+      jest.useFakeTimers();
+      let remover;
+      try {
+        boot({ url: "/rtorrent/?keep=1&mobile=0", coarse: true });
+        const select = openSettings();
+        select.value = "";
+        window.noty = jest.fn();
+        remover = jest.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+        window.theWebUI.settingsSavePending = pending;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(1000);
+        expect(desktopSetSettings).toHaveBeenCalledTimes(1);
+        expect(window.noty).toHaveBeenCalledWith(
+          "Could not clear the saved interface choice; a reload may restore the previous interface.", "error");
+        expect(navigated).toEqual([]);
+        const reload = window.location.pathname + window.location.search;
+        expect(reload).toBe("/rtorrent/?keep=1&mobile=0");
+        expect(boot({ url: reload, coarse: true }).ui).toBe("desktop");
+      } finally {
+        if (remover) remover.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("keeps the page when the auto-mode warning itself throws", () => {
+      jest.useFakeTimers();
+      let remover;
+      let warn;
+      try {
+        boot({ url: "/rtorrent/?mobile=0" });
+        const select = openSettings();
+        select.value = "";
+        window.noty = jest.fn(() => { throw new Error("notification unavailable"); });
+        warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        remover = jest.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+        expect(() => window.theWebUI.setSettings()).not.toThrow();
+        jest.advanceTimersByTime(1000);
+        expect(desktopSetSettings).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("Could not clear the saved interface choice"));
+        expect(navigated).toEqual([]);
+        expect(window.location.search).toBe("?mobile=0");
+      } finally {
+        if (remover) remover.mockRestore();
+        if (warn) warn.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("does not cancel the settings save already started when auto mode is refused", () => {
+      jest.useFakeTimers();
+      let remover;
+      try {
+        boot({ url: "/rtorrent/?mobile=0" });
+        const select = openSettings();
+        select.value = "";
+        window.noty = jest.fn();
+        remover = jest.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+        desktopSetSettings.mockImplementation(function () { this.settingsSavePending = true; });
+        window.theWebUI.settingsSavePending = false;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(1000);
+        expect(desktopSetSettings).toHaveBeenCalledTimes(1);
+        expect(window.theWebUI.settingsSavePending).toBe(true);
+        expect(navigated).toEqual([]);
+        expect(window.location.search).toBe("?mobile=0");
+      } finally {
+        if (remover) remover.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("reports a refused history update while the save is pending", () => {
+      jest.useFakeTimers();
+      let history;
+      try {
+        boot({ url: "/rtorrent/?mobile=0" });
+        const select = openSettings();
+        select.value = "mobile";
+        window.noty = jest.fn();
+        history = jest.spyOn(window.history, "replaceState").mockImplementation(() => { throw new Error("blocked"); });
+        window.theWebUI.settingsSavePending = true;
+        expect(() => window.theWebUI.setSettings()).not.toThrow();
+        expect(window.noty).toHaveBeenCalledWith(
+          "Could not preserve the interface choice in this address; a reload may restore the previous interface.", "error");
+        expect(navigated).toEqual([]);
+      } finally {
+        if (history) history.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("does not rewrite an unchanged address while the save is pending", () => {
+      jest.useFakeTimers();
+      let history;
+      try {
+        boot({ url: "/rtorrent/?keep=1" });
+        const select = openSettings();
+        select.value = "mobile";
+        history = jest.spyOn(window.history, "replaceState").mockImplementation(() => { throw new Error("blocked"); });
+        window.noty = jest.fn();
+        window.theWebUI.settingsSavePending = true;
+        window.theWebUI.setSettings();
+        expect(history).not.toHaveBeenCalled();
+        expect(window.noty).not.toHaveBeenCalled();
+        expect(navigated).toEqual([]);
+      } finally {
+        if (history) history.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("keeps the save flow usable if reporting a history refusal throws", () => {
+      jest.useFakeTimers();
+      let history;
+      let warn;
+      try {
+        boot({ url: "/rtorrent/?mobile=0" });
+        const select = openSettings();
+        select.value = "mobile";
+        window.noty = jest.fn(() => { throw new Error("notification unavailable"); });
+        warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        history = jest.spyOn(window.history, "replaceState").mockImplementation(() => { throw new Error("blocked"); });
+        window.theWebUI.settingsSavePending = true;
+        expect(() => window.theWebUI.setSettings()).not.toThrow();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("Could not preserve the interface choice"));
+        expect(navigated).toEqual([]);
+      } finally {
+        if (history) history.mockRestore();
+        if (warn) warn.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it("leaves the page when a slow save releases its lock", () => {
+      jest.useFakeTimers();
+      try {
+        boot({ url: "/rtorrent/" });
+        const select = openSettings();
+        select.value = "mobile";
+        window.theWebUI.settingsSavePending = true;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(8000);
+        expect(navigated).toEqual([]);
+        window.theWebUI.settingsSavePending = false;
+        jest.advanceTimersByTime(100);
+        expect(navigated).toEqual([window.location.origin + "/rtorrent/"]);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("waits at most 5 seconds for other requests", () => {
+      jest.useFakeTimers();
+      try {
+        boot({ url: "/rtorrent/" });
+        const select = openSettings();
+        select.value = "mobile";
+        $.active = 1;
+        window.theWebUI.setSettings();
+        jest.advanceTimersByTime(4900);
+        expect(navigated).toEqual([]);
+        jest.advanceTimersByTime(100);
+        expect(navigated.length).toBe(1);
+      } finally {
+        $.active = 0;
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe("translations", () => {

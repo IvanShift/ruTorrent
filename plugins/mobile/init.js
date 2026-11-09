@@ -1741,8 +1741,6 @@ plugin.deleteConfirmed = function() {
       // A retained obligation means erase/publication is unresolved. Do not
       // leave a retry button in front of the user when the torrent may be gone.
       if (data && Array.isArray(data.retained) && data.retained.length) {
-        plugin.showAlert('Deletion outcome unresolved for ' + data.retained.length +
-          ' torrent(s). Check the server log.', 'alert-danger');
         if (plugin.torrent && plugin.torrent.hash === hash) {
           plugin.torrent = undefined;
           plugin.showList();
@@ -1750,8 +1748,6 @@ plugin.deleteConfirmed = function() {
         return;
       }
       if (data && Array.isArray(data.refused) && data.refused.length) {
-        plugin.showAlert('Deletion partly refused: ' + data.refused.length +
-          ' torrent(s). Check the server log.', 'alert-danger');
         return;
       }
       // Keep the confirmation and selected torrent until the server accepts
@@ -2417,6 +2413,15 @@ plugin.navigate = function(url) {
 // Settings > General in the desktop UI offers the same choice, including
 // going back to detection
 plugin.addUIModeSetting = function() {
+  function reportChoiceFailure(message) {
+    try {
+      if (typeof noty === 'function') noty(message, 'error');
+      else console.warn('mobile: ' + message);
+    } catch (reportError) {
+      console.warn('mobile: ' + message);
+    }
+  }
+
   // Only the strings are wanted: langLoaded skips onLangLoaded while
   // this plugin is disabled
   this.loadLang();
@@ -2447,6 +2452,26 @@ plugin.addUIModeSetting = function() {
       var mode = $(select).val();
       mode = plugin.isUIMode(mode) ? mode : null;
       if (mode !== plugin.storedUIMode()) {
+        // Stored at once: after a save of unknown outcome the page stays,
+        // and the reload its alert asks for applies the choice
+        var stored = plugin.storeUIMode(mode);
+        if (!stored && !mode) {
+          reportChoiceFailure('Could not clear the saved interface choice; a reload may restore the previous interface.');
+          return;
+        }
+        try {
+          var url = new URL(window.location.href);
+          if (stored || !mode) {
+            url.searchParams.delete('mobile');
+          } else {
+            url.searchParams.set('mobile', mode === 'mobile' ? '1' : '0');
+          }
+          if (url.href !== window.location.href) {
+            window.history.replaceState(window.history.state, '', url.href);
+          }
+        } catch (e) {
+          reportChoiceFailure('Could not preserve the interface choice in this address; a reload may restore the previous interface.');
+        }
         plugin.whenIdle(function() {
           plugin.switchUI(mode);
         });
@@ -2456,11 +2481,13 @@ plugin.addUIModeSetting = function() {
 };
 
 // Wait for the settings save started alongside a switch, so leaving the
-// page does not cancel it
+// page does not cancel it. Other requests get at most 5 seconds, counted
+// from Save; the save gets as long as it holds its lock, which a save of
+// unknown outcome keeps until the page is reloaded.
 plugin.whenIdle = function(func) {
   var deadline = Date.now() + 5000;
   var wait = function() {
-    if ((($.active > 0) || theWebUI.settingsSavePending) && (Date.now() < deadline)) {
+    if (theWebUI.settingsSavePending || (($.active > 0) && (Date.now() < deadline))) {
       setTimeout(wait, 100);
     } else {
       func();

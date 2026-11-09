@@ -3,15 +3,24 @@
 // execute.capture includes date's trailing newline; printf keeps the stored epoch numeric.
 $seedingtimeTimestamp = '"$' . getCmd('execute_capture') . '={sh,-c,printf %s $(date +%s)}"';
 
-// A complete download with no seedingtime takes one from its addtime. The
+// A complete download with no seedingtime takes one. The
 // hash_done key below covers downloads as they complete; the pass over the
 // main view covers those already complete when the plugin starts, which no
 // event reaches again. The inner branch keeps both writes to the gap: an
 // existing seedingtime stays, and an incomplete download gets none.
+$fromAddtime = getCmd('d.set_custom') . '=seedingtime,$' . getCmd('d.get_custom') . '=addtime';
+if ($theSettings->iVersion >= 0x900) {
+    $fill = getCmd('branch=') . 'd.timestamp.finished=,\\\\\\"'
+        . getCmd('d.set_custom') . '=seedingtime,$' . getCmd('cat=') . '$d.timestamp.finished=\\\\\\",\\\\\\"'
+        . $fromAddtime . '\\\\\\"';
+} else {
+    $fill = $fromAddtime;
+}
+
 $fillSeedingtime
     = getCmd('branch=') . getCmd('d.get_complete=') . ',"'
     . getCmd('branch=') . getCmd('d.get_custom') . '=seedingtime,,\"'
-    . getCmd('d.set_custom') . '=seedingtime,$' . getCmd('d.get_custom') . '=addtime\""';
+    . $fill . '\""';
 
 $req = new rXMLRPCRequest([
     $theSettings->getOnFinishedCommand(["seedingtime" . User::getUser(),

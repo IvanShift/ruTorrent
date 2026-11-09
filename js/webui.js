@@ -4,7 +4,7 @@
  */
 
 var theWebUI = {
-	version: "5.3.21",
+	version: "5.3.22",
 	assetVersion: typeof ruTorrentAssetVersion === 'string' ? ruTorrentAssetVersion : String(Date.now()),
 	tables: {
 		trt: {

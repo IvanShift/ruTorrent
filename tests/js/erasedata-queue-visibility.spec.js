@@ -2,6 +2,11 @@ import { readFileSync } from "fs";
 
 window.$ = require("jquery");
 
+// The page loads the shared request stub before plugin scripts.
+const runtime = document.createElement("script");
+runtime.textContent = readFileSync("../js/rtorrent.js", "utf8");
+document.head.appendChild(runtime);
+
 function loadErasedataPlugin() {
   const script = document.createElement("script");
   script.textContent = "(function () { var plugin = { " +

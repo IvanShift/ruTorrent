@@ -9,10 +9,12 @@ require_once(__DIR__ . '/RealParserDriver.php');
  * erasedataDownloadsUnder() in plugins/erasedata/shared.php.
  *
  * The questions go through the real php/xmlrpc.php parser, first to the
- * answers real daemons gave on 2026-11-05, byte for byte with their SCGI
+ * answers real daemons gave on 2026-11-05, with their SCGI
  * headers (task 2026-11-05-issue-3514, evidence-fix/r1/captures): the
  * downloads, the sizes of their files joined by cat, and the paths of the
- * three files of the own files' sizes.
+ * three files of the own files' sizes. The first answer is extended in the
+ * test with total sizes derived from the second captured answer: the original
+ * capture predates the additional d.get_size_bytes column.
  * - fixtures/loaded-downloads-0.16.27/: rtorrent 0b334910 (0.16.27), image
  *   rutorrent-local:release-20261104;
  * - fixtures/loaded-downloads-0.9.8/: rtorrent v0.9.8, image
@@ -63,9 +65,9 @@ class LoadedFilesTest extends TestCase
         foreach (self::CAPTURED as $version => $hashes) {
             $answer = $this->drive([], $this->claimBody($own), [], null, $this->captured($version));
             $this->assertSame([
-                $hashes[0] => [self::ROOT . '/multi/' . self::MULTI, 3],
-                $hashes[1] => [self::ROOT . '/single', 1],
-                self::STUB => [$hashes[2], 1],
+                $hashes[0] => [self::ROOT . '/multi/' . self::MULTI, 3, '74000'],
+                $hashes[1] => [self::ROOT . '/single', 1, '25000'],
+                self::STUB => [$hashes[2], 1, '1'],
             ], $answer['downloads'], $version . ': hashes, directories in the daemon\'s bytes, and file counts');
             $this->assertSame(
                 [$hashes[0] => '17000/17000/40000/', $hashes[1] => '25000/', self::STUB => '1/'],
@@ -281,7 +283,7 @@ class LoadedFilesTest extends TestCase
             . ' $own = ' . var_export([$own], true) . ';'
             . ' $first = erasedataClaimedFiles($own, $d, $sizes, $why);'
             . ' $second = erasedataClaimedFiles($own, $d, $sizes, $why);'
-            . ' $d["' . self::C . '"] = array("/elsewhere", 1);'
+            . ' $d["' . self::C . '"] = array("/elsewhere", 1, "1");'
             . ' $new = erasedataClaimedFiles($own, $d, $sizes, $why); $newWhy = $why;'
             . ' unset($d["' . self::C . '"]); $d["' . self::B . '"][1] = 2; $sizes = array("' . self::B . '" => "3/");'
             . ' $count = erasedataClaimedFiles($own, $d, $sizes, $why);'
@@ -325,6 +327,21 @@ class LoadedFilesTest extends TestCase
             $peak['old'] - $peak['none'] < (1 << 20),
             'the 2 MiB of old sizes are gone before the new 4 MiB arrive: ' . json_encode($peak),
         );
+    }
+
+    public function testSingleFileSizeChangeRefreshesTheSizes()
+    {
+        $own = $this->file('changed/own.bin', 'abc');
+        $answer = $this->drive(
+            [self::B => ['directory' => $this->base . '/changed', 'files' => ['own.bin' => 3]]],
+            '$why = null; $sizes = array("' . self::B . '" => "1/");'
+            . ' $d = erasedataLoadedDownloads($why);'
+            . ' $claimed = erasedataClaimedFiles(' . var_export([$own], true) . ', $d, $sizes, $why);'
+            . ' echo json_encode(array("claimed" => $claimed, "sizes" => $sizes, "why" => $why));',
+        );
+        $this->assertSame([$own => [self::B => true]], $answer['claimed'], 'the changed single file is still protected');
+        $this->assertSame([self::B => '3/'], $answer['sizes'], 'the stale single-file size is refreshed');
+        $this->assertSame(1, $answer['asked']['sizes'], 'the sizes are queried again');
     }
 
     public function testAFailedQuestionIsNoAnswerAndKeepsNoSizes()
@@ -446,9 +463,21 @@ class LoadedFilesTest extends TestCase
         $replies = [];
         for ($n = 1; $n <= 3; $n++) {
             $bytes = file_get_contents(__DIR__ . '/fixtures/loaded-downloads-' . $version . '/answer-' . $n . '.xml');
-            if ($root !== null) {
+            if ($n === 1 || $root !== null) {
                 list($head, $body) = explode("\r\n\r\n", $bytes, 2);
-                $body = str_replace(self::ROOT, $root, $body);
+                if ($n === 1) {
+                    $totals = [74000, 25000, 1];
+                    $body = preg_replace_callback(
+                        '/(<value><i8>[0-9]+<\/i8><\/value>)(\s*<\/data><\/array><\/value>)/',
+                        function ($match) use (&$totals) {
+                            return $match[1] . '<value><i8>' . array_shift($totals) . '</i8></value>' . $match[2];
+                        },
+                        $body,
+                    );
+                }
+                if ($root !== null) {
+                    $body = str_replace(self::ROOT, $root, $body);
+                }
                 $bytes = preg_replace('/Content-Length: [0-9]+/', 'Content-Length: ' . strlen($body), $head)
                     . "\r\n\r\n" . $body;
             }

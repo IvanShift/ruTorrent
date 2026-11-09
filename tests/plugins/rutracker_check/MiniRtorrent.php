@@ -607,6 +607,14 @@ class MiniRtorrent
             case 'd.tracker_size': case 'd.get_tracker_size': return count($download['trackers']);
             case 'd.is_multi_file': return (int) $download['multi'];
             case 'd.size_files': case 'd.get_size_files': return count($download['files']);
+            case 'd.size_bytes': case 'd.get_size_bytes':
+                $total = 0;
+                foreach ($download['files'] as $file) {
+                    $path = rtrim($download['directory'], '/') . '/' . $file;
+                    clearstatcache(true, $path);
+                    $total += is_file($path) ? (int) filesize($path) : 0;
+                }
+                return $total;
             case 'd.base_path': case 'd.get_base_path':
                 if (!$download['open']) {
                     return '';

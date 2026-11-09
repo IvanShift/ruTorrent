@@ -159,6 +159,7 @@ class XMLRPCProxy
         'd.start' => ['hash'],
         'd.stop' => ['hash'],
         'd.close' => ['hash'],
+        'd.check_hash' => ['hash'],
         'd.custom1.set' => ['hash', 'text'],
         'd.custom2.set' => ['hash', 'text'],
         'd.custom3.set' => ['hash', 'text'],
@@ -286,7 +287,7 @@ class XMLRPCProxy
         'd.directory.set', 'd.directory_base.set', 'd.directory.base.set',
         'd.priority.set', 'd.throttle_name.set',
         'd.views.push_back_unique', 'd.delete_tied',
-        'd.open', 'd.close', 'd.start', 'd.stop',
+        'd.open', 'd.close', 'd.start', 'd.stop', 'd.check_hash',
         'f.set_create_queued', 'f.set_resize_queued',
     ];
 
@@ -1918,7 +1919,9 @@ class XMLRPCProxy
                 if ($param['type'] !== 'int' && $param['type'] !== 'string') {
                     return null;
                 }
-                if (!preg_match('/^[1-9][0-9]{0,17}$/D', $val)) {
+                // Compare canonical decimal strings without an integer cast.
+                if (!preg_match('/^[1-9][0-9]{0,18}$/D', $val)
+                    || (strlen($val) === 19 && $val > '9223372036854775807')) {
                     return null;
                 }
                 if (strlen($val) > 8 || (int) $val > self::$sizeLimitMax) {
