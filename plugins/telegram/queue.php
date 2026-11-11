@@ -121,10 +121,8 @@ class rTelegramQueue
             usleep($batchWindowMicroseconds);
         }
 
-        $chunks = $this->renderChunks($config);
-        if ($chunks === false) {
-            return false;
-        }
+        $unreadable = 0;
+        $chunks = $this->renderChunks($config, $unreadable);
         foreach ($chunks as $chunk) {
             $result = null;
             for ($attempt = 0; $attempt < self::MAX_SEND_ATTEMPTS; $attempt++) {
@@ -155,10 +153,12 @@ class rTelegramQueue
             } // Keep transient failures queued for the next scheduled tick.
             $this->removeItems($chunk['files']); // Permanent failures must not block later notifications.
         }
-        return true;
+        // A record kept as unreadable stays pending: stop here so the drain loop
+        // does not spin on it. The next scheduled tick tries it again.
+        return $unreadable === 0;
     }
 
-    private function renderChunks($config)
+    private function renderChunks($config, &$unreadable = 0)
     {
         $chunks = [];
         $currentText = '';
@@ -166,17 +166,10 @@ class rTelegramQueue
         foreach ($this->queueFiles() as $file) {
             $item = $this->readItem($file);
             if ($item === false) {
-                try {
-                    $name = @basename($file);
-                    $name = is_string($name) ? @rawurlencode($name) : null;
-                } catch (Throwable $error) {
-                    $name = null;
-                }
-                if (!is_string($name)) {
-                    $name = '[unavailable]';
-                }
-                telegramLogMessage('queued notification read failed: ' . $name . '; drain stopped, retry on the next drain', true);
-                return false;
+                // Keep it: a permission problem is fixable, a deletion is not.
+                $unreadable++;
+                telegramLogMessage('queued notification ' . $file . ' is unreadable and was not sent; fix its permissions or delete it');
+                continue;
             }
             if (!is_array($item) || !isset($item['event'], $item['torrent'], $item['hash'], $item['comment'], $item['details'])
                 || !in_array($item['event'], self::eventNames(), true)) {
@@ -213,34 +206,7 @@ class rTelegramQueue
 
     private function readItem($file)
     {
-        $stream = null;
-        $data = false;
-        try {
-            $stream = @fopen($file, 'rb');
-            if (@is_resource($stream)) {
-                $before = @fstat($stream);
-                $data = @stream_get_contents($stream);
-                $after = @fstat($stream);
-                // Published records are immutable. A short read may otherwise
-                // look like a valid four-field record from an older version.
-                if (!is_string($data)
-                    || !isset($before['size'], $before['mtime'], $before['ctime'], $after['size'], $after['mtime'], $after['ctime'])
-                    || $before['size'] !== @strlen($data) || $before['size'] !== $after['size']
-                    || $before['mtime'] !== $after['mtime'] || $before['ctime'] !== $after['ctime']) {
-                    $data = false;
-                }
-            }
-        } catch (Throwable $error) {
-            $data = false;
-        } finally {
-            try {
-                if (@is_resource($stream) && @fclose($stream) !== true) {
-                    $data = false;
-                }
-            } catch (Throwable $error) {
-                $data = false;
-            }
-        }
+        $data = @file_get_contents($file);
         if ($data === false) {
             return false;
         }
@@ -336,7 +302,7 @@ class rTelegramQueue
 
     private static function eventNames()
     {
-        return ['added', 'finished', 'removed'];
+        return ['added', 'finished', 'removed', 'checkfailed'];
     }
 
     private static function limitString($value, $length)
