@@ -3,6 +3,11 @@
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd -- "$script_dir" || exit 1
 
+# A umask that masks the owner's own bits, such as 0177, leaves every directory
+# a fixture creates with mkdir() unusable to the test that created it. Clear
+# only those bits; the group and other bits of the caller's umask are kept.
+umask u=rwx
+
 # Exit non-zero if any test file fails, so the suite can gate CI. Counted
 # TestCase and self-running TestLib failures set a non-zero exit; the output
 # matcher still catches diagnostics from other self-running fixtures.
