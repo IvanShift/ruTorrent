@@ -240,6 +240,22 @@ final class AddTorrentRedirectTest extends TestCase
         }
     }
 
+    public function testConfiguredEnvironmentDoesNotChangeRelativeUploadRedirect()
+    {
+        $server = AddTorrentHttpHarness::forAddTorrent(
+            new FakeRtorrentAddTorrentReplies([], [], false),
+            ['preamble' => "putenv('RU_PUBLIC_URL=https://public.test/app');"],
+        );
+        try {
+            $response = $server->request('POST', '/php/addtorrent.php', '', ['Host' => 'internal.test']);
+            $this->assertSame(302, $response['code'], 'the upload redirects');
+            $this->assertSame('./addtorrent.php?result[]=Failed&', $response['headers']['location'] ?? '', 'the configured environment cannot change the browser origin');
+            $this->assertSame([], $server->phpDiagnostics(), 'the request emits no PHP diagnostic');
+        } finally {
+            $server->close();
+        }
+    }
+
     public function testRedirectCarriesTheJsonRequestOnward()
     {
         $response = $this->send('POST', '?json=1');

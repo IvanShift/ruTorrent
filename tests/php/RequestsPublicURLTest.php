@@ -34,6 +34,24 @@ final class RequestsPublicURLTest extends TestCase
         ini_set('error_log', $this->log);
     }
 
+    public function testConfiguredBaseReportsAbsentInvalidAndNormalizedValues()
+    {
+        global $publicURL;
+        $this->assertSame(null, Requests::configuredPublicBaseURL(), 'no configured base is absent');
+        $publicURL = 'https://config.test/app';
+        putenv('RU_PUBLIC_URL=');
+        $this->assertSame('https://config.test/app/', Requests::configuredPublicBaseURL(), 'empty environment permits config');
+        putenv('RU_PUBLIC_URL=https://env.test/prefix');
+        $this->assertSame('https://env.test/prefix/', Requests::configuredPublicBaseURL(), 'environment overrides config');
+        putenv('RU_PUBLIC_URL=ftp://invalid.test/');
+        $this->assertSame(false, Requests::configuredPublicBaseURL(), 'invalid environment is refused');
+        putenv('RU_PUBLIC_URL');
+        $publicURL = 'ftp://invalid.test/';
+        $this->assertSame(false, Requests::configuredPublicBaseURL(), 'invalid config is refused');
+        $publicURL = null;
+        $this->assertSame(null, Requests::configuredPublicBaseURL(), 'null config is absent');
+    }
+
     public function testExplicitEnvironmentOverridesConfigWithoutTrustingForwardedHost()
     {
         global $publicURL;
