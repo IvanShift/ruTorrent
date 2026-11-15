@@ -31,6 +31,24 @@ final class AddTorrentRedirectTest extends TestCase
         }
     }
 
+    public function testUploadWithoutPostIsRefusedBeforeAnyLoad()
+    {
+        $response = $this->send('GET');
+        $this->assertSame(405, $response['code'], 'an upload without POST is refused');
+        $this->assertSame('POST', $response['headers']['allow'] ?? '', 'the response names the required method');
+        $this->assertEquals([], $this->server->daemon()->calls(), 'the refusal sends no daemon request');
+    }
+
+    public function testPendingLegacyResultIsWarning()
+    {
+        $response = $this->send('GET', '?result[]=Pending&name[]=slow.torrent');
+        $this->assertSame(
+            'noty("slow.torrent - "+theUILang["addTorrent"+"Pending"],"warning");',
+            $response['body'],
+            'an unconfirmed add uses warning styling',
+        );
+    }
+
     public function testActualPostRedirectStaysRelativeBehindARewritingProxy()
     {
         $response = $this->send('POST');
@@ -45,6 +63,42 @@ final class AddTorrentRedirectTest extends TestCase
             && strpos($location, 'trap.invalid') === false,
             'proxy Host rewriting cannot redirect to an internal or forwarded host',
         );
+    }
+
+    public function testJsonResultsAnswersWithTheResultsAndNoRedirect()
+    {
+        $response = $this->send('POST', '?json_results=1');
+        $this->assertSame(200, $response['code'], 'the request answers directly');
+        $this->assertTrue(!isset($response['headers']['location']), 'no redirect is sent');
+        $this->assertSame('application/json; charset=UTF-8', $response['headers']['content-type'] ?? '', 'the answer is JSON');
+        $this->assertEquals(['results' => [['status' => 'Failed']]], json_decode($response['body'], true), 'the result is returned');
+    }
+
+    public function testJsonResultsIgnoresAnUnusablePublicBase()
+    {
+        $server = AddTorrentHttpHarness::forAddTorrent(
+            new FakeRtorrentAddTorrentReplies([], [], false),
+            ['globals' => ['publicURL' => 'ftp://public.test/app']],
+        );
+        try {
+            $response = $server->request('POST', '/php/addtorrent.php?json_results=1', '', ['Host' => 'public.test']);
+            $this->assertTrue(!isset($response['headers']['location']), 'no redirect is sent');
+            $this->assertEquals(['results' => [['status' => 'Failed']]], json_decode($response['body'], true), 'the result is returned');
+            $this->assertSame([], $server->phpDiagnostics(), 'the request emits no PHP diagnostic');
+        } finally {
+            $server->close();
+        }
+    }
+
+    public function testJsonResultsTakesPrecedenceOverTheJsonRedirect()
+    {
+        $legacy = $this->send('POST', '?json=1');
+        $this->assertSame(302, $legacy['code'], 'the legacy JSON request redirects');
+        $this->assertSame('./addtorrent.php?result[]=Failed&json=1', $legacy['headers']['location'] ?? '', 'the legacy redirect stays relative');
+        $response = $this->send('POST', '?json=1&json_results=1');
+        $this->assertSame(200, $response['code'], 'the combined request answers directly');
+        $this->assertTrue(!isset($response['headers']['location']), 'no redirect is sent');
+        $this->assertEquals(['results' => [['status' => 'Failed']]], json_decode($response['body'], true), 'all results take precedence');
     }
 
     public function testJsonResultsRespondsDirectlyBehindARewritingProxy()
@@ -98,7 +152,7 @@ final class AddTorrentRedirectTest extends TestCase
         );
         $this->assertTrue(
             stripos($response['headers']['content-type'] ?? '', 'text/html') === 0,
-            'the iframe receives the same result script content type as a result GET',
+            'the legacy POST result has the same script content type as a result GET',
         );
         $calls = $this->notifications($response['body']);
         $this->assertEquals(32, count($calls), 'each uploaded file has exactly one notification');
@@ -155,7 +209,7 @@ final class AddTorrentRedirectTest extends TestCase
         $this->assertEquals(
             'noty("one.torrent - "+theUILang["addTorrent"+"FailedFile"],"error");',
             $result['body'],
-            'the redirected result uses the existing iframe notification script',
+            'the redirected result uses the existing notification script',
         );
     }
 

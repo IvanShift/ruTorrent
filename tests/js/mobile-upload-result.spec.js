@@ -124,6 +124,31 @@ function expectFormCleared() {
 }
 
 describe("mobile add-torrent result", () => {
+  test.each([
+    ["addTorrentFile", "torrentFileSend"],
+    ["addTorrentUrl", "addUrl"],
+  ])("the actual %s submit handler disables %s before sending", (formId, buttonId) => {
+    const src = readFileSync("../plugins/mobile/init.js", "utf8");
+    const start = src.indexOf('      $("#addTorrentFile").submit(function()');
+    const end = src.indexOf("      $('#tadd_label_select').change", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const send = jest.spyOn(plugin, "makeAddRequest").mockImplementation(() => {
+      expect($("#" + buttonId).prop("disabled")).toBe(true);
+      return false;
+    });
+    try {
+      new Function("plugin", "$", src.slice(start, end))(plugin, window.$);
+      $("#" + buttonId).prop("disabled", false);
+      $("#" + formId).triggerHandler("submit");
+      expect($("#" + buttonId).prop("disabled")).toBe(true);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0][0].id).toBe(formId);
+    } finally {
+      send.mockRestore();
+    }
+  });
+
   test("the add page has no frame for an upload to load into", () => {
     expect(document.querySelectorAll("iframe")).toHaveLength(0);
     expect(fileForm().getAttribute("target")).toBeNull();

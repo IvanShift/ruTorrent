@@ -43,6 +43,11 @@ key per page load. Production deployments should run the tool and revalidate
 the index can keep an old asset key in use. Keep `tools/` inaccessible over HTTP,
 including when ruTorrent is served below a URL prefix.
 
+When rolling back the server to a version that predates `json_results`, reload
+open ruTorrent tabs before adding torrents. An old server may add a torrent but
+answer a newer tab with a non-JSON result, which that tab reports as a failure;
+check the torrent list before retrying.
+
 ### Trusted browser origins
 
 The default browser origin must match the request's scheme, host and port.

@@ -104,7 +104,7 @@ async function runDesktop() {
 }
 
 // plugin.alertClass() is how mobile renders a kind; read it back to compare
-// with the kind the desktop handed to noty(). The server writes only these.
+// with the kind the desktop handed to noty(). These are client notification kinds.
 const CLASS_TO_KIND = { "alert-success": "success", "alert-danger": "error", "alert-warning": "alert" };
 
 async function runMobile() {

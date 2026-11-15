@@ -15,9 +15,8 @@ require_once(__DIR__ . '/../../php/Torrent.php');
  * its stub shows (R4-CORE-01). A new hash still needs its deferred proof for
  * Success, and a magnet needs its stub (O-1).
  *
- * addtorrent.php answers with a redirect whose result[] values are the
- * outcome, so it is served by AddTorrentHttpHarness, in front of
- * FakeRtorrentDaemon, and the Location header is what is read.
+ * AddTorrentHttpHarness serves addtorrent.php in front of FakeRtorrentDaemon.
+ * The tests read either the legacy redirect or the direct JSON result.
  */
 class AddTorrentDuplicateTest extends TestCase
 {
@@ -26,6 +25,7 @@ class AddTorrentDuplicateTest extends TestCase
 
     private $server = null;
     private $daemon = null;
+    private $response;
 
     public function tearDown()
     {
@@ -354,6 +354,113 @@ class AddTorrentDuplicateTest extends TestCase
         );
     }
 
+    public function testAnAddedUploadIsNotKeptWhenUploadsAreNotSaved()
+    {
+        $torrent = $this->torrent($hash);
+        $this->server = AddTorrentHttpHarness::forAddTorrent(
+            new FakeRtorrentAddTorrentReplies([], [true], false),
+            ['globals' => ['saveUploadedTorrents' => false],
+                'preamble' => "define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);"],
+        );
+        $this->daemon = $this->server->daemon();
+        list($contentType, $body) = AddTorrentHttpHarness::multipart(
+            AddTorrentHttpHarness::torrentFiles(['one.torrent'], $torrent),
+        );
+        $response = $this->server->request(
+            'POST',
+            '/php/addtorrent.php',
+            $body,
+            ['Content-Type' => $contentType],
+        );
+        $this->assertTrue(
+            strpos($response['headers']['location'] ?? '', 'result[]=Success') !== false,
+            'the upload is confirmed before its source is discarded',
+        );
+        $this->assertEquals(1, $this->loadCalls(), 'the upload reaches the daemon once');
+        $this->assertEquals([], $this->kept(), 'the confirmed source is not saved');
+    }
+
+    public function testJsonResultsAnswersEveryUploadWithItsName()
+    {
+        $torrent = $this->torrent($hash);
+        $this->upload(
+            [],
+            ['one.torrent' => $torrent, 'two.torrent' => $torrent],
+            ['one.torrent', 'two.torrent'],
+            [true],
+            [],
+            ['torrent_file_count' => '2'],
+            '?json_results=1',
+        );
+        $this->assertSame(200, $this->response['code'], 'the batch answers directly');
+        $this->assertTrue(!isset($this->response['headers']['location']), 'no redirect is sent');
+        $this->assertEquals(['results' => [
+            ['status' => 'Success', 'name' => 'one.torrent'],
+            ['status' => 'Duplicate', 'name' => 'two.torrent'],
+        ]], json_decode($this->response['body'], true), 'each upload retains its name and status');
+        $this->assertEquals(1, $this->loadCalls(), 'only the new hash is loaded');
+    }
+
+    public function testJsonResultsAnswersEveryUrlWithItsName()
+    {
+        $loaded = 'magnet:?xt=urn:btih:' . self::LOADED;
+        $fresh = 'magnet:?xt=urn:btih:' . self::FRESH;
+        $this->add(
+            [self::LOADED],
+            'application/x-www-form-urlencoded',
+            'url=' . rawurlencode($loaded . "\n" . $fresh),
+            [],
+            false,
+            [],
+            '?json_results=1',
+        );
+        $this->assertEquals(['results' => [
+            ['status' => 'Duplicate', 'name' => $loaded],
+            ['status' => 'Success', 'name' => $fresh],
+        ]], json_decode($this->response['body'], true), 'each magnet retains its URL and status');
+        $this->assertEquals(2, $this->loadCalls(), 'both magnets are sent');
+    }
+
+    public function testJsonResultsCarriesNamesAsData()
+    {
+        $torrent = $this->torrent($hash);
+        $name = "<img src=x>&'x.torrent";
+        $invalid = "bad\xFF.torrent";
+        $this->upload(
+            [],
+            [$name => $torrent, $invalid => $torrent],
+            [$name, $invalid],
+            [true],
+            [],
+            ['torrent_file_count' => '2'],
+            '?json_results=1',
+        );
+        $body = $this->response['body'];
+        $this->assertEquals(['results' => [
+            ['status' => 'Success', 'name' => $name],
+            ['status' => 'Duplicate', 'name' => 'bad\\xFF.torrent'],
+        ]], json_decode($body, true), 'names remain data with invalid bytes safely displayed');
+        $this->assertTrue(strpbrk($body, "<>&'") === false, 'no markup characters appear unescaped');
+        $this->assertSame('application/json; charset=UTF-8', $this->response['headers']['content-type'] ?? '', 'the response is JSON');
+        $this->assertSame('nosniff', $this->response['headers']['x-content-type-options'] ?? '', 'the response forbids sniffing');
+    }
+
+    public function testWithoutJsonResultsTheUploadIsStillRedirected()
+    {
+        $torrent = $this->torrent($hash);
+        $result = $this->upload(
+            [],
+            ['one.torrent' => $torrent, 'two.torrent' => $torrent],
+            ['one.torrent', 'two.torrent'],
+            [true],
+            [],
+            ['torrent_file_count' => '2'],
+        );
+        $this->assertEquals(['Success', 'Duplicate'], $result, 'the redirect carries both results');
+        $this->assertSame(302, $this->response['code'], 'the legacy upload redirects');
+        $this->assertTrue(strpos($this->response['headers']['location'] ?? '', './addtorrent.php?') === 0, 'the redirect remains relative');
+    }
+
     private function stop()
     {
         if ($this->server !== null) {
@@ -392,7 +499,8 @@ class AddTorrentDuplicateTest extends TestCase
         $body,
         $proofs = [],
         $snapshotFails = false,
-        $daemon = []
+        $daemon = [],
+        $query = ''
     ) {
         $this->stop();
         $this->server = AddTorrentHttpHarness::forAddTorrent(
@@ -405,9 +513,9 @@ class AddTorrentDuplicateTest extends TestCase
                 'preamble' => "define('RTORRENT_LOAD_WAIT_DELAY_US', 20000);"],
         );
         $this->daemon = $this->server->daemon();
-        $response = $this->server->request(
+        $response = $this->response = $this->server->request(
             'POST',
-            '/php/addtorrent.php',
+            '/php/addtorrent.php' . $query,
             $body,
             ['Content-Type' => $contentType],
         );
@@ -460,7 +568,7 @@ class AddTorrentDuplicateTest extends TestCase
      * $torrents (name => torrent bytes), to a daemon holding $loaded, after
      * the plain form $fields (name => value).
      */
-    private function upload($loaded, $torrents, $names, $proofs, $daemon = [], $fields = [])
+    private function upload($loaded, $torrents, $names, $proofs, $daemon = [], $fields = [], $query = '')
     {
         $parts = [];
         foreach ($fields as $field => $value) {
@@ -470,7 +578,7 @@ class AddTorrentDuplicateTest extends TestCase
             $parts = array_merge($parts, AddTorrentHttpHarness::torrentFiles([$name], $torrents[$name]));
         }
         list($contentType, $body) = AddTorrentHttpHarness::multipart($parts);
-        return $this->add($loaded, $contentType, $body, $proofs, false, $daemon);
+        return $this->add($loaded, $contentType, $body, $proofs, false, $daemon, $query);
     }
 
     private function kept()

@@ -354,7 +354,7 @@ if (isset($_REQUEST['result'])) {
     }
     // Percent-encoded UTF-8 batch names can overflow the usual 4 KiB FastCGI
     // header buffer. Bound the complete Location field to 2 KiB and let the
-    // existing iframe/JSON consumer read the same result from this POST body.
+    // legacy result-script or JSON caller read the same result from this POST body.
     if (strlen($location) > 2048) {
         addtorrent_response($results, $names, isset($_REQUEST['json']));
     } else {
