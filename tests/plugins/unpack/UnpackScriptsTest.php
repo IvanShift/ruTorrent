@@ -223,6 +223,95 @@ class UnpackScriptsTest extends TestCase
         $this->assertSame('', $run['log'], 'or logged');
     }
 
+    public function testZipPatternConversionFailureKeepsArchive()
+    {
+        $unzip = $this->extractor('unzip', 'exit 0');
+        file_put_contents($this->base . '/in/x*y.zip', 'zip');
+        file_put_contents($this->base . '/sed', "#!/bin/sh\nprintf partial\nexit 1\n");
+        chmod($this->base . '/sed', 0700);
+        $oldPath = getenv('PATH');
+        putenv('PATH=' . $this->base . ':' . $oldPath);
+        try {
+            $run = $this->script('unzip_file.sh', [$unzip, $this->base . '/in/x*y.zip', $this->base . '/out/', '',
+                $this->base . '/in/x*y.zip']);
+            $dirRun = $this->script('unzip_dir.sh', [$unzip, $this->base . '/in/', $this->base . '/out/', '',
+                $this->base . '/in/x*y.zip;']);
+        } finally {
+            putenv('PATH=' . $oldPath);
+        }
+        $this->assertSame(1, $run['code'], 'conversion failure refuses the unpack');
+        $this->assertSame(1, $dirRun['code'], 'conversion failure refuses the directory unpack');
+        $this->assertSame([], $this->calls('unzip'), 'unzip is not called with partial output');
+        $this->assertTrue(is_file($this->base . '/in/x*y.zip'), 'the archive is kept');
+        $this->assertTrue(strpos($run['log'], 'reason=archive-name-unavailable') !== false, 'the log classifies the failure');
+    }
+
+    public function testMixedUnpackKeepsBothArchivesWhenRarPathIsRefused()
+    {
+        $dir = $this->base . '/in/parent*/';
+        mkdir($dir);
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'a.zip', 'zip');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'echo z > "$dest/z"');
+        $run = $this->script('unall_dir.sh', [$unrar, $dir, $this->base . '/out/', $unzip,
+            $dir . 'a.rar;' . $dir . 'a.zip;']);
+        $this->assertEquals(1, $run['code'], 'the mixed unpack is refused');
+        $this->assertTrue(is_file($dir . 'a.rar') && is_file($dir . 'a.zip'), 'both archives are kept');
+    }
+
+    public function testMixedUnpackKeepsBothArchivesWhenZipPatternFails()
+    {
+        $dir = $this->base . '/in/';
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'x*y.zip', 'zip');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'echo z > "$dest/z"');
+        file_put_contents($this->base . '/sed', "#!/bin/sh\nexit 1\n");
+        chmod($this->base . '/sed', 0700);
+        $oldPath = getenv('PATH');
+        putenv('PATH=' . $this->base . ':' . $oldPath);
+        try {
+            $run = $this->script('unall_dir.sh', [$unrar, $dir, $this->base . '/out/', $unzip,
+                $dir . 'a.rar;' . $dir . 'x*y.zip;']);
+        } finally {
+            putenv('PATH=' . $oldPath);
+        }
+        $this->assertEquals(1, $run['code'], 'the mixed unpack is refused');
+        $this->assertTrue(is_file($dir . 'a.rar') && is_file($dir . 'x*y.zip'), 'both archives are kept');
+    }
+
+    public function testMixedUnpackDeletesOnlyTheListedArchivesAfterBothSucceed()
+    {
+        $dir = $this->base . '/in/';
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'x*y.zip', 'zip');
+        file_put_contents($dir . 'xzy.zip', 'unrelated');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'exit 0');
+        $run = $this->script('unall_dir.sh', [$unrar, $dir, $this->base . '/out/', $unzip,
+            $dir . 'a.rar;' . $dir . 'x*y.zip;']);
+        $this->assertEquals(0, $run['code'], 'both extractors succeed');
+        $this->assertTrue(!file_exists($dir . 'a.rar') && !file_exists($dir . 'x*y.zip'), 'listed archives are deleted');
+        $this->assertTrue(is_file($dir . 'xzy.zip'), 'an unlisted matching path is kept');
+    }
+
+    public function testDirectoryCleanupDoesNotExpandArchiveNames()
+    {
+        foreach (['zip', 'rar'] as $format) {
+            $dir = $this->base . '/in/' . (($format === 'zip') ? 'zip*' : 'rar') . '/';
+            mkdir($dir);
+            file_put_contents($dir . 'x*y.' . $format, 'archive');
+            file_put_contents($dir . 'xzy.' . $format, 'decoy');
+            $tool = $this->extractor('un' . $format, 'exit 0');
+            $run = $this->script('un' . $format . '_dir.sh', [$tool, $dir, $this->base . '/out/', '',
+                $dir . 'x*y.' . $format . ';']);
+            $this->assertEquals(0, $run['code'], 'the directory unpack succeeds');
+            $this->assertTrue(!file_exists($dir . 'x*y.' . $format), 'the selected archive is removed');
+            $this->assertTrue(is_file($dir . 'xzy.' . $format), 'the unrelated archive remains');
+        }
+    }
+
     public function testAStalePrivateDirectoryIsReportedOnceAndKept()
     {
         // No process has number 999999999; this test's own is alive.

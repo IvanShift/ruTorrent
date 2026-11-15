@@ -283,6 +283,41 @@ $tests = [
         testAssertTrue(!is_file($log) || file_get_contents($log) === '', 'nothing is logged');
         unpackNothingOutside($run);
     },
+    'literal archive names do not select other archives' => function () {
+        foreach (['zip'] as $format) {
+            foreach (['Al [1]' => 'Al 1', 'x*y' => 'xzy', 'q?r' => 'qsr', 'a\\b*' => 'a\\bz', 'проба с пробелом' => 'другая'] as $real => $decoy) {
+                $c = unpackCase($format . '-' . bin2hex($real));
+                UnpackArchiveFixture::$format("$c/in/$real.$format", [['f', 'true.txt', 'true']]);
+                UnpackArchiveFixture::$format("$c/in/$decoy.$format", [['f', 'decoy.txt', 'decoy']]);
+                $run = unpackRun("un{$format}_file.sh", ["un$format", "$c/in/$real.$format", "$c/out/"]);
+                testAssertSame(0, $run[0], 'literal archive succeeds: ' . json_encode($run));
+                testAssertSame(['true.txt'], UnpackArchiveFixture::tree("$c/out"), 'only the requested archive is extracted');
+                testAssertSame('true', file_get_contents("$c/out/true.txt"), 'the requested content is delivered');
+                unpackNothingOutside($run);
+            }
+        }
+    },
+    'rar: wildcard paths are refused before unrar runs' => function () {
+        foreach (['x*y.rar', 'q?r.rar', 'parent*/a.rar'] as $name) {
+            $c = unpackCase('rar-mask-' . bin2hex($name));
+            if (strpos($name, '/') !== false) {
+                mkdir("$c/in/parent*");
+            }
+            UnpackArchiveFixture::rar("$c/in/$name", [['f', 'true.txt', 'true']]);
+            $recorder = unpackRecorder($c, 'unrar', '/usr/local/bin/unrar', 1);
+            $run = unpackRun('unrar_file.sh', [$recorder, "$c/in/$name", "$c/out/"]);
+            unpackRefused($run, 'archive-name-pattern', 1);
+            testAssertTrue(strpos($run[2], 'rename') !== false, 'the task says how to proceed');
+            testAssertSame([], unpackCalls($c, 'unrar'), 'unrar is not invoked');
+            testAssertSame([], UnpackArchiveFixture::tree("$c/out"), 'nothing is extracted');
+            testAssertTrue(is_file("$c/in/$name"), 'the archive is kept');
+        }
+        $c = unpackCase('rar-brackets');
+        UnpackArchiveFixture::rar("$c/in/Al [1].rar", [['f', 'true.txt', 'true']]);
+        $run = unpackRun('unrar_file.sh', ['unrar', "$c/in/Al [1].rar", "$c/out/"]);
+        testAssertSame(0, $run[0], 'brackets in RAR names remain supported: ' . json_encode($run));
+        testAssertSame('true', file_get_contents("$c/out/true.txt"), 'bracketed archive extracted');
+    },
     'rar: a directory without archives starts no placement' => function () {
         $c = unpackCase('empty');
         mkdir("$c/in/a/b", 0700, true);
