@@ -165,9 +165,7 @@ class NNMClubCheckImpl
         if ($topicRef === null && is_object($old_torrent) && method_exists($old_torrent, 'comment')) {
             $topicRef = self::parseTopicRef($old_torrent->comment());
         }
-        if ($topicRef !== null) {
-            self::log("Start check for {$hash} using {$topicRef['host']}/forum/viewtopic.php?{$topicRef['query']}");
-        } else {
+        if ($topicRef === null) {
             self::log("Start announce-only check for {$hash}; guest replacement will be unavailable");
         }
 
@@ -189,9 +187,7 @@ class NNMClubCheckImpl
         // path form when a torrent happens to carry both; credentials are
         // never harvested from unrelated session torrents.
         $auth = self::extractAuth($announces, 'path') ?: self::extractAuth($announces, 'query');
-        if ($auth !== null) {
-            self::log("Using the {$auth['mode']}-form credential from current torrent metadata");
-        } else {
+        if ($auth === null) {
             self::log("No tracker credential found for {$hash}, skipping scrape");
         }
 

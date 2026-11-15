@@ -29,6 +29,34 @@ require_once(testFindRepoRoot() . '/plugins/rutracker_check/state.php');
 
 $suite = new StrictTestSuite();
 
+$suite->test('disabled writers cannot publish a successful empty state document', function () {
+    require_once(testFindRepoRoot() . '/tests/php/PhpProcess.php');
+    strictWithStateDir('chk-state-disabled-write', function ($tmp) {
+        foreach (array('file_put_contents', 'json_encode') as $disabled) {
+            strictAssertSame(true, RuTrackerState::save('guarded', array('original' => true)),
+                'the witness document is written before disabling its writer');
+            $before = file_get_contents($tmp . '/guarded.json');
+            $root = testFindRepoRoot();
+            $code = 'define("TESTLIB_HANDLER_STUBS", 1); require '
+                . var_export($root . '/tests/plugins/rutracker_check/TestLib.php', true) . ';'
+                . 'chdir(' . var_export($root . '/php/utility', true) . '); require_once '
+                . var_export($root . '/php/utility/fileutil.php', true) . '; require_once '
+                . var_export($root . '/plugins/rutracker_check/state.php', true) . ';'
+                . 'strictSetPrivateStatic("RuTrackerState", "dir", ' . var_export($tmp, true) . ');'
+                . 'try { $stored = RuTrackerState::save("guarded", array("changed"=>true)); }'
+                . 'catch(Throwable $error) { $stored = false; }'
+                . 'echo "\nSTORED:", $stored ? "1" : "0", "\n";';
+            $child = PhpProcess::run(array_merge(PhpProcess::sameIni(),
+                array('-d', 'disable_functions=' . $disabled, '-r', $code)));
+            strictAssertSame(0, $child['code'], 'the disabled-writer probe completes: ' . $disabled);
+            strictAssertTrue(strpos($child['out'], 'STORED:0') !== false,
+                'a disabled writer never attests successful publication: ' . $disabled);
+            strictAssertSame($before, file_get_contents($tmp . '/guarded.json'),
+                'a disabled writer preserves the previous document: ' . $disabled);
+        }
+    });
+});
+
 $suite->test('update() creates the file from an empty state when none exists yet', function () {
     strictWithStateDir('chk-state-create', function () {
         RuTrackerState::update('demo', function ($state) {

@@ -80,13 +80,24 @@ class KinozalCheckImpl
     // Internal answer of a door that did not answer the topic.
     public const NEXT_DOOR = 'next-door';
 
-    // How many Kinozal topics one scheduler pass dispatches. This bounds the
+    // How many Kinozal topics one scheduler batch dispatches. This bounds the
     // batch independently of request pacing and the HTTP 429 pause. A topic
     // costs one details request, an update adds a download and a login two.
-    // The rest are not dispatched and keep their verdict and chk-time; each
-    // pass starts about one quota further along the foreign rows
+    // The rest are not dispatched and keep their verdict and chk-time; the
+    // next batch continues after the last topic asked
+    // (RuTrackerUpdatePass::continueKinozal()), or, with the interval below
+    // at 0, each pass starts about one quota further along the foreign rows
     // (RuTrackerUpdatePass::fairOrder()).
     public const DEFAULT_CYCLE_TOPICS = 35;
+    // Seconds between ordinary automatic batches. Production, 2026-11-01..15:
+    // in each of ten episodes about 41 requests were answered and the next
+    // drew HTTP 429, probes up to 21 hours after the first answered request
+    // drew 429 too, and none succeeded sooner than 24 hours after it;
+    // two-hour batches met the same wall on 2026-10-31. A gate longer than a
+    // day keeps one batch per window, and at 24.5 hours an hourly scheduler
+    // admits one every 25 hours unless a pass reaches Kinozal half an hour
+    // earlier or later in its hour than the last admitted one did.
+    public const DEFAULT_CYCLE_INTERVAL = 88200;
     // Parsed bodies belong to details attempts, not necessarily to distinct
     // topics (door failover and loginmgr can supply several/final answers).
     private const EMPTY_CYCLE_DIAGNOSTICS = [
@@ -105,7 +116,7 @@ class KinozalCheckImpl
     // proving the same thing over again -- 130 of them per cycle on the live
     // fleet -- and buried the log under 130 identical lines. The download
     // latch stops only download.php and leaves healthy details checks running.
-    // Each latch dies with the process, so the next cycle retries from
+    // Each latch dies with the process, so the next batch retries from
     // scratch and a restored session or a recovered host heals itself.
     private static $cycleAbandoned = false;
     private static $downloadAbandoned = false;
@@ -148,6 +159,7 @@ class KinozalCheckImpl
     private static $lastFailure = [];
     private static $closed = [];
     private static $invalidCycleTopicsReported = false;
+    private static $invalidCycleIntervalReported = false;
 
     // The one test this handler applies to a comment before it does anything:
     // a topic URL on one of Kinozal's own hosts, and nothing else. Used both
@@ -166,20 +178,25 @@ class KinozalCheckImpl
     // $rutrackerKinozalCycleTopics, or null for no limit (0).
     public static function cycleQuota()
     {
-        $value = $GLOBALS['rutrackerKinozalCycleTopics'] ?? null;
-        if ($value === null) {
-            return self::DEFAULT_CYCLE_TOPICS;
-        }
-        $quota = RuTrackerRpcValue::canonicalNonnegativeInteger($value);
-        if ($quota === null) {
-            if (!self::$invalidCycleTopicsReported) {
-                self::$invalidCycleTopicsReported = true;
-                ruTrackerChecker::logUnrepairable('config: invalid rutrackerKinozalCycleTopics; using '
-                    . self::DEFAULT_CYCLE_TOPICS . ' topics per pass');
-            }
-            return self::DEFAULT_CYCLE_TOPICS;
-        }
+        $quota = self::configured(
+            'rutrackerKinozalCycleTopics',
+            self::DEFAULT_CYCLE_TOPICS,
+            'invalidCycleTopicsReported',
+            'topics per pass',
+        );
         return $quota === 0 ? null : $quota;
+    }
+
+    // $rutrackerKinozalCycleInterval in seconds; 0 turns the gate and the
+    // batch cursor off (RuTrackerUpdatePass::run()).
+    public static function cycleInterval()
+    {
+        return self::configured(
+            'rutrackerKinozalCycleInterval',
+            self::DEFAULT_CYCLE_INTERVAL,
+            'invalidCycleIntervalReported',
+            'seconds',
+        );
     }
 
     // Called once by the scheduler/manual batch, never once per hash.
@@ -253,6 +270,22 @@ class KinozalCheckImpl
             }
         }
         return self::cantReach("no Kinozal door answered: id=" . $id);
+    }
+
+    // A nonnegative integer setting; unset means $default, and anything else
+    // is reported once per process under the flag property $reported.
+    private static function configured($name, $default, $reported, $unit)
+    {
+        $value = $GLOBALS[$name] ?? null;
+        $number = $value === null ? $default : RuTrackerRpcValue::canonicalNonnegativeInteger($value);
+        if ($number === null) {
+            if (!self::$$reported) {
+                self::$$reported = true;
+                ruTrackerChecker::logUnrepairable('config: invalid ' . $name . '; using ' . $default . ' ' . $unit);
+            }
+            return $default;
+        }
+        return $number;
     }
 
     // The hosts this cycle asks, in the configured order.
@@ -347,7 +380,7 @@ class KinozalCheckImpl
         }
         self::$skipLogged[$scope] = true;
         ruTrackerChecker::logUnrepairable('kinozal: Kinozal checks skipped for the rest of this cycle: scope='
-            . $scope . ' reason=' . $reason . $context . '; eligibility checked next cycle');
+            . $scope . ' reason=' . $reason . $context . '; eligibility checked by the next scheduled batch');
     }
 
     private static function isMissingAnswer($body)
@@ -463,7 +496,8 @@ class KinozalCheckImpl
         self::$sessionHintLogged = true;
         ruTrackerChecker::logUnrepairable('Kinozal answers as a guest: no authenticated KinozalTV session was available for these checks;'
             . ' re-enter the KinozalTV login and password in Settings -> Accounts and Save;'
-            . ' Kinozal update checks resume after a successful login');
+            . ' Kinozal update checks resume with the next scheduled batch after a successful login,'
+            . ' and the manual check button checks a torrent at once');
     }
 
     // What a finished request says before its body is read, for the answers

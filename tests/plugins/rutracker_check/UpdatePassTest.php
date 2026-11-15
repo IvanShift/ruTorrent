@@ -152,8 +152,15 @@ function upTest($suite, $name, $callback)
         UpdatePassErasedataFake::reset();
         // Pass 0 leaves pass 2 in plain view order; the rotation tests set it.
         strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 0);
+        $hadInterval = array_key_exists('rutrackerKinozalCycleInterval', $GLOBALS);
+        $interval = $GLOBALS['rutrackerKinozalCycleInterval'] ?? null;
+        $GLOBALS['rutrackerKinozalCycleInterval'] = 0;
         try { return strictWithStateDir('chk-updatepass', $callback); }
-        finally { strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', null); }
+        finally {
+            strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', null);
+            if ($hadInterval) $GLOBALS['rutrackerKinozalCycleInterval'] = $interval;
+            else unset($GLOBALS['rutrackerKinozalCycleInterval']);
+        }
     });
 }
 
@@ -2385,6 +2392,343 @@ upTest($suite, 'a declared cycle quota caps ordinary foreign dispatch and leaves
         strictAssertSame(3, $dispatched, 'three ordinary rows were dispatched in all buckets');
         strictAssertSame($eligible - $postponed, $dispatched + $capped, 'no eligible row disappears');
         upAssertNoCustomWrites('a capped row keeps its verdict and its chk-time');
+    });
+});
+
+upTest($suite, 'Kinozal automatic batches wait their interval while NNMClub keeps running', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 3600;
+    $topics = array();
+    for ($topic = 1; $topic <= 36; $topic++) {
+        $row = upKinozalRow(sprintf('%040X', $topic), 1, 0);
+        $row['comment'] = 'https://kinozal.tv/details.php?id=' . (10000 + $topic);
+        $topics[] = $row;
+    }
+    $kinozal = $topics[0];
+    $nnmclub = upParsedRow(str_repeat('B', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12',
+        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER));
+    $rows = array_merge($topics, array($nnmclub));
+    $expected = array_merge(array_column(array_slice($topics, 0, 35), 'hash'), array($nnmclub['hash']));
+    $admittedLog = upCapturedLog(function () use ($rows, &$checked) { upRunPass($rows, $checked); });
+    strictAssertSame($expected, $checked,
+        'the first batch and the other tracker are admitted');
+    $first = RuTrackerState::load('kinozal-cycle');
+    strictAssertSame(1, substr_count($admittedLog, 'kinozal: batch admitted; the next ordinary batch is due '
+        . gmdate('Y-m-d\TH:i:s\Z', $first['started_at'] + 3600)), 'an admitted batch names when the next is due');
+    strictAssertTrue(is_int($first['started_at'] ?? null), 'the admission timestamp is persisted');
+    $log = upCapturedLog(function () use ($rows, &$checked) { upRunPass($rows, $checked); });
+    strictAssertSame(array($nnmclub['hash']), $checked,
+        'a later pass postpones only Kinozal');
+    strictAssertSame($first, RuTrackerState::load('kinozal-cycle'),
+        'a postponed batch never extends its own wait');
+    $metrics = upMetricsByBucket($log);
+    $bucket = ruTrackerChecker::schedulingBucket($kinozal['comment']);
+    strictAssertSame(36, $metrics[$bucket]['postponed'], 'the interval is visible in cycle metrics');
+    upAssertNoCustomWrites('an interval refusal leaves the stored verdict and check time alone');
+    RuTrackerState::save('kinozal-cycle', array('started_at' => time() - 3600));
+    upRunPass($rows, $checked);
+    strictAssertSame($expected, $checked,
+        'the first pass at or after the interval admits the next batch');
+});
+
+upTest($suite, 'Kinozal interval is optional and a corrupt timestamp visibly refuses only its batch', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    $kinozal = upKinozalRow(str_repeat('A', 40), 1, 0);
+    $other = upParsedRow(str_repeat('B', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12',
+        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER));
+    foreach (array('broken', '01', -1, time() + 10000) as $value) {
+        RuTrackerState::save('kinozal-cycle', array('started_at' => $value));
+        $log = testCapturedAppLog(function () use ($kinozal, $other, &$checked) {
+            upRunPass(array($kinozal, $other), $checked);
+        });
+        strictAssertSame(array($other['hash']), $checked, 'bad state does not stop the other tracker');
+        strictAssertTrue(strpos($log, 'kinozal-cycle.json') !== false, 'the refusal names the document to repair');
+        strictAssertTrue(strpos($log, 'started_at') !== false, 'the refusal names its invalid key');
+    }
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 0;
+    upRunPass(array($kinozal), $checked);
+    strictAssertSame(array($kinozal['hash']), $checked, 'zero turns the interval off');
+});
+
+upTest($suite, 'Kinozal interval defaults and exact expiry are independent of hourly slots', function () {
+    upLoadKinozalRegistration();
+    $admit = function ($now) {
+        return strictInvoke('RuTrackerUpdatePass', 'admitKinozalCycle', array($now, KinozalCheckImpl::cycleInterval()));
+    };
+    $configured = (function () {
+        require testFindRepoRoot() . '/plugins/rutracker_check/conf.php';
+        return $rutrackerKinozalCycleInterval;
+    })();
+    $default = KinozalCheckImpl::DEFAULT_CYCLE_INTERVAL;
+    strictAssertSame(88200, $default, 'one batch per 24.5 hours: longer than the mirrors\' daily window');
+    strictAssertSame($default, $configured, 'conf.php ships the same default the code falls back to');
+    foreach (array(null, 7200, '7200', 1800, PHP_INT_MAX) as $value) {
+        $GLOBALS['rutrackerKinozalCycleInterval'] = $value;
+        RuTrackerState::save('kinozal-cycle', array('started_at' => 10000));
+        $interval = $value === null ? $default : (int) $value;
+        strictAssertSame(false, $admit(10001), 'an existing admission is read on every invocation');
+        if ($interval === PHP_INT_MAX) {
+            RuTrackerState::drop('kinozal-cycle');
+            strictAssertSame(true, $admit(10001), 'a first batch is admitted however long the interval');
+            continue;
+        }
+        strictAssertSame(false, $admit(10000 + $interval - 1), 'the final second is still inside the interval');
+        strictAssertSame(true, $admit(10000 + $interval), 'the exact expiry permits one batch');
+        strictAssertSame(10000 + $interval, RuTrackerState::load('kinozal-cycle')['started_at'],
+            'the next interval begins only on admission');
+    }
+    foreach (array(-1, '7200x', '07200', true, 7200.0, array()) as $value) {
+        $GLOBALS['rutrackerKinozalCycleInterval'] = $value;
+        strictSetPrivateStatic('KinozalCheckImpl', 'invalidCycleIntervalReported', false);
+        RuTrackerState::save('kinozal-cycle', array('started_at' => 10000));
+        $log = testCapturedAppLog(function () use ($default, $admit) {
+            strictAssertSame(false, $admit(10000 + $default - 1), 'invalid configuration uses the default interval');
+            strictAssertSame(true, $admit(10000 + $default), 'the fallback admits the exact boundary');
+        });
+        strictAssertSame(1, substr_count($log, 'config: invalid rutrackerKinozalCycleInterval; using 88200 seconds'),
+            'invalid configuration is visible once per process');
+    }
+    strictSetPrivateStatic('KinozalCheckImpl', 'invalidCycleIntervalReported', false);
+});
+
+upTest($suite, 'Kinozal state failures refuse admission and name the repair without changing corrupt bytes', function () {
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    $dir = strictGetPrivateStatic('RuTrackerState', 'dir');
+    file_put_contents($dir . '/kinozal-cycle.json', '{broken');
+    $log = testCapturedAppLog(function () {
+        strictAssertSame(false, strictInvoke('RuTrackerUpdatePass', 'admitKinozalCycle', array(time(), 7200)),
+            'unreadable state cannot authorize a batch');
+    });
+    strictAssertSame('{broken', file_get_contents($dir . '/kinozal-cycle.json'),
+        'an unreadable document is never replaced by an empty reservation');
+    strictAssertTrue(strpos($log, 'kinozal-cycle.json') !== false, 'the corrupt document is named');
+    unlink($dir . '/kinozal-cycle.json');
+    mkdir($dir . '/kinozal-cycle.lock.blocked');
+    unlink($dir . '/kinozal-cycle.lock');
+    rename($dir . '/kinozal-cycle.lock.blocked', $dir . '/kinozal-cycle.lock');
+    $log = testCapturedAppLog(function () {
+        strictAssertSame(false, strictInvoke('RuTrackerUpdatePass', 'admitKinozalCycle', array(time(), 7200)),
+            'an unavailable lock cannot authorize a batch');
+    });
+    strictAssertTrue(strpos($log, 'reason=unlockable') !== false, 'an unavailable guard has a classified reason');
+    // A builtin disabled on PHP 8 throws inside update() instead of failing.
+    rmdir($dir . '/kinozal-cycle.lock');
+    $failure = null;
+    strictAssertSame(false, strictInvoke('RuTrackerUpdatePass', 'updateKinozalCycle', array(function () {
+        throw new Error('Call to undefined function flock()');
+    }, &$failure)), 'a throwing state owner cannot authorize a batch');
+    strictAssertSame('state-unavailable', $failure, 'and is classified for the refusal line');
+});
+
+upTest($suite, 'Kinozal interval does not reserve for resting rows or delay owned recovery', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    $resting = upKinozalRow(str_repeat('A', 40), 0, 5);
+    $resting['time'] = time();
+    upRunPass(array($resting), $checked);
+    strictAssertSame(array(), $checked, 'a fresh authoritative row needs no handler');
+    strictAssertSame(array(), RuTrackerState::load('kinozal-cycle'), 'a pass with no due topic consumes no admission');
+    RuTrackerState::save('kinozal-cycle', array('started_at' => time()));
+    $recovering = upKinozalRowAt('B', ruTrackerChecker::STE_INPROGRESS, time() - 5000);
+    upRunPass(array($recovering), $checked);
+    strictAssertSame(array($recovering['hash']), $checked, 'owned recovery bypasses ordinary batch admission');
+});
+
+upTest($suite, 'a slow earlier tracker cannot backdate the Kinozal batch admission', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    $other = upParsedRow(str_repeat('A', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12',
+        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER));
+    $kinozal = upKinozalRow(str_repeat('B', 40), 1, 0);
+    $prefixFinished = null;
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use ($other, &$prefixFinished) {
+        if ($hash === $other['hash']) {
+            // 1.1 s of real time: started_at counts whole seconds.
+            usleep(1100000);
+            $prefixFinished = time();
+        }
+    });
+    rXMLRPCRequest::reset();
+    upQueueProjection(array($other, $kinozal));
+    RuTrackerUpdatePass::run(array($other, $kinozal));
+    strictAssertTrue(is_int($prefixFinished), 'the legitimate earlier handler actually ran');
+    strictAssertTrue(RuTrackerState::load('kinozal-cycle')['started_at'] >= $prefixFinished,
+        'the reservation begins at actual admission, after the earlier handler completes');
+});
+
+upTest($suite, 'Kinozal interval ownership ignores its name in another tracker topic', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    RuTrackerState::save('kinozal-cycle', array('started_at' => time()));
+    $other = upParsedRow(str_repeat('A', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12&source=kinozal.tv',
+        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER));
+    upWithRegistry(function () use ($other) {
+        // A declared owner of its own, so the gate has to tell owners apart.
+        ruTrackerChecker::registerTracker('/nnmclub\./', '/nnmclub\./', 'NNMClubCheckImpl::download_torrent',
+            null, '~^https?://nnmclub\.to/~');
+        strictAssertSame('NNMClubCheckImpl::download_torrent', ruTrackerChecker::ownerOf($other['comment'])['handler'],
+            'the topic belongs to NNMClub');
+        upRunPass(array($other), $checked);
+        strictAssertSame(array($other['hash']), $checked,
+            'an NNMClub topic mentioning Kinozal does not inherit the Kinozal interval');
+    });
+});
+
+// Five Kinozal topics (failing announces, so never resting) and one NNMClub
+// topic; the checker answers each hash with $answers[$hash] ?? 'confirmed'.
+function upKinozalCursorRows()
+{
+    $rows = array();
+    foreach (array('1', '2', '3', '4', '5') as $letter) {
+        $row = upKinozalRow(str_repeat($letter, 40), 1, 0);
+        $row['comment'] = 'https://kinozal.tv/details.php?id=1000' . $letter;
+        $rows[] = $row;
+    }
+    $rows[] = upParsedRow(str_repeat('B', 40), 'http://bt.nnmclub.to/ann?pk=x|1|1|0#',
+        'https://nnmclub.to/forum/viewtopic.php?t=12',
+        array('state' => ruTrackerChecker::STE_CANT_REACH_TRACKER));
+    return $rows;
+}
+
+function upRunCursorPass($rows, $answers = array())
+{
+    $checked = array();
+    strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use (&$checked, $answers) {
+        $checked[] = $hash;
+        return $answers[$hash] ?? 'confirmed';
+    });
+    rXMLRPCRequest::reset();
+    upQueueProjection($rows);
+    RuTrackerUpdatePass::run($rows);
+    return $checked;
+}
+
+// Lets the next pass admit a batch without touching the cursor.
+function upExpireKinozalInterval()
+{
+    RuTrackerState::save('kinozal-cycle',
+        array_merge(RuTrackerState::load('kinozal-cycle'), array('started_at' => time() - 7200)));
+}
+
+upTest($suite, 'Kinozal batches continue after the last topic asked, whatever the clock turn', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(2, function () {
+        $rows = upKinozalCursorRows();
+        $k = array_column($rows, 'hash');
+        $nnm = $k[5];
+        strictAssertSame(array($k[0], $k[1], $nnm), upRunCursorPass($rows),
+            'the first batch starts at the head of the view');
+        $state = RuTrackerState::load('kinozal-cycle');
+        strictAssertSame($k[1], $state['cursor'], 'the last topic asked is kept');
+        strictAssertSame(1, $state['cursor_position'], 'with its place among the Kinozal topics');
+        strictAssertSame(array($nnm), upRunCursorPass($rows), 'a pass inside the interval asks no Kinozal topic');
+        strictAssertSame($state, RuTrackerState::load('kinozal-cycle'), 'and leaves the cursor alone');
+        foreach (array(array(3, $k[2], $k[3]), array(17, $k[4], $k[0]), array(4, $k[1], $k[2])) as $pass) {
+            // fairOrder() would start each of these passes elsewhere.
+            strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', $pass[0]);
+            upExpireKinozalInterval();
+            $checked = upRunCursorPass($rows);
+            strictAssertSame(array($pass[1], $pass[2]), array_values(array_diff($checked, array($nnm))),
+                'pass ' . $pass[0] . ': the batch continues after the previous one and wraps round');
+            strictAssertTrue(in_array($nnm, $checked, true), 'pass ' . $pass[0] . ': the other tracker keeps its turn');
+            $state = RuTrackerState::load('kinozal-cycle');
+            strictAssertSame($pass[2], $state['cursor'], 'the cursor follows the batch');
+            strictAssertTrue($state['started_at'] >= time() - 5,
+                'writing the cursor keeps the admission time of its own batch');
+        }
+    });
+});
+
+upTest($suite, 'a Kinozal batch cut short resumes with the first topic it did not ask', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(4, function () {
+        $rows = upKinozalCursorRows();
+        $k = array_column($rows, 'hash');
+        // A failure was asked; 'unchanged' is a 429 or a pause, never asked.
+        upRunCursorPass($rows, array($k[1] => 'failed', $k[2] => 'unchanged', $k[3] => 'unchanged'));
+        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+            'a topic that failed is passed, one that was never asked is not');
+        upExpireKinozalInterval();
+        $refused = array($k[2] => 'unchanged', $k[3] => 'not-observed', $k[4] => 'unchanged', $k[0] => 'unchanged');
+        strictAssertSame(array($k[2], $k[3], $k[4], $k[0]), array_slice(upRunCursorPass($rows, $refused), 0, 4),
+            'the next batch starts with the first topic not asked');
+        $state = RuTrackerState::load('kinozal-cycle');
+        strictAssertSame($k[1], $state['cursor'], 'a batch that asked nothing keeps the cursor');
+        strictAssertTrue($state['started_at'] >= time() - 5, 'and spends its admission');
+    });
+});
+
+upTest($suite, 'a pass killed in the middle of a Kinozal batch keeps the topics it asked', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(4, function () {
+        $rows = upKinozalCursorRows();
+        $k = array_column($rows, 'hash');
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'checker', function ($hash) use ($k) {
+            if ($hash === $k[2]) throw new RuntimeException('killed');
+            return 'confirmed';
+        });
+        rXMLRPCRequest::reset();
+        upQueueProjection($rows);
+        try {
+            RuTrackerUpdatePass::run($rows);
+            strictAssertTrue(false, 'the checker stopped the pass');
+        } catch (RuntimeException $stopped) {
+            strictAssertSame('killed', $stopped->getMessage(), 'the pass stopped at the third topic');
+        }
+        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+            'the next batch starts after the last topic asked before the stop');
+    });
+});
+
+upTest($suite, 'a vanished Kinozal cursor topic hands its place to the next one', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(1, function () {
+        $rows = upKinozalCursorRows();
+        $rows[0]['hash'] = '0E' . str_repeat('0', 38);
+        $k = array_column($rows, 'hash');
+        $gone = str_repeat('9', 40);
+        foreach (array(
+            array(array('cursor' => $gone, 'cursor_position' => 2), $k[2], 'the topic now in its place is next'),
+            array(array('cursor' => $gone, 'cursor_position' => 7), $k[2], 'a place past the end wraps round'),
+            array(array('cursor' => $gone, 'cursor_position' => 'x'), $k[0], 'a damaged place starts at the head'),
+            array(array('cursor' => $gone), $k[0], 'a missing place starts at the head'),
+            array(array('cursor' => 5, 'cursor_position' => 3), $k[0], 'a damaged cursor starts at the head'),
+            // '0E' and digits reads as the number zero: == would match k[0].
+            array(array('cursor' => '0E' . str_repeat('1', 38), 'cursor_position' => 3), $k[3],
+                'a gone hash is matched exactly, not as a number'),
+        ) as $case) {
+            RuTrackerState::save('kinozal-cycle', array_merge(array('started_at' => time() - 7200), $case[0]));
+            strictAssertSame($case[1], upRunCursorPass($rows)[0], $case[2]);
+            strictAssertSame($case[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+                $case[2] . ': and the next cursor is written in its canonical form');
+        }
+    });
+});
+
+upTest($suite, 'with the Kinozal interval at 0 the clock turn stays and no cursor is kept', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 0;
+    upWithKinozalCycleTopics(2, function () {
+        $rows = upKinozalCursorRows();
+        $k = array_column($rows, 'hash');
+        RuTrackerState::save('kinozal-cycle', array('started_at' => time(), 'cursor' => $k[3], 'cursor_position' => 3));
+        // Step 2 is made coprime with six foreign rows: 5, so pass 3 starts at row 3.
+        strictSetPrivateStatic('RuTrackerUpdatePass', 'rotationPass', 3);
+        $checked = upRunCursorPass($rows);
+        strictAssertSame(array($k[3], $k[4]), array_values(array_diff($checked, array($k[5]))),
+            'pass 3 starts where the clock turn puts it, as before the gate existed');
+        strictAssertSame(array('started_at' => RuTrackerState::load('kinozal-cycle')['started_at'],
+            'cursor' => $k[3], 'cursor_position' => 3), RuTrackerState::load('kinozal-cycle'),
+            'a disabled gate neither reads nor writes its document');
     });
 });
 

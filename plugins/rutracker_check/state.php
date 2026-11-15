@@ -228,7 +228,7 @@ class RuTrackerState
     {
         global $profileMask;
         $json = json_encode($state);
-        if ($json === false) {
+        if (!is_string($json)) {
             self::reportWriteFailure($dir, $name, 'json-encode-failed');
             return false;
         }
@@ -241,7 +241,7 @@ class RuTrackerState
             self::reportWriteFailure($dir, $name, 'temp-create-failed');
             return false;
         }
-        if (@file_put_contents($tmp, $json) === false) {
+        if (@file_put_contents($tmp, $json) !== strlen($json)) {
             @unlink($tmp);
             self::reportWriteFailure($dir, $name, 'temp-write-failed');
             return false;

@@ -60,9 +60,21 @@ $rutrackerAnnounceCap	??= 10;	// 0-40 probe announces per persisted window per a
 // This bounds the scheduler batch, not the mirror's HTTP allowance: login and
 // updates need additional requests, and HTTP 429 still pauses every door.
 // Recovering an interrupted check, a forum correction and the manual
-// check button are not counted. The topics left over keep their state, and
-// each pass starts about one quota further along the foreign torrents.
+// check button are not counted. The topics left over keep their state; the
+// next batch continues after the last topic asked, or, with the interval
+// below at 0, each pass starts about one quota further along the foreign
+// torrents.
 $rutrackerKinozalCycleTopics	??= 35;
+// Minimum seconds between ordinary automatic Kinozal batches. The mirrors
+// answer about 40 requests and then HTTP 429 until about a day after the
+// first of them, so the default 88200 (24.5 hours) admits a batch every 25
+// hours on the hourly scheduler (on a slower one, at the first pass 24.5
+// hours on); each batch continues after the last topic the previous one
+// asked. Shared persisted state survives reloads and
+// restarts; other trackers keep their schedule. Recovery, forum corrections
+// and manual checks bypass this gate. 0 restores the hourly batches; invalid
+// values use 88200 and are logged.
+$rutrackerKinozalCycleInterval	??= 88200;
 // Seconds between automatic full forum sweeps.
 //
 // Domain: a nonnegative PHP integer, or its canonical decimal spelling as a

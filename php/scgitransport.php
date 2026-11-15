@@ -183,15 +183,46 @@ class rSCGITransport
             || ((strlen($value) === strlen($maximum)) && (strcmp($value, $maximum) <= 0)));
     }
 
-    /** A log line for a failure; a timeout names the budget that ran out. */
-    public static function describeFailure($failure)
+    /**
+     * A log line for a failure; a timeout names the budget that ran out.
+     *
+     * Given the request $payload, the line also names the call that failed, so
+     * an operator can tell which request waited: method names only, never a
+     * parameter. $script is the entry script of a door that has one; null
+     * leaves it out.
+     */
+    public static function describeFailure($failure, $payload = null, $script = null)
     {
         global $rpcTimeOut, $rpcTransferTimeOut;
-        if (($failure !== 'read-timeout') && ($failure !== 'write-timeout')) {
-            return $failure;
+        $text = $failure;
+        if (($failure === 'read-timeout') || ($failure === 'write-timeout')) {
+            list(, $transfer) = self::timeouts($rpcTimeOut, $rpcTransferTimeOut);
+            $text .= ' after the ' . $transfer . '-second transfer budget; raise $rpcTransferTimeOut for slower replies';
         }
-        list(, $transfer) = self::timeouts($rpcTimeOut, $rpcTransferTimeOut);
-        return $failure . ' after the ' . $transfer . '-second transfer budget; raise $rpcTransferTimeOut for slower replies';
+        if ($payload === null) {
+            return $text;
+        }
+        $offset = 0;
+        $method = self::methodNameAfter($payload, '<methodName>', $offset) ?? '?';
+        $request = ['method=' . $method];
+        if ($method === 'system.multicall') {
+            $marker = '<name>methodName</name><value><string>';
+            $calls = substr_count($payload, $marker);
+            // Members laid out otherwise than both doors write them are not counted.
+            $request[] = 'calls=' . ((($calls === 0) && (strpos($payload, '<member>') !== false)) ? '?' : $calls);
+            // Up to three distinct member names, in order of first appearance, read on from the method name.
+            $inner = [];
+            while ((count($inner) < 3) && (($name = self::methodNameAfter($payload, $marker, $offset)) !== null)) {
+                $inner[$name] = true;
+            }
+            if ($inner) {
+                $request[] = 'inner=' . implode(',', array_keys($inner));
+            }
+        }
+        if ($script !== null) {
+            $request[] = 'script=' . self::scriptName($script);
+        }
+        return $text . ' (' . implode(' ', $request) . ')';
     }
 
     protected static function openSocket($address, &$errno, &$error, $timeout)
@@ -305,6 +336,36 @@ class rSCGITransport
         // hrtime can be explicitly disabled even on supported PHP versions;
         // send() refuses before any I/O when microtime is disabled too.
         return microtime(true);
+    }
+
+    /**
+     * The method name after the first $marker at or past $offset, which moves
+     * past it. Anything but a plain name reads as "?", so no payload byte
+     * other than a method name reaches a log; null when no marker is left.
+     */
+    private static function methodNameAfter($payload, $marker, &$offset)
+    {
+        $at = strpos($payload, $marker, $offset);
+        if ($at === false) {
+            return null;
+        }
+        $offset = $at + strlen($marker);
+        return preg_match('/\G[A-Za-z0-9_.]{1,64}(?=<|\z)/', $payload, $match, 0, $offset) ? $match[0] : '?';
+    }
+
+    /** An entry script relative to the ruTorrent root, else its basename; no byte outside a path charset. */
+    private static function scriptName($script)
+    {
+        $script = str_replace('\\', '/', (string) $script);
+        // realpath('') is the working directory, not an absent script.
+        $real = (($script !== '') && function_exists('realpath')) ? @realpath($script) : false;
+        if ($real !== false) {
+            $script = str_replace('\\', '/', $real);
+        }
+        $root = str_replace('\\', '/', dirname(__DIR__)) . '/';
+        $name = (strncmp($script, $root, strlen($root)) === 0) ? substr($script, strlen($root)) : basename($script);
+        $name = preg_replace('/[^A-Za-z0-9_.\/-]/', '?', substr($name, 0, 128));
+        return ($name === '') ? '?' : $name;
     }
 
     private static function fail(&$failure, $code)

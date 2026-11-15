@@ -220,7 +220,11 @@ class rXMLRPCRequest
             // A stopped daemon would add a line on every WebUI poll, which
             // already answers "Could not reach rTorrent"; log the other failures.
             if ($failure !== 'connect-failed') {
-                FileUtil::toLog('rXMLRPCRequest: ' . rSCGITransport::describeFailure($failure));
+                FileUtil::toLog('rXMLRPCRequest: ' . rSCGITransport::describeFailure(
+                    $failure,
+                    $data,
+                    $_SERVER['SCRIPT_FILENAME'] ?? '',
+                ));
             }
             $result = false;
         }

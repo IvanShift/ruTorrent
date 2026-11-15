@@ -509,8 +509,11 @@ class XMLRPCProxy
      * line per ordinary read in the application log (2026-10-11), so it is
      * written only with $rpcLogCalls. The built-in fallback hint is attached
      * to the outer decision, not each member. Without an explicit parameter
-     * policy, report the fallback once per PHP runtime context; FPM requests
-     * do not share this flag, even when served by the same worker.
+     * policy, the fallback warning rides along only when this call already
+     * returns another line (a refusal, a notice, or a $rpcLogCalls trace), so
+     * a routine forward stays silent. It is added once per PHP runtime
+     * context; FPM requests do not share this flag, even when served by the
+     * same worker.
      */
     public static function decisionLogLines($decision, $policy)
     {
@@ -518,10 +521,10 @@ class XMLRPCProxy
             ? [] : $decision['log'];
         if (count($lines) && !empty($policy['logSuffix'])) {
             $lines[0] .= $policy['logSuffix'];
-        }
-        if (!empty($policy['logSuffix']) && !self::$builtInPolicyReported) {
-            self::$builtInPolicyReported = true;
-            $lines[] = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
+            if (!self::$builtInPolicyReported) {
+                self::$builtInPolicyReported = true;
+                $lines[] = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
+            }
         }
         return $lines;
     }

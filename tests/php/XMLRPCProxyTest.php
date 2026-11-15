@@ -662,16 +662,19 @@ class XMLRPCProxyTest extends TestCase
                 [$version, 'untrusted: system.client_version']] as $case) {
                 $decision = self::decideOnModernDaemon($case[0], 'sanitize', $default['safeParams']);
                 $this->assertTrue($decision['action'] === 'send', $case[1] . ': the routine call is forwarded');
-                $expected = (!$fallbackReported && $suffix !== '')
-                    ? ['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'] : [];
-                $fallbackReported = $fallbackReported || $suffix !== '';
+                $this->assertEquals(
+                    [],
+                    XMLRPCProxy::decisionLogLines($decision, $default),
+                    $case[1] . ': a routine forward logs nothing at the shipped default' . $suffix,
+                );
+                // The fallback warning joins the first call that logs something.
+                $expected = [$case[1] . $suffix];
+                if (!$fallbackReported && $suffix !== '') {
+                    $expected[] = 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured';
+                    $fallbackReported = true;
+                }
                 $this->assertEquals(
                     $expected,
-                    XMLRPCProxy::decisionLogLines($decision, $default),
-                    $case[1] . ': no routine decision line at the shipped default' . $suffix,
-                );
-                $this->assertEquals(
-                    [$case[1] . $suffix],
                     XMLRPCProxy::decisionLogLines($decision, $traced),
                     $case[1] . ': $rpcLogCalls traces the routine decision' . $suffix,
                 );
@@ -729,31 +732,42 @@ class XMLRPCProxyTest extends TestCase
         );
     }
 
-    public function testBuiltInPolicyWarningAppearsOncePerRuntimeWithoutCallTracing()
+    public function testBuiltInPolicyWarningRidesTheFirstLoggedLineOncePerRuntime()
     {
         $script = 'require ' . var_export(realpath(__DIR__ . '/../../php/xmlrpc_proxy.php'), true) . ';'
-            . '$xml = ' . var_export($this->methodCallXml('system.client_version'), true) . ';'
-            . '$decision = XMLRPCProxy::decide($xml, "sanitize", array(), false, array("rtorrentVersion" => 0x1019));'
+            . '$options = array("rtorrentVersion" => 0x1019);'
+            . '$routine = XMLRPCProxy::decide(' . var_export($this->methodCallXml('system.client_version'), true)
+            . ', "sanitize", array(), false, $options);'
+            . '$refused = XMLRPCProxy::decide(' . var_export($this->methodCallXml('execute.capture', ['', 'id']), true)
+            . ', "sanitize", array(), false, $options);'
             . '$explicit = XMLRPCProxy::policySettings(array("XMLRPCProxySafeParams" => array()));'
             . '$fallback = XMLRPCProxy::policySettings(array("XMLRPCProxy" => "sanitize"));'
-            . '$lines = array(XMLRPCProxy::decisionLogLines($decision, $explicit));'
-            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
-            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
+            . '$lines = array(XMLRPCProxy::decisionLogLines($refused, $explicit));'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($routine, $fallback);'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($routine, $fallback);'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($refused, $fallback);'
+            . '$lines[] = XMLRPCProxy::decisionLogLines($refused, $fallback);'
             . '$fallback["traceCalls"] = true;'
-            . '$lines[] = XMLRPCProxy::decisionLogLines($decision, $fallback);'
-            . 'echo json_encode($lines);';
+            . '$lines[] = XMLRPCProxy::decisionLogLines($routine, $fallback);'
+            . 'echo json_encode(array($lines, $refused["log"]));';
         $result = SCGITransportFixture::runPhpChild(['-r', $script]);
         $this->assertEquals(0, $result['exitCode'], 'the isolated runtime completed');
         $this->assertEquals('', $result['stderr'], 'the isolated runtime emitted no PHP diagnostics');
+        list($lines, $refusal) = json_decode($result['stdout'], true);
+        $this->assertEquals(1, count($refusal), 'the refusal decision carries one line');
+        $refusedLine = $refusal[0] . ' [built-in policy]';
         $this->assertEquals(
             [
+                [$refusal[0]],
                 [],
-                ['WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'],
                 [],
+                [$refusedLine, 'WARNING: using [built-in policy]; no XMLRPCProxySafeParams override is configured'],
+                [$refusedLine],
                 ['untrusted: system.client_version [built-in policy]'],
             ],
-            json_decode($result['stdout'], true),
-            'explicit policies stay quiet, fallback warns once, and later tracing retains its source',
+            $lines,
+            'an explicit policy never warns, a routine forward stays silent, the fallback warning joins the first '
+            . 'refusal once, and later tracing retains its source',
         );
     }
 

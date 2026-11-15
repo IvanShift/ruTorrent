@@ -179,6 +179,17 @@ $suite->test('scrape hit returns up to date without guest request', function () 
             $row['label'] . ': exactly the expected scrape request, no guest request',
         );
         strictAssertSame(0, count(nnmCreates()), $row['label'] . ': up-to-date torrent is not replaced');
+        // A scrape hit is the hourly common case. With $rutrackerCheckDebug
+        // on, production (2026-11) logged two routine lines per topic, a
+        // third of the application log; only a degraded check is logged.
+        strictAssertSame(
+            $row['comment'] === ''
+                ? ['[NNMClub] Start announce-only check for ' . strtoupper($hash)
+                    . '; guest replacement will be unavailable']
+                : [],
+            ruTrackerChecker::$logs,
+            $row['label'] . ': a routine scrape hit logs only a degraded check',
+        );
     }
 });
 

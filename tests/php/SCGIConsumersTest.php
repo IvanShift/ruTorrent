@@ -173,6 +173,58 @@ class SCGIConsumersTest extends TestCase
         }
     }
 
+    public function testCoreTimeoutNamesTheMulticallAndTheEntryScript()
+    {
+        // rTorrentSettings' constructor talks to a daemon; run() reads only these fields.
+        $reflection = new ReflectionClass('rTorrentSettings');
+        $settings = $reflection->newInstanceWithoutConstructor();
+        $settings->iVersion = 0x904;
+        $settings->apiVersion = 0;
+        $settings->aliases = [];
+        $property = $reflection->getProperty('theSettings');
+        self::makeAccessible($property);
+        $previous = $property->getValue();
+        $property->setValue(null, $settings);
+        $peer = SCGITransportFixture::startChunks([[1.5, "Content-Length: 2\r\n\r\nok"]]);
+        try {
+            $this->usePeer($peer, 3, 0.3);
+            $hash = str_repeat('A', 40);
+            $cases = [
+                'a multicall' => [[['d.name', $hash], ['d.size_bytes', $hash], ['f.multicall', $hash, '', 'f.path=/secret/x'],
+                    ['d.name', $hash], ['t.multicall', $hash, '']],
+                    'method=system.multicall calls=5 inner=d.name,d.size_bytes,f.multicall'],
+                'a single call' => [[['d.multicall2', '', 'main', 'd.name=']], 'method=d.multicall2'],
+            ];
+            foreach ($cases as $label => $case) {
+                $commands = [];
+                foreach ($case[0] as $call) {
+                    $commands[] = new rXMLRPCCommand(array_shift($call), $call);
+                }
+                @unlink($GLOBALS['log_file']);
+                $request = new rXMLRPCRequest($commands);
+                $this->assertTrue($request->run() === false, $label . ' fails on the timeout');
+                $log = file_get_contents($GLOBALS['log_file']);
+                $this->assertEquals(
+                    1,
+                    preg_match(
+                        '/rXMLRPCRequest: read-timeout after the 0\.3-second transfer budget; raise \$rpcTransferTimeOut'
+                        . ' for slower replies \(' . preg_quote($case[1], '/')
+                        . ' script=tests\/php\/SCGIConsumersTest\.php\)$/m',
+                        $log,
+                    ),
+                    $label . ' is named with its entry script: ' . $log,
+                );
+                $this->assertTrue(
+                    strpos($log, 'secret') === false && strpos($log, 'AAAA') === false,
+                    $label . ' logs no parameter',
+                );
+            }
+        } finally {
+            $peer->close();
+            $property->setValue(null, $previous);
+        }
+    }
+
     private function usePeer($peer, $connectTimeout, $transferTimeout)
     {
         $GLOBALS['scgi_host'] = $peer->host();

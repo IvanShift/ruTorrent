@@ -33,6 +33,88 @@ class RuTrackerUpdatePass
     private static $invalidFuseShareReported = false;
     private static $invalidForeignRestReported = false;
 
+    static private function kinozalOwned($comment)
+    {
+        $owner = ruTrackerChecker::ownerOf($comment);
+        return $owner !== null && $owner['handler'] === 'KinozalCheckImpl::download_torrent';
+    }
+
+    // While the interval gate is on, Kinozal's topics take their own slots of
+    // $order in view order, starting after the last topic an admitted batch
+    // asked: kinozal-cycle.json keeps its hash as 'cursor' and its place
+    // among them as 'cursor_position', which names the next topic when that
+    // torrent is gone. The clock turn of fairOrder() would start a batch a
+    // day wherever the hour of its admission happened to put it. $kinozal
+    // maps each Kinozal row index, in view order, to its place. The document
+    // is one per settings profile, like the mirrors' allowance it rations:
+    // daemons sharing a profile share one batch per interval and one cursor.
+    static private function continueKinozal($order, $kinozal, $rows)
+    {
+        if (!$kinozal) return $order;
+        $own = array_keys($kinozal);
+        $state = RuTrackerState::load('kinozal-cycle');
+        $start = 0;
+        if (is_string($state['cursor'] ?? null)) {
+            $place = array_search($state['cursor'], array_column(array_intersect_key($rows, $kinozal), 'hash'), true);
+            $start = $place !== false ? $place + 1
+                : RuTrackerRpcValue::canonicalNonnegativeInteger($state['cursor_position'] ?? null) ?? 0;
+        }
+        $start %= count($own);
+        $turned = array_merge(array_slice($own, $start), array_slice($own, 0, $start));
+        $next = 0;
+        foreach ($order as $slot => $index)
+            if (isset($kinozal[$index])) $order[$slot] = $turned[$next++];
+        return $order;
+    }
+
+    // RuTrackerState::update() of kinozal-cycle.json. A builtin disabled on
+    // PHP 8 throws Error rather than failing, and that must not end the pass
+    // with the other trackers' verdicts unwritten.
+    static private function updateKinozalCycle($mutator, &$failure = null)
+    {
+        try {
+            return RuTrackerState::update('kinozal-cycle', $mutator, $failure);
+        } catch (Throwable $error) {
+            $failure = 'state-unavailable';
+            return false;
+        }
+    }
+
+    // Reserve once, immediately before this pass's first ordinary Kinozal
+    // dispatch. The state owner serializes competing processes/profiles; a
+    // failed write must not authorize outbound work. A crash after reservation,
+    // or a batch whose topics all fail or meet a pause, conservatively delays
+    // the next batch by one interval without changing any topic verdict.
+    static private function admitKinozalCycle($now, $interval)
+    {
+        $admitted = false;
+        $reason = $failure = null;
+        $stored = self::updateKinozalCycle(function ($state) use ($now, $interval, &$admitted, &$reason) {
+            $last = $state === array() ? 0
+                : RuTrackerRpcValue::canonicalNonnegativeInteger($state['started_at'] ?? null);
+            if ($last === null || $last > $now) {
+                $reason = 'invalid-started_at';
+                return $state;
+            }
+            if ($last > 0 && $now - $last < $interval) return $state;
+            $state['started_at'] = $now;
+            $admitted = true;
+            return $state;
+        }, $failure);
+        if (!$stored || $reason !== null) {
+            ruTrackerChecker::logUnrepairable('kinozal: automatic batch refused document=kinozal-cycle.json'
+                . ' key=started_at reason=' . ($reason ?? $failure)
+                . '; ordinary Kinozal checks postponed; repair the state or set rutrackerKinozalCycleInterval=0 to bypass');
+            return false;
+        }
+        if ($admitted) {
+            $due = $now + $interval;
+            ruTrackerChecker::logDebug('kinozal: batch admitted; the next ordinary batch is due '
+                . (is_int($due) ? gmdate('Y-m-d\TH:i:s\Z', $due) : 'never'));
+        }
+        return $admitted;
+    }
+
     // Use the supplied comment, or read the session copy when the row has
     // none. The cycle multicall carries no comment, so run() reads it once
     // per row for the conservative dispatch and announce authority gates.
@@ -670,23 +752,33 @@ class RuTrackerUpdatePass
                     $correction, $correctionPresent);
                 $results[$observation]++;
                 $foreignMetrics[$buckets[$index]]['handler_results'][$observation]++;
+                return $observation;
             };
         // The fast-path verdicts below are buffered rather than written where
         // they are decided; see flushVerdicts() for why.
         $deferred = array();
         $quotas = array();
         $quotaUsed = array();
+        $kinozalAdmitted = null;
+        // A Kinozal owner means trackers/kinozal.php registered it.
+        $kinozal = array();
+        foreach ($rows as $index => $row)
+            if (self::kinozalOwned($comments[$index])) $kinozal[$index] = count($kinozal);
+        $kinozalInterval = $kinozal ? KinozalCheckImpl::cycleInterval() : 0;
+        if ($kinozalInterval === 0) $kinozal = array();
         // The start moves by about one quota a pass, the smallest a foreign
         // owner in this pass declared, counted in foreign rows; without one,
-        // by DEFAULT_ROTATION_STEP.
+        // by DEFAULT_ROTATION_STEP. With its interval on, Kinozal's own
+        // topics follow their cursor instead (continueKinozal()).
         $step = null;
         foreach ($rows as $index => $row) {
             if ($hosts[$index] !== '') continue;
             $quota = self::cycleQuotaFor($comments[$index], $quotas);
             if ($quota !== null) $step = $step === null ? $quota['limit'] : min($step, $quota['limit']);
         }
-        foreach (self::fairOrder($rows, $hosts, self::rotationPass($now),
-            $step ?? self::DEFAULT_ROTATION_STEP) as $index) {
+        $order = self::continueKinozal(self::fairOrder($rows, $hosts, self::rotationPass($now),
+            $step ?? self::DEFAULT_ROTATION_STEP), $kinozal, $rows);
+        foreach ($order as $index) {
             $row = $rows[$index];
             $correctionKey = strtoupper((string) $row['hash']);
             $hasCorrection = array_key_exists($correctionKey, $corrections);
@@ -791,6 +883,14 @@ class RuTrackerUpdatePass
                     }
                 }
 
+                if (isset($kinozal[$index])) {
+                    if ($kinozalAdmitted === null) $kinozalAdmitted = self::admitKinozalCycle(time(), $kinozalInterval);
+                    if (!$kinozalAdmitted) {
+                        $foreignMetrics[$bucket]['postponed']++;
+                        continue;
+                    }
+                }
+
                 // A row past its owner's quota is not touched at all: it keeps
                 // its verdict and chk-time, and the next pass starts further on.
                 // Recovery, correction and resting rows above spend no quota.
@@ -803,9 +903,19 @@ class RuTrackerUpdatePass
                     $quotaUsed[$quota['key']] = ($quotaUsed[$quota['key']] ?? 0) + 1;
                 }
 
-                $dispatch($index);
+                $observation = $dispatch($index);
                 $foreignMetrics[$bucket]['dispatched']++;
                 $checked[] = $row['hash'];
+                // 'unchanged' is a topic the handler never asked: a pause, a
+                // 429 or an abandoned cycle. The next batch starts with it.
+                // Kept topic by topic, so a pass killed half-way still moves
+                // on; a cursor that cannot be kept repeats these topics.
+                if (isset($kinozal[$index]) && $observation !== 'unchanged' && $observation !== 'not-observed') {
+                    $cursor = array('cursor' => $row['hash'], 'cursor_position' => $kinozal[$index]);
+                    self::updateKinozalCycle(function ($state) use ($cursor) {
+                        return array_merge($state, $cursor);
+                    });
+                }
                 continue;
             }
 

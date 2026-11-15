@@ -781,6 +781,81 @@ class SCGITransportTest extends TestCase
         }
     }
 
+    public function testAFailureLineNamesTheRequestByMethodNamesOnly()
+    {
+        $secret = '<value><string>/home/secret/path.torrent</string></value>';
+        $single = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>'
+            . '<param>' . $secret . '</param></params></methodCall>';
+        $huge = '<methodCall><methodName>load.raw</methodName><params><param><value><base64>'
+            . str_repeat('QUJD', 2 * 1024 * 1024) . '</base64></value></param></params></methodCall>';
+        $cases = [
+            'a single call' => [$single, 'method=d.multicall2'],
+            'a call with a large body' => [$huge, 'method=load.raw'],
+            'a multicall names its size and members in order' => [
+                $this->multicallXml(['d.name', 'd.size_bytes', 'f.multicall'], $secret),
+                'method=system.multicall calls=3 inner=d.name,d.size_bytes,f.multicall'],
+            'repeated members count but name once' => [
+                $this->multicallXml(['d.name', 'd.name', 'd.size_bytes', 'd.name', 'f.multicall', 't.multicall', 'p.multicall']),
+                'method=system.multicall calls=7 inner=d.name,d.size_bytes,f.multicall'],
+            'a multicall without members' => [$this->multicallXml([]), 'method=system.multicall calls=0'],
+            'a multicall laid out another way' => [
+                "<methodCall><methodName>system.multicall</methodName><params><param><value><array><data>\n"
+                . "<value><struct>\n<member>\n<name>methodName</name>\n<value><string>d.name</string></value>\n"
+                . "</member>\n</struct></value>\n</data></array></value></param></params></methodCall>",
+                'method=system.multicall calls=?'],
+            'an empty payload' => ['', 'method=?'],
+            'a payload that is not XMLRPC' => ["GET / HTTP/1.1\r\n", 'method=?'],
+            'an unterminated name' => ['<methodCall><methodName>d.name', 'method=d.name'],
+            'a name with forbidden characters' => [
+                '<methodCall><methodName>d.name&amp;$(id)</methodName></methodCall>', 'method=?'],
+            'a name past the length cap' => [
+                '<methodCall><methodName>' . str_repeat('a', 65) . '</methodName></methodCall>', 'method=?'],
+            'a name at the length cap' => [
+                '<methodCall><methodName>' . str_repeat('a', 64) . '</methodName></methodCall>',
+                'method=' . str_repeat('a', 64)],
+            'a name ending in a newline' => [
+                "<methodCall><methodName>d.name\n</methodName></methodCall>", 'method=?'],
+            'a payload ending in a newline after the name' => ["<methodCall><methodName>d.name\n", 'method=?'],
+            'a forbidden member name' => [
+                $this->multicallXml(['d.name', "d.x\nforged log line", 'd.size_bytes']),
+                'method=system.multicall calls=3 inner=d.name,?,d.size_bytes'],
+        ];
+        foreach ($cases as $label => $case) {
+            $line = rSCGITransport::describeFailure('truncated-body', $case[0]);
+            $this->assertEquals('truncated-body (' . $case[1] . ')', $line, $label . ' is named by method only');
+            $this->assertTrue(
+                strpos($line, 'secret') === false && strpos($line, "\n") === false,
+                $label . ' leaks no parameter and adds no line',
+            );
+        }
+        $this->assertEquals(
+            'truncated-body',
+            rSCGITransport::describeFailure('truncated-body'),
+            'without a payload the line is the classified failure alone',
+        );
+    }
+
+    public function testAFailureLineNamesTheEntryScriptRelativeToTheRoot()
+    {
+        $root = dirname(__DIR__, 2);
+        $payload = '<methodCall><methodName>d.name</methodName></methodCall>';
+        $cases = [
+            'a script under the root' => [$root . '/plugins/httprpc/action.php', 'plugins/httprpc/action.php'],
+            'a script outside the root keeps its basename' => ['/srv/elsewhere/update.php', 'update.php'],
+            'a Windows path keeps its basename' => ['C:\\srv\\elsewhere\\update.php', 'update.php'],
+            'a script with forbidden characters' => ['/srv/a b/up"date.php', 'up?date.php'],
+            'an empty script' => ['', '?'],
+            'a long script name is cut' => ['/srv/' . str_repeat('a', 200) . '.php', str_repeat('a', 128)],
+        ];
+        foreach ($cases as $label => $case) {
+            $this->assertEquals(
+                'truncated-body (method=d.name script=' . $case[1] . ')',
+                rSCGITransport::describeFailure('truncated-body', $payload, $case[0]),
+                $label,
+            );
+        }
+    }
+
     public function testATimeoutLogLineNamesTheBudgetInUse()
     {
         $globals = $this->preserveConfiguration();
@@ -2056,7 +2131,7 @@ class SCGITransportTest extends TestCase
             $lines = is_file($log_file) ? file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
             $this->assertTrue($result === false, 'core maps configured response-limit refusal to false');
             $this->assertTrue(
-                count($lines) === 1 && preg_match('/rXMLRPCRequest: response-too-large$/', $lines[0]),
+                count($lines) === 1 && preg_match('/rXMLRPCRequest: response-too-large \(method=\? script=[^ )]+\)$/', $lines[0]),
                 'core forwards its configured limit and logs that classified result once',
             );
         } finally {
@@ -2184,7 +2259,7 @@ class SCGITransportTest extends TestCase
                 'rpc2 forwards the configured response cap to the transport',
             );
             $this->assertTrue(
-                preg_match_all('/ rpc2: response-too-large$/m', $result['rpcLog'], $matches) === 1,
+                preg_match_all('/ rpc2: response-too-large \(method=system\.client_version\)$/m', $result['rpcLog'], $matches) === 1,
                 'rpc2 logs the configured response-cap refusal exactly once',
             );
         } finally {
@@ -2226,7 +2301,8 @@ class SCGITransportTest extends TestCase
             $this->assertTrue(
                 strpos($result['status'], '502 Bad Gateway') !== false
                 && preg_match_all(
-                    '/ rpc2: read-timeout after the [0-9.]+-second transfer budget; raise \$rpcTransferTimeOut for slower replies$/m',
+                    '/ rpc2: read-timeout after the [0-9.]+-second transfer budget; raise \$rpcTransferTimeOut for slower replies'
+                    . ' \(method=system\.client_version\)$/m',
                     $result['rpcLog'],
                     $matches,
                 ) === 1,
@@ -2235,6 +2311,36 @@ class SCGITransportTest extends TestCase
             $this->assertTrue(
                 $result['elapsed'] < 1.5,
                 'the configured rpc2 budget refuses before the larger socket default',
+            );
+        } finally {
+            $peer->close();
+        }
+    }
+
+    public function testCopiedRpc2TimeoutNamesTheMulticallItWaitedFor()
+    {
+        $peer = SCGITransportFixture::startWithVersionProbe([[3, "Content-Length: 1\r\n\r\nx"]]);
+        try {
+            $hash = '<value><string>' . str_repeat('A', 40) . '</string></value>';
+            $result = $this->runCopiedRpc2(
+                $peer->host(),
+                (string) $peer->port(),
+                $this->multicallXml(['d.name', 'd.size_bytes', 'd.name'], $hash),
+                ['transfer' => 0.25, 'connect' => 1, 'socketDefault' => 2],
+            );
+            $this->assertTrue(strpos($result['status'], '502 Bad Gateway') !== false, 'rpc2 answers the timeout with 502');
+            $this->assertTrue(
+                preg_match_all(
+                    '/ rpc2: read-timeout after the [0-9.]+-second transfer budget; raise \$rpcTransferTimeOut for slower replies'
+                    . ' \(method=system\.multicall calls=3 inner=d\.name,d\.size_bytes\)$/m',
+                    $result['rpcLog'],
+                    $matches,
+                ) === 1,
+                'rpc2 names the multicall and its members, and no entry script: ' . $result['rpcLog'],
+            );
+            $this->assertTrue(
+                strpos($result['rpcLog'], 'AAAA') === false && strpos($result['rpcLog'], 'script=') === false,
+                'rpc2 logs no parameter and no script field',
             );
         } finally {
             $peer->close();
@@ -2262,7 +2368,7 @@ class SCGITransportTest extends TestCase
                 'rpc2 returns a fault rather than the incomplete daemon frame',
             );
             $this->assertTrue(
-                preg_match_all('/ rpc2: truncated-body$/m', $result['rpcLog'], $matches) === 1,
+                preg_match_all('/ rpc2: truncated-body \(method=system\.client_version\)$/m', $result['rpcLog'], $matches) === 1,
                 'rpc2 logs the classified framing failure once',
             );
         } finally {
@@ -2288,7 +2394,7 @@ class SCGITransportTest extends TestCase
             );
             $lines = is_file($log_file) ? file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
             $this->assertTrue(
-                count($lines) === 1 && preg_match('/rXMLRPCRequest: truncated-body$/', $lines[0]),
+                count($lines) === 1 && preg_match('/rXMLRPCRequest: truncated-body \(method=\? script=[^ )]+\)$/', $lines[0]),
                 'core logs the classified framing failure once',
             );
         } finally {
@@ -2477,6 +2583,19 @@ class SCGITransportTest extends TestCase
         } finally {
             $peer->close();
         }
+    }
+
+    /** Same bytes as rXMLRPCRequest::makeNextCall() and XMLRPCProxy emit for one multicall member. */
+    private function multicallXml($names, $params = '')
+    {
+        $members = '';
+        foreach ($names as $name) {
+            $members .= "\r\n<value><struct><member><name>methodName</name><value><string>" . $name
+                . '</string></value></member><member><name>params</name><value><array><data>' . $params
+                . "\r\n</data></array></value></member></struct></value>";
+        }
+        return '<?xml version="1.0" encoding="UTF-8"?><methodCall><methodName>system.multicall</methodName>'
+            . '<params><param><value><array><data>' . $members . '</data></array></value></param></params></methodCall>';
     }
 
     /** The pauses $sleeps took against the backoff: first, doubling, capped. */

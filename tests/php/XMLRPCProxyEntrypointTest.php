@@ -1081,9 +1081,9 @@ class XMLRPCProxyEntrypointTest extends TestCase
             );
             $quietLog = ($door === 'rpc2') ? $quiet['rpc2logs'] : implode("\n", $quiet['state']['logs']);
             $this->assertEquals(
-                1,
+                0,
                 substr_count($quietLog, self::BUILT_IN_POLICY_WARNING),
-                $door . ' warns once for the whole batch at the shipped default',
+                $door . ' stays silent about the fallback for a routine batch without tracing',
             );
             $this->assertTrue(
                 strpos($quietLog, 'trusted:') === false,
@@ -1260,17 +1260,19 @@ class XMLRPCProxyEntrypointTest extends TestCase
      * policy reached the door only while a second copy of the list lived in
      * plugins/httprpc/conf.php -- and upstream #3251 removed that copy.
      *
-     * A missing explicit policy is visible once in each PHP request/runtime
-     * context, including without routine call tracing.
+     * A missing explicit policy is named once in each PHP request/runtime
+     * context, on the first decision that logs a line (here a call trace). A
+     * routine forward without tracing logs nothing, as a polling client would
+     * otherwise add a line to every request.
      */
     public function testHttprpcNamesTheBuiltInPolicyInOneDecisionLine()
     {
         $quiet = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none');
         $this->assertHttp($quiet, '200 OK', 'text/xml; charset=UTF-8');
         $this->assertEquals(
-            ['xmlrpc-proxy: ' . self::BUILT_IN_POLICY_WARNING],
+            [],
             $quiet['state']['logs'],
-            'the fallback remains visible without a routine decision trace',
+            'a routine forward without tracing logs nothing, the fallback warning included',
         );
         $result = $this->runEntrypoint('action', $this->viewActionXml(), true, 'success', 'none', true);
         $this->assertHttp($result, '200 OK', 'text/xml; charset=UTF-8');
@@ -1304,14 +1306,10 @@ class XMLRPCProxyEntrypointTest extends TestCase
     {
         $quiet = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none');
         $this->assertHttp($quiet, '200 OK', 'text/xml;charset=UTF-8');
-        $this->assertRpc2Log(
-            $quiet,
-            self::BUILT_IN_POLICY_WARNING,
-            'the fallback remains visible without a routine decision trace',
-        );
-        $this->assertTrue(
-            strpos($quiet['rpc2logs'], 'trusted:') === false,
-            'the fallback warning does not add a routine decision trace',
+        $this->assertEquals(
+            '',
+            trim($quiet['rpc2logs']),
+            'a routine forward without tracing logs nothing, the fallback warning included',
         );
         $result = $this->runEntrypoint('rpc2', $this->viewActionXml(), true, 'success', 'none', true);
         $this->assertHttp($result, '200 OK', 'text/xml;charset=UTF-8');
@@ -1334,6 +1332,37 @@ class XMLRPCProxyEntrypointTest extends TestCase
             ['timeout' => 30, 'transferTimeout' => null, 'maxResponseBytes' => null],
             rSCGITransport::RESPONSE_BODY,
             [['event' => 'send', 'door' => 'rpc2', 'trusted' => true, 'sends' => 1]],
+        );
+    }
+
+    public function testBothDoorsWarnOnceWhenTheBuiltInPolicyRefuses()
+    {
+        $action = $this->runEntrypoint('action', $this->deniedXml(), true, 'success', 'none');
+        $this->assertHttp($action, '403 Forbidden', 'text/xml; charset=UTF-8');
+        $logs = $action['state']['logs'];
+        $this->assertEquals(2, count($logs), 'action logs the refusal and one fallback warning');
+        $this->assertTrue(
+            strpos($logs[0], 'rejected (') !== false && substr($logs[0], -strlen(' [built-in policy]')) === ' [built-in policy]',
+            'action refusal keeps its built-in policy suffix: ' . $logs[0],
+        );
+        $this->assertEquals('xmlrpc-proxy: ' . self::BUILT_IN_POLICY_WARNING, $logs[1], 'action warns after the refusal');
+        $rpc2 = $this->runEntrypoint('rpc2', $this->deniedXml(), true, 'success', 'none');
+        $this->assertHttp($rpc2, '403 Forbidden', 'text/xml;charset=UTF-8');
+        $this->assertRpc2Log($rpc2, self::BUILT_IN_POLICY_WARNING, 'rpc2 warns after the refusal');
+        $this->assertEquals(
+            1,
+            substr_count($rpc2['rpc2logs'], self::BUILT_IN_POLICY_WARNING),
+            'rpc2 warns once',
+        );
+        $this->assertEquals(
+            1,
+            substr_count($rpc2['rpc2logs'], 'rejected ('),
+            'rpc2 logs the refusal',
+        );
+        $this->assertEquals(
+            1,
+            substr_count($rpc2['rpc2logs'], '[built-in policy]' . "\n"),
+            'rpc2 refusal keeps its built-in policy suffix',
         );
     }
 
