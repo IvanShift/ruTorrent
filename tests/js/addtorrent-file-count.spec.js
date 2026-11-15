@@ -24,6 +24,7 @@ for (const src of ["../lang/en.js", "../js/common.js", "../js/objects.js", "../j
   document.body.appendChild(scriptEl);
 }
 makeContent();
+window.uploadTorrentForm = jest.fn();
 
 /** Make the dialog's file input hold files with these names, as a browser would. */
 function select(names) {
@@ -55,7 +56,7 @@ describe("the add dialog tells addtorrent.php how many files it selected", () =>
   it("sends the number of selected files with the upload", () => {
     select(["one.torrent", "two.torrent", "three.torrent"]);
     const { verdict, action } = submit("addtorrent");
-    expect(verdict).toBe(true);
+    expect(verdict).toBe(false);
     expect(new URLSearchParams(action.split("?")[1]).get("torrent_file_count")).toBe("3");
   });
 
@@ -69,10 +70,20 @@ describe("the add dialog tells addtorrent.php how many files it selected", () =>
     expect(query.get("label")).toBe("seed box");
   });
 
+  it("keeps preset query bytes when adding file options", () => {
+    const previous = theURLs.AddTorrentURL;
+    theURLs.AddTorrentURL = "php/addtorrent.php?csrf=token%2B1&raw=%FF";
+    try {
+      select(["one.torrent"]);
+      const action = submit("addtorrent").action;
+      expect(action).toContain("csrf=token%2B1&raw=%FF&torrent_file_count=1");
+    } finally { theURLs.AddTorrentURL = previous; }
+  });
+
   it("does not send a count with a URL", () => {
     $("#url").val("magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567");
     const { verdict, action } = submit("addtorrenturl");
-    expect(verdict).toBe(true);
+    expect(verdict).toBe(false);
     expect(action).not.toContain("torrent_file_count");
   });
 });

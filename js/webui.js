@@ -2635,6 +2635,8 @@ var theWebUI = {
 
 	clearSearch: function()
 	{
+		if($$("query").readOnly)
+			return;
 		$$("query").value = "";
 		theWebUI.updateQuickSearch();
 	},
@@ -2644,8 +2646,14 @@ var theWebUI = {
 		$$("query").blur();
 	},
 
+	updateSearchClear: function()
+	{
+		$$("query_clear").hidden = ($$("query").value === "" || $$("query").readOnly);
+	},
+
 	updateQuickSearch: function()
 	{
+		theWebUI.updateSearchClear();
 		theWebUI.categoryList.setQuickSearch(
 			theSearchEngines.current === -1 ? $$("query").value : null
 		);

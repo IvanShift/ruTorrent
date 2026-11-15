@@ -174,7 +174,8 @@ class XMLRPCProxyTest extends TestCase
             XMLRPCProxy::daemonVersionFromReply($reply('0.16.22')),
             'a reviewed 0.16 release is recognized',
         );
-        foreach (['0.16.28', '0.9.7', '0.16.22evil', '0.16.999'] as $value) {
+        $this->assertEquals(0x101C, XMLRPCProxy::daemonVersionFromReply($reply('0.16.28')), 'reviewed 0.16.28 is supported');
+        foreach (['0.16.29', '0.9.7', '0.16.22evil', '0.16.999'] as $value) {
             $this->assertTrue(
                 XMLRPCProxy::daemonVersionFromReply($reply($value)) === null,
                 'unreviewed version ' . $value . ' fails closed',
@@ -4364,9 +4365,9 @@ class XMLRPCProxyTest extends TestCase
         }
     }
 
-    public function testReviewedDaemons1626And1627KeepNativeListingStopLabelAndSettingsRead()
+    public function testReviewedDaemons1626Through1628KeepNativeListingStopLabelAndSettingsRead()
     {
-        foreach ([0x101A => '0.16.26', 0x101B => '0.16.27'] as $version => $release) {
+        foreach ([0x101A => '0.16.26', 0x101B => '0.16.27', 0x101C => '0.16.28'] as $version => $release) {
             $this->assertReviewedDaemonKeepsNativeListingStopLabelAndSettingsRead($version, $release);
         }
     }
@@ -4449,9 +4450,10 @@ class XMLRPCProxyTest extends TestCase
     /**
      * Bit 28 is v0.16.27 (cab23f12). Its CMD and CMD_REDIRECT registrations,
      * mark_safe() names and method.insert strings are those of v0.16.26
-     * (62899bd0), so the two columns are equal (see the table header).
+     * (62899bd0). 0.16.28 (0c23d278) changes none of these names, so all
+     * three columns are equal (see the table header).
      */
-    public function testNative1627ColumnIsThe1626Column()
+    public function testNative1627And1628ColumnsAreThe1626Column()
     {
         $native = require(__DIR__ . '/../../php/xmlrpc_proxy_native.php');
         $changed = [];
@@ -4460,12 +4462,15 @@ class XMLRPCProxyTest extends TestCase
             if ((($mask >> 27) & 1) !== (($mask >> 28) & 1)) {
                 $changed[] = $name;
             }
-            if ($mask >= (1 << 29)) {
+            if ((($mask >> 28) & 1) !== (($mask >> 29) & 1)) {
+                $changed[] = $name;
+            }
+            if ($mask >= (1 << 30)) {
                 $beyond[] = $name;
             }
         }
-        $this->assertEquals([], $changed, 'no name differs between the 0.16.26 and 0.16.27 columns');
-        $this->assertEquals([], $beyond, 'no name claims a release after 0.16.27');
+        $this->assertEquals([], $changed, 'no name differs between the 0.16.26, 0.16.27 and 0.16.28 columns');
+        $this->assertEquals([], $beyond, 'no name claims a release after 0.16.28');
     }
 
     /**
@@ -4486,9 +4491,9 @@ class XMLRPCProxyTest extends TestCase
             }
         }
         $this->assertEquals(
-            range(0, 27),
+            range(0, 28),
             array_keys($accepted),
-            'the parser accepts exactly 0.16.0 through 0.16.27',
+            'the parser accepts exactly 0.16.0 through 0.16.28',
         );
         $failures = [];
         foreach ($accepted as $minor => $version) {
@@ -4524,9 +4529,9 @@ class XMLRPCProxyTest extends TestCase
             $failures,
             'every accepted 0.16 release passes each proxy ceiling and has a native column',
         );
-        // 0.16.28, then values no parser returns: an API caller's typo must not
+        // 0.16.29, then values no parser returns: an API caller's typo must not
         // select some other release's column.
-        foreach ([0x101C, 0x0907, 0x0FFF, 0x001A, 0, '0.16.26', (float) 0x101A] as $unsupported) {
+        foreach ([0x101D, 0x0907, 0x0FFF, 0x001A, 0, '0.16.26', (float) 0x101A] as $unsupported) {
             $next = XMLRPCProxy::decide(
                 $listing,
                 'sanitize',
@@ -4576,10 +4581,10 @@ class XMLRPCProxyTest extends TestCase
             if (!mkdir($tree, 0700) || !copy(__DIR__ . '/../../php/xmlrpc_proxy.php', $tree . '/xmlrpc_proxy.php')) {
                 throw new Exception('could not create the synthetic native table tree');
             }
-            $every = (2 << 28) - 1;
+            $every = (2 << 29) - 1;
             file_put_contents($tree . '/xmlrpc_proxy_native.php', '<?php return ' . var_export([
                 'every.release' => $every,
-                'not.newest' => $every & ~(1 << 28),
+                'not.newest' => $every & ~(1 << 29),
                 'not.legacy' => $every & ~1,
             ], true) . ';');
             $script = 'require $argv[1];'
@@ -4605,7 +4610,7 @@ class XMLRPCProxyTest extends TestCase
             $this->assertEquals(
                 'every.release=true;not.newest=false;not.legacy=false;',
                 $output,
-                'an omitted version admits only a name native on 0.9.8 and on 0.16.0 through 0.16.27',
+                'an omitted version admits only a name native on 0.9.8 and on 0.16.0 through 0.16.28',
             );
         } finally {
             foreach (['xmlrpc_proxy.php', 'xmlrpc_proxy_native.php'] as $file) {
@@ -4639,7 +4644,7 @@ class XMLRPCProxyTest extends TestCase
             && $native->invoke(null, 'network.port_open', 0x0908) === true,
             'the reviewed columns still answer for themselves',
         );
-        foreach ([0x101C, 0x103E, 0x103F, 0x1040, 0x10FF, 0x1100, 0x1FFF, PHP_INT_MAX] as $version) {
+        foreach ([0x101D, 0x103E, 0x103F, 0x1040, 0x10FF, 0x1100, 0x1FFF, PHP_INT_MAX] as $version) {
             foreach (['d.name', 'network.port_open', 'session.umask', 'no.such.command'] as $name) {
                 $this->assertTrue(
                     $native->invoke(null, $name, $version) === false,
@@ -4647,7 +4652,7 @@ class XMLRPCProxyTest extends TestCase
                 );
             }
         }
-        foreach ([0x101C, 0x103F, 0x1100] as $version) {
+        foreach ([0x101D, 0x103F, 0x1100] as $version) {
             $this->assertTrue(
                 XMLRPCProxy::sanitizeHttprpcCommandParameter(
                     'd.name=',
@@ -4668,15 +4673,15 @@ class XMLRPCProxyTest extends TestCase
                 . htmlspecialchars($value, ENT_NOQUOTES, 'UTF-8')
                 . '</string></value></param></params></methodResponse>';
         };
-        $supported = ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
-        foreach (['0.16.28', '0.16.28-rc1', '0.16.999', '0.17.0', '1.0.0', '0.9.7'] as $value) {
+        $supported = ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.28)';
+        foreach (['0.16.29', '0.16.29-rc1', '0.16.999', '0.17.0', '1.0.0', '0.9.7'] as $value) {
             $this->assertEquals(
                 'rTorrent ' . $value . $supported,
                 XMLRPCProxy::daemonVersionRefusal($reply($value)),
                 'the unreviewed release ' . $value . ' is named with the supported range',
             );
         }
-        foreach (['0.16.27', '0.16.26', '0.16.25', '0.9.8'] as $value) {
+        foreach (['0.16.28', '0.16.27', '0.16.26', '0.16.25', '0.9.8'] as $value) {
             $this->assertTrue(
                 XMLRPCProxy::daemonVersionRefusal($reply($value)) === null,
                 'a supported release ' . $value . ' has nothing to refuse',
@@ -4684,7 +4689,7 @@ class XMLRPCProxyTest extends TestCase
         }
         // The bounds of the repeated text: three runs of at most three digits
         // and a suffix of at most 32 characters.
-        foreach (['999.999.999', '0.16.28-' . str_repeat('a', 32), '0.16.28+build.7_x-y'] as $value) {
+        foreach (['999.999.999', '0.16.29-' . str_repeat('a', 32), '0.16.29+build.7_x-y'] as $value) {
             $this->assertEquals(
                 'rTorrent ' . $value . $supported,
                 XMLRPCProxy::daemonVersionRefusal($reply($value)),

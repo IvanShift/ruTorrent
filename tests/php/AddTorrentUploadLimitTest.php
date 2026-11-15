@@ -138,6 +138,28 @@ final class AddTorrentUploadLimitTest extends TestCase
         );
     }
 
+    public function testOversizedPostKeepsJsonResultAndSelectedCountFromQuery()
+    {
+        $this->server = AddTorrentHttpHarness::forAddTorrent(
+            new FakeRtorrentAddTorrentReplies([], [], false),
+            ['ini' => ['post_max_size' => '1K', 'max_file_uploads' => '100']],
+        );
+        list($contentType, $body) = AddTorrentHttpHarness::multipart(
+            AddTorrentHttpHarness::torrentFiles(['one.torrent', 'two.torrent', 'three.torrent'], str_repeat('x', 512)),
+        );
+        $response = $this->server->request(
+            'POST',
+            '/php/addtorrent.php?csrf=token%2B1&torrent_file_count=3&json_results=1',
+            $body,
+            ['Content-Type' => $contentType],
+        );
+        $this->assertSame(200, $response['code'], 'discarded POST receives JSON directly');
+        $this->assertTrue(!isset($response['headers']['location']), 'no result redirect is needed');
+        $this->assertSame(['results' => [[
+            'status' => 'Failed', 'name' => 'Not processed: 3 of the 3 selected files',
+        ]]], json_decode($response['body'], true), 'the selected count survives the discarded body');
+    }
+
     /**
      * Upload $count invalid torrents to a server that accepts $limit files,
      * declaring $declared selected files when it is not null.

@@ -267,7 +267,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
     }
 
 
-    public function testBothDoorsServeReviewed1626And1627Daemons()
+    public function testBothDoorsServeReviewed1626Through1628Daemons()
     {
         // docker tests/smoke/default.sh failed here with 503 on a 0.16.26 daemon.
         $listing = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName>'
@@ -275,7 +275,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
             . '<param><value><string>main</string></value></param>'
             . '<param><value><string>d.name=</string></value></param>'
             . '</params></methodCall>';
-        foreach (['0.16.26', '0.16.27'] as $version) {
+        foreach (['0.16.26', '0.16.27', '0.16.28'] as $version) {
             foreach (['action', 'rpc2'] as $door) {
                 foreach (['listing' => $listing, 'version read' => $this->allowedXml()] as $name => $xml) {
                     $result = $this->runEntrypoint($door, $xml, true, 'success', 'shipped', false, $version);
@@ -306,7 +306,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
 
     public function testBothDoorsNameAnUnreviewedDaemonRelease()
     {
-        $reason = 'rTorrent 0.16.28 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
+        $reason = 'rTorrent 0.16.29 is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.28)';
         foreach (['action', 'rpc2'] as $door) {
             $result = $this->runEntrypoint(
                 $door,
@@ -315,7 +315,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
                 'success',
                 'shipped',
                 false,
-                '0.16.28',
+                '0.16.29',
             );
             $this->assertHttp(
                 $result,
@@ -408,7 +408,7 @@ class XMLRPCProxyEntrypointTest extends TestCase
         $widen = ['php/xmlrpc_proxy.php' => [
             '(?:[-+][A-Za-z0-9._-]{1,32})?$/D\', $text))' => '(?:[-+][^\r\n]{1,64})?$/D\', $text))']];
         $version = '0.16.28-<svg/onload=alert(1)>"\'&';
-        $why = 'rTorrent ' . $version . ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.27)';
+        $why = 'rTorrent ' . $version . ' is not a supported version (supported: 0.9.8 and 0.16.0 to 0.16.28)';
         foreach (['action', 'rpc2'] as $door) {
             $result = $this->runEntrypoint(
                 $door,

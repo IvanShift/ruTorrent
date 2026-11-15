@@ -26,7 +26,7 @@ class XMLRPCProxy
     // xmlrpc_proxy_native.php (bit minor + 1). Every 0.16 ceiling below reads
     // it, so a release past it fails closed until its column is derived from
     // the daemon's source and reviewed; 0.9.8 is the one other release.
-    private const NEWEST_016_MINOR = 27;
+    private const NEWEST_016_MINOR = 28;
     // Methods that need trusted connections but can carry command
     // parameters. We rebuild these from scratch, keeping only safe params.
     //

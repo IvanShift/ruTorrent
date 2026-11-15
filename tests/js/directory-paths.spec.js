@@ -12,6 +12,7 @@ function load(path, prefix = "", suffix = "") {
 beforeAll(() => {
   load("lang/en.js");
   load("js/common.js");
+  window.uploadTorrentForm = jest.fn();
 });
 
 beforeEach(() => {

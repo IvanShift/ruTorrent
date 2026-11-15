@@ -15,6 +15,7 @@ function load(file, prefix = "", suffix = "") {
 beforeAll(() => {
   load("lang/en.js");
   load("js/common.js");
+  window.uploadTorrentForm = jest.fn();
 });
 
 function labelTree() {
@@ -153,11 +154,11 @@ describe("mobile label identity", () => {
     window.theURLs = { AddTorrentURL: "php/addtorrent.php" };
     setLabelInput("#tadd_label", binary);
     const form = {};
-    expect(mobile.makeAddRequest(form)).toBe(true);
-    expect(form.action).toBe("php/addtorrent.php?label=raw%FF");
+    expect(mobile.makeAddRequest(form)).toBe(false);
+    expect(form.action).toBe("http://localhost/php/addtorrent.php?label=raw%FF");
     $("#tadd_label").val("raw%FF").trigger("input");
     mobile.makeAddRequest(form);
-    expect(form.action).toBe("php/addtorrent.php?label=raw%25FF");
+    expect(form.action).toBe("http://localhost/php/addtorrent.php?label=raw%25FF");
   });
 
   test("a valid label spelled like a binary ID retains its own filter", () => {

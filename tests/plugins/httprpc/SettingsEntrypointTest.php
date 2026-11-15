@@ -54,10 +54,10 @@ class HttprpcSettingsEntrypointTest extends TestCase
         }
     }
 
-    public function testCommandExtensionsServeReviewed1626And1627Daemons()
+    public function testCommandExtensionsServeReviewed1626Through1628Daemons()
     {
         // Every mode=...&cmd=... answered 503 on a 0.16.26 daemon before it was reviewed.
-        foreach (['0.16.24', '0.16.26', '0.16.27'] as $version) {
+        foreach (['0.16.24', '0.16.26', '0.16.27', '0.16.28'] as $version) {
             $result = $this->runRequest('cmd=' . rawurlencode('d.name=') . '&mode=list', null, $version);
             $this->assertEquals(72, $result['status'], 'a native list extension reaches the RPC boundary on ' . $version);
             $this->assertEquals(
@@ -79,11 +79,11 @@ class HttprpcSettingsEntrypointTest extends TestCase
             $refused['output'],
             'the refused extension is named without constructing an RPC request',
         );
-        $next = $this->runRequest('cmd=' . rawurlencode('d.name=') . '&mode=list', null, '0.16.28');
+        $next = $this->runRequest('cmd=' . rawurlencode('d.name=') . '&mode=list', null, '0.16.29');
         $this->assertEquals(0, $next['status'], 'an unreviewed release is answered, not crashed');
         $this->assertEquals(
-            '503|Could not verify the rTorrent version. rTorrent 0.16.28 is not a supported '
-            . 'version (supported: 0.9.8 and 0.16.0 to 0.16.27).',
+            '503|Could not verify the rTorrent version. rTorrent 0.16.29 is not a supported '
+            . 'version (supported: 0.9.8 and 0.16.0 to 0.16.28).',
             $next['output'],
             'the extension refusal names the unreviewed release',
         );

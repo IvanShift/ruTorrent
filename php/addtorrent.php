@@ -12,8 +12,7 @@ set_time_limit(0);
 /**
  * Encode a value for use as a literal in the script this page serves.
  *
- * The result of this page is evaluated by its clients -- js/content.js, and
- * plugins/mobile/init.js, which runs each line that starts with noty( -- so
+ * The legacy result page returns noty() calls to clients that request it, so
  * every reflected value has to be a complete literal that no input can end.
  * The HEX flags also keep <, >, & and both quote characters out of the bytes,
  * so the response cannot be turned into markup by asking for it directly.
@@ -254,8 +253,8 @@ if (isset($_REQUEST['result'])) {
             $uploaded_files[] = $limitRow;
         }
     }
-    // The browser knows the public origin and prefix even when a proxy rewrites them.
     $location = "Location: ./addtorrent.php?";
+    $answer = [];
     if (empty($uploaded_files)) {
         $uploaded_files = [ [ 'status' => "Failed" ] ];
     }
@@ -328,8 +327,28 @@ if (isset($_REQUEST['result'])) {
             $names[$ndx] = $file['name'];
             $location .= ('name[]=' . rawurlencode($file['name']) . '&');
         }
+        $item = [ 'status' => $file['status'] ];
+        if (isset($file['name'])) {
+            $item['name'] = UTF::display($file['name']);
+        }
+        $answer[] = $item;
     }
     unset($file);
+    // json_results asks for every result in the answer itself, which a
+    // script sending the form with fetch() reads directly:
+    // {"results":[{"status":"Success","name":"x.torrent"},...]}, where name is
+    // present whenever the redirect below would carry one. Without it the
+    // upload is redirected to the result branch above, as json=1 when asked.
+    if (isset($_REQUEST['json_results'])) {
+        CachedEcho::send(
+            json_encode(
+                [ 'results' => $answer ],
+                JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES
+                | JSON_INVALID_UTF8_SUBSTITUTE,
+            ),
+            "application/json",
+        );
+    }
     if (isset($_REQUEST['json'])) {
         $location .= 'json=1';
     }

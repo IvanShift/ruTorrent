@@ -13,6 +13,9 @@ class LogFileModeStream
     public static $openModes;
     public static $body;
     public static $refuseOpen;
+    public static $throwOnWrite = false;
+    public static $closed = false;
+
 
     public static function reset($fileType, $exists = true)
     {
@@ -23,6 +26,9 @@ class LogFileModeStream
         self::$openModes = [];
         self::$body = '';
         self::$refuseOpen = false;
+        self::$throwOnWrite = false;
+        self::$closed = false;
+
     }
 
     public function url_stat($path, $flags)
@@ -38,8 +44,16 @@ class LogFileModeStream
 
     public function stream_write($data)
     {
+        if (self::$throwOnWrite) {
+            throw new RuntimeException('write failed');
+        }
         self::$body .= $data;
         return strlen($data);
+    }
+
+    public function stream_close()
+    {
+        self::$closed = true;
     }
 
     public function stream_flush()
@@ -610,6 +624,21 @@ echo (int)((microtime(true) - $start) * 1000);';
             restore_error_handler();
         }
         $this->assertEquals(['ab'], LogFileModeStream::$openModes, 'A refused stream gets one open');
+    }
+
+    public function testAThrowingWriteClosesTheStreamWhileTheExceptionIsKept()
+    {
+        LogFileModeStream::reset(0010000);
+        LogFileModeStream::$throwOnWrite = true;
+        $GLOBALS['log_file'] = 'rutorrent-log-test://sink';
+        $exception = null;
+        try {
+            FileUtil::toLog('probe');
+        } catch (RuntimeException $exception) {
+            $this->assertEquals('write failed', $exception->getMessage(), 'The write threw');
+        }
+        $this->assertTrue($exception !== null && LogFileModeStream::$closed, 'The stream is closed while the exception is retained');
+
     }
 
     public function testANonRegularLogKeepsTheNonBlockingReadWriteMode()

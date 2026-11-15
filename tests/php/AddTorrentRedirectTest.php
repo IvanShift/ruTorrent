@@ -4,9 +4,9 @@ require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/AddTorrentHttpHarness.php');
 
 /**
- * php/addtorrent.php answers an upload POST with a short relative redirect,
- * or, when the Location field would pass its 2 KiB budget, with the result
- * script in the POST body. The budget is load-bearing: behind nginx's 4 KiB
+ * For the legacy HTML result protocol, php/addtorrent.php answers an upload
+ * POST with a short relative redirect or, when the Location field would pass
+ * its 2 KiB budget, with the result script in the POST body. The budget is load-bearing: behind nginx's 4 KiB
  * FastCGI header buffer a Location of about 4 KiB answers 502 (measured on
  * the image, R3C-02), so the boundary itself is pinned here.
  */
@@ -45,6 +45,42 @@ final class AddTorrentRedirectTest extends TestCase
             && strpos($location, 'trap.invalid') === false,
             'proxy Host rewriting cannot redirect to an internal or forwarded host',
         );
+    }
+
+    public function testJsonResultsRespondsDirectlyBehindARewritingProxy()
+    {
+        $response = $this->send('POST', '?json_results=1&json=1');
+        $this->assertSame(200, $response['code'], 'the JSON request receives a direct response');
+        $this->assertTrue(!isset($response['headers']['location']), 'no redirect is sent');
+        $this->assertEquals(['results' => [['status' => 'Failed']]], json_decode($response['body'], true), 'the result is returned as data');
+    }
+
+    public function testJsonResultsRetainsEveryFileNameAndStatus()
+    {
+        $names = ['one.torrent', '<two>.torrent'];
+        list($contentType, $body) = AddTorrentHttpHarness::multipart(
+            AddTorrentHttpHarness::torrentFiles($names, 'invalid torrent'),
+        );
+        $response = $this->send('POST', '?json_results=1', $body, $contentType);
+        $this->assertSame(200, $response['code'], 'the upload receives a direct response');
+        $this->assertTrue(!isset($response['headers']['location']), 'the response has no redirect');
+        $this->assertEquals(['results' => [
+            ['status' => 'FailedFile', 'name' => $names[0]],
+            ['status' => 'FailedFile', 'name' => $names[1]],
+        ]], json_decode($response['body'], true), 'the response preserves every name and status');
+        $this->assertTrue(strpos($response['body'], '<') === false, 'the JSON does not contain markup');
+    }
+
+    public function testJsonResultsDisplaysInvalidUtf8FilenameSafely()
+    {
+        list($contentType, $body) = AddTorrentHttpHarness::multipart(
+            AddTorrentHttpHarness::torrentFiles(["bad\xFF.torrent"], 'invalid torrent'),
+        );
+        $response = $this->send('POST', '?json_results=1', $body, $contentType);
+        $this->assertSame(200, $response['code'], 'the upload receives JSON directly');
+        $this->assertEquals(['results' => [[
+            'status' => 'FailedFile', 'name' => 'bad\\xFF.torrent',
+        ]]], json_decode($response['body'], true), 'invalid filename bytes have a safe escaped display');
     }
 
     public function testLargeCyrillicUploadReturnsEveryResultInThePostBody()
