@@ -1,6 +1,7 @@
 <?php
 
 require_once(dirname(__FILE__) . "/../../php/xmlrpc.php");
+require_once(dirname(__FILE__) . "/../../php/rtorrent.php");
 require_once(dirname(__FILE__) . "/../../php/cache.php");
 require_once(dirname(__FILE__) . "/../../php/utility/json.php");
 eval(FileUtil::getPluginConf('scheduler'));
@@ -22,6 +23,43 @@ class rScheduler
     public $week = [];
     public $seedStopped = [];
     public $leechStopped = [];
+    // A start runs the CLI and the web plugin init at once, and each applies
+    // the schedule to its own copy of this document. The later store used to
+    // replace the lists the earlier one had just written, so the downloads
+    // that one stopped were never started again. rCache::set() calls merge()
+    // when the stored copy changed since this one was loaded; only this
+    // request's own changes go into it.
+    private $listChanges = ['seedStopped' => [], 'leechStopped' => []];
+    private $settingsChanged = false;
+
+    public function __sleep()
+    {
+        return(['hash', 'modified', 'enabled', 'UL', 'DL', 'week', 'seedStopped', 'leechStopped']);
+    }
+    // The changes go in in the order of the stores, not of the daemon calls.
+    // When two applies change one download the other way round, say a stop
+    // hour stops it after a full-speed hour started it but stores first, the
+    // later store takes it off the list while it stays stopped. One lock held
+    // over load, daemon calls and store would close that. The cache key's own
+    // lock cannot be it: rCache::set() takes that lock itself, so it cannot
+    // be held across the store; nor can rLock (php/lock.php), which neither
+    // waits nor excludes. A separate lock file held with flock(), as
+    // rtDataDirLock() holds datadir's, could; this is left as a known
+    // limitation.
+    public function merge($newer, $unused = null)
+    {
+        if (!$this->settingsChanged) {
+            $this->enabled = $newer->enabled;
+            $this->UL = $newer->UL;
+            $this->DL = $newer->DL;
+            $this->week = $newer->week;
+        }
+        foreach ($this->listChanges as $list => $changes) {
+            $this->{$list} = (array) $newer->{$list};
+            $this->changeStopped($list, $changes, null);
+        }
+        return(true);
+    }
 
     public static function load()
     {
@@ -90,6 +128,7 @@ class rScheduler
         if (isset($_POST['enabled'])) {
             $this->enabled = intval($_POST['enabled']);
         }
+        $this->settingsChanged = true;
         $this->apply();
     }
     public static function setSpeed($ul, $dl)
@@ -110,22 +149,25 @@ class rScheduler
         }
         return($req->run() && !$req->fault);
     }
+    // The started downloads, by whether they leech. A started download the
+    // daemon has not resumed yet reads "leech" whatever it will do, so its
+    // saved d.complete decides (rTorrent::isLeeching()).
     public static function getActiveTorrents()
     {
-        $delta = 2;
-        $cmd = new rXMLRPCCommand("d.multicall", ["started",getCmd("d.get_hash="),getCmd("d.get_connection_current=") ]);
+        $columns = [getCmd("d.get_hash="), getCmd("d.get_connection_current="),
+            getCmd("d.get_complete="), getCmd("d.get_hashing=")];
         if (rTorrentSettings::get()->iVersion >= 0x805) {
-            $cmd->addParameter(getCmd("d.get_custom=") . "sch_ignore");
-            $delta = 3;
+            $columns[] = getCmd("d.get_custom=") . "sch_ignore";
         }
-        $req = new rXMLRPCRequest($cmd);
+        $delta = count($columns);
+        $req = new rXMLRPCRequest(new rXMLRPCCommand("d.multicall", array_merge(["started"], $columns)));
         $seeds = [];
         $leeches = [];
         if ($req->run() && !$req->fault) {
             for ($i = 0; $i < count($req->val); $i += $delta) {
                 $hash = $req->val[$i];
-                if (($delta == 2) || empty($req->val[$i + 2])) {
-                    if ($req->val[$i + 1] == 'leech') {
+                if (($delta == 4) || empty($req->val[$i + 4])) {
+                    if (rTorrent::isLeeching($req->val[$i + 1], $req->val[$i + 2], $req->val[$i + 3])) {
                         $leeches[$hash] = true;
                     } else {
                         $seeds[$hash] = true;
@@ -148,8 +190,8 @@ class rScheduler
                 case SCH_FAST:
                     {
                         self::processArray(array_merge($this->seedStopped, $this->leechStopped), "d.open", "d.start");
-                        $this->seedStopped = [];
-                        $this->leechStopped = [];
+                        $this->changeStopped('seedStopped', $this->seedStopped, false);
+                        $this->changeStopped('leechStopped', $this->leechStopped, false);
                         self::setSpeed(SCH_DEF_UL, SCH_DEF_DL);
                         break;
                     }
@@ -158,8 +200,8 @@ class rScheduler
                 case SCH_RESTRICT3:
                     {
                         self::processArray(array_merge($this->seedStopped, $this->leechStopped), "d.open", "d.start");
-                        $this->seedStopped = [];
-                        $this->leechStopped = [];
+                        $this->changeStopped('seedStopped', $this->seedStopped, false);
+                        $this->changeStopped('leechStopped', $this->leechStopped, false);
                         self::setSpeed($this->UL[$no - SCH_RESTRICT1], $this->DL[$no - SCH_RESTRICT1]);
                         break;
                     }
@@ -167,8 +209,8 @@ class rScheduler
                     {
                         $active = self::getActiveTorrents();
                         if (self::processArray(array_merge($active["seeds"], $active["leeches"]), "d.stop", "d.close")) {
-                            $this->leechStopped = array_merge($this->leechStopped, $active["leeches"]);
-                            $this->seedStopped = array_merge($this->seedStopped, $active["seeds"]);
+                            $this->changeStopped('leechStopped', $active["leeches"], true);
+                            $this->changeStopped('seedStopped', $active["seeds"], true);
                         }
                         self::setSpeed(1, 1);
                         break;
@@ -177,10 +219,10 @@ class rScheduler
                     {
                         $active = self::getActiveTorrents();
                         if (self::processArray($active["leeches"], "d.stop", "d.close")) {
-                            $this->leechStopped = array_merge($this->leechStopped, $active["leeches"]);
+                            $this->changeStopped('leechStopped', $active["leeches"], true);
                         }
                         self::processArray($this->seedStopped, "d.open", "d.start");
-                        $this->seedStopped = [];
+                        $this->changeStopped('seedStopped', $this->seedStopped, false);
                         self::setSpeed(SCH_DEF_UL, 1);
                         break;
                     }
@@ -193,5 +235,19 @@ class rScheduler
     protected static function numbers($list)
     {
         return(array_map("intval", array_values((array) $list)));
+    }
+    // Adds the keys of $hashes to a stopped list, or removes them when $kept
+    // is false; null replays the changes $hashes holds.
+    private function changeStopped($list, $hashes, $kept)
+    {
+        foreach ($hashes as $hash => $value) {
+            $value = ($kept === null) ? $value : $kept;
+            $this->listChanges[$list][$hash] = $value;
+            if ($value) {
+                $this->{$list}[$hash] = true;
+            } else {
+                unset($this->{$list}[$hash]);
+            }
+        }
     }
 }

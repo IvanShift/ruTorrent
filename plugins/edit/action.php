@@ -74,8 +74,20 @@ if ($setComment || $setTrackers || $setPrivate) {
         if ($guardedErase) {
             $req->addCommand(new rXMLRPCCommand("d.stop_generation", $hash));
         }
+        // Last, so the positions above stay what the erase guard reads.
+        $req->addCommand(new rXMLRPCCommand("d.get_hashing", $hash));
+        $req->addCommand(new rXMLRPCCommand("d.get_hashing_failed", $hash));
+        $hashingIndex = $req->getCommandsCount() - 2;
         if ($req->run() && !$req->fault) {
-            $isStart = (($req->val[1] != 0) && ($req->val[2] != 0) && ($req->val[3] != 0));
+            // A started torrent the daemon has not resumed yet (queued for
+            // its hash check) is closed and inactive, and must come back
+            // started all the same.
+            $isStart = rTorrent::isMeantToRun(
+                $req->val[3],
+                $req->val[2],
+                $req->val[$hashingIndex],
+                $req->val[$hashingIndex + 1],
+            );
             $fname = $req->val[0] . $hash . ".torrent";
             if (empty($req->val[0]) || !is_readable($fname)) {
                 if (strlen($req->val[4]) && is_readable($req->val[4])) {

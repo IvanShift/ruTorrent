@@ -42,7 +42,7 @@ class RpcStringConsumersTest extends TestCase
      */
     public const REVIEWED_ACCESS_COUNTS = [
         // File paths, and upstream's getSourcePaths() reading every session and tied path.
-        'php/rtorrent.php' => 17,
+        'php/rtorrent.php' => 15,
         'php/settings.php' => 13,
         // downloadName(): the live path, size and file count of one file.
         'php/torrentfilenames.php' => 4,
@@ -55,11 +55,11 @@ class RpcStringConsumersTest extends TestCase
         'plugins/autotools/move_queue.php' => 5,
         'plugins/autotools/util_rt.php' => 4,
         'plugins/check_port/action.php' => 2,
-        'plugins/datadir/util_setdir.php' => 31,
+        'plugins/datadir/util_setdir.php' => 28,
         // Upstream #3384 (merged 2026-10-18): session and tied-file paths used raw as
         // file names, byte-preserving shell quoting into tasks, display projection in replies.
         'plugins/dump/action.php' => 8,
-        'plugins/edit/action.php' => 18,
+        'plugins/edit/action.php' => 19,
         'plugins/erasedata/outcome.php' => 9,
         // Physical paths now retain per-command XML types/table rows instead of flat values.
         'plugins/erasedata/removewithdata.php' => 26,
@@ -70,7 +70,7 @@ class RpcStringConsumersTest extends TestCase
         'plugins/extratio/rules.php' => 5,
         // List and files are read row by row, other modes as flat values, and a
         // names=1 file list reads the session and tied paths for its labels.
-        'plugins/httprpc/action.php' => 47,
+        'plugins/httprpc/action.php' => 34,
         'plugins/ratio/ratio.php' => 9,
         'plugins/retrackers/update.php' => 2,
         'plugins/rutracker_check/check.php' => 96,
@@ -80,11 +80,11 @@ class RpcStringConsumersTest extends TestCase
         'plugins/rutracker_check/trackers/rutracker.php' => 7,
         'plugins/rutracker_check/update.php' => 1,
         'plugins/rutracker_check/updatepass.php' => 70,
-        'plugins/scheduler/scheduler.php' => 4,
+        'plugins/scheduler/scheduler.php' => 6,
         'plugins/throttle/throttle.php' => 10,
         'plugins/trafic/ratios.php' => 3,
         'plugins/trafic/update.php' => 4,
-        'plugins/unpack/unpack.php' => 5,
+        'plugins/unpack/unpack.php' => 3,
         'tools/escaped-values-scan.php' => 4,
     ];
 

@@ -44,7 +44,11 @@ class ScreenshotsFilePathTest extends TestCase
         $this->assertPassed('sample\\"apostrophe\'file.txt', false);
     }
 
-    public function testThePathOfAClosedTorrentIsPassedAfterItIsOpened()
+    /**
+     * A closed torrent's file is where d.directory and f.path say: the
+     * frozen path names where it was when the torrent was last open.
+     */
+    public function testTheCurrentPathOfAClosedTorrentIsPassedWithoutOpeningIt()
     {
         $this->assertPassed('sample\\"apostrophe\'file.txt', true);
     }
@@ -53,7 +57,7 @@ class ScreenshotsFilePathTest extends TestCase
     {
         $path = $this->base . '/' . $name;
         // Spares answer the task's own request to rtorrent, so the tool never runs.
-        $replies = array_merge($closed ? [[''], [0, $path, 0]] : [[$path]], [['0'], ['0']]);
+        $replies = array_merge($closed ? [['0', '/moved/away/' . $name, $this->base, $name]] : [['1', $path, '/elsewhere', 'other']], [['0'], ['0']]);
         if ($this->daemon !== null) {
             $this->daemon->stop();
         }
@@ -71,5 +75,9 @@ class ScreenshotsFilePathTest extends TestCase
         $script = is_array($task) && isset($task['no'])
             ? (string) @file_get_contents($this->base . '/profile/settings/tasks/' . $task['no'] . '/start.sh') : '';
         $this->assertTrue(strpos($script, escapeshellarg($path)) !== false, 'the tool is given ' . $name . '; got ' . $run['out'] . ' ' . $run['err']);
+        $this->assertTrue(
+            !in_array('d.open', $this->daemon->calls(), true) && !in_array('d.close', $this->daemon->calls(), true),
+            'the path read neither opens nor closes the torrent; calls: ' . implode(', ', $this->daemon->calls()),
+        );
     }
 }

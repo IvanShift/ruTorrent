@@ -138,7 +138,7 @@ class SetpropsTest extends TestCase
         );
     }
 
-    public function testGetSavePathChecksOpenStateBeforeChangingTheTorrent()
+    public function testGetSavePathReadsWithoutChangingTheTorrent()
     {
         $this->post('mode=getsavepath&hash=' . self::HASH);
         $this->assertTrue(
@@ -147,13 +147,13 @@ class SetpropsTest extends TestCase
         );
         $request = $this->peer->request();
         $this->assertTrue(
-            strpos($request['payload'], 'd.is_open') !== false,
-            'the first request reads the current open state',
+            strpos($request['payload'], 'base_path') !== false && strpos($request['payload'], 'directory') !== false,
+            'the first request reads the base path and the directory',
         );
         foreach (['d.open', 'd.close'] as $method) {
             $this->assertTrue(
                 strpos($request['payload'], $method) === false,
-                'the state read itself does not change the torrent: ' . $method,
+                'the read does not change the torrent: ' . $method,
             );
         }
         $this->assertTrue(

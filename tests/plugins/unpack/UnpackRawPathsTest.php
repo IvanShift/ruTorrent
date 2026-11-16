@@ -39,19 +39,20 @@ class UnpackRawPathsTest extends TestCase
     public function testAPlainFileIsGivenToTheExtractor()
     {
         $file = $this->base . '/plain.zip';
-        $this->assertTrue(strpos($this->command('zip', [[$file]]), escapeshellarg($file)) !== false, 'the file is extracted');
+        $this->assertTrue(strpos($this->command('zip', [['1', $file, '/elsewhere', 'other.zip']]), escapeshellarg($file)) !== false, 'the file is extracted');
     }
 
     public function testAFileWithQuotesAndABackslashIsGivenToTheExtractor()
     {
         $file = $this->base . '/' . self::NAME . '.zip';
-        $this->assertTrue(strpos($this->command('zip', [[$file]]), escapeshellarg($file)) !== false, 'the file is extracted');
+        $this->assertTrue(strpos($this->command('zip', [['1', $file, '/elsewhere', 'other.zip']]), escapeshellarg($file)) !== false, 'the file is extracted');
     }
 
-    public function testTheFileOfAClosedTorrentIsGivenToTheExtractorAfterItIsOpened()
+    public function testTheFileOfAClosedTorrentIsGivenToTheExtractorWithoutOpeningIt()
     {
         $file = $this->base . '/' . self::NAME . '.zip';
-        $command = $this->command('zip', [[''], [0, $file, 0]]);
+        // Its frozen path names where it was when it was last open.
+        $command = $this->command('zip', [['0', '/moved/away/' . self::NAME . '.zip', $this->base, self::NAME . '.zip']]);
         $this->assertTrue(strpos($command, escapeshellarg($file)) !== false, 'the file is extracted');
     }
 
@@ -59,7 +60,7 @@ class UnpackRawPathsTest extends TestCase
     {
         $dir = $this->base . '/' . self::NAME;
         mkdir($dir);
-        $command = $this->command('', [[$dir, self::NAME, self::NAME], ['a.zip']], true);
+        $command = $this->command('', [[self::NAME, self::NAME], ['1', $dir, '/elsewhere', 'a.zip', '1'], ['a.zip']], true);
         $this->assertTrue(strpos($command, escapeshellarg($dir . '/' . self::NAME . '/' . self::NAME . '/')) !== false, 'the output path is the real one');
     }
 
@@ -67,15 +68,15 @@ class UnpackRawPathsTest extends TestCase
     {
         $dir = $this->base . '/encoded';
         mkdir($dir);
-        $command = $this->command('', [[$dir, 'a%5C%22z', 'name'], ['a.zip']], true);
+        $command = $this->command('', [['a%5C%22z', 'name'], ['1', $dir, '/elsewhere', 'a.zip', '1'], ['a.zip']], true);
         $this->assertTrue(strpos($command, escapeshellarg($dir . '/a\\"z/name/')) !== false, 'the label is decoded once');
     }
 
-    public function testTheDirectoryOfAClosedTorrentIsExtractedAfterItIsOpened()
+    public function testTheDirectoryOfAClosedTorrentIsExtractedWithoutOpeningIt()
     {
         $dir = $this->base . '/' . self::NAME . '.closed';
         mkdir($dir);
-        $command = $this->command('', [['', '', 'name'], [0, $dir, 0], ['a.zip']]);
+        $command = $this->command('', [['', 'name'], ['0', '/moved/away', $dir, 'a.zip', '1'], ['a.zip']]);
         $this->assertTrue(strpos($command, escapeshellarg($dir . '/')) !== false, 'the directory is extracted');
     }
 

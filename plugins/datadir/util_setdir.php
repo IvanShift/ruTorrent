@@ -353,23 +353,21 @@ function rtDataDirSnapshot($hash, $destPath, $addPath, $moveFiles, $dbg, $readOn
     }
     $destPath = rtAddTailSlash($physicalDestination);
     if ($moveFiles) {
-        $info = ['d.get_name', 'd.get_base_path', 'd.get_base_filename', 'd.is_multi_file'];
-        if (!$wasOpen) {
-            array_unshift($info, 'd.open');
-            $info[] = 'd.close';
-        }
-        $request = rtExec($info, $hash, $dbg);
-        if (!$request || !is_array($request->val) || count($request->val) !== count($info)
-            || (!$wasOpen && (string) end($request->val) !== '0')) {
+        // rTorrent::getBasePath() reads a closed download's path without
+        // opening it and from where the download is now, not where it was
+        // when it was last open. The last component of that path is what
+        // d.base_filename answers for an open download; a closed one's
+        // d.base_filename still reads the frozen path, and d.name can differ
+        // from that component after a move without the name.
+        $request = rtExec(['d.get_name', 'd.is_multi_file'], $hash, $dbg);
+        $basePath = rTorrent::getBasePath($hash);
+        if (!$request || !is_array($request->val) || count($request->val) !== 2 || $basePath === false) {
             throw new RuntimeException('unreadable-payload-metadata');
         }
-        $offset = $wasOpen ? 0 : 1;
-        $name = $request->val[$offset];
-        $basePath = $request->val[$offset + 1];
-        $baseFile = $request->val[$offset + 2];
-        $multi = (string) $request->val[$offset + 3] !== '0';
-        if (!is_string($name) || !is_string($basePath) || !is_string($baseFile)
-            || $basePath === '' || $baseFile === ''
+        $name = $request->val[0];
+        $multi = (string) $request->val[1] !== '0';
+        $baseFile = FileUtil::getFileName($basePath);
+        if (!is_string($name) || $baseFile === ''
             || ($multi && ($name === '' || $name === '.' || $name === '..'
                 || strpos($name, '/') !== false || strpos($name, "\0") !== false))
             || $baseFile === '.' || $baseFile === '..'

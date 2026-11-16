@@ -649,32 +649,20 @@ try {
                 if (!validTorrentHashBatch($hash, $malformedForm, true)) {
                     refuseTrustedHashBatch('getsavepath');
                 }
-                $state = new rXMLRPCRequest(new rXMLRPCCommand('d.is_open', $hash[0]));
-                if (!$state->success(true) || count($state->val) !== 1
-                    || !in_array($state->val[0], ['0', '1'], true)) {
-                    break;
-                }
-                if ($state->val[0] === '1') {
-                    // Preserve an already-open torrent: reading its path must not
-                    // stop its transfers by closing it afterwards.
-                    $req = new rXMLRPCRequest([new rXMLRPCCommand('d.get_base_path', $hash[0]),
-                        new rXMLRPCCommand('d.get_name', $hash[0])]);
-                    if ($req->success(true) && count($req->val) === 2) {
-                        $result = ['0', $req->val[0], '0'];
-                        if (!UTF::isValid($req->val[0])) {
-                            $result[] = httprpcPathValues($req->val[0], $req->val[1]);
-                        }
-                    }
-                } else {
-                    $req = new rXMLRPCRequest([
-                        new rXMLRPCCommand('d.open', $hash[0]),
-                        new rXMLRPCCommand('d.get_base_path', $hash[0]),
-                        new rXMLRPCCommand('d.get_name', $hash[0]),
-                        new rXMLRPCCommand('d.close', $hash[0])]);
-                    if ($req->success(true) && count($req->val) === 4) {
-                        $result = [$req->val[0], $req->val[1], $req->val[3]];
-                        if (!UTF::isValid($req->val[1])) {
-                            $result[] = httprpcPathValues($req->val[1], $req->val[2]);
+                // Read without opening a closed torrent: the d.close after a
+                // temporary open would cancel a hash check the daemon queued
+                // for it (rTorrent::getFilePath()). The first and last cells
+                // held the answers of that d.open and d.close, "0".
+                require_once(__DIR__ . '/../../php/rtorrent.php');
+                $base = rTorrent::getBasePath($hash[0]);
+                if ($base !== false) {
+                    $result = ['0', $base, '0'];
+                    if (!UTF::isValid($base)) {
+                        $req = new rXMLRPCRequest(new rXMLRPCCommand('d.get_name', $hash[0]));
+                        if ($req->success(true) && count($req->val) === 1) {
+                            $result[] = httprpcPathValues($base, $req->val[0]);
+                        } else {
+                            $result = null;
                         }
                     }
                 }

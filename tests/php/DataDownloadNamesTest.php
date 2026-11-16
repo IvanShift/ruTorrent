@@ -27,14 +27,12 @@ class DataDownloadNamesReplies extends FakeRtorrentMethodReplies
         if ($multiple && $this->optionalFailure) {
             foreach ($methods as $index => $method) {
                 if (($this->optionalFailure === true && ($method === 'session.path' || $method === 'get_session'))
-                    || ($this->optionalFailure === 'close' && $method === 'd.close')) {
+                    || ($this->optionalFailure === 'directory' && $method === 'd.get_directory')) {
                     $results[$index] = ['faultCode' => '-503', 'faultString' => 'optional metadata unavailable'];
                 }
             }
         }
-        $body = HttprpcListFixture::body($results);
-        $body = str_replace('<value><string>__nil_lifecycle__</string></value>', '<value><nil/></value>', $body);
-        return new FakeRtorrentRawReply($body);
+        return new FakeRtorrentRawReply(HttprpcListFixture::body($results));
     }
 }
 
@@ -92,22 +90,17 @@ class DataDownloadNamesTest extends TestCase
         $this->server = null;
         $this->daemon->stop();
         $this->daemon = null;
-        $this->assertSame('серия.bin', $this->download("cp\xFF.bin", 'серия.bin', null, true), 'temporarily opening a closed torrent retains its attested Unicode label');
-        $this->assertTrue(in_array('d.close', $this->daemon->calls(), true), 'a temporarily opened torrent is closed by the shared owner');
-    }
-
-    public function testARequiredCloseFaultCannotBeIgnoredAsDisplayMetadataFailure()
-    {
-        $this->download("cp\xFF.bin", 'alias.bin', 'close-fault', true);
-    }
-
-    public function testNilLifecycleRepliesRemainValidForClosedDownloads()
-    {
+        $this->assertSame('серия.bin', $this->download("cp\xFF.bin", 'серия.bin', null, true), 'a closed torrent\'s file retains its attested Unicode label');
         $this->assertSame(
-            'серия.bin',
-            $this->download("cp\xFF.bin", 'серия.bin', 'nil', true),
-            'valid nil open/close results do not suppress the frozen path or its display label',
+            [],
+            array_values(array_intersect($this->daemon->calls(), ['d.open', 'd.close'])),
+            'a closed torrent is neither opened nor closed to read its path',
         );
+    }
+
+    public function testARequiredDirectoryFaultCannotBeIgnoredAsDisplayMetadataFailure()
+    {
+        $this->download("cp\xFF.bin", 'alias.bin', 'directory-fault', true);
     }
 
     // A host may disable a function the name lookup needs: sha1() leaves
@@ -150,8 +143,12 @@ class DataDownloadNamesTest extends TestCase
         }
         $values = [];
         foreach (['f.get_frozen_path','f.frozen_path'] as $method) {
-            $values[$method] = $closed ? new FakeRtorrentPerCall([[''],[$path]]) : [$path];
+            $values[$method] = [$closed ? '' : $path];
         }
+        foreach (['d.get_directory','d.directory'] as $method) {
+            $values[$method] = [$this->base];
+        }
+        $values['d.is_open'] = [$closed ? '0' : '1'];
         foreach (['f.get_path','f.path'] as $method) {
             $values[$method] = [$failure === 'path' ? 'different' : $raw];
         }
@@ -167,12 +164,7 @@ class DataDownloadNamesTest extends TestCase
         foreach (['d.get_tied_to_file','d.tied_to_file'] as $method) {
             $values[$method] = [''];
         }
-        if ($failure === 'nil') {
-            foreach (['d.open','d.close'] as $method) {
-                $values[$method] = ['__nil_lifecycle__'];
-            }
-        }
-        $fault = $failure === 'close-fault' ? 'close' : ($failure === 'rpc');
+        $fault = $failure === 'directory-fault' ? 'directory' : ($failure === 'rpc');
         $this->daemon = new FakeRtorrentDaemon(new DataDownloadNamesReplies($values, $fault), $this->base . '/rpc.log', false, [__FILE__]);
         $router = $this->base . '/www/router.php';
         file_put_contents($router, '<?php $_ENV["RU_PROFILE_PATH"]=' . var_export($this->base . '/profile', true) . ';'
@@ -185,9 +177,9 @@ class DataDownloadNamesTest extends TestCase
             . ' chdir(' . var_export($root . '/plugins/data', true) . ');require ' . var_export($root . '/plugins/data/action.php', true) . ';');
         $this->server = TestHttpServer::start($this->base . '/www', [], $serverArguments, $router);
         $response = TestHttpServer::rawGet($this->server->port(), '/?hash=' . $hash . '&no=' . ($failure === 'index' ? '-1' : '0'));
-        if ($failure === 'close-fault') {
-            $this->assertSame('HTTP/1.0 302 Moved Temporarily', $response['status'], 'a failed required close retains the existing data-download refusal');
-            $this->assertSame('', $response['body'], 'a required lifecycle fault cannot be relabeled as an optional metadata failure');
+        if ($failure === 'directory-fault') {
+            $this->assertSame('HTTP/1.0 302 Moved Temporarily', $response['status'], 'a failed required directory read retains the existing data-download refusal');
+            $this->assertSame('', $response['body'], 'a required path fault cannot be relabeled as an optional metadata failure');
             return null;
         }
         $this->assertSame('HTTP/1.0 200 OK', $response['status'], 'the data endpoint still serves the selected raw file');

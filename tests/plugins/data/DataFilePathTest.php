@@ -44,7 +44,11 @@ class DataFilePathTest extends TestCase
         $this->assertSent('sample\\"apostrophe\'file.txt', false);
     }
 
-    public function testThePathOfAClosedTorrentIsSentAfterItIsOpened()
+    /**
+     * A closed torrent's file is where d.directory and f.path say: the
+     * frozen path names where it was when the torrent was last open.
+     */
+    public function testTheCurrentPathOfAClosedTorrentIsSentWithoutOpeningIt()
     {
         $this->assertSent('sample\\"apostrophe\'file.txt', true);
     }
@@ -56,7 +60,7 @@ class DataFilePathTest extends TestCase
         if ($this->daemon !== null) {
             $this->daemon->stop();
         }
-        $this->daemon = new FakeRtorrentDaemon($closed ? [[''], [0, $path, 0]] : [[$path]], $this->base . '/calls.log');
+        $this->daemon = new FakeRtorrentDaemon($closed ? [['0', '/moved/away/' . $name, $this->base, $name]] : [['1', $path, '/elsewhere', 'other']], $this->base . '/calls.log');
         $root = realpath(__DIR__ . '/../../..');
         file_put_contents($this->base . '/drive.php', "<?php\n"
             . '$_ENV["RU_PROFILE_PATH"] = ' . var_export($this->base . '/profile', true) . ";\n"
@@ -67,5 +71,9 @@ class DataFilePathTest extends TestCase
             . 'chdir(' . var_export($root . '/plugins/data', true) . "); require 'action.php';\n");
         $run = PhpProcess::run(array_merge(PhpProcess::sameIni(), [$this->base . '/drive.php']));
         $this->assertEquals('PAYLOAD', $run['out'], 'the file is sent; stderr: ' . $run['err']);
+        $this->assertTrue(
+            !in_array('d.open', $this->daemon->calls(), true) && !in_array('d.close', $this->daemon->calls(), true),
+            'the path read neither opens nor closes the torrent; calls: ' . implode(', ', $this->daemon->calls()),
+        );
     }
 }

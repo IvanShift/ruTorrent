@@ -5,6 +5,7 @@ require_once(__DIR__ . '/../../php/TorrentSequenceFixtures.php');
 require_once(__DIR__ . '/../../php/FakeRtorrentDaemon.php');
 require_once(__DIR__ . '/../../../php/Torrent.php');
 require_once(__DIR__ . '/../../php/TestTree.php');
+require_once(__DIR__ . '/../../php/HalfLoadedReplies.php');
 
 /**
  * plugins/edit/action.php erases the torrent before it reloads it.
@@ -262,8 +263,75 @@ class EditActionReloadTest extends TestCase
     }
 
     /**
+     * A started torrent the daemon has not resumed yet, queued for its hash
+     * check while the daemon loads its session, is closed and inactive. The
+     * edit used to read that as stopped and reload it stopped (b5repro cut 2,
+     * 2026-11-16). The snapshot is the answer captured on such a torrent
+     * (HalfLoadedReplies), with this fixture's session directory and no tied
+     * file or directory.
+     */
+    public function testAQueuedStartedTorrentIsReloadedStarted()
+    {
+        $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=queued', ['snapshot' => $this->capturedSnapshot(
+            HalfLoadedReplies::fixture('edit'),
+            ['/data/.watch/t318.torrent', '/data/downloads/t318'],
+        )]);
+        $load = $this->loadCallIndex();
+        $this->assertTrue(
+            $load >= 0 && $this->daemon->calls()[$load] === 'load_raw_start',
+            'the torrent comes back started (d.state 1, d.hashing 1); calls: ' . implode(', ', $this->daemon->calls()),
+        );
+    }
+
+    /** The same with the guarded erase, whose stop token is read just before d.get_hashing. */
+    public function testAQueuedStartedTorrentIsReloadedStartedThroughTheGuardedErase()
+    {
+        $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=queued', ['guarded' => true,
+            'active' => 0, 'hashing' => 1]);
+        $load = $this->loadCallIndex();
+        $this->assertTrue(
+            $load >= 0 && $this->daemon->calls()[$load] === 'load_raw_start',
+            'the torrent comes back started; calls: ' . implode(', ', $this->daemon->calls()),
+        );
+    }
+
+    /** The other side: a stopped torrent with the same queued fields stays stopped. */
+    public function testAStoppedTorrentIsReloadedStopped()
+    {
+        $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=stopped', ['state' => 0, 'active' => 0, 'hashing' => 1]);
+        $load = $this->loadCallIndex();
+        $this->assertTrue(
+            $load >= 0 && $this->daemon->calls()[$load] === 'load_raw',
+            'd.state 0 reloads stopped; calls: ' . implode(', ', $this->daemon->calls()),
+        );
+    }
+
+    /**
+     * A started torrent whose hash check failed (here a recheck of a payload
+     * the daemon could not read) keeps d.hashing set, and the daemon resumes
+     * it only when it is started again. The edit used to reload it stopped,
+     * and must still. The snapshot is the answer captured on such a torrent
+     * on rtorrent 0.16.28 (fixtures/run-state-edit-*.json), with this
+     * fixture's session directory and no tied file or directory.
+     */
+    public function testAStartedTorrentWhoseHashCheckFailedIsReloadedStopped()
+    {
+        $answers = json_decode(file_get_contents(__DIR__ . '/../../php/fixtures/run-state-edit-rtorrent-0.16.28-cdff6007.json'), true);
+        $this->saveAnEdit('hash=' . self::HASH . '&set_comment=1&comment=failed', ['snapshot' => $this->capturedSnapshot(
+            $answers['hashfailed'],
+            ['/data/.watch/t44.torrent', '/data/downloads'],
+        )]);
+        $load = $this->loadCallIndex();
+        $this->assertTrue(
+            $load >= 0 && $this->daemon->calls()[$load] === 'load_raw',
+            'the torrent comes back stopped (d.state 1, d.hashing 3, d.hashing_failed 1); calls: '
+            . implode(', ', $this->daemon->calls()),
+        );
+    }
+
+    /**
      * The throttle plugin is not registered in this fixture, so action.php
-     * asks for nine values and never reads a throttle name. It used to put the
+     * never reads a throttle name. It used to put the
      * unset throttle into the addition list anyway, and a non-string entry
      * refuses the whole add.
      */
@@ -524,6 +592,17 @@ class EditActionReloadTest extends TestCase
         $this->assertTrue($loadSeen, 'the load transcript was inspected rather than skipped');
     }
 
+    /**
+     * A captured answer to the edit read as this fixture's snapshot: its
+     * session directory, and no tied file or directory ($paths, the
+     * captured ones, become empty).
+     */
+    private function capturedSnapshot($xml, array $paths)
+    {
+        $xml = str_replace(array_merge(['/data/.session/'], $paths), array_merge([$this->base . '/session/'], array_fill(0, count($paths), '')), $xml);
+        return FakeRtorrentDaemon::raw("Status: 200 OK\r\nContent-Type: text/xml\r\nContent-Length: " . strlen($xml) . "\r\n\r\n" . $xml);
+    }
+
     private function repoRoot()
     {
         return realpath(__DIR__ . '/../../..');
@@ -531,12 +610,13 @@ class EditActionReloadTest extends TestCase
 
     /**
      * Runs plugins/edit/action.php against the daemon and returns what it
-     * printed. The nine values are the multicall action.php opens with:
+     * printed. The values are the multicall action.php opens with:
      * get_session, d.is_open, d.is_active, d.get_state, d.get_tied_to_file,
      * d.get_custom1, d.get_directory_base, d.get_connection_seed and
-     * d.get_complete. d.get_complete is 0 so the reload does not take the
-     * fast resume branch, and the directory is empty so the add does not need
-     * a directory to be approved.
+     * d.get_complete, then the throttle name and the stop token when asked
+     * for, and d.get_hashing and d.get_hashing_failed last. d.get_complete is 0 so the reload does not
+     * take the fast resume branch, and the directory is empty so the add does
+     * not need a directory to be approved. 'snapshot' replaces the answer.
      */
     private function saveAnEdit($post, $options = [])
     {
@@ -565,7 +645,7 @@ class EditActionReloadTest extends TestCase
         if ($tied !== '') {
             file_put_contents($tied, $this->announceOnlyTorrent());
         }
-        $values = [$session, 1, 1, 1, $tied, $options['label'] ?? '', $directory,
+        $values = [$session, 1, $options['active'] ?? 1, $options['state'] ?? 1, $tied, $options['label'] ?? '', $directory,
             $options['seed'] ?? 'seed', 0];
         if (!empty($options['throttle'])) {
             $values[] = $options['throttleName'] ?? 'slowpool';
@@ -573,9 +653,11 @@ class EditActionReloadTest extends TestCase
         if (!empty($options['guarded'])) {
             $values[] = str_repeat('a', 32) . ':0000000000000001';
         }
+        $values[] = $options['hashing'] ?? 0; // d.get_hashing
+        $values[] = 0; // d.get_hashing_failed
         $options['tied'] = $tied;
         $replies = [
-            $values,
+            $options['snapshot'] ?? $values,
             [0], // d.erase
             [0], // load
             ['1'], // load proof key

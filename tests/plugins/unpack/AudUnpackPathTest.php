@@ -42,7 +42,7 @@ class AudUnpackPathTest extends TestCase
     public function testAudArchiveFromAClosedDownloadIsUnpackedBesideItself()
     {
         $archive = $this->directory . '/inner.zip';
-        list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', $archive]));
+        list($scripts, $out) = $this->unpack('zip', '3', self::closedFile($this->directory, 'inner.zip'));
         $this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
         $expected = escapeshellarg('unzip') . ' ' . escapeshellarg($archive) . ' '
             . escapeshellarg($this->directory . '/');
@@ -55,7 +55,7 @@ class AudUnpackPathTest extends TestCase
 
     public function testAudArchiveWithoutAPathStartsNoTask()
     {
-        list($scripts, $out) = $this->unpack('zip', '3', self::frozen(['', '']));
+        list($scripts, $out) = $this->unpack('zip', '3', self::closedFile('', ''));
         $this->assertSame(
             [],
             $scripts,
@@ -66,7 +66,8 @@ class AudUnpackPathTest extends TestCase
     public function testAudDownloadIsUnpackedIntoItsLabelAndNameDirectories()
     {
         list($scripts, $out) = $this->unpack('', '0', [
-            'd.get_base_path' => [$this->directory], 'd.base_path' => [$this->directory],
+            'd.is_open' => [1], 'd.get_base_path' => [$this->directory], 'd.base_path' => [$this->directory],
+            'd.get_directory' => ['/elsewhere'], 'd.is_multi_file' => [1],
             // A label another client wrote without percent-encoding.
             'd.get_custom1' => [self::AUD], 'd.custom1' => [self::AUD],
             'd.get_name' => [self::AUD_PAIRS], 'd.name' => [self::AUD_PAIRS],
@@ -79,6 +80,34 @@ class AudUnpackPathTest extends TestCase
             isset($scripts[0]) && strpos($scripts[0], 'unzip_dir.sh') !== false
             && strpos($scripts[0], $expected) !== false,
             'the base path is a directory and the label and name are the daemon\'s own: ' . ($scripts[0] ?? ''),
+        );
+    }
+
+    /**
+     * A closed download's directory is read without opening it, since the
+     * d.close after a temporary open would cancel a hash check the daemon
+     * has queued for it; its d.base_path names where it was when last open.
+     */
+    public function testAudClosedDownloadIsUnpackedFromItsDirectoryWithoutOpeningIt()
+    {
+        list($scripts, $out) = $this->unpack('', '0', [
+            'd.is_open' => [0], 'd.get_base_path' => ['/moved/away'], 'd.is_multi_file' => [1],
+            'd.get_directory' => [$this->directory],
+            'd.get_custom1' => [self::AUD], 'd.get_name' => [self::AUD_PAIRS],
+            'f.multicall' => ['inner.zip'],
+        ]);
+        $this->assertSame(1, count($scripts), 'one unpack task is built: ' . $out);
+        $expected = escapeshellarg($this->directory . '/') . ' '
+            . escapeshellarg($this->directory . '/' . self::AUD . '/' . self::AUD_PAIRS . '/');
+        $this->assertTrue(
+            isset($scripts[0]) && strpos($scripts[0], 'unzip_dir.sh') !== false
+            && strpos($scripts[0], $expected) !== false,
+            'the directory of the closed download is unpacked: ' . ($scripts[0] ?? ''),
+        );
+        $calls = $this->daemon->calls();
+        $this->assertTrue(
+            !in_array('d.open', $calls, true) && !in_array('d.close', $calls, true),
+            'and the download is neither opened nor closed: ' . implode(', ', $calls),
         );
     }
 
@@ -117,11 +146,10 @@ class AudUnpackPathTest extends TestCase
         return [PluginEntryDriver::taskScripts($this->base), $out];
     }
 
-    private static function frozen(array $answers)
+    /** A closed download: its file at $directory "/" $path, not at the path frozen when it was last open. */
+    private static function closedFile($directory, $path)
     {
-        $calls = new FakeRtorrentPerCall(array_map(function ($path) {
-            return [$path];
-        }, $answers));
-        return ['f.get_frozen_path' => $calls, 'f.frozen_path' => $calls];
+        return ['d.is_open' => [0], 'f.get_frozen_path' => ['/moved/away/' . $path], 'd.get_directory' => [$directory],
+            'f.get_path' => [$path]];
     }
 }

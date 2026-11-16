@@ -270,23 +270,14 @@ class rUnpack
         } else {
             $req = new rXMLRPCRequest(
                 [
-                    new rXMLRPCCommand("d.get_base_path", $hash),
                     new rXMLRPCCommand("d.get_custom1", $hash),
                     new rXMLRPCCommand("d.get_name", $hash) ],
             );
             if ($req->success()) {
-                $basename = $req->val[0];
-                $label = rawurldecode($req->val[1]);
-                $tname = $req->val[2];
-                if ($basename == '') {
-                    $req = new rXMLRPCRequest([
-                        new rXMLRPCCommand("d.open", $hash),
-                        new rXMLRPCCommand("d.get_base_path", $hash),
-                        new rXMLRPCCommand("d.close", $hash) ]);
-                    if ($req->success()) {
-                        $basename = $req->val[1];
-                    }
-                }
+                // A closed torrent is read without opening it, where it is now.
+                $basename = (string) rTorrent::getBasePath($hash);
+                $label = rawurldecode($req->val[0]);
+                $tname = $req->val[1];
                 self::log("[Manual] Check torrent [$tname] at [$basename] for archives");
                 $req = new rXMLRPCRequest(
                     new rXMLRPCCommand("f.multicall", [$hash,"",getCmd("f.get_path=")]),

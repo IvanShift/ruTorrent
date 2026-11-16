@@ -8,8 +8,8 @@ if (isset($_REQUEST['result'])) {
 }
 
 if (isset($_REQUEST['hash']) && isset($_REQUEST['no'])) {
-    // The shared reader opens a closed download only to read the path and
-    // returns it in the daemon's own bytes (AUD-ESC-06).
+    // The shared reader reads the path without opening a closed download
+    // and returns it in the daemon's own bytes (AUD-ESC-06).
     $filename = rTorrent::getFilePath($_REQUEST['hash'], $_REQUEST['no']);
     if ($filename !== false) {
         // A name that is not UTF-8 is offered under its label; the file sent

@@ -532,27 +532,76 @@ class rTorrent
         return($fname);
     }
 
-    // Closed downloads may not have a frozen file path until a temporary open.
-    // Keep the open/read/close commands together so media plugins share one result.
+    // A file's path, read without opening its download: the d.close after a
+    // temporary open cancels a hash check the daemon has queued for that
+    // download, which then stays closed with d.state 1 until someone starts
+    // it by hand. False when the daemon does not answer or names no file.
     public static function getFilePath($hash, $index)
     {
         $index = intval($index);
-        $req = new rXMLRPCRequest(new rXMLRPCCommand("f.get_frozen_path", [$hash, $index]));
-        if (!$req->success() || !isset($req->val[0]) || !is_string($req->val[0])) {
+        $req = new rXMLRPCRequest([
+            new rXMLRPCCommand("d.is_open", $hash),
+            new rXMLRPCCommand("f.get_frozen_path", [$hash, $index]),
+            new rXMLRPCCommand("d.get_directory", $hash),
+            new rXMLRPCCommand("f.get_path", [$hash, $index])]);
+        if (!$req->success() || count(array_filter($req->val, 'is_string')) !== 4) {
             return(false);
         }
-        $path = $req->val[0];
-        if ($path === '') {
-            $req = new rXMLRPCRequest([
-                new rXMLRPCCommand("d.open", $hash),
-                new rXMLRPCCommand("f.get_frozen_path", [$hash, $index]),
-                new rXMLRPCCommand("d.close", $hash)]);
-            if (!$req->success() || !isset($req->val[1]) || !is_string($req->val[1])) {
-                return(false);
-            }
-            $path = $req->val[1];
+        return(self::currentPath(...$req->val));
+    }
+
+    // A download's base path, read without opening it (see getFilePath()):
+    // d.base_path while it is open; once it is closed, d.directory for a
+    // multi-file download, or d.directory, "/" and its one file's f.path for
+    // a single-file download. False when the daemon does not answer or names
+    // no path.
+    public static function getBasePath($hash)
+    {
+        $req = new rXMLRPCRequest([
+            new rXMLRPCCommand("d.is_open", $hash),
+            new rXMLRPCCommand("d.get_base_path", $hash),
+            new rXMLRPCCommand("d.get_directory", $hash),
+            new rXMLRPCCommand("f.get_path", [$hash, 0]),
+            new rXMLRPCCommand("d.is_multi_file", $hash)]);
+        if (!$req->success() || count(array_filter($req->val, 'is_string')) !== 5) {
+            return(false);
         }
-        return($path !== '' ? $path : false);
+        list($open, $base, $directory, $path, $multi) = $req->val;
+        return(self::currentPath($open, $base, $directory, ($multi === '0') ? $path : null));
+    }
+
+    // While rTorrent has a download queued for its hash check, or checks it,
+    // d.hashing is not 0 and d.is_active is 0; d.is_open is 0 until the check
+    // opens it, and d.connection_current reads "leech", its unset default,
+    // until the daemon first resumes the download after loading it. Once the
+    // check is done, the daemon resumes the download if its saved d.state is
+    // 1 (hash_done()). A daemon that answers RPC while it loads its session
+    // lists every download it has not reached yet so, and so does one that
+    // loads first for a started download waiting behind another download's
+    // full check. Inactive is not stopped there: only the saved d.state and
+    // d.complete say what such a download is meant to do. These two
+    // predicates are the one place that reads them so.
+
+    // Whether rTorrent runs this download, or will once its hash check is
+    // done: d.state 1, and d.is_active 1 or d.hashing set while
+    // d.hashing_failed is 0. A stopped or a paused download is not meant to
+    // run, nor is a started one whose hash check failed: d.hashing stays set
+    // after the failure, and the daemon resumes it only when it is started
+    // again (DownloadList::hash_done(), resume()).
+    public static function isMeantToRun($state, $isActive, $hashing, $hashFailed)
+    {
+        return((string) $state === '1'
+            && ((string) $isActive === '1'
+                || (self::isHashQueued($hashing) && (string) $hashFailed === '0')));
+    }
+
+    // Whether this download leeches, or will once its hash check is done.
+    // "leech" is also the unset connection of a download not resumed since
+    // the daemon loaded it, so a completed one waiting for its check seeds.
+    public static function isLeeching($connection, $complete, $hashing)
+    {
+        return($connection === 'leech'
+            && !(self::isHashQueued($hashing) && (string) $complete === '1'));
     }
 
     // rTorrent names a BEP-9 magnet download <HASH>.meta, in uppercase hex,
@@ -833,6 +882,30 @@ class rTorrent
             $directory = rTorrentSettings::get()->directory;
         }
         return($directory);
+    }
+
+    // libtorrent freezes a download's paths when it opens its files, each
+    // file's as d.directory, "/" and f.path (FileList::open()), and keeps
+    // them after d.close; d.directory.set closes an open download first. So
+    // the frozen path ($frozen: f.frozen_path, or d.base_path) is the path
+    // only while d.is_open is 1, and a closed download's file is where
+    // d.directory and f.path say, however long ago it was open, as long as
+    // every move since set d.directory: a payload moved without setting it
+    // is where neither path says. A null $path names the directory.
+    private static function currentPath($open, $frozen, $directory, $path)
+    {
+        if ($open === '1') {
+            return(($frozen !== '') ? $frozen : false);
+        }
+        if ($directory === '' || $path === '') {
+            return(false);
+        }
+        return(($path === null) ? $directory : $directory . '/' . $path);
+    }
+
+    private static function isHashQueued($hashing)
+    {
+        return(preg_match('/^[1-9][0-9]*$/D', (string) $hashing) === 1);
     }
 
     /**

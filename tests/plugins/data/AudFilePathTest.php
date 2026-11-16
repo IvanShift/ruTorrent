@@ -61,27 +61,25 @@ class AudFilePathTest extends TestCase
 
     public function testAudDataSendsTheFileTheDaemonNamed()
     {
-        foreach (['open' => [$this->file], 'closed' => ['', $this->file]] as $state => $frozen) {
+        foreach (['open' => true, 'closed' => false] as $state => $open) {
             list($exit, $out, $err) = $this->drive(
                 'plugins/data/action.php',
-                $frozen,
+                $this->file,
+                $open,
                 ['get' => ['hash' => self::HASH, 'no' => '0']],
             );
             $this->assertSame(self::PAYLOAD, $out, $state . ' download: "Get data" sends the file: ' . $out . $err);
             $this->assertSame(0, $exit, $state . ' download: the script ends cleanly: ' . $err);
             $this->assertSame(
-                $state === 'open' ? 1 : 2,
+                1,
                 count($this->daemon->bodies()),
                 'optional download-label evidence stays in the existing path request',
             );
         }
-        $lifecycle = array_values(array_filter($this->daemon->calls(), function ($method) {
-            return in_array($method, ['d.open', 'f.get_frozen_path', 'd.close'], true);
-        }));
         $this->assertSame(
-            ['d.open', 'f.get_frozen_path', 'd.close'],
-            array_slice($lifecycle, -3),
-            'a closed download is opened only to read the path, and closed again',
+            [],
+            array_values(array_intersect($this->daemon->calls(), ['d.open', 'd.close'])),
+            'a closed download is neither opened nor closed to read its path',
         );
     }
 
@@ -90,7 +88,8 @@ class AudFilePathTest extends TestCase
         foreach (['mediainfo' => 'mediainfo', 'screenshots' => 'ffmpeg', 'spectrogram' => 'sox'] as $plugin => $cmd) {
             list($exit, $out, $err) = $this->drive(
                 'plugins/' . $plugin . '/action.php',
-                ['', $this->file],
+                $this->file,
+                false,
                 ['post' => ['cmd' => $cmd, 'hash' => self::HASH, 'no' => '0']],
             );
             $scripts = PluginEntryDriver::taskScripts($this->base);
@@ -112,7 +111,8 @@ class AudFilePathTest extends TestCase
         file_put_contents($file, self::PAYLOAD);
         list($exit, $out, $err) = $this->drive(
             'plugins/spectrogram/action.php',
-            ['', $file],
+            $file,
+            false,
             ['post' => ['cmd' => 'sox', 'hash' => self::HASH, 'no' => '0'],
                 'before' => 'setlocale(LC_CTYPE, "C");'],
         );
@@ -133,19 +133,21 @@ class AudFilePathTest extends TestCase
     }
 
     /**
-     * $frozen lists what f.get_frozen_path answers on each call: a closed
-     * download answers '' first, and then the path inside d.open/d.close.
+     * An open download answers its frozen path; a closed one has its file at
+     * d.directory "/" f.path, wherever its frozen path says it was.
      */
-    private function drive($script, $frozen, array $options)
+    private function drive($script, $file, $open, array $options)
     {
         $this->stopDaemon();
         PluginEntryDriver::removeTree($this->base . '/profile');
-        $answers = new FakeRtorrentPerCall(array_map(function ($path) {
-            return [$path];
-        }, $frozen));
-        $this->daemon = new FakeRtorrentDaemon(new AudFilePathReplies([
-            'f.get_frozen_path' => $answers, 'f.frozen_path' => $answers,
-        ]), $this->base . '/calls.log', false, [__FILE__]);
+        $slash = strrpos($file, '/');
+        $replies = [];
+        foreach (['d.is_open' => $open ? '1' : '0', 'f.get_frozen_path' => $open ? $file : '/moved/away' . substr($file, $slash),
+            'd.get_directory' => substr($file, 0, $slash),
+            'f.get_path' => substr($file, $slash + 1)] as $method => $value) {
+            $replies[$method] = $replies[str_replace('.get_', '.', $method)] = [$value];
+        }
+        $this->daemon = new FakeRtorrentDaemon(new AudFilePathReplies($replies), $this->base . '/calls.log', false, [__FILE__]);
         return PluginEntryDriver::run($this->base, $this->daemon->port(), $script, $options);
     }
 }

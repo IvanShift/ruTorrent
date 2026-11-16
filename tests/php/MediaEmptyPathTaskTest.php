@@ -41,17 +41,12 @@ require_once(__DIR__.'/../../php/utility/utility.php');
 class rCache { public function get($item) { return false; } }
 class rXMLRPCCommand { public function __construct($name, $args = null) {} }
 class rXMLRPCRequest {
-    private static $calls = 0;
     public $val = array();
     public function __construct($command) {}
     public function success() {
-        self::$calls++;
-        if (self::$calls === 1) {
-            $this->val = array(getenv('RPC_CASE') === 'present' ? '/synthetic/media' : '');
-            return true;
-        }
-        if (getenv('RPC_CASE') === 'fallback-failure') return false;
-        $this->val = array('', '');
+        // d.is_open, f.get_frozen_path, d.get_directory and f.get_path in one request.
+        if (getenv('RPC_CASE') === 'failure') return false;
+        $this->val = getenv('RPC_CASE') === 'present' ? array('1', '/synthetic/media', '/synthetic', 'other') : array('0', '', '', '');
         return true;
     }
 }
@@ -92,11 +87,11 @@ PHPREQUEST,
         rmdir($this->scratch);
     }
 
-    public function testEmptyPathSkipsTaskAcrossFallbacks()
+    public function testAnEmptyOrFailedPathReadSkipsTheTask()
     {
         foreach ([['screenshots', 'ffmpeg'], ['spectrogram', 'sox'],
             ['mediainfo', 'mediainfo']] as $route) {
-            foreach (['fallback-empty', 'fallback-failure'] as $rpcCase) {
+            foreach (['empty', 'failure'] as $rpcCase) {
                 @unlink($this->scratch . '/task-started');
                 list($exit, $out, $err) = $this->request($route[0], $route[1], $rpcCase);
                 $label = $route[1] . ' ' . $rpcCase;

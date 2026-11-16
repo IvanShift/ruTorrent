@@ -281,25 +281,25 @@ class UnpackTopDirectoryTest extends TestCase
         );
     }
 
-    /** The manual unpack of the download's one archive, which rtorrent reports at $frozen. */
+    /** The manual unpack of the open download's one archive, which rtorrent reports at $frozen. */
     private function manual($dir, $frozen)
     {
         return $this->drive(
             'plugins/unpack/action.php',
             [],
-            ['f.get_frozen_path' => [$frozen], 'f.frozen_path' => [$frozen]],
+            ['d.is_open' => [1], 'f.get_frozen_path' => [$frozen], 'f.frozen_path' => [$frozen]],
             ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => $dir, 'mode' => 'zip', 'no' => '0'],
         );
     }
 
     /**
-     * A manual unpack of the whole download: rtorrent reports its base path,
-     * label and name, then its files.
+     * A manual unpack of the whole open download: rtorrent reports its base
+     * path, label and name, then its files.
      */
     private function whole($dir, $basePath, $label = '', array $settings = [])
     {
         return $this->drive('plugins/unpack/action.php', $settings, [
-            'd.get_base_path' => [$basePath], 'd.base_path' => [$basePath],
+            'd.is_open' => [1], 'd.get_base_path' => [$basePath], 'd.base_path' => [$basePath],
             'd.get_custom1' => [$label], 'd.custom1' => [$label],
             'd.get_name' => ['a'], 'd.name' => ['a'],
             'f.multicall' => ['a.zip'],

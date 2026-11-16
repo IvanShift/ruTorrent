@@ -84,21 +84,22 @@ class RtorrentRawStringConsumersTest extends TestCase
         mkdir($dir);
         $file = $dir . '/file \\"y\\".bin';
         file_put_contents($file, 'data');
-        $this->daemon(['f.get_frozen_path' => [$file]]);
+        $this->daemon(['d.is_open' => ['1'], 'f.get_frozen_path' => [$file]]);
         $path = rTorrent::getFilePath(self::HASH, 0);
         $this->same($file, $path, 'getFilePath() answers the frozen path in its own bytes');
         $this->assertTrue(is_string($path) && is_file($path), 'and that path is the file');
     }
 
-    public function testGetFilePathFallbackAnswersThePathTheFileHas()
+    public function testGetFilePathOfAClosedDownloadAnswersThePathTheFileHas()
     {
         $file = $this->base . '/' . self::NAME . '.bin';
         file_put_contents($file, 'data');
-        $this->daemon(['f.get_frozen_path' => new FakeRtorrentPerCall([[''], [$file]])]);
+        $this->daemon(['d.is_open' => ['0'], 'f.get_frozen_path' => [''], 'd.get_directory' => [$this->base],
+            'f.get_path' => [self::NAME . '.bin']]);
         $this->same(
             $file,
             rTorrent::getFilePath(self::HASH, 0),
-            'the open/read/close fallback answers the same bytes',
+            'the directory and the file\'s path of a closed download answer the same bytes',
         );
     }
 

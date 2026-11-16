@@ -335,8 +335,10 @@ class SetDirActionCollisionTest extends TestCase
         if ($moveFiles) {
             $replies[] = [$isOpen, 'local-1', $this->base . '/src'];
             if ($isOpen) {
-                $replies[] = ['mytorrent', $this->base . '/src/mytorrent',
-                    'mytorrent', 1];
+                $replies[] = ['mytorrent', 1];
+                // rTorrent::getBasePath(): d.is_open, d.base_path, d.directory,
+                // the first file's f.path and d.is_multi_file.
+                $replies[] = [1, $this->base . '/src/mytorrent', $this->base . '/src/mytorrent', '1.bin', 1];
                 $replies[] = $names;
             }
         }

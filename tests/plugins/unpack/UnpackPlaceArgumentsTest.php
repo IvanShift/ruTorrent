@@ -50,7 +50,7 @@ class UnpackPlaceArgumentsTest extends TestCase
         $this->assertPlacementArguments(
             $this->command(
                 'plugins/unpack/action.php',
-                ['f.get_frozen_path' => $frozen, 'f.frozen_path' => $frozen],
+                ['d.is_open' => [1], 'f.get_frozen_path' => $frozen, 'f.frozen_path' => $frozen],
                 ['post' => ['cmd' => 'unpack', 'hash' => self::HASH, 'dir' => '', 'mode' => 'zip', 'no' => '0']],
             ),
             'manual',
@@ -61,7 +61,7 @@ class UnpackPlaceArgumentsTest extends TestCase
     {
         $this->assertPlacementArguments(
             $this->command('plugins/unpack/action.php', [
-                'd.get_base_path' => [$this->base . '/data/whole'], 'd.base_path' => [$this->base . '/data/whole'],
+                'd.is_open' => [1], 'd.get_base_path' => [$this->base . '/data/whole'], 'd.base_path' => [$this->base . '/data/whole'],
                 'd.get_custom1' => [''], 'd.custom1' => [''],
                 'd.get_name' => ['whole'], 'd.name' => ['whole'],
                 'f.multicall' => ['b.zip'],

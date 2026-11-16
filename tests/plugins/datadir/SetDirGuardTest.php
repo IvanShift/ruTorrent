@@ -8,6 +8,21 @@ class FileUtil
     {
         DataDirTestState::$logs[] = $message;
     }
+    // php/utility/fileutil.php's own.
+    public static function getFileName($path)
+    {
+        $arr = explode('/', $path);
+        return(end($arr));
+    }
+}
+
+class rTorrent
+{
+    public static function getBasePath($hash)
+    {
+        DataDirTestState::$calls[] = 'basePath';
+        return DataDirTestState::$basePath;
+    }
 }
 
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
@@ -35,6 +50,8 @@ class DataDirTestState
     public static $created = [];
     public static $crashAtFiles = false;
     public static $basePath = '/data/downloads/file';
+    public static $name = 'file';
+    public static $multi = 0;
     public static $files = ['file'];
     public static $runFailure = null;
     public static $restoredStart = false;
@@ -59,6 +76,8 @@ class DataDirTestState
         self::$created = [];
         self::$crashAtFiles = false;
         self::$basePath = '/data/downloads/file';
+        self::$name = 'file';
+        self::$multi = 0;
         self::$files = ['file'];
         self::$runFailure = null;
         self::$restoredStart = false;
@@ -194,14 +213,8 @@ function rtExec($commands, $hash, $debug = false)
         return (object) ['val' => [(int) DataDirTestState::$open,
             '0123456789abcdef0123456789abcdef', '/data/downloads']];
     }
-    if ($commands === ['d.get_name', 'd.get_base_path', 'd.get_base_filename',
-        'd.is_multi_file']) {
-        return (object) ['val' => ['file', DataDirTestState::$basePath, 'file', 0]];
-    }
-    if ($commands === ['d.open', 'd.get_name', 'd.get_base_path',
-        'd.get_base_filename', 'd.is_multi_file', 'd.close']) {
-        $values = [0, 'file', DataDirTestState::$basePath, 'file', 0, 0];
-        return (object) ['val' => $values];
+    if ($commands === ['d.get_name', 'd.is_multi_file']) {
+        return (object) ['val' => [DataDirTestState::$name, DataDirTestState::$multi]];
     }
     if ($commands === 'f.multicall') {
         if (DataDirTestState::$crashAtFiles) {
@@ -455,7 +468,7 @@ $suite->test('missing no-replace helper refuses before a native claim', function
     ) !== false, 'missing helper is visible');
 });
 
-$suite->test('initially closed payload read returns to closed state before job', function () use ($hash) {
+$suite->test('a closed torrent whose file list cannot be read stays closed and gets no job', function () use ($hash) {
     DataDirTestState::reset(false, false);
     DataDirTestState::$crashAtFiles = true;
     strictAssertSame(
@@ -465,6 +478,73 @@ $suite->test('initially closed payload read returns to closed state before job',
     );
     strictAssertSame(false, DataDirTestState::$open, 'closed state is preserved');
     strictAssertSame([], DataDirTestState::$created, 'no partial job is published');
+});
+
+// The d.close after a temporary open would cancel a hash check the daemon
+// has queued for the download, and this refusal would leave it closed; and
+// a closed download's own d.base_path may be where it was when last open.
+$suite->test('a closed torrent\'s payload source comes from rTorrent::getBasePath() without opening it', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    $root = DataDirTestState::$root;
+    mkdir($root . '/source', 0700);
+    mkdir($root . '/destination', 0700);
+    file_put_contents($root . '/source/file', 'source');
+    DataDirTestState::$basePath = $root . '/source/file';
+    DataDirTestState::helper($root . '/destination');
+    strictAssertSame(
+        false,
+        rtSetDataDir($hash, $root . '/destination', false, true, false, false, $failure),
+        'the unsupported destination refuses',
+    );
+    strictAssertSame(0, strpos($failure, 'rename-noreplace-unsupported'), 'after the source was found: ' . $failure);
+    strictAssertSame(
+        ['d.stop_close_claim_state', ['d.is_open', 'd.local_id', 'd.directory'],
+            ['d.get_name', 'd.is_multi_file'], 'basePath', 'f.multicall'],
+        DataDirTestState::$calls,
+        'the base path comes from rTorrent::getBasePath(), and nothing opens or closes the torrent',
+    );
+});
+
+// A multi-file download moved without appending its name (the datadir
+// dialog's move without "add path" sets d.directory.base) keeps its payload
+// in a directory whose last component is not d.name. A closed one's base
+// path is its d.directory, so the source is that directory, not d.name.
+$suite->test('a closed multi-file torrent moved without its name moves from its base path, not from d.name', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    $root = DataDirTestState::$root;
+    // A directory named after d.name beside it must not be taken instead.
+    foreach (['/dest', '/Name', '/destination'] as $directory) {
+        mkdir($root . $directory, 0700);
+    }
+    file_put_contents($root . '/dest/f0.bin', 'payload');
+    DataDirTestState::$basePath = $root . '/dest';
+    DataDirTestState::$name = 'Name';
+    DataDirTestState::$multi = 1;
+    DataDirTestState::$files = ['f0.bin'];
+    $snapshot = rtDataDirSnapshot($hash, $root . '/destination', false, true, false);
+    strictAssertSame(
+        [$root . '/dest', $root . '/destination', true],
+        [$snapshot['source'], $snapshot['destination'], $snapshot['move']],
+        'the source is the base path\'s own last component',
+    );
+});
+
+$suite->test('a base path rTorrent::getBasePath() cannot read refuses as unreadable payload metadata', function () use ($hash) {
+    DataDirTestState::reset(false, false);
+    $root = DataDirTestState::$root;
+    mkdir($root . '/destination', 0700);
+    DataDirTestState::$basePath = false;
+    try {
+        rtDataDirSnapshot($hash, $root . '/destination', false, true, false);
+        throw new LogicException('an unreadable base path was admitted');
+    } catch (RuntimeException $e) {
+        strictAssertSame('unreadable-payload-metadata', $e->getMessage(), 'the refusal names the unread metadata');
+    }
+    strictAssertSame(
+        [['d.is_open', 'd.local_id', 'd.directory'], ['d.get_name', 'd.is_multi_file'], 'basePath'],
+        DataDirTestState::$calls,
+        'nothing after the base path is read',
+    );
 });
 
 $suite->test('ordinary checker customs are retained in the job handoff', function () use ($hash) {
