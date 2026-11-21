@@ -87,12 +87,13 @@ class rAutoTools
         $cache = new rCache();
         return $cache->set($this);
     }
-    public function set()
+    public function set($rawPostData = null)
     {
         if (!isset($HTTP_RAW_POST_DATA)) {
-            $HTTP_RAW_POST_DATA = file_get_contents("php://input");
+            $HTTP_RAW_POST_DATA = is_null($rawPostData) ? file_get_contents("php://input") : $rawPostData;
         }
         $vars = explode('&', $HTTP_RAW_POST_DATA);
+        $escaped = isset($vars[0]) && $vars[0] === 'formEncoding=percent-v1';
         $this->enable_label = 0;
         $this->label_template = "{DIR}";
         $this->enable_move = 0;
@@ -106,7 +107,13 @@ class rAutoTools
         $this->addName = 0;
         $this->addLabel = 0;
         foreach ($vars as $var) {
-            $parts = explode("=", $var);
+            $parts = explode("=", $var, 2);
+            if (!isset($parts[1])) {
+                continue;
+            }
+            if ($escaped) {
+                $parts[1] = rawurldecode($parts[1]);
+            }
             if ($parts[0] == "enable_label") {
                 $this->enable_label = $parts[1];
             } elseif ($parts[0] == "label_template") {
@@ -121,7 +128,7 @@ class rAutoTools
             } elseif ($parts[0] == "fileop_type") {
                 $this->fileop_type = $parts[1];
             } elseif ($parts[0] == "path_to_finished") {
-                $this->path_to_finished = rawurldecode($parts[1]);
+                $this->path_to_finished = ($escaped ? $parts[1] : rawurldecode($parts[1]));
                 if (!rTorrentSettings::get()->correctDirectory($this->path_to_finished)) {
                     $this->path_to_finished = '';
                     $this->finishedPathRefused = true;
@@ -134,7 +141,7 @@ class rAutoTools
             } elseif ($parts[0] == "enable_watch") {
                 $this->enable_watch = $parts[1];
             } elseif ($parts[0] == "path_to_watch") {
-                $this->path_to_watch = rawurldecode($parts[1]);
+                $this->path_to_watch = ($escaped ? $parts[1] : rawurldecode($parts[1]));
                 if (!rTorrentSettings::get()->correctDirectory($this->path_to_watch)) {
                     $this->path_to_watch = '';
                 }

@@ -86,24 +86,28 @@ class RtorrentProbeFixture
      * For a test whose daemon answers from a fixed reply list and whose
      * subject is what the script asks rtorrent for, not how it learned to
      * ask. The file is produced by running the real probe once rather than
-     * written out here, so it holds whatever that probe produces.
+     * written out here, so it holds whatever that probe produces. $name is
+     * the session name the daemon reports, $directory its default directory,
+     * $session its session directory and $home the home directory of the
+     * user it runs as.
      */
-    public static function warmSettingsCache($profilePath)
+    public static function warmSettingsCache($profilePath, $name = '', $directory = '/tmp', $session = '', $home = '/home/rtorrent')
     {
-        static $cache = null;
-        if ($cache === null) {
-            $cache = self::probeForCache();
+        static $caches = [];
+        $key = serialize([$name, $directory, $session, $home]);
+        if (!array_key_exists($key, $caches)) {
+            $caches[$key] = self::probeForCache($name, $directory, $session, $home);
         }
-        if ($cache === false) {
+        if ($caches[$key] === false) {
             return false;
         }
         @mkdir($profilePath . '/settings', 0700, true);
-        return file_put_contents($profilePath . '/settings/rtorrent.dat', $cache) !== false;
+        return file_put_contents($profilePath . '/settings/rtorrent.dat', $caches[$key]) !== false;
     }
 
-    public static function responder($hash = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+    public static function responder($hash = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', $name = '', $directory = '/tmp', $session = '', $home = '/home/rtorrent')
     {
-        return new RtorrentProbeResponder($hash);
+        return new RtorrentProbeResponder($hash, false, null, $name, $directory, $session, $home);
     }
 
     /** A daemon that accepts every connection and answers an empty list. */
@@ -112,14 +116,14 @@ class RtorrentProbeFixture
         return new RtorrentProbeResponder(null, true);
     }
 
-    private static function probeForCache()
+    private static function probeForCache($name, $directory, $session, $home)
     {
         $base = sys_get_temp_dir() . '/rutorrent-probe-fixture-' . getmypid();
         $daemon = null;
         try {
             @mkdir($base . '/settings', 0700, true);
             $daemon = new FakeRtorrentDaemon(
-                self::responder(),
+                self::responder('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', $name, $directory, $session, $home),
                 $base . '/calls.log',
                 false,
                 self::replyClassFiles(),
@@ -157,12 +161,20 @@ class RtorrentProbeResponder
     private $hash;
     private $silent;
     private $listFault;
+    private $name;
+    private $directory;
+    private $session;
+    private $home;
 
-    public function __construct($hash, $silent = false, $listFault = null)
+    public function __construct($hash, $silent = false, $listFault = null, $name = '', $directory = '/tmp', $session = '', $home = '/home/rtorrent')
     {
         $this->hash = $hash;
         $this->silent = $silent;
         $this->listFault = $listFault;
+        $this->name = $name;
+        $this->directory = $directory;
+        $this->session = $session;
+        $this->home = $home;
     }
 
     public function __invoke($body, $methods = null)
@@ -197,15 +209,16 @@ class RtorrentProbeResponder
                 return ['6890'];
             case 'execute.capture':
                 // uid, group list, home -- the three lines obtain() reads.
-                return ["1000\n1000 1001\n/home/rtorrent\n"];
+                return ["1000\n1000 1001\n" . $this->home . "\n"];
         }
         // The settings batch: directory, session, library version, name,
-        // port range, bind address, local address. Every one of these
-        // but the library version is answered with the value the class
-        // carries unprobed, so that warmSettingsCache() changes what a
-        // script knows about the daemon's commands and nothing else.
+        // port range, bind address, local address. Every one of these but
+        // the library version and a value the test gave is answered with the
+        // value the class carries unprobed, so that warmSettingsCache()
+        // changes what a script knows about the daemon's commands and
+        // nothing else.
         if (count($names) === 7) {
-            return ['/tmp', '', RtorrentProbeFixture::VERSION, '',
+            return [$this->directory, $this->session, RtorrentProbeFixture::VERSION, $this->name,
                 '6890-6999', '0.0.0.0', '0.0.0.0'];
         }
         return array_fill(0, max(1, count($names)), '0');

@@ -58,7 +58,7 @@ jobs:
       # step the runner's default node decides, and it has been older.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
       - name: editorconfig-checker
         # Both halves are pinned on purpose. The wrapper has to be one that
         # knows the current release asset names as well as the legacy ones,
@@ -84,7 +84,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 26
       - name: install eslint
         working-directory: tests
         run: npm ci

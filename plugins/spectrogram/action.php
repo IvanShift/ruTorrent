@@ -19,7 +19,7 @@ if (isset($input['cmd'])) {
                         $commands = [];
                         $name = '"${dir}"/frame.png';
                         $commands[] = Utility::getExternal("sox")
-                                . " " . Utility::escapeShellArg($filename) . " "
+                                . " --no-glob " . Utility::escapeShellArg($filename) . " "
                                 . implode(" ", array_map(["Utility", "escapeShellArg"], explode(" ", $arguments)))
                                 . ' -t ' . Utility::escapeShellArg($mediafile) . ' -o '
                                 . $name;

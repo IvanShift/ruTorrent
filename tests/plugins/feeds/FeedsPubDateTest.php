@@ -473,6 +473,175 @@ class FeedsPubDateTest extends TestCase
     }
 
     /**
+     * rTorrent sends a backslash or a double quote in a name or a label as it
+     * is, and the feed prints both as rTorrent has them, once: a backslash
+     * already in front of a quote stays. A label the interface set is
+     * URL-encoded and is decoded only after that, so %5C%22 in it is still a
+     * backslash and a quote.
+     */
+    public function testANameOrALabelWithABackslashOrAQuoteReadsBackAsItIs()
+    {
+        $torrents = $this->torrents;
+        $this->torrents = [
+            ['4444444444444444444444444444444444444444', 'say "hi" \\ to C:\\dir\\', '1700000000', '', '', 'tv \\"uhd\\" \\ x'],
+            ['5555555555555555555555555555555555555555', 'ends with \\"', '1710000000', '', '', 'a%5C%22b'],
+        ];
+        try {
+            list(, $output) = $this->feed(false);
+        } finally {
+            $this->torrents = $torrents;
+        }
+        $xml = @simplexml_load_string($output);
+        $this->assertTrue($xml !== false, 'the feed is well-formed XML: ' . substr($output, 0, 300));
+        if ($xml === false) {
+            throw new Exception('The feed could not be parsed');
+        }
+        $read = [];
+        foreach ($xml->channel->item as $item) {
+            $read[(string) $item->guid] = [(string) $item->title, (string) $item->category];
+        }
+        ksort($read);
+        $this->assertEquals(
+            [
+                '4444444444444444444444444444444444444444' => ['say "hi" \\ to C:\\dir\\', 'tv \\"uhd\\" \\ x'],
+                '5555555555555555555555555555555555555555' => ['ends with \\"', 'a\\"b'],
+            ],
+            $read,
+            'each name and label reads back as rTorrent has it: ' . json_encode($read),
+        );
+    }
+
+    /**
+     * The settings probe reads the session name through rXMLRPCRequest.
+     * The channel header prints
+     * the name rTorrent reports.
+     */
+    public function testASessionNameWithABackslashOrAQuoteReadsBackAsItIs()
+    {
+        $name = 'box "q" \\ x';
+        list(, $output, $status) = $this->feed(false, [], null, '0.16.25', 'all', null, $name);
+        $this->assertEquals(200, $status, 'the feed is served');
+        $this->assertEquals(
+            $name . ': All torrents',
+            $this->channelTitle($output),
+            'the channel title reads back the session name as rTorrent reports it',
+        );
+    }
+
+    /**
+     * With item descriptions on, a torrent's tracker message is shown in a
+     * fieldset of its own, as rTorrent has it. A byte that is not UTF-8 shows
+     * as a visible hexadecimal escape rather than emptying the message, and a torrent without a
+     * message has no such fieldset.
+     */
+    public function testATrackerMessageIsShownInTheDescriptionAsItIs()
+    {
+        $torrents = $this->torrents;
+        $this->torrents = [
+            ['6666666666666666666666666666666666666666', 'refused', '1700000000', '', 'Failure reason "unregistered" \\ x'],
+            ['7777777777777777777777777777777777777777', 'no message', '1700000000', '', ''],
+            ['8888888888888888888888888888888888888888', 'not UTF-8', '1700000000', '', "Failure reason \xff x"],
+        ];
+        try {
+            list(, $output) = $this->feed(true);
+        } finally {
+            $this->torrents = $torrents;
+        }
+        $xml = @simplexml_load_string($output);
+        $this->assertTrue($xml !== false, 'the feed is well-formed XML: ' . substr($output, 0, 300));
+        if ($xml === false) {
+            throw new Exception('The feed could not be parsed');
+        }
+        $descriptions = [];
+        foreach ($xml->channel->item as $item) {
+            $descriptions[(string) $item->guid] = (string) $item->description;
+        }
+        $shown = [
+            '6666666666666666666666666666666666666666' => 'Failure reason &quot;unregistered&quot; \\ x',
+            '8888888888888888888888888888888888888888' => "Failure reason \\xFF x",
+        ];
+        foreach ($shown as $hash => $message) {
+            $description = $descriptions[$hash] ?? '';
+            $this->assertTrue(
+                strpos($description, '<legend>Tracker Status</legend>' . $message . '</fieldset>') !== false,
+                'the description shows the tracker message: ' . $description,
+            );
+        }
+        $description = $descriptions['7777777777777777777777777777777777777777'] ?? '';
+        $this->assertTrue(
+            strpos($description, '</fieldset>') !== false && strpos($description, 'Tracker Status') === false,
+            'a torrent without a tracker message has a description and no Tracker Status fieldset: ' . $description,
+        );
+    }
+
+    /**
+     * A torrent's name, label and comment may hold a byte that is not UTF-8.
+     * Each is printed with that byte shown as a hexadecimal escape, as the tracker message
+     * is, rather than emptied: the item keeps its title and its category, and
+     * the description its Comment fieldset.
+     */
+    public function testANameALabelOrACommentThatIsNotUtf8IsShownRatherThanEmptied()
+    {
+        $torrents = $this->torrents;
+        $this->torrents = [
+            ['9999999999999999999999999999999999999999', "name \xff x", '1700000000', 'VRS24mrkercomment %FF x', '', 'label %FF x'],
+        ];
+        try {
+            list(, $output) = $this->feed(true);
+        } finally {
+            $this->torrents = $torrents;
+        }
+        $xml = @simplexml_load_string($output);
+        $this->assertTrue($xml !== false, 'the feed is well-formed XML: ' . substr($output, 0, 300));
+        if ($xml === false) {
+            throw new Exception('The feed could not be parsed');
+        }
+        $item = $xml->channel->item[0];
+        $this->assertEquals(
+            ["name \\xFF x", "label \\xFF x"],
+            [(string) $item->title, (string) $item->category],
+            'the title and the category show the byte as a hexadecimal escape: ' . substr($output, 0, 600),
+        );
+        $this->assertTrue(
+            strpos((string) $item->description, "<legend>Comment</legend>comment \\xFF x</fieldset>") !== false,
+            'the description shows the comment: ' . $item->description,
+        );
+    }
+
+    /**
+     * rTorrent sends a backslash or a double quote in a comment as it is, as
+     * it does in a name. The description prints the comment as rTorrent has
+     * it, once, and URL-decodes it only after that, so %5C%22 in it is still a
+     * backslash and a quote.
+     */
+    public function testACommentWithABackslashOrAQuoteReadsBackAsItIs()
+    {
+        $torrents = $this->torrents;
+        $this->torrents = [
+            ['AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'commented', '1700000000',
+                'VRS24mrkersay "hi" \\ to C:\\dir\\ \\"q\\" %5C%22'],
+        ];
+        try {
+            list(, $output) = $this->feed(true);
+        } finally {
+            $this->torrents = $torrents;
+        }
+        $xml = @simplexml_load_string($output);
+        $this->assertTrue($xml !== false, 'the feed is well-formed XML: ' . substr($output, 0, 300));
+        if ($xml === false) {
+            throw new Exception('The feed could not be parsed');
+        }
+        $description = (string) $xml->channel->item[0]->description;
+        $this->assertTrue(
+            strpos(
+                $description,
+                '<legend>Comment</legend>say &quot;hi&quot; \\ to C:\\dir\\ \\&quot;q\\&quot; \\&quot;</fieldset>',
+            ) !== false,
+            'the description shows the comment as rTorrent has it: ' . $description,
+        );
+    }
+
+    /**
      * mode arrives in the request and titles the channel out of the language
      * file, so an unknown key reads no string: the diagnostic that produces
      * is printed before the document the script is still building, and the
