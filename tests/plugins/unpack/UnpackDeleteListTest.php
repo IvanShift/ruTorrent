@@ -54,7 +54,7 @@ class UnpackDeleteListTest extends TestCase
 
     public function testASingleArchiveWithASemicolonIsDeletedWhole()
     {
-        foreach (['x;y.rar', 'x;y.zip', 'plain.rar'] as $name) {
+        foreach (['x;y.rar', 'x;y.zip', 'plain.rar', "caf\xE9.rar", 'обычный file.zip'] as $name) {
             $this->fresh();
             mkdir($this->base . '/copy');
             mkdir($this->base . '/dl');
@@ -134,10 +134,10 @@ class UnpackDeleteListTest extends TestCase
             . '$up = new rUnpack(); $up->startSilentTask(' . var_export($basename, true) . ', '
             . var_export($downloadname, true) . ', "", "name", ' . var_export(self::HASH, true) . ");\n");
         $driven = PhpProcess::run(array_merge(PhpProcess::sameIni(), [$this->base . '/drive.php']));
-        // The dry run logs the commands it would start as a JSON list.
+        // Restore the known invalid byte escaped by UTF::display() in the dry-run log.
         preg_match('/ with arguments (\[.*\])$/m', (string) @file_get_contents($log), $match);
         $commands = isset($match[1]) ? json_decode($match[1], true) : [];
-        $command = $commands[0] ?? '';
+        $command = str_replace('\\xE9', "\xE9", $commands[0] ?? '');
         if ($command === '') {
             return ['command' => '', 'code' => -1, 'out' => 'no command: ' . $driven['out'] . $driven['err'], 'php' => $driven['err']];
         }

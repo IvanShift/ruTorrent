@@ -48,6 +48,18 @@ function makeTaskQueue() {
   return queue;
 }
 
+describe("requests without timeout", () => {
+  it("uses the default error handler when none is supplied", () => {
+    loadWebUI();
+    window.Ajax = jest.fn();
+    theWebUI.requestWithoutTimeout("?getplugins", jest.fn(), true);
+    expect(window.Ajax.mock.calls[0][4]).toBe(theWebUI.error);
+    const customError = jest.fn();
+    theWebUI.requestWithoutTimeout("?getplugins", jest.fn(), true, customError);
+    expect(window.Ajax.mock.calls[1][4]).toBe(customError);
+  });
+});
+
 describe("webui stale details", () => {
   beforeEach(() => {
     document.body.innerHTML = "";

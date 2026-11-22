@@ -417,6 +417,42 @@ class UnpackScriptsTest extends TestCase
         $this->assertSame('user file', @file_get_contents($userFile), 'the user argument is not a deletion target');
     }
 
+    public function testShortInvocationRefusesWithoutCallingRm()
+    {
+        $rm = $this->base . '/rm';
+        file_put_contents($rm, "#!/bin/sh\necho called > " . escapeshellarg($this->base . '/rm.called') . "\n");
+        chmod($rm, 0700);
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $script = dirname(__DIR__, 3) . '/plugins/unpack/unrar_file.sh';
+        $process = proc_open(
+            [$script, $unrar, 'archive', 'output', '', '', '', PHP_BINARY, 'manual', self::HASH],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $this->base,
+            array_merge(getenv(), ['PATH' => $this->base . ':' . getenv('PATH')]),
+        );
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $this->assertSame(1, proc_close($process), 'short invocation fails: ' . $out . $err);
+        $this->assertTrue(strpos($err, 'fewer than 10 arguments') !== false, 'refusal is visible');
+        $this->assertTrue(!file_exists($this->base . '/rm.called'), 'rm is never called');
+    }
+
+    public function testFailedUnrarKeepsListedArchives()
+    {
+        $archive = $this->base . '/in/a.rar';
+        file_put_contents($archive, 'archive');
+        $unrar = $this->extractor('unrar', '[ "$1" = lt ] && exit 0; exit 2');
+        foreach (['unrar_file.sh' => $archive, 'unrar_dir.sh' => $this->base . '/in/'] as $script => $input) {
+            $run = $this->script($script, [$unrar, $input, $this->base . '/out/', '', [$archive]]);
+            clearstatcache();
+            $this->assertSame(2, $run['code'], $script . ' reports extraction failure');
+            $this->assertTrue(is_file($archive), $script . ' keeps the archive');
+        }
+    }
+
     public function testNothingIsDeletedWhenNoArchiveIsListed()
     {
         file_put_contents($this->base . '/in/a.zip', 'zip');

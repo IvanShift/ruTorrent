@@ -47,3 +47,7 @@ insert_final_newline = false
 [tests/plugins/erasedata/fixtures/loaded-downloads-*/*.xml]
 end_of_line = unset
 insert_final_newline = unset
+
+# Captured half-loaded replies have no final newline.
+[tests/php/fixtures/half-loaded-*.xml]
+insert_final_newline = false

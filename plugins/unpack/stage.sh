@@ -10,6 +10,11 @@
 # download's hash and the user. Any arguments after those are the archives
 # to delete once the unpack has succeeded.
 
+if [ "$#" -lt 10 ] ; then
+	printf '%s\n' 'unpack: refused invocation with fewer than 10 arguments' >&2
+	exit 1
+fi
+
 unpack_output="$3"
 unpack_root="${6:-$3}"
 unpack_php="$7"

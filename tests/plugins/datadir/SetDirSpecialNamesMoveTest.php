@@ -197,20 +197,6 @@ class SetDirSpecialNamesMoveTest extends TestCase
         return is_string($result['answer']) ? $result['answer'] : 'unexpected output: ' . $result['output'];
     }
 
-    private function runPhp($args)
-    {
-        $mask = umask(022);
-        try {
-            $run = PhpProcess::run(
-                array_merge(PhpProcess::sameIni(), ['-d', 'error_reporting=0'], $args),
-                ['env' => ['LC_ALL' => 'C']],
-            );
-        } finally {
-            umask($mask);
-        }
-        return $run['out'];
-    }
-
     private function makeDir($dir)
     {
         if (!is_dir($dir) && !mkdir($dir, 0777, true)) {
@@ -218,8 +204,4 @@ class SetDirSpecialNamesMoveTest extends TestCase
         }
     }
 
-    private function repoRoot()
-    {
-        return realpath(__DIR__ . '/../../..');
-    }
 }

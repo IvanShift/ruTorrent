@@ -216,13 +216,6 @@ class DefaultDirectoryBytesTest extends TestCase
         return $file;
     }
 
-    private function runScript($which, $args)
-    {
-        return $this->runPhp($this->driver(
-            'require(' . var_export($this->repoRoot() . '/plugins/autotools/' . $which . '.php', true) . ');',
-        ), $args);
-    }
-
     private function runPhp($file, $args = [])
     {
         $mask = umask(022);

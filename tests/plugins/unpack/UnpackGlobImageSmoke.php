@@ -3,7 +3,7 @@
 // Real Info-ZIP and UnRAR; fixtures were made by the fork's
 // UnpackArchiveFixture. The regular suite also checks the shell arguments.
 require_once(__DIR__ . '/../../php/TestCase.php');
-require_once(__DIR__ . '/UnpackPlaceFixture.php');
+require_once(__DIR__ . '/../../php/TestTree.php');
 
 
 function runGlobUnpack($script, array $args)
@@ -41,7 +41,7 @@ class UnpackGlobImageSmoke extends TestCase
 
     public function tearDown()
     {
-        UnpackPlaceFixture::remove($this->base);
+        TestTree::remove($this->base);
     }
 
     public function testZipTreatsItsFilenameLiterally()
