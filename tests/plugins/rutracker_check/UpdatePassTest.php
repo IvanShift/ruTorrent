@@ -2623,10 +2623,9 @@ upTest($suite, 'Kinozal batches continue after the last topic asked, whatever th
         $k = array_column($rows, 'hash');
         $nnm = $k[5];
         strictAssertSame(array($k[0], $k[1], $nnm), upRunCursorPass($rows),
-            'the first batch starts at the head of the view');
+            'the first batch starts at the smallest hash');
         $state = RuTrackerState::load('kinozal-cycle');
-        strictAssertSame($k[1], $state['cursor'], 'the last topic asked is kept');
-        strictAssertSame(1, $state['cursor_position'], 'with its place among the Kinozal topics');
+        strictAssertSame($k[1], $state['cursors'][RuTrackerState::daemonKey()], 'the last topic asked is kept');
         strictAssertSame(array($nnm), upRunCursorPass($rows), 'a pass inside the interval asks no Kinozal topic');
         strictAssertSame($state, RuTrackerState::load('kinozal-cycle'), 'and leaves the cursor alone');
         foreach (array(array(3, $k[2], $k[3]), array(17, $k[4], $k[0]), array(4, $k[1], $k[2])) as $pass) {
@@ -2638,7 +2637,7 @@ upTest($suite, 'Kinozal batches continue after the last topic asked, whatever th
                 'pass ' . $pass[0] . ': the batch continues after the previous one and wraps round');
             strictAssertTrue(in_array($nnm, $checked, true), 'pass ' . $pass[0] . ': the other tracker keeps its turn');
             $state = RuTrackerState::load('kinozal-cycle');
-            strictAssertSame($pass[2], $state['cursor'], 'the cursor follows the batch');
+            strictAssertSame($pass[2], $state['cursors'][RuTrackerState::daemonKey()], 'the cursor follows the batch');
             strictAssertTrue($state['started_at'] >= time() - 5,
                 'writing the cursor keeps the admission time of its own batch');
         }
@@ -2653,14 +2652,14 @@ upTest($suite, 'a Kinozal batch cut short resumes with the first topic it did no
         $k = array_column($rows, 'hash');
         // A failure was asked; 'unchanged' is a 429 or a pause, never asked.
         upRunCursorPass($rows, array($k[1] => 'failed', $k[2] => 'unchanged', $k[3] => 'unchanged'));
-        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursors'][RuTrackerState::daemonKey()],
             'a topic that failed is passed, one that was never asked is not');
         upExpireKinozalInterval();
         $refused = array($k[2] => 'unchanged', $k[3] => 'not-observed', $k[4] => 'unchanged', $k[0] => 'unchanged');
         strictAssertSame(array($k[2], $k[3], $k[4], $k[0]), array_slice(upRunCursorPass($rows, $refused), 0, 4),
             'the next batch starts with the first topic not asked');
         $state = RuTrackerState::load('kinozal-cycle');
-        strictAssertSame($k[1], $state['cursor'], 'a batch that asked nothing keeps the cursor');
+        strictAssertSame($k[1], $state['cursors'][RuTrackerState::daemonKey()], 'a batch that asked nothing keeps the cursor');
         strictAssertTrue($state['started_at'] >= time() - 5, 'and spends its admission');
     });
 });
@@ -2683,12 +2682,12 @@ upTest($suite, 'a pass killed in the middle of a Kinozal batch keeps the topics 
         } catch (RuntimeException $stopped) {
             strictAssertSame('killed', $stopped->getMessage(), 'the pass stopped at the third topic');
         }
-        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+        strictAssertSame($k[1], RuTrackerState::load('kinozal-cycle')['cursors'][RuTrackerState::daemonKey()],
             'the next batch starts after the last topic asked before the stop');
     });
 });
 
-upTest($suite, 'a vanished Kinozal cursor topic hands its place to the next one', function () {
+upTest($suite, 'a vanished Kinozal cursor resumes at the next hash', function () {
     upLoadKinozalRegistration();
     $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
     upWithKinozalCycleTopics(1, function () {
@@ -2697,20 +2696,46 @@ upTest($suite, 'a vanished Kinozal cursor topic hands its place to the next one'
         $k = array_column($rows, 'hash');
         $gone = str_repeat('9', 40);
         foreach (array(
-            array(array('cursor' => $gone, 'cursor_position' => 2), $k[2], 'the topic now in its place is next'),
-            array(array('cursor' => $gone, 'cursor_position' => 7), $k[2], 'a place past the end wraps round'),
-            array(array('cursor' => $gone, 'cursor_position' => 'x'), $k[0], 'a damaged place starts at the head'),
-            array(array('cursor' => $gone), $k[0], 'a missing place starts at the head'),
+            array(array('cursor' => str_repeat('3', 39) . '4', 'cursor_position' => 0), $k[3], 'a removed cursor resumes at the next hash'),
+            array(array('cursor' => $gone, 'cursor_position' => 2), $k[0], 'a removed cursor wraps after the largest hash'),
+            array(array('cursor' => $gone, 'cursor_position' => 7), $k[0], 'the legacy position is ignored'),
+            array(array('cursor' => $gone, 'cursor_position' => 'x'), $k[0], 'a damaged legacy position does not affect wraparound'),
+            array(array('cursor' => $gone), $k[0], 'a missing legacy position does not affect wraparound'),
             array(array('cursor' => 5, 'cursor_position' => 3), $k[0], 'a damaged cursor starts at the head'),
+            array(array('cursors' => array(RuTrackerState::daemonKey() => $k[2]), 'cursor' => $k[0]), $k[3],
+                'the daemon cursor outranks the legacy one'),
+            array(array('cursors' => 'broken', 'cursor' => $k[1]), $k[2], 'a damaged cursor map falls back and is repaired'),
             // '0E' and digits reads as the number zero: == would match k[0].
-            array(array('cursor' => '0E' . str_repeat('1', 38), 'cursor_position' => 3), $k[3],
-                'a gone hash is matched exactly, not as a number'),
+            array(array('cursor' => '0E' . str_repeat('1', 38), 'cursor_position' => 3), $k[1],
+                'a gone hash is compared as a string, not as a number'),
         ) as $case) {
             RuTrackerState::save('kinozal-cycle', array_merge(array('started_at' => time() - 7200), $case[0]));
             strictAssertSame($case[1], upRunCursorPass($rows)[0], $case[2]);
-            strictAssertSame($case[1], RuTrackerState::load('kinozal-cycle')['cursor'],
+            strictAssertSame($case[1], RuTrackerState::load('kinozal-cycle')['cursors'][RuTrackerState::daemonKey()],
                 $case[2] . ': and the next cursor is written in its canonical form');
+            strictAssertSame(false, array_key_exists('cursor_position', RuTrackerState::load('kinozal-cycle')),
+                $case[2] . ': the obsolete position is removed');
         }
+    });
+});
+
+upTest($suite, 'Kinozal additions and removals preserve the next hash', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(2, function () {
+        $rows = upKinozalCursorRows();
+        $hashes = array_column($rows, 'hash');
+        upRunCursorPass($rows);
+        $added = upKinozalRow(str_repeat('2', 39) . '3', 1, 0);
+        $added['comment'] = 'https://kinozal.tv/details.php?id=10006';
+        unset($rows[1]); // Remove the saved cursor.
+        $rows[] = $added;
+        $rows = array_values(array_reverse($rows));
+        upExpireKinozalInterval();
+        $checked = upRunCursorPass($rows);
+        strictAssertSame(array($added['hash'], $hashes[2]),
+            array_values(array_diff($checked, array($hashes[5]))),
+            'the added next hash and its successor are reached after removing the cursor');
     });
 });
 
@@ -7775,6 +7800,71 @@ upTest($suite, 'the replacement backoff doubles from one hour to a one-day cap a
         'the last entry takes its key with it');
     strictAssertSame(false, RuTrackerReplacementBackoff::clear($hash, $now),
         'clearing an absent entry is a no-op');
+});
+
+upTest($suite, 'Kinozal batches cover all topics despite view reordering', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(35, function () {
+        $rows = array();
+        for ($i = 0; $i < 124; $i++) {
+            $row = upKinozalRow(strtoupper(str_pad(dechex($i + 1), 40, '0', STR_PAD_LEFT)), 1, 0);
+            $row['comment'] = 'https://kinozal.tv/details.php?id=' . (10000 + $i);
+            $rows[] = $row;
+        }
+        $visited = array();
+        for ($pass = 0; $pass < 4; $pass++) {
+            if ($pass) upExpireKinozalInterval();
+            $visited = array_merge($visited, upRunCursorPass($rows));
+            $rows = array_reverse($rows);
+        }
+        strictAssertSame(124, count(array_unique($visited)), 'all topics are reached across reordered views');
+    });
+});
+
+upTest($suite, 'Kinozal cursors advance independently for alternating daemons', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    $savedPort = $GLOBALS['scgi_port'] ?? null;
+    try {
+        upWithKinozalCycleTopics(35, function () {
+            $fleets = array(array(), array());
+            foreach ($fleets as $who => $_) {
+                for ($i = 0; $i < 124; $i++) {
+                    $row = upKinozalRow(strtoupper(sha1("$who/$i")), 1, 0);
+                    $row['comment'] = 'https://kinozal.tv/details.php?id=' . (100000 * ($who + 1) + $i);
+                    $fleets[$who][] = $row;
+                }
+            }
+            $visited = array(array(), array());
+            for ($pass = 0; $pass < 8; $pass++) {
+                $who = $pass % 2;
+                $GLOBALS['scgi_port'] = 5000 + $who;
+                if ($pass) upExpireKinozalInterval();
+                $visited[$who] = array_merge($visited[$who], upRunCursorPass($fleets[$who]));
+            }
+            foreach ($visited as $who => $hashes)
+                strictAssertSame(124, count(array_unique($hashes)), 'daemon ' . $who . ' reaches all topics in four batches');
+        });
+    } finally {
+        if ($savedPort === null) unset($GLOBALS['scgi_port']);
+        else $GLOBALS['scgi_port'] = $savedPort;
+    }
+});
+
+upTest($suite, 'Kinozal orders numeric-looking hashes as strings', function () {
+    upLoadKinozalRegistration();
+    $GLOBALS['rutrackerKinozalCycleInterval'] = 7200;
+    upWithKinozalCycleTopics(1, function () {
+        $rows = array();
+        foreach (array('3', '2', '1') as $digit) {
+            $row = upKinozalRow('0E' . str_repeat($digit, 38), 1, 0);
+            $row['comment'] = 'https://kinozal.tv/details.php?id=1000' . $digit;
+            $rows[] = $row;
+        }
+        RuTrackerState::save('kinozal-cycle', array('started_at' => time() - 7200, 'cursor' => $rows[2]['hash']));
+        strictAssertSame($rows[1]['hash'], upRunCursorPass($rows)[0], 'the successor is the lexical next hash');
+    });
 });
 
 exit($suite->run());

@@ -39,27 +39,27 @@ class RuTrackerUpdatePass
         return $owner !== null && $owner['handler'] === 'KinozalCheckImpl::download_torrent';
     }
 
-    // While the interval gate is on, Kinozal's topics take their own slots of
-    // $order in view order, starting after the last topic an admitted batch
-    // asked: kinozal-cycle.json keeps its hash as 'cursor' and its place
-    // among them as 'cursor_position', which names the next topic when that
-    // torrent is gone. The clock turn of fairOrder() would start a batch a
-    // day wherever the hour of its admission happened to put it. $kinozal
-    // maps each Kinozal row index, in view order, to its place. The document
-    // is one per settings profile, like the mirrors' allowance it rations:
-    // daemons sharing a profile share one batch per interval and one cursor.
+    // Keep Kinozal's slots in a stable hash order, independent of view order.
+    // A removed cursor still identifies where the next batch starts. The
+    // installation shares the admission time, but each daemon has its cursor.
     static private function continueKinozal($order, $kinozal, $rows)
     {
         if (!$kinozal) return $order;
         $own = array_keys($kinozal);
+        usort($own, function ($a, $b) use ($rows) {
+            return strcmp($rows[$a]['hash'], $rows[$b]['hash']);
+        });
         $state = RuTrackerState::load('kinozal-cycle');
+        $cursor = $state['cursors'][RuTrackerState::daemonKey()] ?? $state['cursor'] ?? null;
         $start = 0;
-        if (is_string($state['cursor'] ?? null)) {
-            $place = array_search($state['cursor'], array_column(array_intersect_key($rows, $kinozal), 'hash'), true);
-            $start = $place !== false ? $place + 1
-                : RuTrackerRpcValue::canonicalNonnegativeInteger($state['cursor_position'] ?? null) ?? 0;
+        if (is_string($cursor)) {
+            foreach ($own as $place => $index) {
+                if (strcmp($rows[$index]['hash'], $cursor) > 0) {
+                    $start = $place;
+                    break;
+                }
+            }
         }
-        $start %= count($own);
         $turned = array_merge(array_slice($own, $start), array_slice($own, 0, $start));
         $next = 0;
         foreach ($order as $slot => $index)
@@ -763,7 +763,7 @@ class RuTrackerUpdatePass
         // A Kinozal owner means trackers/kinozal.php registered it.
         $kinozal = array();
         foreach ($rows as $index => $row)
-            if (self::kinozalOwned($comments[$index])) $kinozal[$index] = count($kinozal);
+            if (self::kinozalOwned($comments[$index])) $kinozal[$index] = true;
         $kinozalInterval = $kinozal ? KinozalCheckImpl::cycleInterval() : 0;
         if ($kinozalInterval === 0) $kinozal = array();
         // The start moves by about one quota a pass, the smallest a foreign
@@ -907,13 +907,18 @@ class RuTrackerUpdatePass
                 $foreignMetrics[$bucket]['dispatched']++;
                 $checked[] = $row['hash'];
                 // 'unchanged' is a topic the handler never asked: a pause, a
-                // 429 or an abandoned cycle. The next batch starts with it.
+                // 429 or an abandoned cycle. If no later topic is asked, the
+                // next batch starts with it.
                 // Kept topic by topic, so a pass killed half-way still moves
                 // on; a cursor that cannot be kept repeats these topics.
                 if (isset($kinozal[$index]) && $observation !== 'unchanged' && $observation !== 'not-observed') {
-                    $cursor = array('cursor' => $row['hash'], 'cursor_position' => $kinozal[$index]);
-                    self::updateKinozalCycle(function ($state) use ($cursor) {
-                        return array_merge($state, $cursor);
+                    $cursor = $row['hash'];
+                    $daemon = RuTrackerState::daemonKey();
+                    self::updateKinozalCycle(function ($state) use ($cursor, $daemon) {
+                        unset($state['cursor_position']);
+                        if (!isset($state['cursors']) || !is_array($state['cursors'])) $state['cursors'] = array();
+                        $state['cursors'][$daemon] = $cursor;
+                        return $state;
                     });
                 }
                 continue;
