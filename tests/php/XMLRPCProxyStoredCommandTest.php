@@ -41,7 +41,7 @@ class XMLRPCProxyStoredCommandTest extends TestCase
 
     public function setUp()
     {
-        $this->opts = ['directory' => ['root' => '/', 'resolve' => null]];
+        $this->opts = ['rtorrentVersion' => 0x101c, 'directory' => ['root' => '/', 'resolve' => null]];
     }
 
     public function testEachIsRefusedAsACallOfItsOwn()
@@ -142,7 +142,7 @@ class XMLRPCProxyStoredCommandTest extends TestCase
      * from js/rtorrent.js, under their names before and after the
      * php/methods-*.php renames, plus the actions and the plugin columns.
      */
-    public function testTheWebUIRequestsAreStillForwarded()
+    public function testUnsafeWebUIRequestsAreRefused()
     {
         $source = file_get_contents(__DIR__ . '/../../js/rtorrent.js');
         $lists = [];
@@ -205,11 +205,16 @@ class XMLRPCProxyStoredCommandTest extends TestCase
                 $refused[] = 'system.multicall ' . $request[0];
             }
         }
-        $this->assertTrue(
-            count($refused) === 0,
-            'every request the web UI makes is forwarded'
-            . (count($refused) ? ', refused: ' . implode(', ', $refused) : ''),
-        );
+        // The fork trusts only daemon-native aliases and approved request
+        // shapes. These upstream samples include legacy aliases, a direct
+        // evaluator and a load tail outside that policy.
+        $expected = [
+            'd.multicall2', 'system.multicall d.multicall2', 'd.multicall', 'system.multicall d.multicall',
+            't.multicall', 'system.multicall t.multicall', 'f.multicall', 'system.multicall f.multicall',
+            'p.multicall', 'system.multicall p.multicall', 'd.multicall2', 'system.multicall d.multicall2',
+            'branch', 'system.multicall branch', 'load.start', 'system.multicall load.start',
+        ];
+        $this->assertSame($expected, $refused, 'only the documented upstream sample shapes are refused');
     }
 
     private function decide($xml)

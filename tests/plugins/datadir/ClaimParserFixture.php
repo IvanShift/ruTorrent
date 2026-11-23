@@ -3,7 +3,7 @@
 /** Shared real-parser harness for guarded datadir claim scenarios. */
 trait ClaimParserFixture
 {
-    private function claimReplies($directory, $name, $basePath, $multi, $files, $label = '', $session = '', $tied = '')
+    private function claimReplies($directory, $name, $basePath, $multi, $files, $label = '')
     {
         $claim = ['d.stop_close_claim_state', 'd.stop_close_claim',
             'd.directory.set_if_stop_close_claim', 'd.directory.base.set_if_stop_close_claim',
@@ -14,8 +14,6 @@ trait ClaimParserFixture
         return new FakeRtorrentMethodReplies([
             'system.listMethods' => array_merge(['system.listMethods'], $claim),
             'd.get_custom1' => [$label], 'd.get_custom' => [''],
-            'get_session' => [$session], 'session.path' => [$session],
-            'd.get_tied_to_file' => [$tied], 'd.tied_to_file' => [$tied],
             'd.stop_close_claim_state' => new FakeRtorrentPerCall([['absent'], ['absent'], ['done|S|' . $receipt]]),
             'd.stop_close_claim' => [$receipt], 'd.is_open' => [1], 'd.local_id' => [$localId],
             'd.directory' => [$directory], 'd.get_name' => [$name], 'd.get_base_path' => [$basePath],
@@ -25,7 +23,7 @@ trait ClaimParserFixture
         ]);
     }
 
-    private function claimInPlace($destination, $label = '', $session = '', $tied = '')
+    private function claimInPlace($destination, $label = '')
     {
         $source = $this->base . '/source';
         if (!is_dir($source)) {
@@ -40,7 +38,7 @@ trait ClaimParserFixture
             . ' if ($refusal === "") $refusal = rtDataDirClaimRefusal();'
             . ' $applied = $refusal === "" && rtDataDirApplyLocked($hash, $dest, true, false, true, false, false, $failure, $warning);'
             . ' echo json_encode(array("refusal" => $refusal, "applied" => $applied, "failure" => $failure));';
-        return $this->claimDrive($this->claimReplies($source, 'download', $source, true, [], $label, $session, $tied), $body);
+        return $this->claimDrive($this->claimReplies($source, 'download', $source, true, [], $label), $body);
     }
 
     private function claimDrive($replies, $body)

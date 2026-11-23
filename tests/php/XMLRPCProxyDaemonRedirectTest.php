@@ -99,8 +99,8 @@ class XMLRPCProxyDaemonRedirectTest extends TestCase
             );
             $decision = $this->decideConfined($this->call($name, [$hash, '/torrents1/x']));
             $this->assertTrue(
-                $decision['action'] === 'send',
-                $name . ' inside the boundary is forwarded',
+                $decision['action'] === 'reject',
+                $name . ' direct setter is refused even inside the boundary',
             );
         }
     }
@@ -191,7 +191,7 @@ class XMLRPCProxyDaemonRedirectTest extends TestCase
             'sanitize',
             ['d.custom1.set', 'd.directory.set', 'd.directory_base.set'],
             false,
-            ['directory' => ['root' => '/torrents1', 'resolve' => null]],
+            ['rtorrentVersion' => 0x101c, 'directory' => ['root' => '/torrents1', 'resolve' => null]],
         );
     }
 }

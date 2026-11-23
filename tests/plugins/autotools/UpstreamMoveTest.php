@@ -4,6 +4,21 @@ define('MOVE_WORKER_TEST_LIBRARY', true);
 require_once __DIR__ . '/MoveWorkerTest.php';
 require_once testFindRepoRoot() . '/plugins/erasedata/filesystem.php';
 $suite = new StrictTestSuite();
+$suite->test('upstream move plans a default directory containing quote and backslash', function () {
+    $state = moveWorkerFixture(false, [1,1,1], '"\\bytes');
+    try {
+        list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-check');
+        strictAssertSame(0, $exit, 'check completes');
+        strictAssertSame($state['root'] . '/fin/', $output, 'destination follows exact default directory');
+        list($exit, $after, $calls, $output) = moveWorkerRun($state, 'upstream-move');
+        strictAssertSame(0, $exit, 'move completes');
+        strictAssertSame('payload', file_get_contents($state['destination']), 'payload moved');
+        strictAssertSame(false, file_exists($state['source']), 'source moved');
+    } finally {
+        strictRemoveTree($state['root']);
+    }
+});
+
 foreach (['legacy','native'] as $version) {
     $suite->test('upstream check hook captures the torrent identity before its source ' . $version, function () use ($version) {
         $state = moveWorkerFixture();

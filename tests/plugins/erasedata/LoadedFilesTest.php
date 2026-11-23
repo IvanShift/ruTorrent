@@ -120,6 +120,20 @@ class LoadedFilesTest extends TestCase
         );
     }
 
+    public function testUnknownSameSizePathDoesNotCertifyThePublicBridge()
+    {
+        $private = $this->file('capture/entry', 'obsolete');
+        $public = $this->base . '/public';
+        $this->assertTrue(symlink($private, $public), 'the legacy bridge exists');
+        $directory = dirname($private);
+        $unknown = str_repeat('./', PHP_MAXPATHLEN);
+        $answer = $this->claim([
+            self::B => ['directory' => $directory, 'files' => ['entry' => 8, $unknown => 8]],
+        ], [$private, $public]);
+        $this->assertSame(true, $answer['claimed'][$private][self::B], 'the private path is witnessed');
+        $this->assertSame(false, $answer['claimed'][$public][self::B], 'the unknown path cannot witness the public bridge');
+    }
+
     public function testASymlinkToOurFileClaimsItAndOurSymlinkIsTheNameItIs()
     {
         $own = $this->file('s5a/movie.bin', 'movie bytes');
@@ -240,10 +254,32 @@ class LoadedFilesTest extends TestCase
             is_array(@stat($previous)) && @realpath($previous) === false,
             'stat() reaches the file, realpath() does not',
         );
-        $this->assertSame([$own => [self::B => true]], $this->claim(
+        $answer = $this->claim(
             [self::B => ['directory' => $this->base . '/chain', 'files' => ['l34' => 11]]],
             [$own],
-        )['claimed'], 'kept rather than guessed');
+        );
+        $this->assertSame(
+            [$own => [self::B => true]],
+            $answer['claimed'],
+            'kept rather than guessed: claimed=' . json_encode($answer['claimed']) . ' why=' . json_encode($answer['why']),
+        );
+    }
+
+    public function testPathAtPhp86LimitRemainsPossible()
+    {
+        $own = $this->file('limit/one.bin', 'one');
+        $directory = dirname($own);
+        while (strlen($directory . '/one.bin') < PHP_MAXPATHLEN - 2) {
+            $directory .= '/.';
+        }
+        if (strlen($directory . '/one.bin') < PHP_MAXPATHLEN - 1) {
+            $directory .= '/';
+        }
+        $path = $directory . '/one.bin';
+        $this->assertSame(PHP_MAXPATHLEN - 1, strlen($path), 'the path is at the PHP 8.6 boundary');
+        $this->assertTrue(is_array(@stat(dirname($path))) && is_executable(dirname($path)), 'the parent can be searched');
+        $this->assertTrue(is_file($own), 'the original file exists at its short path');
+        $this->assertSame(false, erasedataLeadsNowhere($path), 'the PHP limit cannot prove absence');
     }
 
     public function testSizesAreComparedModulo2To32()

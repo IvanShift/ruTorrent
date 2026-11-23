@@ -157,6 +157,11 @@ class rTorrent
         return getCmd($command . '=') . implode(',', $quoted);
     }
 
+    public static function prepareLoadDirectory(&$directory, $isAddPath, $directoryIsReported)
+    {
+        return true;
+    }
+
     public static function sendTorrent(
         $torrent,
         $isStart,

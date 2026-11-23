@@ -333,6 +333,55 @@ class UnconfirmedEraseTest extends TestCase
             . ' reason=shared-with-loaded-torrent'], $this->loggedLines(), 'the kept file is counted');
     }
 
+    public function testAFileReachedByAPathPhpCannotStatIsKept()
+    {
+        $this->fresh();
+        $download = $this->download();
+        file_put_contents($download['files'][1], 'second');
+        $directory = $download['base'];
+        while (strlen($directory . '/one.bin') < PHP_MAXPATHLEN - 1) {
+            $directory .= '/.';
+        }
+        if (strlen($directory . '/one.bin') < PHP_MAXPATHLEN) {
+            $directory .= '/';
+        }
+        $this->assertSame(PHP_MAXPATHLEN, strlen($directory . '/one.bin'), 'path has a fixed length');
+        $this->assertTrue(@stat($directory . '/one.bin') === false, 'PHP cannot stat the path');
+        $this->startDaemon([
+            FakeRtorrentDaemon::fault('Could not find info-hash.', -501),
+        ], [self::OTHER => ['directory' => $directory, 'files' => ['one.bin' => 3]]]);
+        $this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
+        $out = $this->collect();
+        $this->assertTrue($out === '', 'collector completes: ' . $out);
+        $this->assertTrue($this->isFile($download['files'][0]), 'the possibly shared file is retained');
+        $this->assertTrue(!$this->isFile($download['files'][1]), 'unrelated file is removed');
+    }
+
+    public function testAFileReachedThroughADirectoryThatCannotBeSearchedIsKept()
+    {
+        $this->fresh();
+        $download = $this->download();
+        file_put_contents($download['files'][1], 'second');
+        $locked = $this->base . '/data/Locked';
+        @mkdir($locked, 0700, true);
+        symlink($download['files'][0], $locked . '/one.bin');
+        chmod($locked, 0);
+        try {
+            $this->assertTrue(@stat($locked . '/one.bin') === false, 'the directory cannot be searched');
+            $this->startDaemon(
+                [FakeRtorrentDaemon::fault('Could not find info-hash.', -501)],
+                [self::OTHER => ['directory' => $locked, 'files' => ['one.bin' => 3]]],
+            );
+            $this->assertTrue($this->leaveManifest($download) === 'left', 'the list is published');
+            $out = $this->collect();
+        } finally {
+            chmod($locked, 0700);
+        }
+        $this->assertTrue($out === '', 'collector completes: ' . $out);
+        $this->assertTrue($this->isFile($download['files'][0]), 'possibly shared file is retained');
+        $this->assertTrue(!$this->isFile($download['files'][1]), 'unrelated file is removed');
+    }
+
     public function testAnotherDownloadsHardlinkKeepsItsDataButNotOurName()
     {
         $this->fresh();

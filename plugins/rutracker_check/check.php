@@ -943,6 +943,7 @@ class ruTrackerChecker
             return self::STE_ERROR;
         }
         $stagedRecord = null;
+        $stagedErase = null;
         $reuse = null;
         if ($exists === true) {
             // Recover marked transactions first. An unmarked installed copy may
@@ -1076,9 +1077,7 @@ class ruTrackerChecker
                 // the live re-read below reports the crash, not the user -- the
                 // record is the one truthful account of the state the torrent
                 // was last in when the crashed generation selected its policy.
-                if (!self::eraseStaged($newHash, (string) $markerReq->val[0], $rawStagedRecord)) {
-                    return self::STE_ERROR;
-                }
+                $stagedErase = [(string) $markerReq->val[0], $rawStagedRecord];
             }
         }
 
@@ -1214,6 +1213,19 @@ class ruTrackerChecker
                 return self::STE_ERROR;
             }
 
+        }
+
+        // Refuse an unusable daemon-reported directory before changing the
+        // predecessor's state, including when reusing an installed successor.
+        $loadDirectory = $baseDir;
+        if (!rTorrent::prepareLoadDirectory($loadDirectory, false, true, true)) {
+            self::logUnrepairable('directory-not-reusable: ' . $hash);
+            return self::STE_ERROR;
+        }
+
+        // Keep the dead run's recovery record until this directory is admissible.
+        if ($stagedErase !== null && !self::eraseStaged($newHash, $stagedErase[0], $stagedErase[1])) {
+            return self::STE_ERROR;
         }
 
         $stagedAt = time();

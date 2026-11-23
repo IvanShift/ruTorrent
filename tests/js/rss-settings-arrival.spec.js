@@ -43,6 +43,7 @@ run(
 );
 
 for (const [name, stub] of Object.entries({
+  cacheBust: (url) => url,
   injectCustomElementCSS: () => {},
   injectCustomElementAttribute: () => {},
   injectScript: () => {},

@@ -59,6 +59,7 @@ final class RutrackerRealStackDriver
         $settings = array_merge([
             'directory' => $this->daemon->directory,
             'session' => $this->daemon->session,
+            'topDirectory' => '/',
         ], $settings);
         $driver = $this->base . '/drive-' . uniqid() . '.php';
         file_put_contents($driver, "<?php\n"
@@ -84,7 +85,7 @@ final class RutrackerRealStackDriver
             . ' $rsProperty->setValue(null, $rsSettings);' . "\n"
             . '$scgi_host = "127.0.0.1"; $scgi_port = ' . (int) $this->served['port'] . ';'
             . ' $rpcTimeOut = 10; $rpcLogCalls = false; $rpcLogFaults = false;'
-            . ' $topDirectory = "/"; $saveUploadedTorrents = false;'
+            . ' $topDirectory = ' . var_export($settings['topDirectory'], true) . '; $saveUploadedTorrents = false;'
             . ' $log_file = ' . var_export($this->appLog, true) . ";\n"
             . 'require_once(' . var_export($root . '/php/xmlrpc.php', true) . ");\n"
             . 'require_once(' . var_export($root . '/php/rtorrent.php', true) . ");\n"

@@ -46,11 +46,6 @@ class XMLRPCProxy
         'catch', 'branch', 'try', 'and', 'or', 'less', 'greater', 'equal', 'match',
     ];
 
-    private static $viewCarrierDenies = [
-        'view.filter', 'view.filter.temp', 'view.sort_new',
-        'view.sort_current', 'view.event_added', 'view.event_removed',
-    ];
-
     // Exactly the URIs rtorrent does not treat as a local path:
     // is_network_uri() and is_magnet_uri() in core/download_factory.cc, which
     // use strncmp and are therefore case-sensitive. This has to agree with
@@ -156,47 +151,6 @@ class XMLRPCProxy
         ],
     ];
 
-    // One canonical name per command, for the other spellings a daemon
-    // registers it under. Two sources: php/methods-*.php and the table
-    // php/settings.php builds inline, which rXMLRPCCommand puts every call
-    // through, and the redirects rtorrent registers itself (CMD2_REDIRECT in
-    // src/main.cc of 0.9.8, CMD_REDIRECT in 0.16), which a caller can name
-    // directly. tests/php/RtorrentCommandRedirectsFixture.php lists the second.
-    //
-    // Resolved before anything classifies a name, so a command is judged as
-    // itself under every spelling the daemon answers to rather than once per
-    // spelling — and so a deployment that narrows $denyPrefixes still gets the
-    // list it asked for rather than these as well.
-    //
-    // Matched whole, not as prefixes: set_session is the legacy spelling of
-    // session.path.set, while set_session_lock and set_session_on_completion
-    // are different settings nothing here refuses, and a prefix would take
-    // them too.
-    private static $canonicalNames = [
-        'system.method.erase' => 'method.erase',
-        'system.method.get' => 'method.get',
-        'system.method.has_key' => 'method.has_key',
-        'system.method.insert' => 'method.insert',
-        'system.method.list_keys' => 'method.list_keys',
-        'system.method.set' => 'method.set',
-        'system.method.set_key' => 'method.set_key',
-        'set_directory' => 'directory.default.set',
-        'directory' => 'directory.default.set',
-        'set_session' => 'session.path.set',
-        'session' => 'session.path.set',
-        'scgi_port' => 'network.scgi.open_port',
-        'scgi_local' => 'network.scgi.open_local',
-        'get_scgi_dont_route' => 'network.scgi.dont_route',
-        'set_scgi_dont_route' => 'network.scgi.dont_route.set',
-        'd.set_directory' => 'd.directory.set',
-        'd.set_directory_base' => 'd.directory_base.set',
-        'd.directory.base.set' => 'd.directory_base.set',
-        'view_filter' => 'view.filter',
-        'view_filter_on' => 'view.filter_on',
-        'view_sort_current' => 'view.sort_current',
-        'view_sort_new' => 'view.sort_new',
-    ];
-
     // Direct calls that match a listed shape are rebuilt and sent trusted.
     // An unmatched original elevation is refused locally. For names added to
     // serve checked WebUI batches, an unmatched direct call retains the older
@@ -280,7 +234,7 @@ class XMLRPCProxy
         'load', 'load_verbose', 'load_start', 'load_start_verbose',
         'load_raw', 'load_raw_start', 'load_raw_verbose',
         'set_xmlrpc_size_limit', 'xmlrpc_size_limit',
-        'view_filter', 'view_sort_new', 'view_sort_current',
+        'view_filter', 'view_filter_on', 'view_sort_new', 'view_sort_current',
     ];
 
     // Commands whose argument is a path rtorrent will write a download into.
@@ -1281,12 +1235,6 @@ class XMLRPCProxy
         if ($name === 'p.call_target') {
             return true;
         }
-        if (in_array($name, self::$viewCarrierDenies, true)) {
-            return true;
-        }
-        if (strncmp($name, 'directory.watch.', 16) === 0) {
-            return true;
-        }
         foreach (self::$denyPrefixes as $prefix) {
             if (strncmp($name, $prefix, strlen($prefix)) === 0) {
                 return true;
@@ -2242,6 +2190,12 @@ class XMLRPCProxy
                 && self::nativeOnDaemon('t.scrape_incomplete', $version)) ? $value : null;
         }
         $name = self::rawCommandName($value);
+        // These native getters accept a literal key; legacy aliases are not native on supported daemons.
+        if ($resultSlot && !in_array($name, ['d.custom', 'd.custom.if_z', 'd.custom_throw', 'd.views.has'], true)
+            && in_array($name, self::$safeGetters, true)
+            && substr($value, strpos($value, '=') + 1) !== '') {
+            return null;
+        }
         if ($name === null || self::isDirectDenied($name)) {
             return null;
         }

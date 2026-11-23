@@ -17,7 +17,7 @@ function open(cookies) {
   window.theWebUI = {
     addAndShowSettings: () => {},
     setSettings: () => {},
-    request: (action) => window.requests.push(action),
+    requestWithTimeout: (action) => window.requests.push(action),
   };
   window.rTorrentStub = function () {};
   const plugin = {

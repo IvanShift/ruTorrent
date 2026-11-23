@@ -5008,6 +5008,17 @@ class RemoveWithDataTest extends TestCase
         );
     }
 
+    public function testUnknownClaimCannotProveThePublicBridge()
+    {
+        $successor = ['observations' => []];
+        $snapshot = ['claimed' => ['private' => ['hash' => true], 'public' => ['hash' => false]]];
+        $this->assertTrue(erasedataCleanupCaptureReferencedByName('private', 'public', $successor, $snapshot), 'an unknown public path cannot prove the bridge');
+        $snapshot['claimed']['public']['hash'] = true;
+        $this->assertTrue(!erasedataCleanupCaptureReferencedByName('private', 'public', $successor, $snapshot), 'a witnessed bridge permits restoration');
+        $snapshot['claimed']['private']['hash'] = false;
+        $this->assertTrue(erasedataCleanupCaptureReferencedByName('private', 'public', $successor, $snapshot), 'an unknown private reference remains protected');
+    }
+
     public function testCleanupLegacyCapturedFileBridgeRestoresWithoutNewBridge()
     {
         $this->reset();
@@ -18929,10 +18940,11 @@ class RemoveWithDataTest extends TestCase
             rXMLRPCRequest::$erased,
             'and really erases the download it was asked to',
         );
+        $manifests = $this->manifestFiles($hash);
         $this->assertEquals(
             1,
-            count($this->manifestFiles($hash)),
-            'exactly one final manifest stands for the collector',
+            count($manifests),
+            'exactly one final manifest stands for the collector; found ' . json_encode($manifests),
         );
         $this->assertEquals(
             [],

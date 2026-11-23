@@ -96,6 +96,52 @@ describe("mobile row filters", () => {
     expect(typeof plugin.labelIds[labelId(label)]).toBe('number');
   });
 
+  it.each(['Movies', 'tv "4k" \\ archive'])("uses canonical labels before the desktop panel arrives: %s", (label) => {
+    theWebUI.categoryList.panelLabelAttribs.plabel = undefined;
+    plugin.request = (url, callback) => callback({ [hash]: [] });
+    plugin.processTorrents({ [hash]: row({ label }) }, true);
+    const id = labelId(label);
+    expect(plugin.labelList.find(entry => entry.id === id)).toEqual({ name: label, value: label, id, count: 1 });
+    plugin.setFilter('label', label);
+    expect(plugin.filters.label).toEqual([id]);
+    expect($('#' + hash).css('display')).not.toBe('none');
+  });
+
+  it("preserves byte-backed labels before the desktop panel arrives", () => {
+    const value = { name: 'bad �', labelKey: 'bad%20%FF' };
+    theWebUI.categoryList.panelLabelAttribs.plabel = undefined;
+    plugin.request = (url, callback) => callback({ [hash]: [] });
+    plugin.processTorrents({ [hash]: row({ label: labelDisplay(value), label_value: value }) }, true);
+    const id = labelId(value);
+    expect(plugin.labelList.find(entry => entry.id === id)).toEqual({ name: value.name, value, id, count: 1 });
+    plugin.setFilter('label', value);
+    expect(plugin.filters.label).toEqual([id]);
+    expect($('#' + hash).css('display')).not.toBe('none');
+  });
+
+  it("keeps a saved tracker while the first tracker response is pending", () => {
+    let respond;
+    plugin.filters.tracker = ['tracker.test'];
+    plugin.request = (url, callback) => { respond = callback; };
+    plugin.processTorrents({ [hash]: row({}) }, true);
+    plugin.applyFilters();
+    expect(plugin.filters.tracker).toEqual(['tracker.test']);
+    respond({ [hash]: [{ name: 'https://tracker.test/announce' }] });
+    expect(plugin.filters.tracker).toEqual(['tracker.test']);
+    expect($('#' + hash).css('display')).not.toBe('none');
+  });
+
+  it("drops a missing saved tracker when the first tracker response arrives", () => {
+    let respond;
+    plugin.filters.tracker = ['gone.test'];
+    plugin.request = (url, callback) => { respond = callback; };
+    plugin.processTorrents({ [hash]: row({}) }, true);
+    expect(plugin.filters.tracker).toEqual(['gone.test']);
+    respond({ [hash]: [{ name: 'https://tracker.test/announce' }] });
+    expect(plugin.filters.tracker).toEqual([]);
+    expect($('#' + hash).css('display')).not.toBe('none');
+  });
+
   it("counts and filters a tracker whose host is an inherited object key", () => {
     plugin.request = (url, callback) => callback({ [hash]: [{ name: 'https://constructor/announce' }] });
     plugin.processTorrents({ [hash]: row({}) }, true);

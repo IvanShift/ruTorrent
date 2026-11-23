@@ -278,6 +278,7 @@ describe("mobile plugin settings", () => {
 
     it("prunes absent label and tracker filters once torrents are loaded", () => {
       plugin.torrents = { h1: { name: "test", size: 100 } };
+      plugin.rowsPrimed = true;
       plugin.labelList = [{ name: "other", count: 1 }];
       plugin.trackerList = [{ name: "tr2.example.com", count: 1 }];
       plugin.filters = { status: ["downloading"], label: ["music"], tracker: ["tr.example.com"] };
@@ -328,7 +329,7 @@ describe("mobile plugin settings", () => {
       expect(plugin.filters).toEqual({ status: ["stopped"], label: [label], tracker: [] });
 
       plugin.torrents = null;
-      plugin.labelList = [{ name: "other", count: 1 }, { name: label, count: 1 }];
+      plugin.labelList = [{ id: "other", name: "other", count: 1 }, { id: label, name: label, count: 1 }];
       plugin.trackerList = [];
       plugin.updateFilterButton($());
       plugin.renderFilterPage();

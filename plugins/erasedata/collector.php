@@ -1614,8 +1614,8 @@ function erasedataCleanupCaptureReferencedByName(
     // reaches the private file would break, so keep the capture. $otherSnapshot
     // was taken for both: through the bridge a torrent uses both, through
     // another name only the private file.
-    foreach ($otherSnapshot['claimed'][$entry] ?? [] as $hash => $_) {
-        if (!isset($otherSnapshot['claimed'][$public][$hash])) {
+    foreach ($otherSnapshot['claimed'][$entry] ?? [] as $hash => $witnessed) {
+        if ($witnessed !== true || ($otherSnapshot['claimed'][$public][$hash] ?? false) !== true) {
             return(true);
         }
     }

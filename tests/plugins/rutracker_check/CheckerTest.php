@@ -287,11 +287,7 @@ class rTorrent
     public static $sendResult = false;
     public static $lastSend = null;
     public static $sends = [];
-
-    public static function canReplaceInDirectory($directory)
-    {
-        return true;
-    }
+    public static $directoryAccepted = true;
 
     public static function getSource($hash)
     {
@@ -308,6 +304,11 @@ class rTorrent
         }
         $torrent = new Torrent($fname);
         return $torrent->errors() ? false : $torrent;
+    }
+
+    public static function prepareLoadDirectory(&$directory, $isAddPath, $directoryIsReported)
+    {
+        return self::$directoryAccepted;
     }
 
     public static function sendTorrent($torrent, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null)
@@ -2986,6 +2987,38 @@ class CheckerTest
         $clears = $this->branchRequestsContaining('chk-replacement');
         strictAssertSame(1, count($clears), 'the stale transaction is repaired atomically');
         strictAssertSame(null, rTorrent::$lastSend, 'no load may be enqueued');
+    }
+
+    public function testRejectedDirectoryRetainsOrphanedStagedCopy()
+    {
+        $this->resetFakes();
+        $oldHash = str_repeat('A', 40);
+        $this->stageTorrents();
+        rTorrent::$directoryAccepted = false;
+        rXMLRPCRequest::queue('d.hash', true, false, [self::NEW_HASH]);
+        rXMLRPCRequest::queue(
+            self::PREFLIGHT_KEY_COMMANDS,
+            true,
+            false,
+            [self::PLUGIN_MARKER, 0, 0, $oldHash . '-started-1786899620'],
+        );
+        $this->queueReuseRead(self::PLUGIN_MARKER, $oldHash . '-started-1786899620');
+        rXMLRPCRequest::queue('d.hash', true, false, [$oldHash]);
+        $this->queueAtomic(RuTrackerAtomicOwnership::SENTINEL_ERASED);
+        $this->queueViews();
+        $this->queueSnapshot(sys_get_temp_dir(), 0, 0);
+
+        strictAssertSame(
+            ruTrackerChecker::STE_ERROR,
+            ruTrackerChecker::createTorrent(checkerParsed('new-torrent'), $oldHash),
+            'the unusable directory is refused',
+        );
+        strictAssertSame(
+            0,
+            count($this->branchRequestsContaining('$d.erase=')),
+            'the staged copy and its recovery record are retained',
+        );
+        strictAssertSame(null, rTorrent::$lastSend, 'no replacement is loaded');
     }
 
     public function testOrphanedStagedCopyIsAdoptedAndReplaced()
@@ -10109,6 +10142,7 @@ DSL;
         rTorrent::$sendResult = false;
         rTorrent::$lastSend = null;
         rTorrent::$sends = [];
+        rTorrent::$directoryAccepted = true;
         rXMLRPCRequest::reset();
         rXMLRPCRequest::$defaultLocalProjectionResponse = RuTrackerAtomicOwnership::SENTINEL_ACTED;
         FileUtil::$log = [];

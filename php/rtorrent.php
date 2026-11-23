@@ -172,6 +172,17 @@ class rTorrent
         return(getCmd($command . '=') . implode(',', $quoted));
     }
 
+    /** Normalize and validate a load directory; strict replacement admission also rejects "0" and checks lengths and the physical boundary. */
+    public static function prepareLoadDirectory(&$directory, $isAddPath, $directoryIsReported, $strictReported = false)
+    {
+        if ($strictReported && $directory === '0') {
+            return self::directoryFailed();
+        }
+        $directory = self::parseDirectory($directory, $isAddPath);
+        return !$directory || strlen($directory) === 0
+            || self::validateLoadDirectory($directory, $directoryIsReported, $strictReported);
+    }
+
     /** Validate and prepare a load before callers erase an existing download. */
     public static function preflightTorrentLoad(
         $fname,
@@ -197,9 +208,7 @@ class rTorrent
         }
         // New metainfo may reuse a daemon path; provenance is independent of $isNew.
         $directoryIsReported = $directoryIsReported || !$isNew || (!$isAddPath && !$directory);
-        $directory = self::parseDirectory($directory, $isAddPath);
-        if ($directory && strlen($directory) > 0
-            && !self::validateLoadDirectory($directory, $directoryIsReported)) {
+        if (!self::prepareLoadDirectory($directory, $isAddPath, $directoryIsReported)) {
             $failure = 'invalid-directory';
             return false;
         }
@@ -849,15 +858,6 @@ class rTorrent
         return(strpos(FileUtil::addslash(rtrim($real, '/') . $rest), $realTop) === 0);
     }
 
-    // A replacement must load where the original download reported its data.
-    public static function canReplaceInDirectory($directory)
-    {
-        $reported = $directory;
-        rTorrentSettings::get()->correctReportedDirectory($reported);
-        $load = self::parseDirectory($directory, false);
-        return self::normalizeNewDirectory($load) && $reported === $load;
-    }
-
     /**
      * Resolve, in place, the directory a download is loaded into, and see
      * that it exists. False when it is refused or cannot be made.
@@ -1080,11 +1080,13 @@ class rTorrent
     }
 
     /** Share directory admission with the preflight that runs before an erase. */
-    private static function validateLoadDirectory(&$directory, $directoryIsReported)
+    private static function validateLoadDirectory(&$directory, $directoryIsReported, $strictReported = false)
     {
         $settings = rTorrentSettings::get();
         $valid = $directoryIsReported
             ? $settings->correctReportedDirectory($directory)
+                && (!$strictReported || (rTorrentSettings::userDirectory($directory, $directory) !== false
+                    && self::isInsideTopDirectory($directory)))
             : $settings->correctDirectory($directory) && self::isInsideTopDirectory($directory);
         return $valid ? true : self::directoryFailed();
     }
@@ -1094,9 +1096,4 @@ class rTorrent
         self::$directoryRefused = true;
         return(false);
     }
-    private static function hasDirectory($directory)
-    {
-        return($directory && strlen($directory) > 0);
-    }
-
 }

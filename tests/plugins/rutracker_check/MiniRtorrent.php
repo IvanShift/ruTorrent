@@ -55,6 +55,7 @@ class MiniRtorrent
     public $loads = [];
     public $executed = [];
     public $calls = [];
+    public $lifecycle = [];
     public $views = ['main', 'default', 'started', 'stopped', 'seeding'];
     /**
      * Method => count: that many requests carrying the method are executed
@@ -261,6 +262,7 @@ class MiniRtorrent
             'loads' => $this->loads,
             'executed' => $this->executed,
             'calls' => $this->calls,
+            'lifecycle' => $this->lifecycle,
         ];
         $tmp = $this->stateFile . '.tmp';
         file_put_contents($tmp, json_encode($state, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
@@ -507,6 +509,9 @@ class MiniRtorrent
 
     private function call($name, $args, $hash, $sub = null)
     {
+        if (in_array($name, ['d.stop', 'd.close', 'd.erase'], true)) {
+            $this->lifecycle[] = $name;
+        }
         switch ($name) {
             case 'branch':
                 $condition = $this->exec((string) self::one($args), $hash, $sub);
@@ -536,6 +541,8 @@ class MiniRtorrent
                 return $this->compare($args, $hash, $sub) < 0 ? 1 : 0;
             case 'cat':
                 return self::text($args);
+            case 't.multicall':
+                return $this->subMulticall($hash, 't', array_slice($args, 1));
             case 'f.multicall':
                 // Run in a download's command, as d.multicall's
                 // cat="$f.multicall=,f.size_bytes=,cat=/" does.

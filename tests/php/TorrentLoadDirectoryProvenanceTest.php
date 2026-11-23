@@ -95,6 +95,21 @@ class TorrentLoadDirectoryProvenanceTest extends TestCase
         $this->assertSame('invalid-directory', $failure, 'an invalid default is reported, not relocated');
     }
 
+    public function testOrdinaryPreflightUsesTheDefaultForZeroDirectory()
+    {
+        $prepared = rTorrent::preflightTorrentLoad(
+            new Torrent($this->announceOnlyTorrent()),
+            false,
+            '0',
+            false,
+            true,
+            null,
+            $failure,
+        );
+        $this->assertTrue(is_array($prepared), 'ordinary preflight accepts the default');
+        $this->assertSame('/load-provenance-top', $prepared['directory'], 'zero selects the configured default');
+    }
+
     public function testReloadKeepsTheReportedContractWithoutAnExtraFlag()
     {
         $prepared = rTorrent::preflightTorrentLoad(

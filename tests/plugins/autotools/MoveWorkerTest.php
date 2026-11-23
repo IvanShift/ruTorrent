@@ -4,9 +4,9 @@ require_once __DIR__ . '/../rutracker_check/TestLib.php';
 require_once __DIR__ . '/../../php/FakeRtorrentDaemon.php';
 require_once __DIR__ . '/MoveDaemonReplies.php';
 
-function moveWorkerFixture($multi = false, $run = [1,1,1])
+function moveWorkerFixture($multi = false, $run = [1,1,1], $suffix = '')
 {
-    $root = sys_get_temp_dir() . '/mw-' . bin2hex(random_bytes(5));
+    $root = sys_get_temp_dir() . '/mw-' . bin2hex(random_bytes(5)) . $suffix;
     foreach (['', '/session', '/dl', '/fin'] as $dir) {
         mkdir($root . $dir, 0700);
     }
@@ -223,6 +223,18 @@ if (defined('MOVE_WORKER_TEST_LIBRARY')) {
 }
 
 $suite = new StrictTestSuite();
+$suite->test('worker moves from a default directory containing quote and backslash', function () {
+    $state = moveWorkerFixture(false, [1,1,1], '"\\bytes');
+    try {
+        list($exit, $after, $calls, $output) = moveWorkerRun($state);
+        strictAssertSame(0, $exit, 'worker completes: ' . $output);
+        strictAssertSame('payload', file_get_contents($state['destination']), 'payload reaches destination');
+        strictAssertSame(false, file_exists($state['source']), 'source moved');
+    } finally {
+        strictRemoveTree($state['root']);
+    }
+});
+
 foreach ([false,true] as $multi) {
     foreach ([[1,1,1],[0,1,0],[0,0,0]] as $run) {
         $suite->test('real worker preserves ' . json_encode($run) . ' multi=' . (int) $multi, function () use ($multi, $run) {

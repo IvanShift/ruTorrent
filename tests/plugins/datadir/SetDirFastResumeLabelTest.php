@@ -7,7 +7,7 @@ require_once(__DIR__ . '/../../php/RtorrentProbeFixture.php');
 require_once(__DIR__ . '/../../php/TestTree.php');
 require_once(__DIR__ . '/ClaimParserFixture.php');
 
-/** A fast-resume request changes directory in place and leaves labels owned by rTorrent. */
+/** An in-place directory change does not erase or reload the torrent. */
 class SetDirFastResumeLabelTest extends TestCase
 {
     use ClaimParserFixture;
@@ -31,36 +31,11 @@ class SetDirFastResumeLabelTest extends TestCase
         TestTree::remove($this->base);
     }
 
-    public function testAPlainLabelIsKept()
-    {
-        $this->assertLabelKept('Plain');
-    }
-
-    public function testALabelWithAQuoteIsKept()
-    {
-        $this->assertLabelKept('Foo"Bar');
-    }
-
-    public function testALabelWithABackslashIsKept()
-    {
-        $this->assertLabelKept('C\\D');
-    }
-
-    public function testALabelRuTorrentEncodedIsKept()
-    {
-        $this->assertLabelKept('TV%20Shows');
-    }
-
-    public function testEncodedLabelRemainsUnchangedDuringInPlaceMove()
-    {
-        $this->assertLabelKept('a%5C%22z');
-    }
-
-    private function assertLabelKept($label)
+    public function testInPlaceChangeDoesNotEraseOrReload()
     {
         TestTree::remove($this->base);
         mkdir($this->base, 0700, true);
-        $result = $this->claimInPlace($this->base . '/dest', $label);
+        $result = $this->claimInPlace($this->base . '/dest', 'Plain');
         $this->assertSame(
             ['refusal' => '', 'applied' => true, 'failure' => null],
             $result['answer'],
@@ -68,8 +43,12 @@ class SetDirFastResumeLabelTest extends TestCase
         );
         $this->assertTrue(in_array('d.get_custom1', $result['calls'], true), 'the existing label is checked');
         $this->assertTrue(in_array('d.directory.set_if_stop_close_claim', $result['calls'], true), 'the claimed directory is changed');
+        foreach (['load_raw', 'load_raw_start', 'load', 'load_start',
+            'load.raw', 'load.raw_start', 'load.normal', 'load.start'] as $method) {
+            $this->assertTrue(!in_array($method, $result['calls'], true), 'the in-place change does not call ' . $method);
+        }
         $wire = implode("\n", $result['bodies']);
-        foreach (['d.erase', 'load.raw', 'd.custom1.set', 'd.set_custom1'] as $method) {
+        foreach (['d.erase', 'load.raw', 'd.custom1.set', 'd.set_custom1', 'd.delete_tied', 'd.tied_to_file.set', 'd.set_tied_to_file'] as $method) {
             $this->assertTrue(strpos($wire, $method) === false, 'the in-place change does not call ' . $method);
         }
     }

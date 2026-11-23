@@ -7,6 +7,17 @@ require_once(__DIR__ . '/../../php/RtorrentProbeFixture.php');
 require_once(__DIR__ . '/../../php/TestTree.php');
 require_once(__DIR__ . '/../../../php/utility/json.php');
 
+class InitSessionDirectoryResponder extends RtorrentProbeResponder
+{
+    public function __invoke($body, $methods = null)
+    {
+        if (RtorrentProbeFixture::methodNames($body) === ['system.listMethods']) {
+            return ['system.listMethods', 'execute.raw.bg'];
+        }
+        return parent::__invoke($body, $methods);
+    }
+}
+
 /**
  * init.php starts the plugin only when the session directory rtorrent
  * reports exists, and names the directory when it does not. A directory
@@ -38,7 +49,7 @@ class InitSessionDirectoryTest extends TestCase
     {
         $run = $this->runInit('se"ss\\ion', true);
         $this->assertTrue(
-            strpos($run['printed'], 'webBadSessionError') === false,
+            strpos($run['printed'], '|registered=1') !== false && strpos($run['printed'], 'webBadSessionError') === false,
             'init.php finds the session directory: ' . $run['printed'] . $run['errors'],
         );
     }
@@ -69,10 +80,10 @@ class InitSessionDirectoryTest extends TestCase
             'the settings cache is warmed',
         );
         $this->daemon = new FakeRtorrentDaemon(
-            RtorrentProbeFixture::responder(),
+            new InitSessionDirectoryResponder('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
             $this->base . '/calls.log',
             false,
-            RtorrentProbeFixture::replyClassFiles(),
+            array_merge(RtorrentProbeFixture::replyClassFiles(), [__FILE__]),
         );
         $file = $this->base . '/drive.php';
         file_put_contents($file, "<?php\n"

@@ -403,16 +403,18 @@ $.each(plugin.statusFilterOptions, function(i, opt) {
   }
 });
 
-plugin.applyFilters = function() {
+plugin.applyFilters = function(trackerReady) {
   // Drop filters whose label/tracker no longer exists in the torrent list
   // (label/tracker ids are persistent, so check the current lists instead)
   if (this.torrents) {
   this.filters.label = $.grep(this.filters.label, function(id) {
     return $.grep(plugin.labelList, function(o) {return o.id === id;}).length > 0;
   });
-  this.filters.tracker = $.grep(this.filters.tracker, function(name) {
-    return $.grep(plugin.trackerList, function(o) {return o.name === name;}).length > 0;
-  });
+  if (trackerReady || this.rowsPrimed) {
+    this.filters.tracker = $.grep(this.filters.tracker, function(name) {
+      return $.grep(plugin.trackerList, function(o) {return o.name === name;}).length > 0;
+    });
+  }
   }
 
   // Selections within a category are ORed, categories are ANDed
@@ -2071,6 +2073,8 @@ plugin.processTorrents = function(torrents, singleUpdate) {
   var plabel = theWebUI.categoryList.panelLabelAttribs.plabel;
   var noLabel = plabel && plabel.get("-_-_-nlb-_-_-");
   plugin.labelList = [{name: '', value: '', id: labelId(''), count: noLabel ? noLabel.count : 0}];
+  var labelEntries = Object.create(null);
+  labelEntries[labelId('')] = plugin.labelList[0];
 
   if (plabel) {
     for (const l of plabel.keys()) {
@@ -2080,7 +2084,9 @@ plugin.processTorrents = function(torrents, singleUpdate) {
           plugin.labelIds[l] = plugin.nextLabelId++;
         }
 
-        plugin.labelList.push({name: labelDisplay(value), value, id: l, count: plabel.get(l).count});
+        var entry = {name: labelDisplay(value), value, id: l, count: plabel.get(l).count};
+        plugin.labelList.push(entry);
+        labelEntries[l] = entry;
       }
     }
   }
@@ -2092,13 +2098,17 @@ plugin.processTorrents = function(torrents, singleUpdate) {
     v.hash = n;
     v.status = theWebUI.getStatusIcon(v)[1];
     torrentArray.push(v);
-    if (v.label) {
-      if (plugin.labelIds[v.label] == undefined) {
-        plugin.labelIds[v.label] = plugin.nextLabelId++;
-      }
-      if ($.grep(plugin.labelList, function(o) {return o.name === v.label;}).length === 0) {
-        plugin.labelList.push({name: v.label, count: 0});
-      }
+    var label = getTorrentLabel(v);
+    var id = labelId(label);
+    if (plugin.labelIds[id] == undefined) {
+      plugin.labelIds[id] = plugin.nextLabelId++;
+    }
+    if (!labelEntries[id]) {
+      labelEntries[id] = {name: labelDisplay(label), value: label, id, count: 0};
+      plugin.labelList.push(labelEntries[id]);
+    }
+    if (!plabel || !plabel.has(id)) {
+      labelEntries[id].count++;
     }
   });
   torrentArray.sort(plugin.dynamicSort(plugin.sort));
@@ -2256,7 +2266,7 @@ plugin.processTorrents = function(torrents, singleUpdate) {
 
     // Re-filtering shows/hides every row, so skip it while nothing changed
     if (listChanged) {
-      plugin.applyFilters();
+      plugin.applyFilters(true);
       if ($('#torrentFilter').is(':visible')) {
         plugin.renderFilterPage();
       }

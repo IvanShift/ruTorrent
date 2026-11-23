@@ -141,7 +141,9 @@ if (!function_exists('erasedataLoadedDownloads')) {
             }
             if (!count($keys) && !erasedataLeadsNowhere($path)) {
                 foreach ($bySize[$file[2]] ?? [] as $own) {
-                    $claimed[$own][$hash] = true;
+                    if (!isset($claimed[$own][$hash])) {
+                        $claimed[$own][$hash] = false;
+                    }
                 }
             }
             foreach (array_keys($keys) as $key) {
@@ -211,7 +213,8 @@ if (!function_exists('erasedataLoadedDownloads')) {
     }
 
     // Which of $ownPaths a download in $downloads still uses: own path =>
-    // [hash => true] for each download that does. Or null, with $why as
+    // [hash => true] for witnessed use, or false for a possible use whose
+    // path cannot be resolved. Or null, with $why as
     // erasedataLoadedDownloads() sets it, when rtorrent will not say.
     // $downloads is what erasedataLoadedDownloads() answers, without the
     // download being deleted. $sizes keeps what erasedataFileSizes() answered

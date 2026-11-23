@@ -64,6 +64,19 @@ class XMLRPCProxyTest extends TestCase
         $reported = self::makeAccessible(new ReflectionProperty('XMLRPCProxy', 'builtInPolicyReported'));
         $reported->setValue(null, $this->previousBuiltInPolicyReported);
     }
+    public function testMulticallGetterArgumentsAreRefused()
+    {
+        $method = new ReflectionMethod(XMLRPCProxy::class, 'rebuildMulticallParam');
+        if (PHP_VERSION_ID < 80100) {
+            $method->setAccessible(true);
+        }
+        $this->assertTrue($method->invoke(null, 'd.name=', ['d.name'], true, 0x101c) !== null, 'empty getter is accepted');
+        $this->assertSame(null, $method->invoke(null, 'd.name=hello', ['d.name'], true, 0x101c), 'getter with an argument is refused');
+        foreach (['d.custom=key', 'd.custom.if_z=key,fallback', 'd.custom_throw=key', 'd.views.has=main'] as $command) {
+            $name = strstr($command, '=', true);
+            $this->assertTrue($method->invoke(null, $command, [$name], true, 0x101c) !== null, $name . ' retains its arguments');
+        }
+    }
 
     public function testD4NativeGateRejectsAliasesAcrossDirectAndTrustedSlots()
     {
@@ -4008,13 +4021,13 @@ class XMLRPCProxyTest extends TestCase
         $this->assertTrue($d['trusted'] === false, 'directory.watchful must be untrusted');
     }
 
-    public function testViewFilterOnIsOrdinaryNotRefused()
+    public function testViewFilterOnIsRefusedAsStoredCommand()
     {
         $this->resetMocks();
         $xml = '<?xml version="1.0"?><methodCall><methodName>view.filter_on</methodName><params></params></methodCall>';
         $d = self::decideOnModernDaemon($xml, 'sanitize');
-        $this->assertTrue($d['action'] === 'send', 'view.filter_on must not be refused');
-        $this->assertTrue($d['trusted'] === false, 'view.filter_on must be untrusted');
+        $this->assertTrue($d['action'] === 'reject', 'view.filter_on stores a command and is refused');
+        $this->assertSame('', $d['payload'], 'a refusal has no forwarded payload');
     }
 
     public function testViewSortIsOrdinaryNotRefused()
