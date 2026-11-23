@@ -288,6 +288,11 @@ class rTorrent
     public static $lastSend = null;
     public static $sends = [];
 
+    public static function canReplaceInDirectory($directory)
+    {
+        return true;
+    }
+
     public static function getSource($hash)
     {
         self::$sourceReads++;

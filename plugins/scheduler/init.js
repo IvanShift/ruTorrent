@@ -115,7 +115,7 @@ if (plugin.canChangeOptions()) {
 					return true;
 		for (let day = 0; day < 7; day++)
 			for (let hour = 0; hour < 24; hour++)
-				if ($(`.day-${day}.hour-${hour}`).attr("clr") !== theWebUI.scheduleTable.week[day][hour])
+				if (Number($(`.day-${day}.hour-${hour}`).attr("clr")) !== theWebUI.scheduleTable.week[day][hour])
 					return true;
 		return false;
 	}

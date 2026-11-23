@@ -849,6 +849,15 @@ class rTorrent
         return(strpos(FileUtil::addslash(rtrim($real, '/') . $rest), $realTop) === 0);
     }
 
+    // A replacement must load where the original download reported its data.
+    public static function canReplaceInDirectory($directory)
+    {
+        $reported = $directory;
+        rTorrentSettings::get()->correctReportedDirectory($reported);
+        $load = self::parseDirectory($directory, false);
+        return self::normalizeNewDirectory($load) && $reported === $load;
+    }
+
     /**
      * Resolve, in place, the directory a download is loaded into, and see
      * that it exists. False when it is refused or cannot be made.
@@ -1085,4 +1094,9 @@ class rTorrent
         self::$directoryRefused = true;
         return(false);
     }
+    private static function hasDirectory($directory)
+    {
+        return($directory && strlen($directory) > 0);
+    }
+
 }
